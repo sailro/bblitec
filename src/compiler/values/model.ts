@@ -1,4 +1,5 @@
 import { cppIdentifierPattern } from "../../cpp-literals.js";
+import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
@@ -80,6 +81,28 @@ export function scalarFacts(
             ? { staticBoolean: value.staticBoolean }
             : {}),
     };
+}
+
+/** Whether a value carries a generation-known string, number or boolean. */
+export function hasScalarFacts(value: Value): boolean {
+    return (
+        value.staticString !== undefined ||
+        value.staticNumber !== undefined ||
+        value.staticBoolean !== undefined
+    );
+}
+
+/** Whether a record member's generation-known shape survives a copy of the record. */
+export function keepsStaticMember(value: Value): boolean {
+    return (
+        !value.parameterBinding &&
+        (value.kind === "json-null" ||
+            value.kind === "record" ||
+            isHandleKind(value.kind) ||
+            hasScalarFacts(value) ||
+            value.staticElements !== undefined ||
+            value.tupleElements !== undefined)
+    );
 }
 
 /** Whether a value's spelling reads storage that already exists. */

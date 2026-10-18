@@ -1,5 +1,6 @@
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
+    hasScalarFacts,
     isPresentValue,
     isStringValue,
     nativeDataMetadata,
@@ -122,7 +123,7 @@ import { cppIdentifiers } from "./cpp-identifiers.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { pinOperand } from "./evaluation-order.js";
 import { representedResultType } from "./represented-result.js";
-import { recordCopyObservation } from "./record-observations.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
 import {
@@ -283,6 +284,20 @@ function withFallbackAbsence(left: Value): Value {
         ...selected
     } = left;
     return selected;
+}
+
+/**
+ * `xs.length = n`. Only an array whose element type can never be absent may
+ * grow: its new slots default, and no read can mistake one for a hole. Every
+ * other array keeps the dense-array refusal; a length of zero only shrinks.
+ */
+function arrayLengthWrite(
+    array: string,
+    length: string,
+    elementIsAlwaysPresent: boolean,
+): string {
+    const grows = elementIsAlwaysPresent && length !== "0.0";
+    return `bbl::js::${grows ? "array_set_length" : "array_truncate"}(${array}, ${length});`;
 }
 
 /**
@@ -4520,7 +4535,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // the same handle kind; a fallback that can itself miss
             // composes its flag into the result's.
             if (leftFound === "true") {
-                return left;
+                return left.kind === "data" &&
+                    left.dataType?.kind === "optional"
+                    ? {
+                          ...this.presentOptionalValue(
+                              left,
+                              left.dataType.inner,
+                          ),
+                          ...scalarFacts(left),
+                      }
+                    : left;
+            }
+            if (leftFound === "false") {
+                this.context.emitDiscardedValue(left);
+                return this.context.compileValue(expression.right);
             }
             // The fallback runs only on a miss, so what it emits (a pinned
             // call result, say) stays inside the arm the select takes.
@@ -4758,7 +4786,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 left.staticNumber !== undefined ||
                 left.staticBoolean !== undefined ||
-                left.staticString !== undefined
+                left.staticString !== undefined ||
+                left.staticElements !== undefined
             ) {
                 return {
                     ...this.leafValue(`(*${left.cpp})`, inner),
@@ -4770,6 +4799,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         : {}),
                     ...(left.staticString !== undefined
                         ? { staticString: left.staticString }
+                        : {}),
+                    ...(left.staticElements !== undefined
+                        ? {
+                              staticElements: left.staticElements,
+                              ...(left.staticElementsOwner
+                                  ? {
+                                        staticElementsOwner:
+                                            left.staticElementsOwner,
+                                    }
+                                  : {}),
+                          }
                         : {}),
                 };
             }
@@ -5172,23 +5212,55 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.recordPropertiesAreCurrent(owner)
                     ? owner.recordProperties?.[property]
                     : undefined;
-            const sourceType = this.context.checker.getTypeAtLocation(
-                access.expression,
-            );
-            // A mutable record can still have a resource field no alias replaces.
+            // A desugared access proves what its source node proves; a node the
+            // compiler made for its own descriptors has no source to write it.
+            const readNode =
+                access.expression.pos < 0
+                    ? ts.getOriginalNode(access.expression)
+                    : access.expression;
+            const sourceType = this.context.checker.getTypeAtLocation(readNode);
+            // A mutable record can still have a field no alias replaces.
             // The whole-program write proof includes structural and asserted aliases.
+            const provenWith = (keepsPresent: boolean): boolean =>
+                this.context.bindings.recordPropertiesAreCurrent(owner) &&
+                (sourceField !== undefined ||
+                    owner.recordOwnKeys !== undefined) &&
+                (readNode.pos < 0 ||
+                    !recordFieldIsWritten(
+                        this.context,
+                        sourceType,
+                        property,
+                        keepsPresent,
+                    ));
+            const unwrittenRecordField = provenWith(false);
+            // What a field's presence or resource says survives another closure
+            // replacing a shared cell's whole record; the values it holds do not.
+            const unreplacedCell = owner.sharedStorageCpp === undefined;
+            const resourceField =
+                field.type.kind === "handle" ||
+                (field.type.kind === "vector" &&
+                    field.type.element.kind === "handle");
             const stableResourceField =
                 sourceField &&
-                (field.type.kind === "handle" ||
-                    (field.type.kind === "vector" &&
-                        field.type.element.kind === "handle")) &&
-                recordCopyObservation(
-                    this.context,
-                    sourceType,
-                    sourceType,
-                    [property],
-                    false,
-                ) === undefined;
+                unwrittenRecordField &&
+                (resourceField || unreplacedCell);
+            if (
+                unwrittenRecordField &&
+                (sourceField?.kind === "json-null" ||
+                    (sourceField === undefined &&
+                        owner.recordOwnKeys !== undefined &&
+                        !owner.recordOwnKeys.includes(property))) &&
+                field.type.kind === "optional"
+            ) {
+                writable(value).optionalFoundCpp = "false";
+            }
+            if (
+                sourceField?.optionalFoundCpp === "true" &&
+                field.type.kind === "optional" &&
+                provenWith(true)
+            ) {
+                writable(value).optionalFoundCpp = "true";
+            }
             const staticField =
                 stableResourceField ||
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
@@ -5201,13 +5273,44 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ]?.recordProperties === owner.recordProperties)
                     ? sourceField
                     : undefined;
-            if (staticField && field.type.kind === "handle") {
-                const transported = withCommonResourceMetadata(value, [
+            const handleType =
+                field.type.kind === "optional" &&
+                field.type.inner.kind === "handle"
+                    ? field.type.inner
+                    : field.type.kind === "handle"
+                      ? field.type
+                      : undefined;
+            if (staticField && handleType && isHandleKind(staticField.kind)) {
+                const baseValue =
+                    field.type.kind === "optional"
+                        ? {
+                              ...this.presentOptionalValue(value, handleType),
+                              optionalFoundCpp: "true",
+                          }
+                        : value;
+                const transported = withCommonResourceMetadata(baseValue, [
                     staticField,
                 ]);
-                return field.type.ownedEngine || value.kind === "picking-info"
+                return handleType.ownedEngine ||
+                    baseValue.kind === "picking-info"
                     ? transported
                     : commonResourceValue(transported, [staticField]);
+            }
+            if (
+                staticField?.kind === "record" &&
+                unwrittenRecordField &&
+                unreplacedCell
+            ) {
+                if (staticField.recordProperties) {
+                    writable(value).recordProperties =
+                        staticField.recordProperties;
+                }
+                if (staticField.recordOwnKeys) {
+                    writable(value).recordOwnKeys = staticField.recordOwnKeys;
+                }
+                if (field.type.kind === "optional") {
+                    writable(value).optionalFoundCpp = "true";
+                }
             }
             if (
                 staticField &&
@@ -8563,15 +8666,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : "0.0",
         );
         // Argument effects may have invalidated this exact array's contents.
-        const members = facts.staticElements;
-        // Raw DOM element storage belongs to the document realm, just like
-        // each element reconstructed by leafValue; query cardinality is dynamic.
-        const documentOwner =
-            element.handle === "ui-element"
-                ? this.leafValue("bbl::UiElementHandle{}", element)
+        const members =
+            facts.staticElements ??
+            (facts.runtimeElementTemplate
+                ? [facts.runtimeElementTemplate]
+                : undefined);
+        // Raw DOM element storage belongs to the document realm, and an entry
+        // program's unowned handles belong to its one default engine, just like
+        // each element reconstructed by leafValue.
+        const defaultOwner =
+            element.handle === "ui-element" ||
+            (!members &&
+                belongsToEntryEngine(element.handle) &&
+                this.context.defaultEngine() !== undefined)
+                ? this.leafValue(`${handleCppType(element.handle)}{}`, element)
                 : undefined;
         if (
-            !documentOwner &&
+            !defaultOwner &&
             (!members ||
                 members.some(
                     (member) =>
@@ -8587,10 +8698,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: method === "includes" ? "boolean" : "number",
         } as const;
         const absent = method === "includes" ? "false" : "-1.0";
-        if (!documentOwner && !members?.length)
+        if (!defaultOwner && !members?.length)
             return this.leafValue(absent, type);
         const engine = this.context.storedResourceEngine(
-            documentOwner ?? members![0]!,
+            defaultOwner ?? members![0]!,
             call,
         );
         const same = `std::addressof(*(${engine})) == std::addressof(${this.context.requireEngine(needle, call)})`;
@@ -12645,10 +12756,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         cppName: string,
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "struct" },
-    ): void {
+    ): Record<string, Value> | undefined {
         const referenceStruct = this.context.dataTypes.isReferenceStruct(
             dataType.name,
         );
+        let knownProperties: Record<string, Value> | undefined = {};
         let declared = false;
         const declareDefault = (): void => {
             if (declared) return;
@@ -12670,6 +12782,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         const store = (field: DataStructField, cpp: string): string =>
             `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
+        // The record keeps a field's generation-known scalar only while the
+        // field's value is one; anything else forgets it.
+        const trackKnownField = (
+            sourceName: string,
+            field: DataStructField,
+            facts: Value | undefined,
+        ): void => {
+            if (!knownProperties) return;
+            if (facts && !facts.parameterBinding && hasScalarFacts(facts)) {
+                knownProperties[sourceName] = {
+                    ...this.leafValue(
+                        `${cppName}${member}${field.name}`,
+                        field.type,
+                    ),
+                    ...scalarFacts(facts),
+                };
+            } else {
+                delete knownProperties[sourceName];
+            }
+        };
         const assigned = new EmissionSet<string>();
         const assign = (
             sourceName: string,
@@ -12689,6 +12821,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ),
             });
             assigned.add(field.name);
+            trackKnownField(
+                sourceName,
+                field,
+                sourceValue.conditionalOwnKey ? undefined : sourceValue,
+            );
         };
         // A spread copies a field a later property of the literal writes
         // again only to be replaced: the later value is the one kept.
@@ -12717,6 +12854,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     source.kind === "data"
                         ? this.narrowOptional(source, property.expression)
                         : source;
+                if (
+                    spread.kind === "json-null" ||
+                    spread.optionalFoundCpp === "false"
+                ) {
+                    declareDefault();
+                    continue;
+                }
                 if (spread.kind === "record") {
                     declareDefault();
                     // A spread reads each getter once; it copies the value.
@@ -12741,6 +12885,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             assign(name, value, property);
                             continue;
                         }
+                        trackKnownField(
+                            name,
+                            field,
+                            value.conditionalOwnKey ? undefined : value,
+                        );
                         const entry = this.recordMemberEntry(
                             name,
                             value.conditionalOwnKey
@@ -12792,6 +12941,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             code: store(field, callback),
                         });
                         assigned.add(field.name);
+                        if (knownProperties) delete knownProperties[name];
                     }
                     continue;
                 }
@@ -12824,12 +12974,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 : `${cppName} = ${spread.cpp};`,
                         );
                     }
+                    const spreadProperties =
+                        this.context.bindings.recordPropertiesAreCurrent(spread)
+                            ? spread.recordProperties
+                            : undefined;
+                    if (!spreadProperties) knownProperties = undefined;
                     for (const field of this.context.dataTypes.structFields(
                         dataType.name,
                         property,
                         "accessors",
                     )) {
                         assigned.add(field.name);
+                        if (
+                            spreadProperties &&
+                            !replaced.has(field.sourceName)
+                        ) {
+                            trackKnownField(
+                                field.sourceName,
+                                field,
+                                spreadProperties[field.sourceName],
+                            );
+                        }
                     }
                     continue;
                 }
@@ -12853,6 +13018,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             )
                             .map((field) => field.sourceName),
                     );
+                    const spreadProperties =
+                        this.context.bindings.recordPropertiesAreCurrent(spread)
+                            ? spread.recordProperties
+                            : undefined;
+                    if (!spreadProperties) knownProperties = undefined;
                     for (const name of this.copyStructOwnProperties(
                         { cpp: cppName, type: dataType },
                         spread,
@@ -12863,8 +13033,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             excludedKeys,
                             fresh: (field) => !assigned.has(field),
                         },
-                    ))
+                    )) {
                         assigned.add(name);
+                    }
+                    if (knownProperties && spreadProperties) {
+                        for (const field of this.context.dataTypes.structFields(
+                            spread.dataType.name,
+                            property,
+                            "accessors",
+                        )) {
+                            if (excludedKeys.has(field.sourceName)) continue;
+                            trackKnownField(
+                                field.sourceName,
+                                fieldOf(field.sourceName, property),
+                                spreadProperties[field.sourceName],
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "optional" &&
+                    spread.dataType.inner.kind === "struct"
+                ) {
+                    knownProperties = undefined;
+                    declareDefault();
+                    const innerType = spread.dataType.inner;
+                    const pinned = this.context.bindings.pinValueToTemporary(
+                        spread,
+                        "spread_optional",
+                        property.expression,
+                    );
+                    const present = this.presentOptionalValue(
+                        pinned,
+                        innerType,
+                    );
+                    const excludedKeys = new Set(
+                        this.context.dataTypes
+                            .structFields(innerType.name, property, "accessors")
+                            .filter(
+                                (field) =>
+                                    !field.accessor &&
+                                    replaced.has(field.sourceName),
+                            )
+                            .map((field) => field.sourceName),
+                    );
+                    const copiedFields = new Set<string>();
+                    this.context.emit(
+                        `if (${optionalPresentCpp(pinned.cpp)}) {`,
+                    );
+                    for (const name of this.copyStructOwnProperties(
+                        { cpp: cppName, type: dataType },
+                        present,
+                        innerType,
+                        property.expression,
+                        "spread",
+                        {
+                            excludedKeys,
+                            fresh: (field) => !assigned.has(field),
+                        },
+                    ))
+                        copiedFields.add(name);
+                    this.context.emit("}");
+                    for (const name of copiedFields) assigned.add(name);
                     continue;
                 }
                 this.context.fail(
@@ -12874,6 +13106,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             const key = this.runtimeKey(property);
             if (key && ts.isPropertyAssignment(property)) {
+                knownProperties = undefined;
                 declareDefault();
                 for (const name of this.emitKeyedFieldWrite(
                     cppName + member,
@@ -12891,6 +13124,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.symbolKeyOrText(property.name),
                     property,
                 );
+                trackKnownField(
+                    field.sourceName,
+                    field,
+                    knownProperties &&
+                        !this.context.evaluationOrder.writesStorage(
+                            property.initializer,
+                        )
+                        ? this.context.probeEmission(
+                              () => {
+                                  try {
+                                      return this.context.compileValue(
+                                          property.initializer,
+                                      );
+                                  } catch (error) {
+                                      if (error instanceof CompileError)
+                                          return undefined;
+                                      throw error;
+                                  }
+                              },
+                              () => false,
+                          )
+                        : undefined,
+                );
                 this.context.emit({
                     kind: "expression",
                     code: store(
@@ -12904,6 +13160,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (ts.isShorthandPropertyAssignment(property)) {
                 declareDefault();
                 const field = fieldOf(property.name.text, property);
+                trackKnownField(
+                    field.sourceName,
+                    field,
+                    knownProperties
+                        ? this.context.bindings.lookupOptional(property.name)
+                        : undefined,
+                );
                 this.context.emit({
                     kind: "expression",
                     code: store(
@@ -12942,6 +13205,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         ),
                     });
                     assigned.add(field.name);
+                    if (knownProperties)
+                        delete knownProperties[field.sourceName];
                     continue;
                 }
             }
@@ -12970,6 +13235,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Struct literal is missing field '${missing.name}'.`,
             );
         }
+        return knownProperties && Object.keys(knownProperties).length > 0
+            ? knownProperties
+            : undefined;
     }
 
     /**
@@ -15120,9 +15388,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         // static in-bounds proof over the snapshot's length
                         // must stop applying from here on.
                         this.invalidateStaticElements(narrowed);
+                        const elementType = this.context.checker
+                            .getTypeAtLocation(left.expression)
+                            .getNumberIndexType();
+                        const absent = elementType && nullability(elementType);
                         this.context.emit(
                             (this.invalidateAliases(narrowed.cpp),
-                            `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
+                            arrayLengthWrite(
+                                narrowed.cpp,
+                                this.context.compileNumber(
+                                    expression.right,
+                                    "double",
+                                ),
+                                narrowed.dataType.element.kind === "struct" &&
+                                    absent !== undefined &&
+                                    !absent.null &&
+                                    !absent.undefined,
+                            )),
                         );
                         return true;
                     }
@@ -16888,6 +17170,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `static_cast<bool>(${value.cpp})`;
         }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
+            if (value.optionalFoundCpp === "false") {
+                return "false";
+            }
+            if (
+                value.optionalFoundCpp === "true" &&
+                (value.dataType.inner.kind === "struct" ||
+                    value.dataType.inner.kind === "vector" ||
+                    value.dataType.inner.kind === "handle")
+            ) {
+                return "true";
+            }
+            if (value.staticBoolean !== undefined) {
+                return value.staticBoolean ? whenPresent("true") : "false";
+            }
+            if (value.staticNumber !== undefined) {
+                return value.staticNumber === 0 ||
+                    Number.isNaN(value.staticNumber)
+                    ? "false"
+                    : whenPresent("true");
+            }
+            if (value.staticString !== undefined) {
+                return value.staticString.length === 0
+                    ? "false"
+                    : whenPresent("true");
+            }
             // The stored engagement and, once engaged, the value's own
             // truthiness. A presence flag beside the storage (an unchecked
             // element read's in-range test) is the slot's presence, so it
@@ -17166,6 +17473,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return equal !== negated ? "true" : "false";
         }
         if (value?.kind === "data" && value.dataType?.kind === "optional") {
+            if (value.optionalFoundCpp === "false") {
+                return absentTest("false", "true");
+            }
+            if (
+                value.optionalFoundCpp === "true" ||
+                value.staticString !== undefined ||
+                value.staticNumber !== undefined ||
+                value.staticBoolean !== undefined ||
+                value.staticElements !== undefined ||
+                value.tupleElements !== undefined
+            ) {
+                return absentTest("true", "false");
+            }
             return absentTest(
                 optionalPresentCpp(value.cpp),
                 `!${optionalPresentCpp(value.cpp)}`,

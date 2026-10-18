@@ -410,16 +410,13 @@ export class CallbackLowerer {
         }
         const dataName =
             this.context.allocateTemporaryCppName("csm_receiver_data");
-        this.context.registerNativeBindingType(
-            dataName,
-            "const bbl::js::F32Array",
-        );
+        this.context.registerNativeBindingType(dataName, "bbl::js::F32Array");
         const previousDepth = this.context.frameCallbackDepth;
         this.context.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
-                const binding = this.context.registerNativeConstBinding(
+                const binding = this.context.registerNativeBinding(
                     dataName,
                     true,
                 );
@@ -449,7 +446,7 @@ export class CallbackLowerer {
             compiled,
             "void",
             expression,
-            `[[maybe_unused]] const bbl::js::F32Array& ${dataName}`,
+            `[[maybe_unused]] bbl::js::F32Array ${dataName}`,
             [dataName],
         );
     }

@@ -26,7 +26,11 @@ import ts from "typescript";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
-import { nullability, typeCanCarryReference } from "./type-facts.js";
+import {
+    nullability,
+    presentLiteralKeys,
+    typeCanCarryReference,
+} from "./type-facts.js";
 import {
     requireAbsenceTag,
     requireDeclarationAbsenceTag,
@@ -206,7 +210,10 @@ export function generationKnownStringArgument(value: Value): boolean {
         const entries =
             candidate.kind === "tuple"
                 ? candidate.tupleElements
-                : candidate.kind === "record" && candidate.recordProperties
+                : (candidate.kind === "record" ||
+                        (candidate.kind === "data" &&
+                            candidate.dataType?.kind === "struct")) &&
+                    candidate.recordProperties
                   ? Object.values(candidate.recordProperties)
                   : undefined;
         if (!entries) return false;
@@ -2052,6 +2059,54 @@ export class UserFunctionLowerer {
                     }
                 }
             }
+            if (
+                !group &&
+                returnType?.kind === "struct" &&
+                !result.recordProperties &&
+                recordReturn &&
+                ts.isObjectLiteralExpression(recordReturn) &&
+                !firstReturn(ir.statements) &&
+                recordReturn.properties.every(
+                    (property) =>
+                        (ts.isPropertyAssignment(property) ||
+                            ts.isShorthandPropertyAssignment(property)) &&
+                        !ts.isComputedPropertyName(property.name) &&
+                        property.name.text !== "__proto__",
+                )
+            ) {
+                const fields = context.dataTypes.structFields(
+                    returnType.name,
+                    call,
+                    "accessors",
+                );
+                const access = context.dataTypes.isReferenceStruct(
+                    returnType.name,
+                )
+                    ? "->"
+                    : ".";
+                const presentProperties: Record<string, Value> = {};
+                for (const key of presentLiteralKeys(
+                    this.checker,
+                    recordReturn,
+                )) {
+                    const field = fields.find(
+                        (candidate) =>
+                            !candidate.accessor && candidate.sourceName === key,
+                    );
+                    if (field) {
+                        presentProperties[key] = {
+                            ...context.dataLowerer.leafValue(
+                                `${result.cpp}${access}${field.name}`,
+                                field.type,
+                            ),
+                            optionalFoundCpp: "true",
+                        };
+                    }
+                }
+                if (Object.keys(presentProperties).length > 0) {
+                    writable(result).recordProperties = presentProperties;
+                }
+            }
             // A fresh literal array can keep its scalar field facts across a
             // shared native call. Project them onto that call's own storage;
             // the probe's temporary expressions never escape its transaction.
@@ -2077,21 +2132,24 @@ export class UserFunctionLowerer {
                 } catch (error) {
                     if (!(error instanceof CompileError)) throw error;
                 }
-                if (folded)
+                if (folded) {
                     context.dataLowerer.retainArrayLiteralFacts(
                         result,
                         folded,
                         arrayReturn,
                     );
+                    if (result.staticElements) {
+                        context.dataLowerer.registerFixedLength(
+                            result.cpp,
+                            result.staticElements.length,
+                        );
+                    }
+                }
             }
             if (
                 returnType &&
                 ["number", "boolean", "string"].includes(returnType.kind) &&
-                argumentValues.every(
-                    returnType.kind === "string"
-                        ? generationKnownStringArgument
-                        : generationKnownPrimitive,
-                )
+                argumentValues.every(generationKnownStringArgument)
             ) {
                 const key = this.scalarResults.key(
                     context.functionEmissionScope(),

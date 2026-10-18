@@ -32,11 +32,13 @@ Rules:
   functions, module `const`s run at generation, and an inlined call's argument for a parameter its body never
   rebinds. A fold reaching the host, clock, `Math.random` or locale refuses; written constants require the
   initialization snapshot proof below.
-- Scalar facts survive readonly return fields; string facts survive locals with no reachable writes. Forwarded option
+- Scalar facts survive readonly return fields; string, number and boolean facts survive locals with no reachable writes;
+  a named record's number field folds while no write in the program can replace it. Forwarded option
   records project complete current fields from their native owner. Single-expression helpers returning
   fresh primitive records retain call-time field facts when the expression writes no storage. Primitive module constants
   can snapshot an earlier fresh scalar record in the same module across only pure initializers and inert declarations.
-- Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse.
+- Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
+  write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
   strings via `--env NAME=value` or `CompileOptions.environment`. No dotenv or host variables.

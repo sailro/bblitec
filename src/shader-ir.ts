@@ -2770,9 +2770,19 @@ export function lowerWgslShaderProgram(
             throw new Error(`Unsupported vertex attribute '${name}'.`);
         return { name, ...attribute };
     });
-    if (source.useThinInstances) {
+    const lanes =
+        source.useThinInstances === undefined
+            ? vertexInstanceLanes(source.vertexSource)
+            : undefined;
+    const readsInstanceColors =
+        source.useThinInstanceColors === true || lanes?.instanceColors === true;
+    const readsThinInstances =
+        source.useThinInstances === true ||
+        readsInstanceColors ||
+        lanes?.thinInstances === true;
+    if (readsThinInstances) {
         attributes.push(...instanceAttributes);
-        if (source.useThinInstanceColors) {
+        if (readsInstanceColors) {
             attributes.push(instanceColorAttribute);
         }
     }
@@ -2875,3 +2885,15 @@ const instanceColorAttribute: {
     location: number;
     type: ShaderType;
 } = { name: "instanceColor", location: 20, type: "vec4<f32>" };
+
+/** The instance lanes a vertex source reads when its program does not state them. */
+export function vertexInstanceLanes(vertexSource: string): {
+    readonly thinInstances: boolean;
+    readonly instanceColors: boolean;
+} {
+    const instanceColors = /\binstanceColor\b/.test(vertexSource);
+    return {
+        instanceColors,
+        thinInstances: instanceColors || /\bworld[0123]\b/.test(vertexSource),
+    };
+}

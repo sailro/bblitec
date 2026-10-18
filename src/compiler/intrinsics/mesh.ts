@@ -1280,7 +1280,11 @@ function compileMeshOptionalStreams(
         if (!argument || context.symbols.isGlobalUndefined(argument))
             return { cpp: "std::nullopt", present: false };
         const value = context.compileValue(argument);
-        const optional = value.dataType?.kind === "optional";
+        if (value.optionalFoundCpp === "false")
+            return { cpp: "std::nullopt", present: false };
+        const optional =
+            value.dataType?.kind === "optional" &&
+            value.optionalFoundCpp !== "true";
         const type: DataType = {
             kind: "optional",
             inner: { kind: "f32array" },

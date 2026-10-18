@@ -1,7 +1,9 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
+import { nullability } from "./type-facts.js";
 import {
     programObservations,
     type ObservedWrite,
@@ -137,6 +139,78 @@ export function recordCopyObservation(
     );
     byKey.set(key, answer ?? null);
     return answer;
+}
+
+/**
+ * Whether any write in the program can replace `property` on a record of
+ * `source` type: one through a holder that can hold such a record, or through
+ * a more specific type whose records the program can also view as `source`.
+ * Asking only whether the field stays present, a plain assignment of a value
+ * that is neither null nor undefined cannot remove it.
+ */
+export function recordFieldIsWritten(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+    keepsPresent = false,
+): boolean {
+    const { checker } = context;
+    const observations = programObservations(context.program);
+    const holds = holderTest(checker);
+    const mentionsTypeParameter = (
+        type: ts.Type,
+        seen = new Set<ts.Type>(),
+    ): boolean => {
+        if (seen.has(type)) return false;
+        seen.add(type);
+        if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+        if (type.isUnionOrIntersection())
+            return type.types.some((member) =>
+                mentionsTypeParameter(member, seen),
+            );
+        return (
+            (type.flags & ts.TypeFlags.Object) !== 0 &&
+            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !==
+                0 &&
+            checker
+                .getTypeArguments(type as ts.TypeReference)
+                .some((argument) => mentionsTypeParameter(argument, seen))
+        );
+    };
+    // A holder instantiated over a type parameter may be any concrete
+    // instantiation, which assignability cannot relate to `source`; only a
+    // write that names the property is attributed to it.
+    const viewedAsSource = (holder: ts.Type): boolean =>
+        (holder.isUnion() ? holder.types : [holder]).some((member) =>
+            checker.isTypeAssignableTo(member, source),
+        );
+    const mayRemove = (write: ObservedWrite): boolean => {
+        const assignment = write.node.parent;
+        if (
+            !ts.isBinaryExpression(assignment) ||
+            assignment.left !== write.node ||
+            assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+        )
+            return true;
+        const absent = nullability(checker.getTypeAtLocation(assignment.right));
+        return absent.null || absent.undefined;
+    };
+    const relevant = (write: ObservedWrite): boolean =>
+        !keepsPresent || mayRemove(write);
+    return (
+        writesWhere(
+            observations,
+            (type) => holds(type, [source]) || viewedAsSource(type),
+            (write) =>
+                (write.property === undefined || write.property === property) &&
+                relevant(write),
+        ) !== undefined ||
+        writesWhere(
+            observations,
+            mentionsTypeParameter,
+            (write) => write.property === property && relevant(write),
+        ) !== undefined
+    );
 }
 
 /**
@@ -873,11 +947,16 @@ function holdsRecord(
         0
     )
         return false;
+    const holderHandle = pinnedSourceHandleKind(holder);
     // A record union's value is a record of one of its members.
     return records.some((record) =>
-        (record.isUnion() ? record.types : [record]).some((member) =>
-            checker.isTypeAssignableTo(member, holder),
-        ),
+        (record.isUnion() ? record.types : [record]).some((member) => {
+            const memberHandle = pinnedSourceHandleKind(member);
+            if (holderHandle !== undefined || memberHandle !== undefined) {
+                return holderHandle === memberHandle;
+            }
+            return checker.isTypeAssignableTo(member, holder);
+        }),
     );
 }
 

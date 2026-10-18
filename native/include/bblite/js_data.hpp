@@ -5116,15 +5116,26 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
-// Length writes keep the dense-array contract; sparse growth needs slot presence.
-template <typename T> inline void array_truncate(Array<T>& values, double count) {
+[[nodiscard]] inline std::size_t array_length_value(double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
         throw std::runtime_error("Invalid array length.");
-    const auto size = array_index(count);
+    return array_index(count);
+}
+
+// Length writes keep the dense-array contract; sparse growth needs slot presence.
+template <typename T> inline void array_truncate(Array<T>& values, double count) {
+    const auto size = array_length_value(count);
     if (size > values.size()) [[unlikely]] {
         throw std::runtime_error("Array length assignment must not grow the array.");
     }
     values.resize(size);
+}
+
+// A length write to an array whose element can never be absent: growth
+// fills the new slots with the element's default, which no read can tell
+// from a hole because the element type has no way to name one.
+template <typename T> inline void array_set_length(Array<T>& values, double count) {
+    values.resize(array_length_value(count));
 }
 
 template <typename T> [[nodiscard]] inline bool array_has_index(const T& values, double index) {

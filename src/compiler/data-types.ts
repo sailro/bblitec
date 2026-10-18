@@ -8353,10 +8353,15 @@ export class DataTypeRegistry {
         const stored = fields.map((field) => ({
             ...field,
             name: sanitizeIdentifier(field.sourceName),
-            type: this.engineFieldStorage(
-                this.markStoredObjectReferences(field.type),
-                field.declarations,
-            ),
+            type:
+                field.declarations === undefined
+                    ? this.engineOwnedFieldStorage(
+                          this.markStoredObjectReferences(field.type),
+                      )
+                    : this.engineFieldStorage(
+                          this.markStoredObjectReferences(field.type),
+                          field.declarations,
+                      ),
         }));
         const key = `owned-result:${stored
             .map(

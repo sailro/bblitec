@@ -138,8 +138,9 @@ export function compileShaderMaterialOptions(
             "depthBias",
             "depthBiasSlopeScale",
             "transmissive",
+            "useThinInstanceColors",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare, depthOnlyFragment, depthBias, depthBiasSlopeScale and transmissive only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare, depthOnlyFragment, depthBias, depthBiasSlopeScale, transmissive and useThinInstanceColors only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -248,6 +249,17 @@ export function compileShaderMaterialOptions(
         false,
         "Shader depthOnlyFragment",
     );
+    const useThinInstanceColorsExpression = context.objectProperty(
+        object,
+        "useThinInstanceColors",
+    );
+    const thinInstanceColorOption = useThinInstanceColorsExpression
+        ? compileOptionalStaticBoolean(
+              context,
+              useThinInstanceColorsExpression,
+              false,
+          )
+        : undefined;
     const depthCompareExpression = context.objectProperty(
         object,
         "depthCompare",
@@ -356,6 +368,9 @@ export function compileShaderMaterialOptions(
         depthWrite,
         ...(depthCompare === undefined ? {} : { depthCompare }),
         ...(depthOnlyFragmentExpression ? { depthOnlyFragment } : {}),
+        ...(thinInstanceColorOption === undefined
+            ? {}
+            : { thinInstanceColorOption }),
         ...depthBiasOptions,
     };
     try {
@@ -628,10 +643,10 @@ function compileShaderStorageBuffers(
             // This is the host-shareable read-only shape reached by the
             // racer. Other WGSL storage element layouts require their own
             // minimum-size/alignment validation before they may be bound.
-            if (type !== "array<vec4<f32>>") {
+            if (type !== "array<vec4<f32>>" && type !== "array<mat4x4<f32>>") {
                 context.fail(
                     typeExpression,
-                    `Reached shader storage buffers support type 'array<vec4<f32>>', received '${type}'.`,
+                    `Reached shader storage buffers support types 'array<vec4<f32>>' and 'array<mat4x4<f32>>', received '${type}'.`,
                 );
             }
             used.add(name);

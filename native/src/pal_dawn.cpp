@@ -882,7 +882,8 @@ class DawnSceneRun {
      */
     void write_draw_blocks(const upstream::RenderDrawCommand& draw, DawnMesh& mesh,
                            [[maybe_unused]] const DrawBlocks& blocks,
-                           const ShaderPassMatrices& pass_matrices) {
+                           const ShaderPassMatrices& pass_matrices,
+                           WGPUBuffer pass_uniforms = nullptr) {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& shader_block_scratch = data_.shader_block_scratch;
@@ -901,23 +902,29 @@ class DawnSceneRun {
                 *pass_scene, engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
             const ShaderPassMatrices shader_pass_matrices = shader_packet_published_matrices(
                 draw.item.shader_packet, shader_matrices.apply(pass_matrices));
+            DawnShaderBindings& bindings = mesh.shader_bindings[DawnShaderBindingKey{
+                draw.item.shader_variant, draw.item.material.value,
+                pass_uniforms ? pass_uniforms : state.view_projection}];
             // A block that is exactly the shared scene matrix binds the
             // frame's own buffer and needs no write; everything else -- custom
             // gathers, or several system matrices -- owns the material's
             // buffer and is filled here.
             const auto write_stage_block = [&](const upstream::ShaderVariantStageBlock& block,
-                                               WGPUBuffer buffer) {
+                                               DawnBuffer& buffer, std::uint64_t bytes) {
                 if (!block.present || block_is_shared_scene_matrix(block)) {
                     return;
                 }
+                ensure_uniform_buffer(state, buffer, bytes);
                 shader_stage_block_floats(block, shader_pass_matrices, material,
                                           shader_block_scratch);
-                DawnGpuDevice{state.queue}.write_buffer(buffer, 0, shader_block_scratch.data(),
-                                                        shader_block_scratch.size() *
-                                                            sizeof(float));
+                DawnGpuDevice{state.queue}.write_buffer(
+                    buffer.get(), 0, shader_block_scratch.data(),
+                    shader_block_scratch.size() * sizeof(float));
             };
-            write_stage_block(shader_info.vertex, mesh.shader_vertex_uniforms);
-            write_stage_block(shader_info.fragment, mesh.material_uniforms);
+            write_stage_block(shader_info.vertex, bindings.vertex_uniforms,
+                              shader_vertex_uniform_bytes(shader_info.vertex.float_size));
+            write_stage_block(shader_info.fragment, bindings.fragment_uniforms,
+                              shader_fragment_uniform_bytes(shader_info.fragment.float_size));
             return;
         }
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -949,7 +956,8 @@ class DawnSceneRun {
 
     void write_material_uniforms(const upstream::RenderDrawList& list,
                                  const ShaderPassMatrices& pass_matrices,
-                                 bool pass_dependent_only = false) {
+                                 bool pass_dependent_only = false,
+                                 WGPUBuffer pass_uniforms = nullptr) {
         const Scene& pass_scene = *current_frame().pass_scene;
         std::vector<DawnMesh>& pass_meshes = *current_frame().pass_meshes;
         update_material_bindings(pass_scene, data_.engine, list, pass_matrices, pass_meshes,
@@ -961,7 +969,7 @@ class DawnSceneRun {
             }
             DawnMesh& mesh = pass_meshes[draw.item_index];
             write_draw_blocks(draw, mesh, ensure_draw_state(pass_scene, draw, mesh, /*frame=*/true),
-                              pass_matrices);
+                              pass_matrices, pass_uniforms);
         }
     }
 
@@ -3044,9 +3052,11 @@ public:
                             if (task.render.shadow_generator.value == invalid_handle) {
                                 if (target_record.has_color) {
                                     write_material_uniforms(render_task.draw_lists.opaque,
-                                                            binding_camera.pass());
+                                                            binding_camera.pass(), false,
+                                                            render_task.view_projection);
                                     write_material_uniforms(render_task.draw_lists.transparent,
-                                                            binding_camera.pass());
+                                                            binding_camera.pass(), false,
+                                                            render_task.view_projection);
                                 } else {
                                     // Depth-only draws use their dedicated pipeline, but the
                                     // source task still updates every binding before drawing.
@@ -3101,8 +3111,10 @@ public:
                                 render_task.view_projection, 0,
                                 task_camera_pass.view_projection.data(),
                                 sizeof(task_camera_pass.view_projection));
-                            write_material_uniforms(render_task.draw_lists.opaque, matrices);
-                            write_material_uniforms(render_task.draw_lists.transparent, matrices);
+                            write_material_uniforms(render_task.draw_lists.opaque, matrices, false,
+                                                    render_task.view_projection);
+                            write_material_uniforms(render_task.draw_lists.transparent, matrices,
+                                                    false, render_task.view_projection);
                             upstream::sort_transparent_draws(render_task.draw_lists.transparent,
                                                              engine, source_camera);
 #endif
@@ -3155,9 +3167,10 @@ public:
                                 const bool later_cascade = wrote_caster_blocks[generator_index];
                                 wrote_caster_blocks[generator_index] = true;
                                 write_material_uniforms(render_task.draw_lists.opaque, caster_pass,
-                                                        later_cascade);
+                                                        later_cascade, render_task.view_projection);
                                 write_material_uniforms(render_task.draw_lists.transparent,
-                                                        caster_pass, later_cascade);
+                                                        caster_pass, later_cascade,
+                                                        render_task.view_projection);
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
                                         "Shadow render task has no depth attachment.");

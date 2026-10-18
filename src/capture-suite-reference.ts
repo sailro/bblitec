@@ -66,6 +66,7 @@ function mimeType(path: string): string {
         case ".html":
             return "text/html; charset=utf-8";
         case ".js":
+        case ".mjs":
             return "text/javascript; charset=utf-8";
         case ".wasm":
             // Emscripten instantiates through `WebAssembly.instantiateStreaming`,
@@ -408,6 +409,10 @@ export function pinnedPackageSpecifiers(
             .replaceAll(
                 '"@recast-navigation/wasm/wasm"',
                 '"/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js"',
+            )
+            .replaceAll(
+                "import.meta.env",
+                '(import.meta.env ?? { BASE_URL: "/", MODE: "production", PROD: true, DEV: false, SSR: false })',
             )
     );
 }
@@ -780,6 +785,15 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 existsSync(path) &&
                 statSync(path).isFile()
             ) {
+                if (url.search === "?raw") {
+                    response.writeHead(200, {
+                        "Content-Type": "text/javascript; charset=utf-8",
+                    });
+                    response.end(
+                        `export default ${JSON.stringify(readFileSync(path, "utf8"))};\n`,
+                    );
+                    return;
+                }
                 response.writeHead(200, { "Content-Type": mimeType(path) });
                 response.end(readFileSync(path));
                 return;

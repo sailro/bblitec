@@ -45,7 +45,7 @@ import {
     integerLoopCounter,
     integerLoopStepCpp,
 } from "./integer-loops.js";
-import { staticNumberValue } from "./option-helpers.js";
+import { foldingNoRecordFields, staticNumberValue } from "./option-helpers.js";
 import {
     argumentAt,
     isLogicalAssignmentOperator,
@@ -3015,10 +3015,13 @@ export class StatementLowerer {
             bound.name.text === "length"
                 ? context.knownCollectionCardinality(bound.expression)
                 : undefined;
+        // A bound read through a record's fields stays a runtime bound: the
+        // loop is not required to unroll, and a large expansion exhausts the
+        // static budget instead of falling back to the loop.
         const end =
             length.staticNumber ??
             cardinality ??
-            staticNumberValue(context, endExpression);
+            staticNumberValue(foldingNoRecordFields(context), endExpression);
         const iterations =
             end === undefined
                 ? undefined

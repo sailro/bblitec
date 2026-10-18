@@ -1573,7 +1573,8 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            !containsEvaluatedCall(unwrapped.left)
+            (!containsEvaluatedCall(unwrapped.left) ||
+                !this.context.evaluationOrder.writesStorage(unwrapped.left))
         ) {
             let leftValue: Value | undefined;
             const truthiness = this.context.probeEmission(
@@ -3966,6 +3967,7 @@ export class ExpressionLowerer {
                 );
             }
             const value = this.compileValue(argumentAt(call, 0));
+            const coerced = staticStringCoercion(value);
             this.context.reachJsData();
             if (value.kind === "json-null") {
                 return staticStringValue(
@@ -3979,9 +3981,12 @@ export class ExpressionLowerer {
                     ? primitiveTraits(value.dataType)
                     : undefined;
             if (primitive)
-                return this.context.dataValue(primitive.stringCpp(value.cpp), {
-                    kind: "string",
-                });
+                return {
+                    ...this.context.dataValue(primitive.stringCpp(value.cpp), {
+                        kind: "string",
+                    }),
+                    ...(coerced !== undefined ? { staticString: coerced } : {}),
+                };
             if (
                 value.dataType?.kind === "union" &&
                 value.dataType.members.every(
@@ -3998,6 +4003,7 @@ export class ExpressionLowerer {
                         value,
                         argumentAt(call, 0),
                     ),
+                    ...(coerced !== undefined ? { staticString: coerced } : {}),
                 };
             }
             if (
@@ -4015,6 +4021,7 @@ export class ExpressionLowerer {
                     kind: "data",
                     cpp: `bbl::js::concat(${stringConcatPart(this.context, value, argumentAt(call, 0))})`,
                     dataType: { kind: "string" },
+                    ...(coerced !== undefined ? { staticString: coerced } : {}),
                 };
             }
             if (isStringValue(value)) {
@@ -4022,6 +4029,7 @@ export class ExpressionLowerer {
                     kind: "data",
                     cpp: value.cpp,
                     dataType: { kind: "string" },
+                    ...(coerced !== undefined ? { staticString: coerced } : {}),
                 };
             }
             this.context.fail(
@@ -5555,7 +5563,10 @@ export class ExpressionLowerer {
                 ? browserCondition.value
                     ? "true"
                     : "false"
-                : !containsEvaluatedCall(unwrapped.condition)
+                : !containsEvaluatedCall(unwrapped.condition) ||
+                    !this.context.evaluationOrder.writesStorage(
+                        unwrapped.condition,
+                    )
                   ? this.context.probeEmission(
                         () =>
                             this.context.conditions.compileCondition(

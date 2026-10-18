@@ -12,6 +12,8 @@ export {
     optionalValueCpp,
     contextCanvas,
     isPresentValue,
+    hasScalarFacts,
+    keepsStaticMember,
     presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,

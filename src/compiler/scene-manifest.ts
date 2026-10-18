@@ -8,6 +8,7 @@ import type { CompileAdaptation } from "../fidelity.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
+import { vertexInstanceLanes } from "../shader-ir.js";
 import {
     emissionArray,
     EmissionMap,
@@ -218,6 +219,10 @@ export class SceneManifestRecorder {
     private readonly unknownMaterialMeshProfiles = new EmissionSet<
         number | undefined
     >();
+    private readonly shadowCasterShaderVariants = new EmissionMap<
+        string,
+        string
+    >();
     @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     @journaled private accessor runtimeMeshProfileCount = 0;
@@ -351,6 +356,24 @@ export class SceneManifestRecorder {
 
     /** Settles the records whose final shape depends on the whole entry. */
     public settle(): void {
+        for (const mesh of this.sceneMeshes) {
+            const current = [
+                ...(mesh.shaderVariant === undefined
+                    ? []
+                    : [mesh.shaderVariant]),
+                ...(mesh.shaderVariants ?? []),
+            ];
+            const casters = current.flatMap((variant) => {
+                const caster = this.shadowCasterShaderVariants.get(variant);
+                return caster === undefined ? [] : [caster];
+            });
+            if (casters.length > 0) {
+                writable(mesh).shaderVariants = [
+                    ...new Set([...current, ...casters]),
+                ].sort();
+                delete writable(mesh).shaderVariant;
+            }
+        }
         if (this.unknownMaterialMeshProfiles.size > 0) {
             // Explicit assignments must agree independently of unknown ones.
             // A retained callback with an unknown material cannot change an
@@ -376,15 +399,45 @@ export class SceneManifestRecorder {
                     this.unknownMaterialMeshProfiles.has(index)
                 ) {
                     const variants = this.reachedShaderPrograms
-                        .filter(({ name }) => {
-                            const known = knownLayouts.get(name);
-                            return (
-                                known === undefined ||
-                                (known.thinInstances === mesh.thinInstances &&
-                                    known.thinInstanceColors ===
-                                        mesh.thinInstanceColors)
-                            );
-                        })
+                        .filter(
+                            ({
+                                name,
+                                thinInstanceColorOption,
+                                vertexSource,
+                            }) => {
+                                const known = knownLayouts.get(name);
+                                if (known !== undefined) {
+                                    return (
+                                        known.thinInstances ===
+                                            mesh.thinInstances &&
+                                        known.thinInstanceColors ===
+                                            mesh.thinInstanceColors
+                                    );
+                                }
+                                const lanes = vertexInstanceLanes(vertexSource);
+                                if (
+                                    thinInstanceColorOption === true ||
+                                    lanes.instanceColors
+                                ) {
+                                    return (
+                                        mesh.thinInstances !== undefined &&
+                                        mesh.thinInstanceColors === true
+                                    );
+                                }
+                                if (lanes.thinInstances) {
+                                    return (
+                                        mesh.thinInstances !== undefined &&
+                                        mesh.thinInstanceColors !== true
+                                    );
+                                }
+                                return this.sceneMeshes.some(
+                                    (candidate) =>
+                                        candidate.thinInstances === undefined,
+                                )
+                                    ? mesh.thinInstances === undefined
+                                    : true;
+                            },
+                        )
                         .map(({ name }) => name);
                     writable(mesh).shaderVariants = [
                         ...new Set([
@@ -915,6 +968,15 @@ export class SceneManifestRecorder {
             );
             writable(program).useThinInstances = true;
             if (colors) writable(program).useThinInstanceColors = true;
+        }
+    }
+
+    public recordShadowCasterShaderVariant(
+        materialVariant: string | undefined,
+        casterVariant: string | undefined,
+    ): void {
+        if (materialVariant !== undefined && casterVariant !== undefined) {
+            this.shadowCasterShaderVariants.set(materialVariant, casterVariant);
         }
     }
 

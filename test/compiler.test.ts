@@ -2805,9 +2805,10 @@ test("spreads a native partial struct into a wider struct", () => {
                 String.raw`if \(v_options\.${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options\.${key}\);`,
             ),
         );
+    // `label` is never written, so the copy's presence is known statically.
     assert.ok(
         result.cpp.includes(
-            "v_options.enabled = bbl::js::Nullable<bool>{v_item.label.has_value()};",
+            "v_options.enabled = bbl::js::Nullable<bool>{true};",
         ),
     );
 
@@ -4501,7 +4502,8 @@ test("copies spread objects and destructures reference-backed array entries", ()
         result.cpp,
         /bblscene::Row v_moved = bbl::js::make_ref<bblscene::RowData>\(\*\(v_original\)\);/,
     );
-    assert.match(result.cpp, /v_moved->row = \(v_original->row \+ 1\.0\);/);
+    // `original.row` is never written, so the moved row folds.
+    assert.match(result.cpp, /v_moved->row = \(1\.0 \+ 1\.0\);/);
     assert.match(result.cpp, /v_bblite_item_\d+->row/);
     assert.match(result.cpp, /v_bblite_item_\d+->colors/);
 });

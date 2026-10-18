@@ -3,7 +3,12 @@ import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt, propertyNameText } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { booleanValue, staticStringValue, type Value } from "./types.js";
+import {
+    booleanValue,
+    scalarFacts,
+    staticStringValue,
+    type Value,
+} from "./types.js";
 import {
     type DataStructField,
     type DataType,
@@ -205,6 +210,9 @@ export function structOwnEntries(
                           field.type.inner,
                       )
                     : value),
+                ...(original && !original.parameterBinding && !field.accessor
+                    ? scalarFacts(original)
+                    : {}),
                 ...(field.declarations
                     ? { slotDeclarations: field.declarations }
                     : {}),

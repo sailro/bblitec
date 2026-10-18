@@ -2606,6 +2606,9 @@ struct MeshRecord {
     // default only when this field was never assigned.
     bool has_render_order = false;
     double render_order = 0.0;
+    // Mesh.renderOnTop: the transparent draw list keeps a flagged mesh after
+    // every other, whatever its camera distance.
+    bool render_on_top = false;
     // Self-visibility (scene-node.ts `visible?: boolean`, undefined = true).
     // No PICK path consults it -- `gpu-picker.ts` filters on `pickable`
     // alone -- which is the mirror of `pickable` below, and why the render

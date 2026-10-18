@@ -33,6 +33,10 @@ void release_dawn_shader_bindings(DawnShaderBindings& bindings) {
         bindings.scene.reset();
     if (bindings.storage)
         bindings.storage.reset();
+    if (bindings.fragment_uniforms)
+        bindings.fragment_uniforms.reset();
+    if (bindings.vertex_uniforms)
+        bindings.vertex_uniforms.reset();
     bindings = {};
 }
 
@@ -238,14 +242,12 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
     const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
-    const WGPUBuffer vertex_uniforms =
-        info.vertex.present && block_is_shared_scene_matrix(info.vertex)
-            ? pass_uniforms
-            : mesh.shader_vertex_uniforms;
+    const bool shared_scene_matrix =
+        info.vertex.present && block_is_shared_scene_matrix(info.vertex);
     const DawnShaderBindingKey key{
         variant,
         material_handle.value,
-        vertex_uniforms,
+        pass_uniforms,
     };
     // A render target's slot binds the target's current view: a rebuilt target
     // rebuilds the groups that named the old one.
@@ -277,7 +279,9 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     const auto existing = mesh.shader_bindings.find(key);
     DawnShaderBindings bindings;
     if (existing != mesh.shader_bindings.end()) {
-        if (existing->second.render_views == render_views &&
+        if ((!info.vertex.present || existing->second.scene) &&
+            (!info.fragment.present || existing->second.material) &&
+            existing->second.render_views == render_views &&
             existing->second.resource_version == material.shader_resource_version)
             return existing->second;
         bindings = std::move(existing->second);
@@ -335,6 +339,12 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
 
     if (info.vertex.present && !bindings.scene) {
+        if (!shared_scene_matrix) {
+            ensure_uniform_buffer(state, bindings.vertex_uniforms,
+                                  shader_vertex_uniform_bytes(info.vertex.float_size));
+        }
+        const WGPUBuffer vertex_uniforms =
+            shared_scene_matrix ? pass_uniforms : bindings.vertex_uniforms.get();
         if (!vertex_uniforms) {
             dawn_error("Shader vertex uniform buffer is not ready.");
         }
@@ -422,9 +432,11 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
 
     if (info.fragment.present && !bindings.material) {
+        ensure_uniform_buffer(state, bindings.fragment_uniforms,
+                              shader_fragment_uniform_bytes(info.fragment.float_size));
         WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
         entry.binding = 0;
-        entry.buffer = mesh.material_uniforms;
+        entry.buffer = bindings.fragment_uniforms.get();
         entry.size = info.fragment.float_size * 4ull;
         WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         descriptor.layout = layouts[3];
@@ -591,29 +603,6 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
                                        identity.data(), sizeof(identity));
     }
 #endif
-    const upstream::ShaderVariantInfo* mesh_shader_info =
-        item.material_kind == upstream::RenderMaterialKind::shader
-            ? &upstream::shader_variant_info(item.shader_variant)
-            : nullptr;
-    // A Standard item's blocks live in the pinned standard buffers,
-    // so the transcribed material buffer is a 16-byte stub for it.
-    mesh.material_uniform_size =
-        ((item.material_kind == upstream::RenderMaterialKind::standard ? 16ull
-          : mesh_shader_info
-              ? std::max<std::uint64_t>(mesh_shader_info->fragment.float_size * 4ull, 16ull)
-              // The pinned material blocks own every PBR
-              // draw; like the Standard arm this buffer is
-              // never written for them, so it stays a stub.
-              : 16ull) +
-         15) &
-        ~15ull;
-    mesh.material_uniforms =
-        create_buffer(state, WGPUBufferUsage_Uniform, nullptr, mesh.material_uniform_size);
-    if (mesh_shader_info) {
-        mesh.shader_vertex_uniforms = create_buffer(
-            state, WGPUBufferUsage_Uniform, nullptr,
-            std::max<std::uint64_t>(mesh_shader_info->vertex.float_size * 4ull, 16ull));
-    }
     mesh.attribute_version = geometry.attribute_version;
 #if BBLITE_MESH_GEOMETRY_UPDATE
     mesh.index_version = geometry.index_version;
