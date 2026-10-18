@@ -50,7 +50,7 @@ test("effect textures refuse a render target's depth", () => {
     );
 });
 
-test("shader materials sample render-target colour textures", () => {
+test("shader materials bind render-target colour and depth textures", () => {
     const source = (texture: string): string => `
 import {createEngine,createRenderTargetTexture,createShaderMaterial,setShaderTexture} from "@babylonjs/lite";
 async function main(){
@@ -68,13 +68,20 @@ main();`;
         ).cpp,
         /bbl::set_shader_render_texture\(v_engine, v_material, 0u, v_target\.texture\)/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                source(
-                    `if(target.depthTexture)setShaderTexture(material,"picture",target.depthTexture);`,
+    assert.match(
+        compileSource(
+            source(
+                `if(target.depthTexture)setShaderTexture(material,"picture",target.depthTexture);`,
+            )
+                .replace(
+                    'samplers:["picture"]',
+                    'samplers:[{name:"picture",sampleType:"depth"}]',
+                )
+                .replace(
+                    "textureSample(picture,pictureSampler,vec2f(0.5))",
+                    "vec4f(textureLoad(picture,vec2i(0),0))",
                 ),
-            ),
-        /depth textures are not lowered/,
+        ).cpp,
+        /bbl::set_shader_render_texture\(v_engine, v_material, 0u, .*depth/,
     );
 });

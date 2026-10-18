@@ -264,6 +264,13 @@ export function concreteArgumentIdentityPaths(
                 : undefined;
         }
         if (!ts.isCallExpression(node)) return undefined;
+        // A call's result can be disjoint from the selected identity even
+        // when its body is opaque. Its evaluation effects are checked separately.
+        if (
+            scalarArray(node) ||
+            excludesSelected(checker.getTypeAtLocation(node))
+        )
+            return [];
         const declaration = checker.getResolvedSignature(node)?.declaration;
         // Default-library scalar arrays cannot carry the selected record.
         // Resolve the declaration so an authored method with the same name

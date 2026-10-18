@@ -29,14 +29,20 @@ Rules:
 - Operands that touch the same state evaluate left to right; the compiler pins them into temporaries.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
-  functions, module `const`s run at generation, and an inlined call's argument for a parameter its body never
-  rebinds. A fold reaching the host, clock, `Math.random` or locale refuses; written constants require the
+  functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
+  module `const`s run at generation, and an inlined call's argument for a parameter its body never rebinds.
+  A fold reaching the host, clock, `Math.random`
+  or locale refuses; written constants require the
   initialization snapshot proof below.
-- Scalar facts survive readonly return fields; string, number and boolean facts survive locals with no reachable writes;
-  a named record's number field folds while no write in the program can replace it. Forwarded option
+- Scalar facts survive readonly return fields; string, number and boolean facts survive locals with no reachable writes.
+  Nullable scalar helpers retain known branch results and their evaluated effects.
+  A named record's number field folds while no write in the program can replace it. Forwarded option
   records project complete current fields from their native owner. Single-expression helpers returning
   fresh primitive records retain call-time field facts when the expression writes no storage. Primitive module constants
   can snapshot an earlier fresh scalar record in the same module across only pure initializers and inert declarations.
+- Fresh literal option records retain captured scalar facts across `await` when analysis rules out writes and untracked aliases.
+  Shared native factories whose normal exits construct records preserve known presence.
+- Static composition can spread unchanged literal array fields of stored records.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
@@ -77,6 +83,8 @@ Rules:
   refuse; orientation metadata is not applied.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
   device-supported BC/ASTC candidate.
+  `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
+  linear/sRGB format. Unsupported native formats refuse.
 - `loadGaussianSplatStream` runs the lowered pinned streaming library on the WebGPU-subset device; options are the pin's
   numeric budgets and `signal`. `splatsData`/`updateData` admit equal-count replacement.
 - Environments: HDR (pinned GGX prefilter), DDS, `.env`, baked BRDF LUT, static local probes, procedural sky. Live probe
@@ -135,34 +143,51 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 
 ## Meshes and hierarchy
 
+- Data mesh creation and replacement accept numeric buffer views; retained CPU streams preserve their aliases.
+
 - Reached builders, data factories, lines, CSG and thin instances with admitted options.
 - `updateMeshGeometry`/`updateMeshGeometryCapacity`: owned, unshared, packed Float32/Uint32 geometry; imported geometry
   updates refuse. Device recovery re-uploads CPU arrays and drops GPU-only writes.
 - Thin-instance pools with compute tasks or geometry-output tasks refuse. Device recovery fails explicitly when thin-instance GPU buffers remain owned; recovery registration is admitted.
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
+- Transform-node `worldMatrix` retains the pin's local/world buffer identity and lazy subtree invalidation.
 - A mesh removed from its last scene or passed to `disposeMeshGpu` retires
   ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses. `disposeMeshGpu` of a mesh a scene or
   live render task still lists refuses.
 
 ## Materials
 
+- Clustered point/spot lights and containers can be stored in application records and arrays. Light scalar fields and
+  retained position/diffuse/direction tuples are mutable; `markClusteredLightContainerDirty` publishes edits.
+  Populate lights and scene meshes before attaching the container; capacity and point/spot layout stay fixed.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
+  `createPbrMaterial()` accepts omitted options and uses the pinned texture/factor defaults.
 - Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
   `diffuseColor` after `enableMaterialTracking` (re-read each frame).
-- Shader materials: 2D/array samplers, storage buffers, `get/setShaderUniform` by runtime name,
+- Shader materials: up to 16 vertex/fragment 2D/array sampler pairs, storage buffers, `get/setShaderUniform` by runtime name,
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
-  render-target colour textures rebind per draw. Template text and plugin `getCustomCode`
-  functions run at generation; reaching host/engine APIs, `this`, module `let`, clock or random refuses.
+  render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
+  functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
+  `let`, clock or random refuses. Retained objects stay native.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
-  and reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
+  and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
+  Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
+  Nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned empty defaults.
+  `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
+  material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
+  `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.
+  Reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
   return no value; vertex entry points may return `@builtin(position) vec4<f32>` directly.
-  Known mixed instance layouts refuse at generation; unknown material selections validate the compiled lanes before drawing.
+  Instance inputs follow mesh buffers and `useThinInstanceColors`. Incompatible layouts refuse at generation;
+  unknown material selections also validate the compiled lanes before drawing.
   Alpha-to-coverage only on shader materials. Storage uploads preserve typed-array subview byte ranges.
+  `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
+  unconditional setup before scene registration.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.
-- Material plugins: explicit enablement; dynamic shader signatures refuse.
+- Material plugins: explicit enablement and constant priorities; priority mutation and dynamic shader signatures refuse.
 
 ## Animation and deformation
 
@@ -240,6 +265,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
+  Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
   refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
   cannot be removed.

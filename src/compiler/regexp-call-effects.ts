@@ -157,7 +157,7 @@ function facts(
     return result;
 }
 
-/** Comparisons and numeric construction do not expose a prototype for mutation. */
+/** Observations that do not pass a prototype to application code. */
 function onlyObserved(
     checker: ts.TypeChecker,
     state: RegExpEffects,
@@ -167,6 +167,37 @@ function onlyObserved(
 ): boolean {
     const expression = outermostWrapper(value);
     const parent = expression.parent;
+    if (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "prototype" &&
+        libraryGlobal(checker, expression.expression) === "Object" &&
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === expression &&
+        parent.name.text === "hasOwnProperty"
+    ) {
+        const method = outermostWrapper(parent);
+        const invoke = method.parent;
+        if (
+            ts.isPropertyAccessExpression(invoke) &&
+            invoke.expression === method &&
+            invoke.name.text === "call"
+        ) {
+            const target = outermostWrapper(invoke);
+            const call = target.parent;
+            if (
+                ts.isCallExpression(call) &&
+                call.expression === target &&
+                call.arguments.length === 2
+            ) {
+                // The prototype only supplies the builtin method. The call's
+                // receiver is its first argument, and the result is boolean.
+                const declaration =
+                    checker.getResolvedSignature(call)?.declaration;
+                if (declaration && declarationInDefaultLibrary(declaration))
+                    return true;
+            }
+        }
+    }
     if (
         ts.isBinaryExpression(parent) &&
         [

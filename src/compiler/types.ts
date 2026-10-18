@@ -840,6 +840,8 @@ export interface CompiledShaderProgram {
     readonly needAlphaBlending: boolean;
     /** The pin's fixed-function blend equation when alpha blending is enabled. */
     readonly blendMode: "alpha" | "additive";
+    /** Explicit add-equation factors, in color then alpha source/destination order. */
+    readonly blend?: CompiledShaderBlend;
     readonly needAlphaTesting: boolean;
     readonly backFaceCulling: boolean;
     readonly depthWrite: boolean;
@@ -864,7 +866,7 @@ export interface CompiledShaderProgram {
     readonly useThinInstances?: boolean;
     /**
      * `useThinInstanceColors`: the material binds the mesh's per-instance
-     * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
+     * RGBA stream. Part of
      * the program's identity, because the attribute is declared in the
      * prelude the stage compiles against.
      */
@@ -874,6 +876,13 @@ export interface CompiledShaderProgram {
     /** Original ShaderMaterialOptions value retained separately from the composed color lane. */
     readonly thinInstanceColorOption?: boolean;
 }
+
+export type CompiledShaderBlend = readonly [
+    srcColor: string,
+    dstColor: string,
+    srcAlpha: string,
+    dstAlpha: string,
+];
 
 export interface CompiledShaderSampler {
     name: string;
@@ -1112,6 +1121,7 @@ export interface CompileAsset {
         // A Basis Universal texture, transcoded by the pin's own loader at
         // generation and packaged as a mip table with GPU blocks.
         | "basis"
+        | "ktx2"
         // Opaque bytes consumed by scene code through fetch().arrayBuffer().
         // The compiler packages them unchanged and the native program reads
         // the local payload synchronously through the PAL.
@@ -1940,6 +1950,9 @@ export function runtimeMeshValue(value: Value): Value {
             : {}),
         ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
         ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
+        ...(value.sceneMeshProfileIndex !== undefined
+            ? { sceneMeshProfileIndex: value.sceneMeshProfileIndex }
+            : {}),
         ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
     };
 }
@@ -2207,6 +2220,8 @@ export interface ValueFields {
     uiLookupId?: string;
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
+    /** The scene was created on its engine's primary surface. */
+    scenePrimarySurface?: true;
     environmentAsset?: CompileAsset;
     localCubemap?: {
         readonly plan: LocalCubemapPlan;
@@ -3234,6 +3249,7 @@ export type Feature =
     | "material:standard-lightmap"
     | "texture:file"
     | "texture:compressed"
+    | "texture:ktx2"
     | "texture:pixels"
     | "texture:pixels-writes"
     | "sprite:billboard"

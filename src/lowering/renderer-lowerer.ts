@@ -19,6 +19,7 @@ import {
     lowerThinInstanceBindingUpdate,
 } from "./thin-instance-binding-update.js";
 import { LightLowerer } from "./light-lowerer.js";
+import { nativeBlendFactor } from "./pinned-blend-table.js";
 import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
@@ -162,6 +163,7 @@ const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
 interface LoweredShader {
     output: string;
     data: string;
+    positionFirst?: boolean;
 }
 
 /** `as`/parenthesis/non-null unwrap for the pinned stamp walks. */
@@ -821,14 +823,20 @@ export class RendererLowerer {
                 if (!block) {
                     return {
                         present: false,
-                        systemMatrices: [] as string[],
+                        systemUniforms: [] as {
+                            name: ShaderSystemMatrix;
+                            floatOffset: number;
+                        }[],
                         floatSize: 0,
                         gather: [] as number[][],
                     };
                 }
                 return {
                     present: true,
-                    systemMatrices: block.systemMatrices,
+                    systemUniforms: block.systemMatrices.map((name, index) => ({
+                        name,
+                        floatOffset: block.systemOffsets[index]! / 4,
+                    })),
                     floatSize: block.size / 4,
                     gather: block.members.map((member) => [
                         member.offset / 4,
@@ -859,6 +867,7 @@ export class RendererLowerer {
                 thinInstanceColorOption: program.thinInstanceColorOption,
                 alphaBlending: program.needAlphaBlending,
                 additiveBlending: program.blendMode === "additive",
+                blend: program.blend,
                 alphaTesting: program.needAlphaTesting,
                 backFaceCulling: program.backFaceCulling,
                 depthWrite: program.depthWrite,
@@ -893,16 +902,17 @@ export class RendererLowerer {
             this.context.floatLiteral(value);
         const stageBlockLiteral = (block: {
             present: boolean;
-            systemMatrices: readonly string[];
+            systemUniforms: readonly {
+                name: ShaderSystemMatrix;
+                floatOffset: number;
+            }[];
             floatSize: number;
             gather: number[][];
         }): string =>
-            `ShaderVariantStageBlock{${block.present}, {${block.systemMatrices
+            `ShaderVariantStageBlock{${block.present}, {${block.systemUniforms
                 .map(
-                    (name) =>
-                        `ShaderSystemMatrix::${shaderSystemMatrixEnumerator(
-                            name as ShaderSystemMatrix,
-                        )}`,
+                    ({ name, floatOffset }) =>
+                        `{ShaderSystemMatrix::${shaderSystemMatrixEnumerator(name)}, ${floatOffset}u}`,
                 )
                 .join(", ")}}, ${block.floatSize}u, {${block.gather
                 .map(
@@ -921,6 +931,7 @@ export class RendererLowerer {
         ${info.runtimeInstanceLayoutCheck},
         ${info.alphaBlending},
         ${info.additiveBlending},
+        ${info.blend ? `BlendFactors{${info.blend.map((factor) => `BlendFactor::${nativeBlendFactor(factor)}`).join(", ")}}` : "std::nullopt"},
         ${info.alphaTesting},
         ${info.backFaceCulling},
         ${info.depthWrite},
@@ -1193,21 +1204,26 @@ struct RenderFeatures {
 
 // Generated per-scene shader-variant metadata: pipeline state from the
 // pinned shader-pipeline mapping and the reflected per-stage uniform
-// blocks ([the declared system matrices][vec4-slot-packed
-// custom members]) with gathers from the material's flat value storage.
+// blocks, with reflected offsets for system members and gathers from the
+// material's flat custom-value storage.
 // Which matrix each system slot carries, emitted from
 // shaderSystemMatrixTable so this order and the compiler's cannot
 // disagree. The pin lets a caller name any of nine system uniforms; these
-// are the ones a reached scene can declare (all but screenSize and
-// alphaCutoff), and they head the block in the order the caller declared
+// are the ones a reached scene can declare (all but alphaCutoff),
+// and they head the block in the order the caller declared
 // them.
 enum class ShaderSystemMatrix : std::uint8_t {
 ${systemMatrixEnumerators}
 };
 
+struct ShaderSystemUniform {
+    ShaderSystemMatrix source;
+    std::uint32_t float_offset;
+};
+
 struct ShaderVariantStageBlock {
     bool present = false;
-    std::vector<ShaderSystemMatrix> system_matrices;
+    std::vector<ShaderSystemUniform> system_uniforms;
     std::uint32_t float_size = 0;
     // {block float offset, value float offset, float count}
     std::vector<std::array<std::uint32_t, 3>> gather;
@@ -1265,6 +1281,7 @@ struct ShaderVariantInfo {
     bool runtime_instance_layout_check = false;
     bool alpha_blending = false;
     bool additive_blending = false;
+    std::optional<BlendFactors> blend;
     bool alpha_testing = false;
     bool back_face_culling = true;
     bool depth_write = true;
@@ -2183,21 +2200,7 @@ ${
 }
 }
 
-// The same composition over a transform node, which upstream is the same
-// call: TransformNode is a pure alias for SceneNode, so its local matrix
-// is composeTrsLocalMatrix(position, rotationQuaternion, scaling) exactly
-// as a mesh's is -- or, while the node holds one, its raw local matrix
-// (scene-node.ts initSceneNodeTransform's \`_localMatrix\` arm).
-std::array<float, 16> transform_node_local_matrix(
-    const TransformNodeRecord& node) {
-    if (node.local_matrix) return *node.local_matrix;
-    return trs_matrix(node);
-}
-
-// world-matrix-state.ts: a node's world is its parent's world times its own
-// local, walked to the root. Nothing is cached — this port re-derives per
-// frame where the pin keeps a version-stamped cache, which is the same
-// answer for a scene that reads it once per bake.
+// Internal matrix consumers read the same cached storage as the public getter.
 std::array<float, 16> transform_node_world(
     const Engine& engine,
     TransformNodeHandle node) {
@@ -2208,16 +2211,10 @@ std::array<float, 16> transform_node_world(
             0.0f, 0.0f, 1.0f, 0.0f,
             0.0f, 0.0f, 0.0f, 1.0f};
     }
-    const TransformNodeRecord& record =
-        ${recordAt("engine.transform_nodes", "node")};
-    const std::array<float, 16> local =
-        transform_node_local_matrix(record);
-    if (record.parent.value >= engine.transform_nodes.size()) {
-        return local;
-    }
-    return matrix_product(
-        transform_node_world(engine, record.parent),
-        local);
+    const auto view = transform_node_world_view(engine, node);
+    std::array<float, 16> result{};
+    std::copy_n(view.begin(), 16, result.begin());
+    return result;
 }
 
 // The root a record composes under when no mesh or transform node parents
@@ -2588,7 +2585,7 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         },
     ): LoweredShader[] {
         this.assertPinnedRestatedContracts(options);
-        const result: Array<{ output: string; data: string }> = [];
+        const result: LoweredShader[] = [];
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
             data: materialVertexWgsl(
@@ -2649,6 +2646,22 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         for (const source of options.shaderPrograms) {
             const name = source.name;
             const program = lowerWgslShaderProgram(source);
+            // D3D12 links separately compiled signatures by register. Both
+            // stages must put position after locations when the fragment
+            // does not declare it, including flat-only fragment inputs.
+            const fragmentInputs =
+                program.fragment.entryPoint.parameters.flatMap((parameter) =>
+                    parameter.attribute
+                        ? [parameter]
+                        : (program.fragment.structs.find(
+                              (structure) => structure.name === parameter.type,
+                          )?.members ?? []),
+                );
+            const positionFirst = fragmentInputs.some(
+                ({ attribute }) =>
+                    attribute?.kind === "builtin" &&
+                    attribute.value === "position",
+            );
             // The prelude's `defines` lines come from the pin's own
             // builder; everything else in it this port re-addresses.
             const defineText = pinnedShaderDefineText(
@@ -2680,10 +2693,12 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 },
                 {
                     output: `upstream/shaders/${name}.vert.native.wgsl`,
+                    positionFirst,
                     data: emitNativeWgslProgram(program, "vertex", defineText),
                 },
                 {
                     output: `upstream/shaders/${name}.frag.native.wgsl`,
+                    positionFirst,
                     data: emitNativeWgslProgram(
                         program,
                         "fragment",

@@ -174,6 +174,7 @@ import {
 import {
     executeApplicationFunction,
     type ExecutedScalar,
+    type ExecutedArgument,
     type ExecutedTarget,
 } from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
@@ -742,6 +743,13 @@ function requireSourceProfileScopes(
         `--source-profile selects no timed source function named ${unmatched.map((name) => `'${name}'`).join(", ")}. ` +
             "A name is a function's own, Class.method for a class member, or the variable or property an unnamed " +
             "function is bound to; async functions, generators and functions lowered inline at their calls carry no scope.",
+    );
+}
+
+function losslessGenerationNumber(value: ExecutedArgument): boolean {
+    return (
+        typeof value !== "number" ||
+        (Number.isFinite(value) && !Object.is(value, -0))
     );
 }
 
@@ -4852,15 +4860,18 @@ class Compiler implements LoweringServices {
                 dynamicUniforms: [],
             };
         }
-        // A builder called with generation-known arguments is run: its text
-        // is what the browser compiles.
-        const built = this.runGenerationBuilder(resolved);
-        if (built !== undefined) return { source: built, dynamicUniforms: [] };
         const declaration = resolveFunctionDeclaration(
             this.checker,
             callee,
             (node, message) => this.fail(node, message),
         );
+        // Function declarations use closed execution. Function literals keep
+        // the numeric-template uniform path before requiring static text.
+        if (declaration && ts.isFunctionDeclaration(declaration)) {
+            const built = this.runGenerationBuilder(resolved);
+            if (built !== undefined)
+                return { source: built, dynamicUniforms: [] };
+        }
         const returned = this.builderReturn(declaration);
         const template =
             returned &&
@@ -5177,14 +5188,12 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The text a call to a source `function` declaration returns when
+     * The text a call to a source function or const function literal returns when
      * generation runs it: every supplied argument folds to a generation-known
-     * scalar (a wrapper parameter every call omits folds to its default).
+     * scalar or fresh literal data (an always-omitted wrapper parameter folds to its default).
      * Omitted arguments take defaults in the closed function's own scope.
-     * Undefined for any other call, an arrow
-     * builder included, which keeps the template path that lifts a run-time
-     * number into a uniform; a function that runs and returns anything but
-     * text refuses.
+     * Undefined for any other call; a function that runs and returns anything
+     * but text refuses.
      */
     private runGenerationBuilder(call: ts.CallExpression): string | undefined {
         const executed = this.runGenerationCall(call);
@@ -5200,6 +5209,17 @@ class Compiler implements LoweringServices {
         call: ts.CallExpression,
     ): { value: unknown; label: string } | undefined {
         const callee = this.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            !callee.questionDotToken &&
+            this.libraryGlobal(callee.expression) !== undefined
+        ) {
+            const label = `Static call '${callee.getText()}'`;
+            return {
+                value: this.runGenerationFunction(call, [], label),
+                label,
+            };
+        }
         if (!ts.isIdentifier(callee)) return undefined;
         const declaration = resolveFunctionDeclaration(
             this.checker,
@@ -5208,7 +5228,6 @@ class Compiler implements LoweringServices {
         );
         if (
             !declaration ||
-            !ts.isFunctionDeclaration(declaration) ||
             !declaration.body ||
             declaration.getSourceFile().isDeclarationFile ||
             call.arguments.length > declaration.parameters.length ||
@@ -5220,17 +5239,27 @@ class Compiler implements LoweringServices {
         ) {
             return undefined;
         }
-        const args: Array<ExecutedScalar | undefined> = [];
+        if (!ts.isFunctionDeclaration(declaration)) {
+            const binding = declaration.parent;
+            if (
+                !ts.isVariableDeclaration(binding) ||
+                binding.initializer !== declaration ||
+                !ts.isVariableDeclarationList(binding.parent) ||
+                (binding.parent.flags & ts.NodeFlags.Const) === 0
+            )
+                return undefined;
+        }
+        const args: Array<ExecutedArgument | undefined> = [];
         // Omitted arguments stay omitted: the closed function evaluates its
         // own defaults in parameter order and observes the authored arity.
         for (const argument of call.arguments) {
             const value = ts.isSpreadElement(argument)
                 ? undefined
-                : this.staticScalar(
+                : this.generationArgument(
                       this.alwaysUsedParameterDefault(argument) ?? argument,
                   );
             if (value === undefined) return undefined;
-            args.push(value);
+            args.push(value.value);
         }
         const label = `Builder '${callee.text}'`;
         return {
@@ -5247,11 +5276,17 @@ class Compiler implements LoweringServices {
      */
     public runGenerationFunction(
         declaration: ExecutedTarget,
-        args: readonly (ExecutedScalar | undefined)[],
+        args: readonly (ExecutedArgument | undefined)[],
         label: string,
     ): unknown {
         const key = JSON.stringify(
-            args.map((value) => (value === undefined ? [] : value)),
+            args.map((value) =>
+                value === undefined
+                    ? ["undefined"]
+                    : typeof value === "number"
+                      ? ["number", Object.is(value, -0) ? "-0" : String(value)]
+                      : ["value", value],
+            ),
         );
         let runs = this.generationRuns.get(declaration);
         if (!runs) {
@@ -5271,14 +5306,16 @@ class Compiler implements LoweringServices {
                     closed = false;
                     return this.staticScalar(identifier);
                 },
-                ...(ts.isVariableDeclaration(declaration)
+                ...(ts.isVariableDeclaration(declaration) ||
+                ts.isCallExpression(declaration)
                     ? {
                           writtenThrough: (name: ts.Identifier) =>
                               this.moduleConstantIsWritten(name) &&
-                              !this.moduleRecordUnchangedBeforeSnapshot(
-                                  name,
-                                  declaration,
-                              ),
+                              (!ts.isVariableDeclaration(declaration) ||
+                                  !this.moduleRecordUnchangedBeforeSnapshot(
+                                      name,
+                                      declaration,
+                                  )),
                       }
                     : {}),
             },
@@ -5296,6 +5333,75 @@ class Compiler implements LoweringServices {
     ): ExecutedScalar | undefined {
         const value = this.compileValue(expression);
         return value.staticString ?? value.staticBoolean ?? value.staticNumber;
+    }
+
+    /** Retained objects stay native; only fresh, lossless literal data may cross realms. */
+    private generationArgument(
+        expression: ts.Expression,
+    ): { value: ExecutedArgument | undefined } | undefined {
+        const node = this.unwrap(expression);
+        if (node.kind === ts.SyntaxKind.NullKeyword) return { value: null };
+        if (ts.isArrayLiteralExpression(node)) {
+            const elements: ExecutedArgument[] = [];
+            for (const element of node.elements) {
+                if (
+                    ts.isSpreadElement(element) ||
+                    ts.isOmittedExpression(element)
+                )
+                    return undefined;
+                const value = this.generationArgument(element);
+                if (
+                    value?.value === undefined ||
+                    !losslessGenerationNumber(value.value)
+                )
+                    return undefined;
+                elements.push(value.value);
+            }
+            return { value: elements };
+        }
+        if (ts.isObjectLiteralExpression(node)) {
+            const record: { [name: string]: ExecutedArgument } = {};
+            for (const property of node.properties) {
+                if (
+                    !ts.isPropertyAssignment(property) ||
+                    ts.isComputedPropertyName(property.name)
+                )
+                    return undefined;
+                const name = propertyNameText(property.name);
+                if (name === undefined || name === "__proto__")
+                    return undefined;
+                const value = this.generationArgument(property.initializer);
+                if (
+                    value?.value === undefined ||
+                    !losslessGenerationNumber(value.value)
+                )
+                    return undefined;
+                record[name] = value.value;
+            }
+            return { value: record };
+        }
+        // A proven scalar field may read a retained record without passing
+        // that record into the generation realm. Its ordinary value lowering
+        // owns the alias/write proof; observable calls still stay native.
+        if (
+            this.evaluationOrder.writesStorage(node) ||
+            this.evaluationOrder.hasModuleEffects(node)
+        )
+            return undefined;
+        const carried = this.compileValue(node);
+        // A present undefined argument still counts toward the authored arity.
+        // Nested undefined values remain excluded by the lossless JSON boundary.
+        if (
+            carried.kind === "json-null" &&
+            carried.cpp === "std::nullopt" &&
+            !carried.parameterBinding
+        )
+            return { value: undefined };
+        const value =
+            carried.staticString ??
+            carried.staticBoolean ??
+            carried.staticNumber;
+        return value === undefined ? undefined : { value };
     }
 
     public resolveStaticExpression(

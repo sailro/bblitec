@@ -1940,6 +1940,34 @@ ${body}
 }`;
 }
 
+function containerDirtyMarker(context: LoweringContext): string {
+    const symbol = "markClusteredLightContainerDirty";
+    const { file, declaration } = context.functionDeclaration(
+        clusteredModule,
+        symbol,
+    );
+    const [container] = clusteredParameterNames(context, declaration);
+    if (!container || declaration.parameters.length !== 1) {
+        return context.contractError(
+            declaration,
+            `Expected ${symbol} to take the container.`,
+        );
+    }
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                `${container}._version`,
+                { cpp: `${container}.version`, type: "scalar", mutable: true },
+            ],
+        ]),
+        calls: new Map(),
+    });
+    return `// ${context.provenance(clusteredModule, symbol)}
+inline void mark_clustered_light_container_dirty_record(ClusteredLightContainer& ${container}) {
+${body}
+}`;
+}
+
 /**
  * `_enableClusteredSpotSupport`, lowered from its body: the support object
  * is a stateless module singleton, so installing it is the container's
@@ -2269,21 +2297,25 @@ ClusteredLightContainer* clustered_container(
 
 namespace bbl {
 
-// The scene surface, at the pin's own four entry points. Each resolves the
+// The scene surface, at the pin's entry points. Each resolves the
 // container its handle names and runs the pin's own factory body.
 ClusteredLightContainerHandle create_clustered_light_container(
     Engine& engine,
     const ${CONTAINER_OPTIONS}& options);
 
-void create_clustered_point_light(
+ClusteredLightHandle create_clustered_point_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
     const ${POINT_OPTIONS}& options);
 
-void create_clustered_spot_light(
+ClusteredLightHandle create_clustered_spot_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
     const ${SPOT_OPTIONS}& options);
+
+ClusteredLight& clustered_light(Engine& engine, ClusteredLightHandle light);
+void mark_clustered_light_container_dirty(
+    Engine& engine, ClusteredLightContainerHandle container);
 
 void add_clustered_light_container(
     Engine& engine,
@@ -2319,6 +2351,8 @@ ${containerFactory(context)}
 ${lightFactory(context, "createClusteredPointLight", POINT_OPTIONS, "create_clustered_point_light_record")}
 
 ${lightFactory(context, "createClusteredSpotLight", SPOT_OPTIONS, "create_clustered_spot_light_record")}
+
+${containerDirtyMarker(context)}
 
 std::shared_ptr<ClusteredRefreshState> build_clustered_light_gpu_state(
     Engine& engine,
@@ -2367,22 +2401,33 @@ ClusteredLightContainerHandle create_clustered_light_container(
         static_cast<std::uint32_t>(containers.size() - 1)};
 }
 
-void create_clustered_point_light(
+ClusteredLightHandle create_clustered_point_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
     const ${POINT_OPTIONS}& options) {
-    // The light the pin returns is the scene's to keep; no scene reached
-    // here holds one, so the surface returns nothing.
-    static_cast<void>(upstream::create_clustered_point_light_record(
-        ${recordAt("engine.clustered_light_containers", "container")}, options));
+    auto& record = ${recordAt("engine.clustered_light_containers", "container")};
+    static_cast<void>(upstream::create_clustered_point_light_record(record, options));
+    return {static_cast<std::uint32_t>(record.point_lights.size() - 1), container, false};
 }
 
-void create_clustered_spot_light(
+ClusteredLightHandle create_clustered_spot_light(
     Engine& engine,
     ClusteredLightContainerHandle container,
     const ${SPOT_OPTIONS}& options) {
-    static_cast<void>(upstream::create_clustered_spot_light_record(
-        ${recordAt("engine.clustered_light_containers", "container")}, options));
+    auto& record = ${recordAt("engine.clustered_light_containers", "container")};
+    static_cast<void>(upstream::create_clustered_spot_light_record(record, options));
+    return {static_cast<std::uint32_t>(record.spot_lights.size() - 1), container, true};
+}
+
+ClusteredLight& clustered_light(Engine& engine, ClusteredLightHandle light) {
+    auto& container = ${recordAt("engine.clustered_light_containers", "light.container")};
+    return ${recordAt("light.spot ? container.spot_lights : container.point_lights", "light")};
+}
+
+void mark_clustered_light_container_dirty(
+    Engine& engine, ClusteredLightContainerHandle container) {
+    upstream::mark_clustered_light_container_dirty_record(
+        ${recordAt("engine.clustered_light_containers", "container")});
 }
 
 ${containerAdder(context)}

@@ -1396,6 +1396,9 @@ export class BindingScopes {
                                 [name],
                                 independentFields,
                                 argument,
+                                member.staticString !== undefined ||
+                                    member.staticNumber !== undefined ||
+                                    member.staticBoolean !== undefined,
                             ),
                     )
                     .map(([name]) => name),
@@ -1691,6 +1694,8 @@ export class BindingScopes {
     ): void {
         const owner = value.staticElementsOwner ?? value;
         const elements = owner.staticElements ?? value.staticElements;
+        const template =
+            owner.runtimeElementTemplate ?? value.runtimeElementTemplate;
         const recordSnapshot =
             elements?.[0]?.staticElementIndex === 0 &&
             elements[0].staticElementsOwner === owner;
@@ -1721,11 +1726,15 @@ export class BindingScopes {
                 (cardinality !== undefined &&
                     candidate.collectionCardinality === cardinality) ||
                 (elements !== undefined &&
-                    candidate.staticElements === elements)
+                    candidate.staticElements === elements) ||
+                (template !== undefined &&
+                    candidate.runtimeElementTemplate === template)
             ) {
                 if (recordSnapshot && candidate.staticElementsOwner === owner)
                     delete writable(candidate).recordProperties;
-                if (owner.runtimeElementTemplate) {
+                if (!preserveCardinality) {
+                    delete writable(candidate).runtimeElementTemplate;
+                } else if (owner.runtimeElementTemplate) {
                     writable(candidate).runtimeElementTemplate =
                         owner.runtimeElementTemplate;
                 }
@@ -1741,6 +1750,7 @@ export class BindingScopes {
             owner,
             cardinality,
             elements,
+            template,
         ]))
             invalidate(candidate);
         invalidate(value);
@@ -1764,7 +1774,14 @@ export class BindingScopes {
     private invalidateRecordMap(
         properties: Readonly<Record<string, Value>>,
     ): void {
+        if (this.invalidatedRecordMaps.has(properties)) return;
         this.invalidatedRecordMaps.add(properties);
+        for (const member of Object.values(properties)) {
+            if (member.recordProperties)
+                this.invalidateRecordMap(member.recordProperties);
+            if (member.staticElements || member.staticElementsOwner)
+                this.invalidateStaticElements(member);
+        }
         for (const candidate of this.factIndex.matching([properties]))
             if (candidate.recordProperties === properties)
                 delete writable(candidate).recordProperties;
@@ -1954,7 +1971,7 @@ export class BindingScopes {
                 kind: "declaration",
                 type: "const auto",
                 name: cpp,
-                initializer: storage.cpp,
+                initializer: `bbl::js::snapshot_value(${storage.cpp})`,
                 attributes: "[[maybe_unused]] ",
             });
             this.context.registerNativeConstBinding(cpp);
@@ -2458,10 +2475,7 @@ export class BindingScopes {
             this.context.classOf(value) !== undefined
         )
             return undefined;
-        const retainFields = (
-            projected: Value,
-            type: DataType<"struct">,
-        ): Value => {
+        const retainFields = (projected: Value): Value => {
             const literal = unwrapExpression(node);
             const properties = value.recordProperties;
             if (
@@ -2480,36 +2494,6 @@ export class BindingScopes {
                 // Field reads still select native storage and apply the
                 // declared readonly/resource rules; aliases withdraw together.
                 projected = this.pinValueToTemporary(projected, "record", node);
-                for (const field of this.context.dataTypes.structFields(
-                    type.name,
-                    node,
-                    "accessors",
-                )) {
-                    const source = properties[field.sourceName];
-                    const memberType =
-                        field.type.kind === "optional"
-                            ? field.type.inner
-                            : field.type;
-                    if (
-                        source?.kind !== "tuple" ||
-                        memberType.kind !== "vector"
-                    )
-                        continue;
-                    const storedSlot = `${projected.cpp}->${field.name}`;
-                    const slot = field.accessor
-                        ? `${storedSlot}.get()`
-                        : storedSlot;
-                    const member = this.context.dataLowerer.leafValue(
-                        field.type.kind === "optional" ? `(*${slot})` : slot,
-                        memberType,
-                    );
-                    this.context.dataLowerer.retainArrayLiteralFacts(
-                        member,
-                        source,
-                        node,
-                    );
-                    writable(properties)[field.sourceName] = member;
-                }
                 this.retainRecordPropertiesAlias(value);
                 projected = valueForKind("data", {
                     ...projected,
@@ -2517,6 +2501,10 @@ export class BindingScopes {
                     recordOwnKeys:
                         value.recordOwnKeys ?? Object.keys(properties),
                 });
+                this.context.dataLowerer.retainRecordArrayLiteralFacts(
+                    projected,
+                    node,
+                );
             }
             return projected;
         };
@@ -2555,7 +2543,6 @@ export class BindingScopes {
                         ),
                         type,
                     ),
-                    type,
                 ),
             );
         };
@@ -2697,7 +2684,7 @@ export class BindingScopes {
                     recordProperties: properties,
                 });
             }
-            projected = retainFields(projected, stored);
+            projected = retainFields(projected);
             return { ...projected, freshData: true };
         });
     }

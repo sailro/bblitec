@@ -282,7 +282,6 @@ inline constexpr std::size_t pinned_max_lights = ${MAX_LIGHTS}u;
 ${cppFunction(render, "bool light_affects_mesh(")}
 ${[
     "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
-    "std::array<float, 16> transform_node_local_matrix(",
     "std::array<float, 16> transform_node_world(",
     "std::optional<std::array<float, 16>> mesh_root_world(",
     "std::array<float, 16> mesh_world_matrix(",

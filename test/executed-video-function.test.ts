@@ -313,18 +313,21 @@ test("binds external pairs after the samplers and before the storage buffers", (
         loaded,
         /textureLoad\(frame, vec2u\(input\.position\.xy\), 0\)/,
     );
-    // A vertex stage read refuses like a sampler's does.
-    assert.throws(
-        () =>
-            lowerWgslShaderProgram({
-                ...program,
-                vertexSource: vertexSource.replace(
-                    "out.uv = input.uv;",
-                    "out.uv = textureSampleBaseClampToEdge(frame, frameSampler, input.uv).xy;",
-                ),
-            }),
-        /read by the vertex stage/,
+    const vertex = emitNativeWgslProgram(
+        lowerWgslShaderProgram({
+            ...program,
+            vertexSource: vertexSource.replace(
+                "out.uv = input.uv;",
+                "out.uv = textureLoad(frame, vec2u(0)).xy;",
+            ),
+        }),
+        "vertex",
     );
+    assert.match(
+        vertex,
+        /@group\(0\) @binding\(0\) var frame: texture_2d<f32>;/,
+    );
+    assert.match(vertex, /textureLoad\(frame, vec2u\(0\), 0\)/);
 });
 
 test("the bind checks carry the pin's own messages", () => {

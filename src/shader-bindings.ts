@@ -108,9 +108,12 @@ function uniformBlocks(wgsl: string): WgslVariableDeclaration[] {
 export function demotableUniformBlocks(wgsl: string): string[] {
     const blocks = uniformBlocks(wgsl).map(({ name }) => name);
     return [
-        ...["localProbeData", "gp", "nmeShadowParams"].filter((name) =>
-            blocks.includes(name),
-        ),
+        ...[
+            "localProbeData",
+            "gp",
+            "nmeShadowParams",
+            "clusteredLightParams",
+        ].filter((name) => blocks.includes(name)),
         // The shadow receivers' per-light blocks: `shadowInfo_<light>` and
         // `csmInfo_<light>`, as `createShadowFragment` names them.
         ...blocks.filter(

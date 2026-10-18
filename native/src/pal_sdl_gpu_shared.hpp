@@ -278,9 +278,10 @@ inline int stage_uniform_slot(const PinnedStageSlots& slots, const char* block_n
  * and the resolver answers for the pair.
  */
 template <typename Resolve>
-inline std::vector<SDL_GPUTextureSamplerBinding>
-resolve_stage_textures(const PinnedStageSlots& slots, const char* what, Resolve resolve) {
-    std::vector<SDL_GPUTextureSamplerBinding> bindings;
+inline void resolve_stage_textures(const PinnedStageSlots& slots, const char* what,
+                                   std::vector<SDL_GPUTextureSamplerBinding>& bindings,
+                                   Resolve resolve) {
+    bindings.clear();
     bindings.reserve(slots.textures.size());
     for (std::size_t slot = 0; slot < slots.textures.size(); ++slot) {
         const std::string& name = slots.textures[slot];
@@ -293,14 +294,30 @@ resolve_stage_textures(const PinnedStageSlots& slots, const char* what, Resolve 
         }
         bindings.push_back(binding);
     }
-    return bindings;
 }
 
 template <typename Resolve>
+inline std::vector<SDL_GPUTextureSamplerBinding>
+resolve_stage_textures(const PinnedStageSlots& slots, const char* what, Resolve resolve) {
+    std::vector<SDL_GPUTextureSamplerBinding> bindings;
+    resolve_stage_textures(slots, what, bindings, resolve);
+    return bindings;
+}
+
+/** Reusable binding storage; sampled and storage texture slots are separate dense lists. */
+struct StageTextureBindingScratch {
+    std::vector<SDL_GPUTextureSamplerBinding> sampled;
+    std::vector<SDL_GPUTexture*> storage;
+};
+
+template <typename ResolveSampled, typename ResolveStorage>
 inline void bind_stage_textures(SDL_GPURenderPass* pass, const PinnedStageSlots& slots,
-                                bool fragment, const char* what, Resolve resolve) {
+                                bool fragment, const char* what,
+                                StageTextureBindingScratch& scratch, ResolveSampled resolve_sampled,
+                                ResolveStorage resolve_storage) {
     if (!slots.textures.empty()) {
-        const auto bindings = resolve_stage_textures(slots, what, resolve);
+        auto& bindings = scratch.sampled;
+        resolve_stage_textures(slots, what, bindings, resolve_sampled);
         if (fragment) {
             SDL_BindGPUFragmentSamplers(pass, 0, bindings.data(),
                                         static_cast<Uint32>(bindings.size()));
@@ -311,11 +328,12 @@ inline void bind_stage_textures(SDL_GPURenderPass* pass, const PinnedStageSlots&
     }
     if (slots.storage_textures.empty())
         return;
-    std::vector<SDL_GPUTexture*> bindings;
+    auto& bindings = scratch.storage;
+    bindings.clear();
     bindings.reserve(slots.storage_textures.size());
     for (std::size_t slot = 0; slot < slots.storage_textures.size(); ++slot) {
         const std::string& name = slots.storage_textures[slot];
-        SDL_GPUTexture* texture = resolve(name, slot).texture;
+        SDL_GPUTexture* texture = resolve_storage(name, slot).texture;
         if (!texture) {
             gpu_error(
                 (std::string(what) + " declares an unresolved storage texture '" + name + "'.")
@@ -330,6 +348,13 @@ inline void bind_stage_textures(SDL_GPURenderPass* pass, const PinnedStageSlots&
     }
     SDL_BindGPUVertexStorageTextures(pass, 0, bindings.data(),
                                      static_cast<Uint32>(bindings.size()));
+}
+
+template <typename Resolve>
+inline void bind_stage_textures(SDL_GPURenderPass* pass, const PinnedStageSlots& slots,
+                                bool fragment, const char* what, Resolve resolve) {
+    StageTextureBindingScratch scratch;
+    bind_stage_textures(pass, slots, fragment, what, scratch, resolve, resolve);
 }
 
 /**

@@ -469,6 +469,18 @@ export class CompressedTextureLowerer {
      * render one gamma step wrong.
      */
     public srgbGpuFormat(gpuFormat: string): string {
+        const twin = this.srgbFormatTwins().get(gpuFormat);
+        if (!twin) {
+            throw new Error(
+                `The pinned sRGB format table has no twin for ` +
+                    `'${gpuFormat}', so an sRGB slot cannot be packaged ` +
+                    "from it.",
+            );
+        }
+        return twin;
+    }
+
+    private srgbFormatTwins(): ReadonlyMap<string, string> {
         if (!this.srgbTwins) {
             const { file, declaration } = this.context.functionDeclaration(
                 KTX2_MODULE,
@@ -504,15 +516,7 @@ export class CompressedTextureLowerer {
             }
             this.srgbTwins = twins;
         }
-        const twin = this.srgbTwins.get(gpuFormat);
-        if (!twin) {
-            throw new Error(
-                `The pinned sRGB format table has no twin for ` +
-                    `'${gpuFormat}', so an sRGB slot cannot be packaged ` +
-                    "from it.",
-            );
-        }
-        return twin;
+        return this.srgbTwins;
     }
 
     private srgbTwins?: Map<string, string>;
@@ -809,7 +813,53 @@ export class CompressedTextureLowerer {
         );
     }
 
-    public lower(): LoweredSource {
+    private lowerKtx2Texture(): string {
+        const { declaration } = this.context.functionDeclaration(
+            KTX2_MODULE,
+            "makeSampler",
+        );
+        const returns = this.context.findNodes(
+            declaration,
+            ts.isReturnStatement,
+        );
+        if (returns.length !== 1 || !returns[0]?.expression) {
+            this.context.contractError(
+                declaration,
+                "KTX2 sampler requires one return.",
+            );
+        }
+        // This is the same sampler the KTX1 reader below constructs. Guard
+        // that equivalence against the source before sharing its native path.
+        this.context.assertExpressionShape(
+            returns[0].expression,
+            `getOrCreateSampler(engine, {
+                addressModeU: "repeat", addressModeV: "repeat",
+                minFilter: "linear", magFilter: "linear",
+                mipmapFilter: mipCount > 1 ? "linear" : "nearest",
+                maxAnisotropy: mipCount > 1 ? 4 : 1
+            })`,
+            "KTX2 shared compressed sampler",
+        );
+        const conversions = [...this.srgbFormatTwins()]
+            .filter(([linear]) => uploadableCompressedFormats.includes(linear))
+            .map(([linear, srgb]) => {
+                const result = uploadableCompressedFormats.includes(srgb)
+                    ? `texture.data.compressed.format = ${JSON.stringify(srgb)};`
+                    : `throw std::runtime_error("KTX2: unsupported native sRGB format ${srgb}");`;
+                return `    if (srgb && texture.data.compressed.format == ${JSON.stringify(linear)}) { ${result} }`;
+            })
+            .join("\n");
+        return `
+// ${this.context.provenance(KTX2_MODULE, "loadKtx2Texture2D", "uploadCompressed; makeSampler; srgbFormat")}
+FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb) {
+    FileTexture texture = load_compressed_texture(engine, path, true);
+${conversions}
+    return texture;
+}
+`;
+    }
+
+    public lower(ktx2 = false): LoweredSource {
         const rows = this.formatRows();
         const magic = [...layout.magic].map((character) =>
             character.charCodeAt(0),
@@ -1021,6 +1071,7 @@ FileTexture load_compressed_texture_variants(
     texture.data.compressed_alternatives = std::move(alternatives);
     return texture;
 }
+${ktx2 ? this.lowerKtx2Texture() : ""}
 
 } // namespace bbl
 `,

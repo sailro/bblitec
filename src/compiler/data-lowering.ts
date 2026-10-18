@@ -17,6 +17,7 @@ import {
 } from "./types.js";
 import { emitStringAppend } from "./expressions.js";
 import { BranchState } from "./branch-state.js";
+import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { FunctionStorageFlow } from "./function-storage-flow.js";
 import {
     compileDataExpressionSink,
@@ -562,6 +563,7 @@ interface DataLoweringContext extends Pick<
     | "nativeEmission"
     | "checker"
     | "evaluationOrder"
+    | "evaluator"
     | "impureReadCount"
     | "bindings"
     | "sharedClosures"
@@ -2516,6 +2518,12 @@ export class DataLowerer {
             // the path and causing the caller to evaluate it again.
             return (
                 this.compilePropertyFromValue(owner, unwrapped) ??
+                clusteredLightProperty(
+                    this.context,
+                    owner,
+                    unwrapped.name.text,
+                    unwrapped,
+                ) ??
                 (mode === "read"
                     ? this.context.propertyAccess.readResolvedProperty(
                           owner,
@@ -6232,7 +6240,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // accesses need no extra wrapper copy before their index is evaluated.
         const typedIndexRunsCode =
             isTypedArrayType(dataType) && this.indexMayChangeOwner(access);
-        const retainedIndexOwner = ownedRead || typedIndexRunsCode;
+        // Accessor reads return owning views by value. Materialize that view
+        // before taking its writable slot, just as for an effectful index.
+        const ownedTypedStore =
+            mode === "write" &&
+            isTypedArrayType(dataType) &&
+            !owner.nativeLvalue &&
+            !namesStableOwner(owner);
+        const retainedTypedOwner = typedIndexRunsCode || ownedTypedStore;
+        const retainedIndexOwner = ownedRead || retainedTypedOwner;
         let index = "";
         const compileIndex = (): void => {
             index = preparedIndex
@@ -6365,7 +6381,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // Keep fresh containers and retained typed-array owners alive until
         // the index finishes. Numeric writes return a slot that owns its view;
         // reads return values. This expression stays behind its source guard.
-        const retainedOwner = typedIndexRunsCode
+        const retainedOwner = retainedTypedOwner
             ? `bbl::js::retain_typed_array_owner(${owner.cpp})`
             : owner.cpp;
         const indexed = retainedIndexOwner
@@ -6475,14 +6491,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : undefined;
                     const possible = selected ? [selected] : candidates;
                     if (dataType.element.ownedEngine)
-                        return snapshotOwner.staticElements
-                            ? withCommonResourceMetadata(
-                                  value,
-                                  selected
-                                      ? [selected]
-                                      : snapshotOwner.staticElements,
-                              )
-                            : value;
+                        return withCommonResourceMetadata(value, possible);
                     // A container read has its own storage and presence. Producer
                     // facts may describe the handle, but cannot replace that storage.
                     const transported = withCommonResourceMetadata(
@@ -7230,7 +7239,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ...ownerCaptures,
             this.context.registerNativeBinding(indexTemporary),
         ];
-        const snapshots = (owner.staticElementsOwner ?? owner).staticElements;
+        const elementOwner = owner.staticElementsOwner ?? owner;
+        const snapshots = elementOwner.staticElements;
         const sourceIndex = staticNumberValue(
             this.context,
             access.argumentExpression,
@@ -7240,7 +7250,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? snapshots[sourceIndex]
                     ? [snapshots[sourceIndex]]
                     : []
-                : (snapshots ?? []);
+                : (snapshots ??
+                  (elementOwner.runtimeElementTemplate
+                      ? [elementOwner.runtimeElementTemplate]
+                      : []));
         const leaf = withCommonResourceMetadata(
             this.leafValue(indexed, element),
             element.kind === "handle" ? candidates : [],
@@ -8393,7 +8406,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 });
             }
             const staticParts = call.arguments.map((argument) =>
-                staticNumberValue(this.context, argument),
+                this.context.evaluator.staticNumberThroughRecords(argument),
             );
             if (
                 staticParts.every(
@@ -9115,6 +9128,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /** Link literal array fields to their stored owner before aliases can write them. */
+    public retainRecordArrayLiteralFacts(owner: Value, node: ts.Node): void {
+        const type = owner.dataType;
+        const properties = owner.recordProperties;
+        if (type?.kind !== "struct" || !properties) return;
+        const reference = this.context.dataTypes.isReferenceStruct(type.name);
+        for (const field of this.context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        )) {
+            const source = properties[field.sourceName];
+            const memberType =
+                field.type.kind === "optional" ? field.type.inner : field.type;
+            if (source?.kind !== "tuple" || memberType.kind !== "vector")
+                continue;
+            const storedSlot = `${owner.cpp}${reference ? "->" : "."}${field.name}`;
+            const slot = field.accessor ? `${storedSlot}.get()` : storedSlot;
+            const member = this.leafValue(
+                field.type.kind === "optional" ? `(*${slot})` : slot,
+                memberType,
+            );
+            this.retainArrayLiteralFacts(member, source, node);
+            writable(properties)[field.sourceName] = member;
+        }
+    }
+
     /** Keep scalar facts on views of the native elements, never on copied records. */
     public retainArrayLiteralFacts(
         owner: Value,
@@ -9312,7 +9352,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** A stored scalar array alias can replace elements outside the binding graph. */
-    private invalidateStoredArrayFacts(value: Value): void {
+    private invalidateStoredArrayFacts(value: Value, seen?: Set<Value>): void {
+        if (value.recordProperties) {
+            seen ??= new Set<Value>();
+            if (seen.has(value)) return;
+            seen.add(value);
+            for (const member of Object.values(value.recordProperties))
+                this.invalidateStoredArrayFacts(member, seen);
+        }
         this.invalidateRecordArrayFacts(value);
         if (
             !value.freshData &&

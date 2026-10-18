@@ -169,7 +169,8 @@ function gltfNodeHierarchyCpp(): string {
                 const auto& storage = accessors.at(unsigned_value(*matrix));
                 if (storage.type != "VEC4" || storage.component_type != 5126 || storage.count != 4)
                     throw std::runtime_error("Invalid glTF node matrix storage.");
-                node.local_matrix = read_matrix(storage, 0);
+                const auto local = read_matrix(storage, 0);
+                node.local_matrix.emplace(local.begin(), local.end());
             }
             node.local_matrix_locked = required(planned_node, "locked").as_boolean();
         }

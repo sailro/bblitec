@@ -54,6 +54,32 @@ const results = new EmissionWeakMap<
     WeakMap<ts.FunctionLikeDeclaration, Map<string, boolean>>
 >();
 
+// AST shape is immutable; every scalar projection shares this call-name census.
+const optionalCallNames = new WeakMap<
+    ts.FunctionLikeDeclaration,
+    ReadonlySet<string>
+>();
+
+function optionalCalls(
+    declaration: ts.FunctionLikeDeclaration,
+): ReadonlySet<string> {
+    const cached = optionalCallNames.get(declaration);
+    if (cached) return cached;
+    const names = new Set<string>();
+    forEachAnalysisNode(
+        declaration,
+        (node) => {
+            if (!ts.isCallExpression(node) || !node.questionDotToken) return;
+            const callee = unwrapExpression(node.expression);
+            if (ts.isPropertyAccessExpression(callee))
+                names.add(callee.name.text);
+        },
+        { types: "skip" },
+    );
+    optionalCallNames.set(declaration, names);
+    return names;
+}
+
 /**
  * Proves that a concrete argument projection is neither written through nor
  * retained. A copied container can still carry reference-valued children.
@@ -198,6 +224,7 @@ export function parameterProjectionIsReadOnly(
     path: Path,
     independentFields = false,
     argument?: ts.Expression,
+    capturedScalarFacts = false,
 ): boolean {
     const literal = argument && unwrapExpression(argument);
     const keys =
@@ -224,6 +251,10 @@ export function parameterProjectionIsReadOnly(
         independentFields,
         undefined,
         keys,
+        capturedScalarFacts &&
+            independentFields &&
+            literal !== undefined &&
+            ts.isObjectLiteralExpression(literal),
     );
 }
 
@@ -267,6 +298,7 @@ function parameterProjection(
     independentFields = false,
     identityPaths?: readonly Path[],
     ownKeys?: readonly string[],
+    freshScalarCapture = false,
 ): boolean {
     if (!isSupportedFunction(declaration) || !declaration.body) return false;
     const parameter = declaration.parameters[index];
@@ -284,6 +316,7 @@ function parameterProjection(
         independentFields,
         identityPaths,
         ownKeys,
+        freshScalarCapture,
     ]);
     let functions = results.get(checker);
     let known = functions?.get(declaration);
@@ -317,10 +350,13 @@ function parameterProjection(
               )
               .map((property) => property.name)
         : [];
-    // Absence is a dependency too: adding a missing member anywhere in this
-    // body, including a retained callback, defeats optional-call pruning.
+    // Only absence used to prune an optional call is a dependency. Other
+    // missing reference fields do not alias the scalar projection being proved.
+    const optionalCallAbsence = absent.length
+        ? absent.filter((key) => optionalCalls(declaration).has(key))
+        : [];
     const selected = (
-        identityPaths ?? [path, ...absent.map((key) => [key])]
+        identityPaths ?? [path, ...optionalCallAbsence.map((key) => [key])]
     ).map((selectedPath) => {
         const type = typeAt(selectedPath);
         return {
@@ -329,6 +365,10 @@ function parameterProjection(
             scalar: type !== undefined && !typeCanCarryReference(type),
         };
     });
+    // A fresh literal's scalar field has no caller-held owner to mutate later.
+    // Follow captures through their bodies instead of treating retention alone
+    // as a write. Reference escapes, aliases and writes still use the same proof.
+    const inspectCaptures = freshScalarCapture && selected[0]?.scalar === true;
     active.add(declaration);
 
     const nativeHandle = (
@@ -592,7 +632,10 @@ function parameterProjection(
                 if (ts.isVariableDeclaration(node) || ts.isBindingElement(node))
                     remaining++;
             },
-            { functions: "skip", types: "skip" },
+            {
+                ...(inspectCaptures ? {} : { functions: "skip" as const }),
+                types: "skip",
+            },
         );
     do {
         changed = false;
@@ -612,7 +655,10 @@ function parameterProjection(
                                 project(flow(node.expression), "*"),
                             );
                 },
-                { functions: "skip", types: "skip" },
+                {
+                    ...(inspectCaptures ? {} : { functions: "skip" as const }),
+                    types: "skip",
+                },
             );
     } while (changed && --remaining > 0);
 
@@ -700,7 +746,7 @@ function parameterProjection(
                 root,
                 (node) => {
                     if (absentOptionalCall(node)) return "skip";
-                    if (ts.isFunctionLike(node)) {
+                    if (ts.isFunctionLike(node) && !inspectCaptures) {
                         return (
                             someAnalysisNode(
                                 node,
@@ -729,8 +775,10 @@ function parameterProjection(
                         uses(node.expression)
                     )
                         return true;
+                    // A fresh scalar projection has no external owner alias;
+                    // captured writes and escapes are checked throughout the body.
                     if (
-                        ts.isAwaitExpression(node) ||
+                        (ts.isAwaitExpression(node) && !inspectCaptures) ||
                         ts.isYieldExpression(node)
                     )
                         return true;

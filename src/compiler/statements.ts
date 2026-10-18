@@ -5701,6 +5701,31 @@ export class StatementLowerer {
             context.expectSameEngine(task, material, call);
             materialCpp = material.cpp;
             materialOverride = true;
+            const meshProfile =
+                mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
+            if (material.scenePbrMaterialIndex !== undefined) {
+                if (meshProfile === undefined) {
+                    context.sceneManifest.recordUnknownSceneMeshMaterial(
+                        material.scenePbrMaterialIndex,
+                    );
+                } else {
+                    context.sceneManifest.recordScenePbrMaterialMesh(
+                        material.scenePbrMaterialIndex,
+                        meshProfile,
+                    );
+                }
+            } else if (
+                !material.standardMaterial &&
+                material.nodeMaterialIndex === undefined &&
+                material.shaderVariant === undefined &&
+                material.sceneShaderVariant === undefined &&
+                !material.possibleSceneShaderVariants?.length &&
+                !material.assetPbrMaterial
+            ) {
+                context.sceneManifest.recordUnknownSceneMaterialAssignment(
+                    meshProfile,
+                );
+            }
             context.reachFeature("frame-graph:task-material-override", call);
         }
         context.emit({

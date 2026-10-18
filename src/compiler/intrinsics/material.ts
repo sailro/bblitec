@@ -24,7 +24,7 @@ import {
     compileLocalCubemapIntrinsic,
     type LocalCubemapIntrinsicContext,
 } from "./local-cubemap.js";
-import { isStringValue, type Value } from "../types.js";
+import { commonResourceValue, isStringValue, type Value } from "../types.js";
 import {
     emitMaterialPluginResources,
     foldMaterialPluginList,
@@ -42,6 +42,7 @@ import {
 import { isTypedArrayType } from "../data-types.js";
 import {
     compileOptionalStaticBoolean,
+    conditionalOptionObjects,
     compileStaticNumber,
     staticNumberValue,
     validateObjectProperties,
@@ -54,6 +55,7 @@ import type {
 } from "../types.js";
 import { recordAt } from "../record-access.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
+import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -91,6 +93,12 @@ export interface MaterialIntrinsicContext
             | "fail"
             | "bindings"
             | "nativeEmission"
+            | "unwrap"
+            | "evaluationOrder"
+            | "conditions"
+            | "captureEmittedLines"
+            | "enterRuntimeControlFlow"
+            | "leaveRuntimeControlFlow"
         > {}
 
 function compileStorageBufferData(
@@ -643,14 +651,16 @@ function compileCreatePbrMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.expectArgumentCount(call, 1, 1);
+    context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
     // Babylon Lite's PbrMaterialProps has neither field: the pin's
     // createPbrMaterial spreads its props, and refraction lives on
     // `_transmissive`/`_subsurface`, which only `setPbrTransmission` writes
     // -- the call that also registers the scene transmission hook. Neither
     // option reaches anything upstream, so neither may reach it here.
-    const props = context.expectObjectLiteral(argumentAt(call, 0));
+    const props = call.arguments[0]
+        ? context.expectObjectLiteral(call.arguments[0])
+        : ts.factory.createObjectLiteralExpression();
     for (const name of ["transmissive", "subsurface"] as const) {
         const option = context.objectProperty(props, name);
         if (option) {
@@ -693,7 +703,7 @@ function compileCreatePbrMaterial(
         usePhysicalLightFalloff,
         scenePbrMaterialIndex,
         plugins,
-    } = context.intrinsicOptions.compilePbrMaterialOptions(argumentAt(call, 0));
+    } = context.intrinsicOptions.compilePbrMaterialOptions(props);
     context.expectSameEngine(baseColor, orm, call);
     if (normal) context.expectSameEngine(baseColor, normal.texture, call);
     context.reachFeature("material:pbr", call);
@@ -917,11 +927,13 @@ function compileCreateGridMaterial(
     };
 }
 
-function compileCreateStandardNoColorMaterialView(
+function compileCreateNoColorMaterialView(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
     importedName:
-        "createStandardNoColorMaterialView" | "createPbrNoColorMaterialView",
+        | "createStandardNoColorMaterialView"
+        | "createPbrNoColorMaterialView"
+        | "createShaderNoColorMaterialView",
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const source = context.compileValue(argumentAt(call, 0));
@@ -929,6 +941,21 @@ function compileCreateStandardNoColorMaterialView(
     const engineCpp = context.requireEngine(source, call);
     context.reachFeature("material:no-color-view", call);
     context.reachFeature("renderer:scene", call);
+    if (importedName === "createShaderNoColorMaterialView") {
+        context.reachFeature("material:shader", call);
+        context.sceneManifest.recordSceneMaterialSlot();
+        return {
+            kind: "material",
+            cpp: `bbl::create_shader_no_color_material_view(${engineCpp}, ${source.cpp})`,
+            engineCpp,
+            ...(source.shaderVariant
+                ? { shaderVariant: source.shaderVariant }
+                : {}),
+            ...(source.sceneShaderVariant
+                ? { sceneShaderVariant: source.sceneShaderVariant }
+                : {}),
+        };
+    }
     if (importedName === "createStandardNoColorMaterialView") {
         context.sceneManifest.recordSceneMaterialSlot();
         return {
@@ -1044,13 +1071,64 @@ function compileCreateShaderMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    let leaves = 0;
+    const compile = (options: ts.ObjectLiteralExpression): Value => {
+        const selection = conditionalOptionObjects(context, options);
+        if (!selection) {
+            if (++leaves > 64)
+                context.fail(
+                    options,
+                    "Shader material options exceed 64 static variants.",
+                );
+            return compileShaderMaterialCreation(context, call, options);
+        }
+        const condition = context.conditions.compileCondition(
+            selection.condition,
+        );
+        if (condition === "true" || condition === "false")
+            return compile(
+                condition === "true" ? selection.whenTrue : selection.whenFalse,
+            );
+        const arm = (options: ts.ObjectLiteralExpression): Value => {
+            let value!: Value;
+            context.enterRuntimeControlFlow();
+            try {
+                const lines = context.captureEmittedLines(() => {
+                    value = compile(options);
+                });
+                return {
+                    ...value,
+                    cpp: context.dataLowerer.armExpression(
+                        options,
+                        lines,
+                        value.cpp,
+                    ),
+                };
+            } finally {
+                context.leaveRuntimeControlFlow();
+            }
+        };
+        const whenTrue = arm(selection.whenTrue);
+        const whenFalse = arm(selection.whenFalse);
+        return {
+            ...commonResourceValue(whenTrue, [whenTrue, whenFalse]),
+            cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
+        };
+    };
+    return compile(context.expectObjectLiteral(argumentAt(call, 0)));
+}
+
+function compileShaderMaterialCreation(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    options: ts.ObjectLiteralExpression,
+): Value {
     const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
-    context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
-    const variant = context.intrinsicOptions.compileShaderMaterialOptions(
-        argumentAt(call, 0),
-    );
+    const variant =
+        context.intrinsicOptions.compileShaderMaterialOptions(options);
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     // A declared slot binds through the pin's checks whether or not
@@ -1190,18 +1268,9 @@ function compileSetShadowCasterMaterial(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const caster = context.compileValue(argumentAt(call, 1));
-    context.expectKind(caster, "material", argumentAt(call, 1));
-    context.expectSameEngine(material, caster, call);
-    context.sceneManifest.recordShadowCasterShaderVariant(
-        material.sceneShaderVariant ?? material.shaderVariant,
-        caster.sceneShaderVariant ?? caster.shaderVariant,
-    );
     return {
         kind: "void",
-        cpp:
-            `bbl::set_shadow_caster_material(` +
-            `${context.requireEngine(material, call)}, ` +
-            `${material.cpp}, ${caster.cpp})`,
+        cpp: shadowCasterMaterialWrite(context, material, caster, call),
     };
 }
 
@@ -1322,11 +1391,6 @@ function compileSetShaderTexture(
         ? `bbl::shader_texture_slot_by_name(${engine}, ${material.cpp}, ${name.cpp}, ${texture.csmReceiverGeneratorIndex !== undefined ? "true" : "false"})`
         : `${context.intrinsicOptions.resolveShaderTextureSlot(material, argumentAt(call, 1))}u`;
     if (texture.kind === "render-texture") {
-        if (texture.isDepthTexture)
-            context.fail(
-                argumentAt(call, 2),
-                "Shader-material textures sample a render target's colour; depth textures are not lowered.",
-            );
         context.expectSameEngine(material, texture, call);
         return {
             kind: "void",
@@ -1337,16 +1401,17 @@ function compileSetShaderTexture(
         };
     }
     context.expectKind(texture, "texture", argumentAt(call, 2));
-    const cachedPixelsTexture =
-        texture.dataType?.kind === "handle" &&
-        texture.dataType.handle === "texture";
+    const storedTexture =
+        texture.textureStorage === "stored" ||
+        (texture.dataType?.kind === "handle" &&
+            texture.dataType.handle === "texture");
     const setter =
         texture.csmReceiverGeneratorIndex !== undefined
             ? "set_shader_csm_texture"
-            : texture.textureFile
-              ? "set_shader_texture"
-              : texture.textureStorage === "pixels" || cachedPixelsTexture
-                ? "set_shader_pixels_texture"
+            : storedTexture || texture.textureStorage === "pixels"
+              ? "set_shader_pixels_texture"
+              : texture.textureFile
+                ? "set_shader_texture"
                 : undefined;
     if (!setter) {
         context.fail(
@@ -2241,7 +2306,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     [
         "createStandardNoColorMaterialView",
         (context, call) =>
-            compileCreateStandardNoColorMaterialView(
+            compileCreateNoColorMaterialView(
                 context,
                 call,
                 "createStandardNoColorMaterialView",
@@ -2250,10 +2315,19 @@ const materialIntrinsicHandlers = new EmissionMap<
     [
         "createPbrNoColorMaterialView",
         (context, call) =>
-            compileCreateStandardNoColorMaterialView(
+            compileCreateNoColorMaterialView(
                 context,
                 call,
                 "createPbrNoColorMaterialView",
+            ),
+    ],
+    [
+        "createShaderNoColorMaterialView",
+        (context, call) =>
+            compileCreateNoColorMaterialView(
+                context,
+                call,
+                "createShaderNoColorMaterialView",
             ),
     ],
     ["setStandardLightmapTexture", compileSetStandardLightmapTexture],

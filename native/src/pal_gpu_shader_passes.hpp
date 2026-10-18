@@ -30,6 +30,7 @@ struct ShaderPacketSystemState {
     std::array<float, 16> view_projection{}, view{}, projection{}, world{}, world_view{},
         world_view_projection{};
     std::array<float, 4> camera_position{};
+    std::array<float, 2> screen_size{};
 };
 } // namespace bbl
 

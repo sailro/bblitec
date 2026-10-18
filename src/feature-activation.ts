@@ -1236,6 +1236,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/ktx-loader.ts + src/texture/compressed-formats.ts",
         consumers: CMAKE,
     },
+    "texture:ktx2": {
+        provenance: "src/texture/ktx2-loader.ts",
+        consumers: CMAKE,
+    },
     "texture:pixels": {
         provenance: "src/texture/pixels-texture.ts",
         consumers: CMAKE,
@@ -2841,6 +2845,17 @@ function capabilityRows(
                 "history and scene-UBO blocks only for a scene composing " +
                 "the TAA composite",
             ["render_capabilities.hpp", "frame_graph_post_process.hpp"],
+        ),
+        row(
+            "BBLITE_STANDARD_PLUGIN_TEXTURES",
+            "capability",
+            emit.standardPluginBindings?.some((list) => list.length > 0) ??
+                false,
+            emit.standardPluginBindings?.some((list) => list.length > 0)
+                ? "composed Standard plugins declare texture bindings"
+                : "no Standard plugin texture bindings",
+            "src/material/plugin/std-plugin-bridge.ts: composed plugin bindings",
+            ["render_capabilities.hpp", "standard_variants.hpp"],
         ),
         row(
             "BBLITE_STANDARD_SKELETON",

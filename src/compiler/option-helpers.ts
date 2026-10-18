@@ -1,4 +1,4 @@
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { BindingLookup } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
@@ -53,6 +53,71 @@ export function validateObjectProperties(
         }
         traceSourceNode(property);
     }
+}
+
+/**
+ * Split a finite conditional spread into ordinary option dictionaries. Moving
+ * its predicate ahead of earlier members is legal only when they commute and
+ * the predicate has no observable effects. Each selected dictionary still
+ * evaluates its members once; conflicting evaluations require retained options.
+ */
+export function conditionalOptionObjects(
+    context: Pick<
+        LoweringServices,
+        | "objectProperties"
+        | "unwrap"
+        | "expectObjectLiteral"
+        | "evaluationOrder"
+        | "fail"
+    >,
+    object: ts.ObjectLiteralExpression,
+):
+    | {
+          condition: ts.Expression;
+          whenTrue: ts.ObjectLiteralExpression;
+          whenFalse: ts.ObjectLiteralExpression;
+      }
+    | undefined {
+    const properties = context.objectProperties(object);
+    for (const [index, property] of properties.entries()) {
+        if (!ts.isSpreadAssignment(property)) continue;
+        const expression = context.unwrap(property.expression);
+        if (!ts.isConditionalExpression(expression)) continue;
+        const prefix = properties.slice(0, index);
+        const { condition } = expression;
+        if (
+            context.evaluationOrder.writesStorage(condition) ||
+            context.evaluationOrder.hasModuleEffects(condition) ||
+            prefix.some(
+                (member) =>
+                    context.evaluationOrder.operandsToPin([
+                        member,
+                        condition,
+                    ])[0],
+            )
+        ) {
+            context.fail(
+                property,
+                "Conditional static options require a side-effect-free predicate independent of earlier option evaluations.",
+            );
+        }
+        const branch = (arm: ts.Expression): ts.ObjectLiteralExpression => {
+            const selected = context.expectObjectLiteral(arm);
+            const result = ts.factory.updateObjectLiteralExpression(object, [
+                ...prefix,
+                ...context.objectProperties(selected),
+                ...properties.slice(index + 1),
+            ]);
+            writable(result).parent = object.parent;
+            return result;
+        };
+        return {
+            condition,
+            whenTrue: branch(expression.whenTrue),
+            whenFalse: branch(expression.whenFalse),
+        };
+    }
+    return undefined;
 }
 
 export interface BooleanOptionsContext extends Pick<

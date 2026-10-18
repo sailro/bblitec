@@ -522,20 +522,25 @@ async function materializeAsset(
         };
     }
 
-    if (asset.kind === "basis") {
+    if (asset.kind === "basis" || asset.kind === "ktx2") {
         // The one texture whose bytes the browser produces: the pin fetches
         // its transcoder from a CDN and picks a target format from the
         // device, so generation runs the pinned loader and packages what it
         // uploaded. The file itself rides the ordinary download cache and is
         // served back to the page from the loopback origin, so a recompile
         // asks the CDN for the transcoder alone.
-        const { transcodeBasisTexture, writeKtx1 } =
+        const { transcodeBasisTexture, transcodeKtx2Texture, writeKtx1 } =
             await import("./basis-transcode.js");
         const lowerer = compressedTextureLowerer();
-        const transcoded = await transcodeBasisTexture(
-            source,
-            await assetBytes(source, inputPath),
-        );
+        const bytes = await assetBytes(source, inputPath);
+        const transcoded =
+            asset.kind === "ktx2"
+                ? await transcodeKtx2Texture(
+                      source,
+                      bytes,
+                      await decoders.ktx2?.(),
+                  )
+                : await transcodeBasisTexture(source, bytes);
         writeFileSync(
             destination,
             await packageKtx1(
@@ -544,6 +549,9 @@ async function materializeAsset(
                     lowerer.magicBytes(),
                     lowerer.glInternalFormat(transcoded.gpuFormat),
                     lowerer.headerLayout(),
+                    asset.kind === "ktx2"
+                        ? lowerer.blockSize(transcoded.gpuFormat)
+                        : undefined,
                 ),
             ),
         );
@@ -1124,7 +1132,10 @@ async function main(): Promise<void> {
             ],
         });
     }
-    if (specializationFeatures.compressedImages) {
+    if (
+        specializationFeatures.compressedImages ||
+        result.manifest.assets.some((asset) => asset.kind === "ktx2")
+    ) {
         // The same tradeoff the `.basis` arm records, reached through a glTF
         // instead of a texture call: `uploadKtx2Texture2D` is the one glTF
         // image path whose bytes the browser produces, so it is executed at
@@ -1133,8 +1144,8 @@ async function main(): Promise<void> {
             id: "executed-ktx2-transcode",
             category: "asset-materialization",
             sourceSemantics:
-                "KHR_texture_basisu redirects a material slot to a KTX2 " +
-                "image, and uploadKtx2Texture2D fetches the Babylon KTX2 " +
+                "loadKtx2Texture2D or KHR_texture_basisu reaches a KTX2 " +
+                "image. uploadKtx2Texture2D fetches the Babylon KTX2 " +
                 "decoder from a CDN at run time, transcodes to the first " +
                 "compressed format the device reports, and uploads the mip " +
                 "chain it produced.",
@@ -1147,9 +1158,9 @@ async function main(): Promise<void> {
                 "page injects with a script tag, and the target format is a " +
                 "device question both the reference and the compiled " +
                 "backends answer with BC7 on D3D12. sRGB is not a transcode " +
-                "input -- it selects the container's GL enum -- so an image " +
-                "reached at both colour spaces is refused rather than " +
-                "packaged once.",
+                "input: direct texture loads share linear blocks and select " +
+                "the pinned GPU format per load. A glTF image reached at " +
+                "both colour spaces still refuses.",
             risk: "medium",
             validation: [
                 "scene 112 parity against the browser golden, which " +

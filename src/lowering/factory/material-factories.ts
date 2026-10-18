@@ -613,8 +613,8 @@ void set_shader_render_texture(
     MaterialRecord& record = shader_material(engine, material);
     const bool transmission = texture.source == RenderTextureSource::transmission_color ||
                               texture.source == RenderTextureSource::transmission_depth;
-    if ((texture.source != RenderTextureSource::render_target && !transmission) || texture.depth_only)
-        throw std::runtime_error("setShaderTexture samples a render target's colour texture.");
+    if (texture.source != RenderTextureSource::render_target && !transmission)
+        throw std::runtime_error("setShaderTexture requires a render target or transmission texture.");
     if (record.shader_textures.size() <= slot) {
         record.shader_textures.resize(slot + 1);
     }
@@ -1980,6 +1980,25 @@ MaterialHandle create_standard_material(Engine& engine) {
         const standardModule = "src/material/standard/no-color-view.ts";
         const esmModule = "src/material/standard/esm-shadow-view.ts";
         const pbrModule = "src/material/pbr/no-color-view.ts";
+        const shaderModule = "src/material/shader/no-color-view.ts";
+        const shaderView = this.context.functionDeclaration(
+            shaderModule,
+            "createShaderNoColorMaterialView",
+        );
+        const shaderReturn = this.context.findNodes(
+            shaderView.declaration,
+            ts.isReturnStatement,
+        )[0]?.expression;
+        if (!shaderReturn)
+            this.context.contractError(
+                shaderView.declaration,
+                "Expected a shader material view return.",
+            );
+        this.context.assertExpressionShape(
+            shaderReturn,
+            "createMaterialView(source, { features: 0 })",
+            "Shader no-color view",
+        );
         const viewModule = "src/material/material-view.ts";
         const dirtyModule = "src/material/material-dirty.ts";
         for (const [modulePath, functionName, flag] of [
@@ -2065,7 +2084,7 @@ MaterialHandle create_standard_material(Engine& engine) {
         return {
             modulePath: viewModule,
             symbolName:
-                "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty" +
+                "createStandardNoColorMaterialView,createPbrNoColorMaterialView,createShaderNoColorMaterialView,markMaterialUboDirty" +
                 (esmShadows
                     ? ",createStandardEsmShadowMaterialView," +
                       "createPbrEsmShadowMaterialView"
@@ -2076,7 +2095,7 @@ MaterialHandle create_standard_material(Engine& engine) {
             source: `// ${this.context.provenance(
                 viewModule,
                 "createMaterialView",
-                `${standardModule}#createStandardNoColorMaterialView, ${pbrModule}#createPbrNoColorMaterialView, and ${dirtyModule}#markMaterialUboDirty`,
+                `${standardModule}#createStandardNoColorMaterialView, ${pbrModule}#createPbrNoColorMaterialView, ${shaderModule}#createShaderNoColorMaterialView, and ${dirtyModule}#markMaterialUboDirty`,
             )}
 #include <bblite/runtime.hpp>
 
@@ -2088,12 +2107,13 @@ namespace {
 MaterialHandle create_no_color_material_view(
     Engine& engine,
     MaterialHandle source,
-    bool standard) {
+    bool standard,
+    bool shader = false) {
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
     const MaterialRecord& source_record = ${recordAt("engine.materials", "source")};
-    if (source_record.standard_material != standard) {
+    if (source_record.standard_material != standard || source_record.shader_material != shader) {
         throw std::runtime_error(
             "No-color material view family does not match its source.");
     }
@@ -2120,6 +2140,12 @@ MaterialHandle create_pbr_no_color_material_view(
     Engine& engine,
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false);
+}
+
+MaterialHandle create_shader_no_color_material_view(
+    Engine& engine,
+    MaterialHandle source) {
+    return create_no_color_material_view(engine, source, false, true);
 }
 ${
     !nodeCasters

@@ -72,6 +72,7 @@
 #include "pal_external_renderables.hpp"
 #endif
 #include "pal_sdl_gpu_indexed_draw.hpp"
+#include "pal_sdl_gpu_formats.hpp"
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
@@ -509,6 +510,13 @@ struct ShaderTaskTarget {
     SDL_GPUTextureFormat color;
     SDL_GPUTextureFormat depth;
     SDL_GPUSampleCount samples;
+    std::optional<DepthCompare> depth_compare{};
+};
+
+/** Reflected texture slots mapped once to their material's sampler declarations. */
+struct ShaderStageTextureSlots {
+    std::vector<std::size_t> sampled;
+    std::vector<std::size_t> storage;
 };
 
 /** Custom-material pipelines follow the render task's attachment layout. */
@@ -522,7 +530,8 @@ struct ShaderTaskPipeline {
     SDL_GPUColorTargetDescription color{};
     std::vector<SDL_GPUVertexBufferDescription> buffers;
     std::vector<SDL_GPUVertexAttribute> attributes;
-    std::map<std::tuple<SDL_GPUTextureFormat, SDL_GPUTextureFormat, SDL_GPUSampleCount, bool>,
+    std::map<std::tuple<SDL_GPUTextureFormat, SDL_GPUTextureFormat, SDL_GPUSampleCount, bool,
+                        SDL_GPUCompareOp>,
              OwnedSdlPipeline>
         pipelines;
 
@@ -550,11 +559,15 @@ struct ShaderTaskPipeline {
         const auto base_depth = base.target_info.has_depth_stencil_target
                                     ? base.target_info.depth_stencil_format
                                     : SDL_GPU_TEXTUREFORMAT_INVALID;
+        const auto depth_compare = target.depth_compare ? gpu_depth_compare(*target.depth_compare)
+                                                        : base.depth_stencil_state.compare_op;
         if (target.color == color.format && target.depth == base_depth &&
-            target.samples == base.multisample_state.sample_count) {
+            target.samples == base.multisample_state.sample_count &&
+            depth_compare == base.depth_stencil_state.compare_op) {
             return coverage ? alpha_to_coverage : ordinary;
         }
-        const auto key = std::make_tuple(target.color, target.depth, target.samples, coverage);
+        const auto key =
+            std::make_tuple(target.color, target.depth, target.samples, coverage, depth_compare);
         if (const auto found = pipelines.find(key); found != pipelines.end())
             return found->second.get();
         auto info = base;
@@ -572,6 +585,7 @@ struct ShaderTaskPipeline {
         info.target_info.depth_stencil_format = target.depth;
         info.target_info.has_depth_stencil_target = target.depth != SDL_GPU_TEXTUREFORMAT_INVALID;
         info.depth_stencil_state.enable_depth_test &= info.target_info.has_depth_stencil_target;
+        info.depth_stencil_state.compare_op = depth_compare;
         info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
         info.multisample_state.sample_count = target.samples;
         info.multisample_state.enable_alpha_to_coverage = coverage;
@@ -773,14 +787,15 @@ struct GpuState : SdlGpuDevice {
     // generation derived from it -- is the authority on its registers.
     std::vector<PinnedStageSlots> shader_vertex_slots;
     std::vector<PinnedStageSlots> shader_fragment_slots;
-    /** Each fragment stage's packed textures as declared sampler slots (npos: undeclared). */
-    std::vector<std::vector<std::size_t>> shader_fragment_texture_slots;
+    /** Each stage's packed textures as declared sampler slots (npos: undeclared). */
+    std::vector<ShaderStageTextureSlots> shader_vertex_texture_slots;
+    std::vector<ShaderStageTextureSlots> shader_fragment_texture_slots;
+    StageTextureBindingScratch shader_texture_binding_scratch;
     using StorageBuffer = VersionedGpuBuffer<SDL_GPUBuffer*>;
     std::vector<StorageBuffer> storage_buffers;
     // The mesh buffers a released mesh leaves for the next one's upload;
     // `release(GpuState&)` empties it after the meshes go.
     SdlKeptBuffers kept_buffers;
-    std::vector<SDL_GPUTextureSamplerBinding> shader_texture_binding_scratch;
 #if BBLITE_HAS_EFFECT_TASK
     // One built pass per effect render task, keyed by task index and built
     // lazily against the target's own format and sample count -- the pin
@@ -829,8 +844,6 @@ struct GpuState : SdlGpuDevice {
     /** The depth grab's nearest sampler. */
     SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif
-    std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
-    std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
@@ -1175,15 +1188,20 @@ SDL_GPUTextureSamplerBinding task_transmission_binding(GpuState& state, const En
 void release_task_transmissions(GpuState& state);
 #endif
 
-/** A render target's sampled colour, as a material slot reads it. */
-inline SDL_GPUTexture* sdl_render_texture_color(const GpuState& state, const Engine& engine,
-                                                const RenderTextureRef& reference) {
+/** A render target's sampled attachment, as a shader slot reads it. */
+inline SDL_GPUTexture* sdl_shader_render_texture(const GpuState& state, const Engine& engine,
+                                                 const RenderTextureRef& reference) {
     if (reference.source != RenderTextureSource::render_target ||
         reference.target.value >= state.render_targets.size())
         pal::refuse_invalid_frame_handle("A material render texture names no render target.");
-    if (pal::resolve_render_target(engine, reference.target, pal::frame_pass_target_user).swapchain)
+    const auto& record =
+        pal::resolve_render_target(engine, reference.target, pal::frame_pass_target_user);
+    if (record.swapchain)
         throw std::runtime_error("A material cannot sample the swapchain target.");
-    SDL_GPUTexture* texture = handle_at(state.render_targets, reference.target).sampled_color;
+    const auto& target = handle_at(state.render_targets, reference.target);
+    const bool depth = reference.depth_only || pal::render_target_samples_depth(record);
+    SDL_GPUTexture* texture =
+        depth ? (record.sampled_depth ? target.depth : nullptr) : target.sampled_color;
     if (!texture)
         pal::fail_render_target_has_no_texture();
     return texture;

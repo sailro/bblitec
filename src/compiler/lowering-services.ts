@@ -52,7 +52,7 @@ import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
-import type { ExecutedScalar } from "./executed-application-function.js";
+import type { ExecutedArgument } from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -304,7 +304,7 @@ export interface LoweringServices {
      */
     runGenerationFunction(
         declaration: ts.FunctionLikeDeclaration,
-        args: readonly (ExecutedScalar | undefined)[],
+        args: readonly (ExecutedArgument | undefined)[],
         label: string,
     ): unknown;
     compileShaderSource(expression: ts.Expression): {

@@ -132,6 +132,7 @@ export class ScopedValueIndex {
                         value.staticElementsOwner,
                         value.staticElements,
                         value.collectionCardinality,
+                        value.runtimeElementTemplate,
                         value.recordProperties,
                     ].filter((key) => key !== undefined),
                 ),

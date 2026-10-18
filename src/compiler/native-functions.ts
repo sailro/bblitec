@@ -114,6 +114,25 @@ interface NativeFunctionSignature {
     declaration: SupportedFunction;
 }
 
+/** All normal exits construct a record; throwing exits return no value. */
+function returnsFreshRecord(body: ts.ConciseBody): boolean {
+    const record = (expression: ts.Expression | undefined): boolean =>
+        expression !== undefined &&
+        ts.isObjectLiteralExpression(unwrapExpression(expression));
+    if (!ts.isBlock(body)) return record(body);
+    const last = body.statements.at(-1);
+    return (
+        last !== undefined &&
+        ts.isReturnStatement(last) &&
+        record(last.expression) &&
+        !someAnalysisNode(
+            body,
+            (node) => ts.isReturnStatement(node) && !record(node.expression),
+            { functions: "skip", types: "skip" },
+        )
+    );
+}
+
 /**
  * One instance field a once-emitted method reaches. A class instance is a
  * compile-time record whose data fields are disjoint native locals, so the
@@ -659,7 +678,24 @@ export class NativeFunctionLowerer {
             );
         });
         const cpp = `bblscene::${signature.cppName}(${argumentsCpp.join(", ")})`;
-        return this.callValue(cpp, signature.returnType);
+        const result = this.callValue(cpp, signature.returnType);
+        if (
+            signature.returnType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(
+                signature.returnType.name,
+            ) &&
+            body &&
+            returnsFreshRecord(body)
+        ) {
+            // Native reference storage can be empty, but this source result
+            // cannot. Evaluate the factory before exposing its known presence.
+            return this.context.bindings.pinValueToTemporary(
+                { ...result, optionalFoundCpp: "true" },
+                "function_result",
+                call,
+            );
+        }
+        return result;
     }
 
     /**

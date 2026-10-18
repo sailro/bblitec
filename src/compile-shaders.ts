@@ -454,12 +454,12 @@ export async function compileOfflineShaders(
                 const source = join(directory, name);
                 const tool = requireTint();
                 const kind = stageKind(stage.stem);
-                // A native module's stages share one interstage structure
-                // whose position both read: placing it first lets a D3D12
-                // fragment read a prefix of the vertex locations. A pinned
-                // fragment that omits the position keeps Tint's order.
+                // Shader materials carry the order their fragment inputs
+                // require. Other owned modules share position-first inputs;
+                // pinned stages retain Tint's own order.
                 const positionFirst =
-                    !stage.pinnedBindings && kind !== "compute";
+                    kind !== "compute" &&
+                    (stage.positionFirst ?? !stage.pinnedBindings);
                 const products = formats.tint.filter(
                     (extension) =>
                         extension !== ".demote.spv" || kind === "fragment",

@@ -380,11 +380,9 @@ function specializeExternalTextureLoads(
 }
 
 /**
- * The texture/sampler pairs a fragment samples, at this backend's own
- * addresses: SDL_GPU takes fragment textures at group 2, binding `2n` with
- * the sampler at `2n + 1`, where the pin binds both into its group 1 beside
- * the uniform blocks. The identifiers stay the pin's, because the caller's
- * WGSL samples through them.
+ * The pin exposes texture/sampler pairs to both stages. Native stages use
+ * group 0 for vertex resources and group 2 for fragment resources, with
+ * texture/sampler pairs at bindings `2n`/`2n + 1`.
  *
  * An external texture binds its video's baked frame: the RGBA8 texels the
  * browser's import yields, as a plain `texture_2d<f32>`. Over that one
@@ -396,9 +394,10 @@ function emitSamplerBindings(
     program: ShaderIrProgram,
     stage: ShaderStage,
 ): string | undefined {
-    if (stage !== "fragment" || program.reflection.samplers.length === 0) {
+    if (program.reflection.samplers.length === 0) {
         return undefined;
     }
+    const group = stage === "vertex" ? 0 : 2;
     return program.reflection.samplerDeclarations
         .flatMap((decl, index) => {
             const depth = decl.comparison || decl.sampleType === "depth";
@@ -410,8 +409,8 @@ function emitSamplerBindings(
                   ? "texture_2d_array<f32>"
                   : "texture_2d<f32>";
             return [
-                `@group(2) @binding(${index * 2}) var ${decl.name}: ${textureType};`,
-                `@group(2) @binding(${index * 2 + 1}) var ${shaderSamplerName(decl.name)}: ${decl.comparison ? "sampler_comparison" : "sampler"};`,
+                `@group(${group}) @binding(${index * 2}) var ${decl.name}: ${textureType};`,
+                `@group(${group}) @binding(${index * 2 + 1}) var ${shaderSamplerName(decl.name)}: ${decl.comparison ? "sampler_comparison" : "sampler"};`,
             ];
         })
         .join("\n");
@@ -431,10 +430,7 @@ function emitStorageBindings(
     // two WebGPU bindings but one t-register, which Tint compacts for the
     // target artifact and publishes through the stage-slot sidecar.
     const group = stage === "vertex" ? 0 : 2;
-    const firstBinding =
-        stage === "vertex"
-            ? 0
-            : program.reflection.samplerDeclarations.length * 2;
+    const firstBinding = program.reflection.samplerDeclarations.length * 2;
     return reached
         .map(
             ({ name, type, binding }) =>

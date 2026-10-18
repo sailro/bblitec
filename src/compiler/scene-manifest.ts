@@ -8,7 +8,6 @@ import type { CompileAdaptation } from "../fidelity.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
-import { vertexInstanceLanes } from "../shader-ir.js";
 import {
     emissionArray,
     EmissionMap,
@@ -379,8 +378,10 @@ export class SceneManifestRecorder {
             // A retained callback with an unknown material cannot change an
             // already-settled program's layout; an incompatible runtime use
             // refuses before its draw is submitted.
-            shaderThinInstanceLanes(this.sceneMeshes, (message) =>
-                this.context.failAtFile(message),
+            shaderThinInstanceLanes(
+                this.sceneMeshes,
+                this.reachedShaderPrograms,
+                (message) => this.context.failAtFile(message),
             );
             const knownLayouts = new Map<string, SceneMeshManifest>();
             for (const mesh of this.sceneMeshes)
@@ -399,45 +400,22 @@ export class SceneManifestRecorder {
                     this.unknownMaterialMeshProfiles.has(index)
                 ) {
                     const variants = this.reachedShaderPrograms
-                        .filter(
-                            ({
-                                name,
-                                thinInstanceColorOption,
-                                vertexSource,
-                            }) => {
-                                const known = knownLayouts.get(name);
-                                if (known !== undefined) {
-                                    return (
-                                        known.thinInstances ===
-                                            mesh.thinInstances &&
+                        .filter(({ name, thinInstanceColorOption }) => {
+                            const known = knownLayouts.get(name);
+                            if (known !== undefined) {
+                                return (
+                                    known.thinInstances ===
+                                        mesh.thinInstances &&
+                                    (thinInstanceColorOption === false ||
                                         known.thinInstanceColors ===
-                                            mesh.thinInstanceColors
-                                    );
-                                }
-                                const lanes = vertexInstanceLanes(vertexSource);
-                                if (
-                                    thinInstanceColorOption === true ||
-                                    lanes.instanceColors
-                                ) {
-                                    return (
-                                        mesh.thinInstances !== undefined &&
-                                        mesh.thinInstanceColors === true
-                                    );
-                                }
-                                if (lanes.thinInstances) {
-                                    return (
-                                        mesh.thinInstances !== undefined &&
-                                        mesh.thinInstanceColors !== true
-                                    );
-                                }
-                                return this.sceneMeshes.some(
-                                    (candidate) =>
-                                        candidate.thinInstances === undefined,
-                                )
-                                    ? mesh.thinInstances === undefined
-                                    : true;
-                            },
-                        )
+                                            mesh.thinInstanceColors)
+                                );
+                            }
+                            // A runtime material can select any reached
+                            // program. Its mesh supplies the layout; shader
+                            // text cannot establish that association.
+                            return true;
+                        })
                         .map(({ name }) => name);
                     writable(mesh).shaderVariants = [
                         ...new Set([
@@ -951,8 +929,7 @@ export class SceneManifestRecorder {
      * Settles each scene-local shader program's instanced form.
      *
      * The pin builds the instanced pipeline from the MESH -- `hasColor` is
-     * `!!ti.colors && material._tic != 0`, and this port refuses the `_tic`
-     * key, so the mesh decides outright -- and it builds one pipeline per
+     * `!!ti.colors && material._tic != 0` -- and it builds one pipeline per
      * renderable, keyed `"" + +hasColor`. This port bakes one variant into
      * the material record instead, so the lanes are settled once, after the
      * entry, from the pairs recorded on the way through.
@@ -960,6 +937,7 @@ export class SceneManifestRecorder {
     private settleShaderThinInstances(): void {
         for (const [variant, colors] of shaderThinInstanceLanes(
             this.sceneMeshes,
+            this.reachedShaderPrograms,
             (message) => this.context.failAtFile(message),
         )) {
             const program = this.reachedShaderProgram(
@@ -1036,12 +1014,20 @@ export class SceneManifestRecorder {
             }
         }
         if (material.pbrMaterial !== null) {
-            const meshes =
-                this.scenePbrMaterialMeshes.get(material.pbrMaterial) ??
-                new EmissionSet<number>();
-            meshes.add(meshIndex);
-            this.scenePbrMaterialMeshes.set(material.pbrMaterial, meshes);
+            this.recordScenePbrMaterialMesh(material.pbrMaterial, meshIndex);
         }
+    }
+
+    /** A draw uses this material on a mesh, without changing the mesh's own material. */
+    public recordScenePbrMaterialMesh(
+        materialIndex: number,
+        meshIndex: number,
+    ): void {
+        const meshes =
+            this.scenePbrMaterialMeshes.get(materialIndex) ??
+            new EmissionSet<number>();
+        meshes.add(meshIndex);
+        this.scenePbrMaterialMeshes.set(materialIndex, meshes);
     }
 
     /** A material assignment reached a mesh handle not tied to one static

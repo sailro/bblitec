@@ -24,11 +24,12 @@
  *
  * Source plugins carry constant shader declarations and dynamic texture/UBO
  * callbacks. The PBR vertex opt-in executes its own pinned bridge; Standard
- * retains fragment texture plugins. Priority and enabled-state mutation refuse.
+ * retains fragment texture plugins. Priorities are constant; enabled-state mutation refuses.
  */
 import ts from "typescript";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
+import { pinnedModuleFunction } from "./lowering/pinned-shader-builders.js";
 
 /** The pinned module the Standard bridge keeps its index layout in. */
 const STD_PLUGIN_BRIDGE = "src/material/plugin/std-plugin-bridge.ts";
@@ -87,6 +88,7 @@ export interface MaterialPluginVaryingManifest {
 export interface MaterialPluginManifest {
     /** The plugin's own `name`, which heads its signature upstream. */
     name: string;
+    priority?: number;
     /**
      * `getCustomCode("fragment")`, folded: injection point to WGSL. Absent
      * where the pinned call returns null.
@@ -108,6 +110,7 @@ export interface MaterialPluginManifest {
 /** The shape the pin's own bridges read a plugin through. */
 interface PinnedPlugin {
     readonly name: string;
+    readonly priority?: number;
     getCustomCode(
         shaderType: "vertex" | "fragment",
     ): Readonly<Record<string, string>> | null;
@@ -133,6 +136,9 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
     const samplers = manifest.samplers;
     return {
         name: manifest.name,
+        ...(manifest.priority !== undefined
+            ? { priority: manifest.priority }
+            : {}),
         getCustomCode(shaderType) {
             const code =
                 shaderType === "fragment" ? manifest.fragment : manifest.vertex;
@@ -150,31 +156,43 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
 /**
  * The identity two plugin lists share a composed fragment under.
  *
- * The pin's own `pluginSignature` is the authority, and it is what
- * `registerPluginBridges` checks the numbering against. The compiler needs
- * its own key because it partitions the scene's lists — and assigns the
- * index the generated record carries — before any pinned module is loaded.
- * Over the reached slice the two agree by construction: every input
- * `pluginSignature` reads past the name is a folded custom-code record or a
- * folded sampler declaration, the rest being the fields that refuse at
- * generation. Insertion order is kept rather than sorted for the same
- * reason the pin keeps it: `pluginSignature` stringifies both records as
- * written.
+ * The compiler and both bridges execute the same pinned signature function.
  */
 export function materialPluginListKey(
     plugins: readonly MaterialPluginManifest[],
 ): string {
-    return JSON.stringify(
-        plugins.map((plugin) => [
-            plugin.name,
-            plugin.fragment ?? null,
-            plugin.vertex ?? null,
-            plugin.samplers ?? null,
-            plugin.defines ?? null,
-            plugin.uniforms ?? null,
-            plugin.varyings ?? null,
-        ]),
-    );
+    const signature = pinnedModuleFunction(
+        "src/material/plugin/plugin-bridge-shared.ts",
+        "pluginSignature",
+    )(pinnedPlugins(plugins));
+    if (typeof signature !== "string")
+        throw new Error("Pinned pluginSignature did not return a string.");
+    return signature;
+}
+
+/** Binding callbacks follow the same priority order as the pin's composed fields. */
+export function materialPluginOrder(
+    plugins: readonly MaterialPluginManifest[],
+): readonly number[] {
+    const entries = plugins.map((plugin) => ({
+        priority: plugin.priority,
+    }));
+    const ordered: unknown = pinnedModuleFunction(
+        "src/material/plugin/plugin-bridge-shared.ts",
+        "enabledPlugins",
+    )(entries);
+    if (!Array.isArray(ordered) || ordered.length !== entries.length)
+        throw new Error(
+            "Pinned enabledPlugins did not retain the plugin list.",
+        );
+    return ordered.map((entry: unknown) => {
+        const index = entries.findIndex((original) => original === entry);
+        if (index < 0)
+            throw new Error(
+                "Pinned enabledPlugins replaced a plugin identity.",
+            );
+        return index;
+    });
 }
 
 /**
@@ -340,8 +358,9 @@ async function registerPluginBridges(
         // bind by an index the record never filled. Comparing the pairs the
         // scene declared against the ones the pin composed is what makes
         // the generated table's ordinal the pin's own position.
-        const declared = standardMaterialPlugins[position]!.flatMap((plugin) =>
-            (plugin.samplers ?? []).map(({ texture, sampler }) => ({
+        const manifests = standardMaterialPlugins[position]!;
+        const declared = materialPluginOrder(manifests).flatMap((index) =>
+            (manifests[index]!.samplers ?? []).map(({ texture, sampler }) => ({
                 texture,
                 sampler,
             })),

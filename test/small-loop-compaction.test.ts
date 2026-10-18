@@ -61,7 +61,7 @@ test("short handle walks use native loops and conditional bodies retain identity
     assert.ok(member, "compact loop member");
     const snapshots = [
         ...divergent.cpp.matchAll(
-            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\};/g,
+            /const auto (\w+) = bbl::js::snapshot_value\(std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\}\);/g,
         ),
     ];
     assert.equal(snapshots.length, 2);

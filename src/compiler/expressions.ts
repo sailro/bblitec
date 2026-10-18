@@ -43,7 +43,10 @@ import {
     TYPED_ARRAY_KINDS,
     typeofTag,
 } from "./data-types.js";
-import { belongsToEntryEngine } from "./data-types/handles.js";
+import {
+    belongsToEntryEngine,
+    isEngineScopedHandleKind,
+} from "./data-types/handles.js";
 import {
     DynamicBindingStorageRequired,
     requireOneObject,
@@ -2707,11 +2710,12 @@ export class ExpressionLowerer {
     private compileBooleanValue(expression: ts.Expression): Value {
         let value: Value = { kind: "boolean", cpp: "" };
         const lines = this.context.captureEmittedStatements(() => {
+            const compiled = this.context.captureNativeExpression(() =>
+                this.context.conditions.compileCondition(expression),
+            );
             value = {
-                kind: "boolean",
-                ...this.context.captureNativeExpression(() =>
-                    this.context.conditions.compileCondition(expression),
-                ),
+                ...booleanValue(compiled.cpp),
+                ...compiled,
             };
         });
         this.context.emitCapturedStatements(lines);
@@ -3210,20 +3214,32 @@ export class ExpressionLowerer {
                 });
             if (converted) [whenTrue, whenFalse] = converted;
         }
-        const ownedResourceType =
+        const ownedResourceType: DataType<"handle"> | undefined =
             whenTrue.dataType?.kind === "handle" &&
             whenTrue.dataType.ownedEngine
                 ? whenTrue.dataType
                 : whenFalse.dataType?.kind === "handle" &&
                     whenFalse.dataType.ownedEngine
                   ? whenFalse.dataType
-                  : undefined;
+                  : whenTrue.kind === whenFalse.kind &&
+                      isHandleKind(whenTrue.kind) &&
+                      isEngineScopedHandleKind(whenTrue.kind) &&
+                      whenTrue.engineCpp &&
+                      whenFalse.engineCpp &&
+                      whenTrue.engineCpp !== whenFalse.engineCpp
+                    ? {
+                          kind: "handle",
+                          handle: whenTrue.kind,
+                          ownedEngine: true,
+                      }
+                    : undefined;
         if (ownedResourceType && whenTrue.kind === whenFalse.kind) {
             // Where the entry's engine is in scope, the arms select plain
             // handles of that one engine; elsewhere each carries its owner.
             const selectedType: DataType<"handle"> =
                 belongsToEntryEngine(ownedResourceType.handle) &&
-                this.context.entryEngineInScope()
+                this.context.entryEngineInScope() &&
+                whenTrue.engineCpp === whenFalse.engineCpp
                     ? { kind: "handle", handle: ownedResourceType.handle }
                     : ownedResourceType;
             const trueArm = this.selectedArmValue(whenTrue, selectedType, node);
@@ -7570,6 +7586,14 @@ export class ExpressionLowerer {
                     recordCallback.cpp,
                     functionType,
                 );
+            }
+            if (recordCallback?.kind === "data" && !optionalCall) {
+                const callableRecord =
+                    this.context.dataLowerer.compileCallableRecordCall(
+                        call,
+                        recordCallback,
+                    );
+                if (callableRecord) return callableRecord;
             }
             if (instance && declaration) {
                 const optionalFound =

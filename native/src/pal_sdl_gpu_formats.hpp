@@ -69,12 +69,18 @@ inline SDL_GPUCompareOp gpu_depth_compare(DepthCompare compare) {
 
 inline SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
     switch (factor) {
+    case BlendFactor::zero:
+        return SDL_GPU_BLENDFACTOR_ZERO;
     case BlendFactor::one:
         return SDL_GPU_BLENDFACTOR_ONE;
     case BlendFactor::src_alpha:
         return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
     case BlendFactor::one_minus_src_alpha:
         return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    case BlendFactor::dst:
+        return SDL_GPU_BLENDFACTOR_DST_COLOR;
+    case BlendFactor::dst_alpha:
+        return SDL_GPU_BLENDFACTOR_DST_ALPHA;
     }
     return SDL_GPU_BLENDFACTOR_ONE;
 }

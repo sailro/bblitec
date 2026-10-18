@@ -45,10 +45,10 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
         namespace bbl::upstream {
         inline constexpr bool public_camera_matrix_caches = false;
         ${cppRecord(plan.header, "enum class ShaderSystemMatrix")}
+        ${cppRecord(plan.header, "struct ShaderSystemUniform")}
         ${cppRecord(plan.header, "struct ShaderVariantStageBlock")}
         ${[
             "std::array<float, 16> mesh_local_matrix(",
-            "std::array<float, 16> transform_node_local_matrix(",
             "std::array<float, 16> transform_node_world(",
             "std::optional<std::array<float, 16>> mesh_root_world(",
             "std::array<float, 16> mesh_world_matrix(",

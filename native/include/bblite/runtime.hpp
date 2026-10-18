@@ -701,6 +701,20 @@ struct ClusteredLightContainerHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/** A stable slot in one container's point or spot list. */
+struct ClusteredLightHandle {
+    std::uint32_t value = invalid_handle;
+    ClusteredLightContainerHandle container{};
+    bool spot = false;
+
+    [[nodiscard]] auto identity() const noexcept {
+        return std::pair{container.value, std::pair{spot, value}};
+    }
+    [[nodiscard]] bool operator==(const ClusteredLightHandle& other) const noexcept {
+        return identity() == other.identity();
+    }
+};
+
 struct GpuPickerHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -828,12 +842,12 @@ struct GpuPickerRecord {
  * resolve every option, so the members carry no defaults of their own.
  */
 struct ClusteredLight {
-    std::array<double, 3> position{};
-    std::array<double, 3> diffuse{};
+    js::Tuple<3> position{};
+    js::Tuple<3> diffuse{};
     double range = 0.0;
     double intensity = 0.0;
     /** Spot only; a point light leaves the cone unset. */
-    std::array<double, 3> direction{};
+    js::Tuple<3> direction{};
     double angle = 0.0;
 };
 
@@ -1043,6 +1057,8 @@ enum class DepthTextureFormat {
     depth32_float,
 };
 
+enum class DepthCompare;
+
 struct RenderTargetOptions {
     std::uint32_t samples = 1;
     bool has_color = true;
@@ -1071,6 +1087,7 @@ struct RenderTargetOptions {
     ScaleRounding scale_rounding = ScaleRounding::floor;
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
+    std::optional<DepthCompare> depth_compare{};
 };
 
 enum class RenderTextureSource {
@@ -1214,9 +1231,12 @@ struct CopyTaskOptions {
  * rather than in a PAL header.
  */
 enum class BlendFactor {
+    zero,
     one,
     src_alpha,
     one_minus_src_alpha,
+    dst,
+    dst_alpha,
 };
 
 struct BlendFactors {
@@ -1546,6 +1566,7 @@ struct RenderTargetRecord {
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     std::shared_ptr<RenderTargetLifecycle> lifecycle{};
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
+    std::optional<DepthCompare> depth_compare{};
     /** A retired internal target keeps its handle slot without retaining attachments. */
     bool retired = false;
     /** The CSM static cache copies this depth into another target, or out of one. */
@@ -2382,6 +2403,11 @@ struct MeshVisibility {
     }
 };
 
+struct TransformNodeMatrixCache {
+    std::optional<js::F32Array> local, world, trs_owner;
+    js::F32Array world_owner = js::F32Array(std::size_t{16});
+};
+
 struct TransformNodeRecord {
     MeshVisibility visible;
     /** Bumped each time `create_transform_node` reuses this slot. */
@@ -2401,8 +2427,9 @@ struct TransformNodeRecord {
      * `local_matrix_locked` (`_localMatrixLocked`) holds, which only
      * setParent releases.
      */
-    std::optional<std::array<float, 16>> local_matrix;
+    std::optional<js::F32Array> local_matrix;
     bool local_matrix_locked = false;
+    mutable std::shared_ptr<TransformNodeMatrixCache> matrix_cache;
     /** The node this one hangs under, or none — `IParentable.parent`. */
     TransformNodeHandle parent{};
     /**
@@ -6502,7 +6529,7 @@ void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double p
  */
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
 /** The same one level up, recursing into both of a node's child arms. */
-void mark_transform_node_dirty(Engine& engine, TransformNodeHandle node);
+void mark_transform_node_dirty(Engine& engine, TransformNodeHandle node, bool local = true);
 /** Install a mesh quaternion as its rotation source of truth. */
 void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion);
 void flatten_line_attributes(const std::vector<std::vector<Vec3>>& lines,
@@ -6677,6 +6704,7 @@ FileTexture load_file_texture(Engine& engine, const std::string& path, TextureSa
 // leaves unset here and sets in `basis-loader.ts`, which is what decides
 // the Standard UV block's V flip.
 FileTexture load_compressed_texture(Engine& engine, const std::string& path, bool invert_y);
+FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb);
 FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<std::string>& paths,
                                              bool invert_y);
 void set_material_base_color_file(Engine& engine, MaterialHandle material, FileTexture texture);
@@ -6692,6 +6720,7 @@ MaterialHandle create_pbr_esm_shadow_material_view(Engine& engine, MaterialHandl
 MaterialHandle create_node_esm_shadow_material_view(Engine& engine, MaterialHandle source,
                                                     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle source);
+MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_node_no_color_material_view(Engine& engine, MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 void set_standard_emissive_texture(Engine& engine, MaterialHandle material,
@@ -7517,6 +7546,8 @@ struct MeshCpuGeometry {
 [[nodiscard]] std::vector<std::uint32_t> mesh_cpu_indices(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_world_matrix_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset);
+[[nodiscard]] js::F32Array transform_node_world_matrix_view(const Engine& engine,
+                                                            TransformNodeHandle node);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 

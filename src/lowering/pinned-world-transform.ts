@@ -10,6 +10,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
+import { lowerTransformNodeWorldView } from "./transform-node-world-view.js";
 
 /**
  * The always-emitted header carrying the pinned TRS composition, the pinned
@@ -90,6 +91,8 @@ template <typename Record>
 std::array<float, 16> trs_matrix(const Record& mesh) {
     return narrow_mat4(trs_local_matrix(mesh));
 }
+
+${lowerTransformNodeWorldView(context)}
 
 // world-matrix-state.ts getWorldMatrix: parent * local, with f32 matrix storage.
 inline std::array<float, 16> light_world_matrix(const LightRecord& light) {

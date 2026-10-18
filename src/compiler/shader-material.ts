@@ -9,18 +9,10 @@ import type { LoweringServices } from "./lowering-services.js";
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
-// Shader-material lowering: variant matching and uniform resolution.
-//
-// A createShaderMaterial call either matches a predeclared program --
-// proven by lowering both sides through the typed WGSL IR and
-// comparing the IR, never the source text -- or registers the scene's
-// own WGSL as a scene-local variant. Reached programs are recorded in
-// reach order, which is the generated variant table's index order, and
-// the uniform setters resolve their offsets from the reflected layout
-// of the reached program.
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
+import { nativeBlendFactor } from "../lowering/pinned-blend-table.js";
 import {
     pinnedErrorCode,
     pinnedErrorMessageCpp,
@@ -43,6 +35,7 @@ import {
     type ObjectValidationContext,
 } from "./option-helpers.js";
 import type {
+    CompiledShaderBlend,
     CompiledShaderDefine,
     CompiledShaderProgram,
     CompiledShaderSampler,
@@ -62,19 +55,8 @@ import { isTypedArrayType, tupleComponents } from "./data-types.js";
  */
 const WGSL_IDENTIFIER = cppIdentifierPattern;
 
-/**
- * How many sampler pairs a shader material may declare.
- *
- * The Dawn backend binds every mesh pipeline outside the composed material
- * families through one superset group-2 layout, whose fifth pair is the
- * environment/reflection cube (`pal_dawn.cpp`, the `pair == 4` arm of the
- * layout's `viewDimension`). A fifth 2D pair would land in that entry and
- * fail inside `wgpuDeviceCreateBindGroup` at run time, on one backend only,
- * so the reached slice stops at four and says so here instead. Lifting it
- * means a per-variant layout, the way the composed families already build
- * one.
- */
-const MAX_SHADER_SAMPLERS = 8;
+/** Per-stage resource limits for native shader materials. */
+const MAX_SHADER_SAMPLERS = 16;
 const MAX_SHADER_STORAGE_BUFFERS = 8;
 
 export interface ShaderMaterialContext
@@ -96,10 +78,25 @@ export interface ShaderMaterialContext
             | "compileShaderSource"
             | "compileStringLiteral"
             | "bindings"
+            | "symbols"
             | "dataLowerer"
             | "emit"
             | "fail"
         > {}
+
+/** The pin defaults nullish declaration lists/maps before iterating them. */
+function absentShaderOption(
+    context: ShaderMaterialContext,
+    expression: ts.Expression | undefined,
+): boolean {
+    if (!expression) return true;
+    const resolved = context.resolveStaticLiteral(expression);
+    return (
+        context.symbols.isNullishLiteral(resolved) ||
+        (ts.isIdentifier(resolved) &&
+            context.bindings.lookupOptional(resolved)?.kind === "json-null")
+    );
+}
 
 export function compileShaderMaterialOptions(
     context: ShaderMaterialContext,
@@ -130,6 +127,7 @@ export function compileShaderMaterialOptions(
             "defines",
             "needAlphaBlending",
             "blendMode",
+            "blend",
             "needAlphaTesting",
             "backFaceCulling",
             "depthWrite",
@@ -140,7 +138,7 @@ export function compileShaderMaterialOptions(
             "transmissive",
             "useThinInstanceColors",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend mode, culling, depthWrite, depthCompare, depthOnlyFragment, depthBias, depthBiasSlopeScale, transmissive and useThinInstanceColors only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, external textures, storage buffers, defines, alpha state and blend settings, culling, depthWrite, depthCompare, depthOnlyFragment, depthBias, depthBiasSlopeScale, transmissive and useThinInstanceColors only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -166,7 +164,7 @@ export function compileShaderMaterialOptions(
         signatures: declaredUniforms,
         defaults: uniformDefaults,
         dynamicDefaults,
-    } = uniformsExpression
+    } = uniformsExpression && !absentShaderOption(context, uniformsExpression)
         ? compileShaderUniformSignatures(context, uniformsExpression)
         : { signatures: [], defaults: [], dynamicDefaults: [] };
     const dynamicSourceUniforms = [
@@ -209,10 +207,14 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "defines"),
         generatedNames,
     );
+    const blendExpression = context.objectProperty(object, "blend");
+    const blend = blendExpression
+        ? compileShaderBlend(context, blendExpression)
+        : undefined;
     const needAlphaBlending = compileOptionalStaticBoolean(
         context,
         context.objectProperty(object, "needAlphaBlending"),
-        false,
+        blend !== undefined,
     );
     const blendModeExpression = context.objectProperty(object, "blendMode");
     const blendMode = blendModeExpression
@@ -338,9 +340,7 @@ export function compileShaderMaterialOptions(
             "Scene-local shader material names must contain letters or digits.",
         );
     }
-    // The pin names nine system uniforms; the reached subset is the
-    // shaderSystemMatrixTable rows, the six matrices and the camera
-    // position. `screenSize` and `alphaCutoff` refuse by name.
+    // The shared system table owns the supported names and their layouts.
     for (const signature of uniforms) {
         if (!signature.includes(":") && !isShaderSystemMatrix(signature)) {
             context.fail(
@@ -363,6 +363,7 @@ export function compileShaderMaterialOptions(
         defines,
         needAlphaBlending,
         blendMode,
+        ...(blend ? { blend } : {}),
         needAlphaTesting,
         backFaceCulling,
         depthWrite,
@@ -431,6 +432,57 @@ export function compileShaderMaterialOptions(
     };
 }
 
+/** The explicit GPUBlendState replaces both default blend components. */
+function compileShaderBlend(
+    context: ShaderMaterialContext,
+    expression: ts.Expression,
+): CompiledShaderBlend {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["color", "alpha"],
+        "Shader blend requires color and alpha components.",
+    );
+    const component = (side: "color" | "alpha"): [string, string] => {
+        const value = context.objectProperty(object, side);
+        if (!value) context.fail(object, `Shader blend requires ${side}.`);
+        const literal = context.expectObjectLiteral(value);
+        validateObjectProperties(
+            context,
+            literal,
+            ["operation", "srcFactor", "dstFactor"],
+            "Shader blend components accept operation, srcFactor and dstFactor.",
+        );
+        const operation = context.objectProperty(literal, "operation");
+        if (operation && context.compileStaticString(operation) !== "add") {
+            context.fail(
+                operation,
+                "Shader blend supports the add operation only.",
+            );
+        }
+        const factor = (name: "srcFactor" | "dstFactor"): string => {
+            const field = context.objectProperty(literal, name);
+            const text = field
+                ? context.compileStaticString(field)
+                : name === "srcFactor"
+                  ? "one"
+                  : "zero";
+            try {
+                nativeBlendFactor(text);
+            } catch (error) {
+                context.fail(
+                    field ?? literal,
+                    error instanceof Error ? error.message : String(error),
+                );
+            }
+            return text;
+        };
+        return [factor("srcFactor"), factor("dstFactor")];
+    };
+    return [...component("color"), ...component("alpha")];
+}
+
 /**
  * The `samplers` list, normalized the way `createShaderMaterial` normalizes
  * it: each name a WGSL identifier, unique against every other generated
@@ -446,7 +498,7 @@ function compileShaderSamplers(
     expression: ts.Expression | undefined,
     used: Set<string>,
 ): CompiledShaderSampler[] {
-    if (!expression) {
+    if (!expression || absentShaderOption(context, expression)) {
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
@@ -544,7 +596,7 @@ function compileShaderExternalTextures(
     used: Set<string>,
     samplers: number,
 ): string[] {
-    if (!expression) return [];
+    if (!expression || absentShaderOption(context, expression)) return [];
     const names = context
         .expectStaticArrayElements(expression)
         .map((element) => {
@@ -601,7 +653,7 @@ function compileShaderStorageBuffers(
     expression: ts.Expression | undefined,
     used: Set<string>,
 ): CompiledShaderStorageBuffer[] {
-    if (!expression) return [];
+    if (!expression || absentShaderOption(context, expression)) return [];
     const buffers = context
         .expectStaticArrayElements(expression)
         .map((element): CompiledShaderStorageBuffer => {
@@ -676,7 +728,7 @@ function compileShaderDefines(
     expression: ts.Expression | undefined,
     used: Set<string>,
 ): CompiledShaderDefine[] {
-    if (!expression) {
+    if (!expression || absentShaderOption(context, expression)) {
         return [];
     }
     const object = context.expectObjectLiteral(expression);
@@ -1196,23 +1248,27 @@ function staticNumber(
 
 /**
  * Which scene-local shader programs draw instanced, and which of those also
- * read the per-instance colour stream.
+ * bind the per-instance colour stream.
  *
  * The pin builds one pipeline per renderable and keys it `"" + +hasColor`,
- * where `hasColor` is `!!ti.colors && material._tic != 0` -- so both axes
- * are the mesh's, `_tic` being an opt-out this port refuses. This port bakes
+ * where `hasColor` is `!!ti.colors && material._tic != 0`. This port bakes
  * one variant into the material record, which is why a material whose meshes
  * disagree on either axis refuses rather than picking a side: the pin would
- * compose two programs there. The line family shows the shape a
- * generalization would take, naming each permutation (`-ti`, `-tic`) as its
- * own variant; nothing reached needs it.
+ * compose two programs there. Shader source does not select the layout.
  */
 export function shaderThinInstanceLanes(
     meshes: readonly SceneMeshManifest[],
+    programs: readonly CompiledShaderProgram[],
     fail: (message: string) => never,
 ): ReadonlyMap<string, boolean> {
     const lanes = new EmissionMap<string, boolean>();
     const seen = new EmissionMap<string, SceneMeshManifest>();
+    const colorOptions = new Map(
+        programs.map((program) => [
+            program.name,
+            program.thinInstanceColorOption,
+        ]),
+    );
     for (const mesh of meshes) {
         if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length)
             continue;
@@ -1221,6 +1277,9 @@ export function shaderThinInstanceLanes(
             ...(mesh.shaderVariants ?? []),
         ]);
         for (const variant of variants) {
+            const colors =
+                mesh.thinInstanceColors === true &&
+                colorOptions.get(variant) !== false;
             if (mesh.thinInstances === "possible") {
                 fail(
                     `Shader material '${variant}' is on a mesh that may acquire ` +
@@ -1234,7 +1293,7 @@ export function shaderThinInstanceLanes(
             if (first === undefined) {
                 seen.set(variant, mesh);
                 if (mesh.thinInstances !== undefined) {
-                    lanes.set(variant, mesh.thinInstanceColors === true);
+                    lanes.set(variant, colors);
                 }
                 continue;
             }
@@ -1242,7 +1301,8 @@ export function shaderThinInstanceLanes(
             // across all meshes that can select that program.
             if (
                 first.thinInstances !== mesh.thinInstances ||
-                first.thinInstanceColors !== mesh.thinInstanceColors
+                (mesh.thinInstances !== undefined &&
+                    lanes.get(variant) !== colors)
             ) {
                 fail(
                     `Shader material '${variant}' is drawn on meshes that ` +

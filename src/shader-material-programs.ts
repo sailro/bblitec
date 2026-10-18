@@ -1,4 +1,5 @@
 import type {
+    CompiledShaderBlend,
     CompiledShaderSampler,
     CompiledShaderStorageBuffer,
 } from "./compiler/types.js";
@@ -21,6 +22,7 @@ export interface ShaderMaterialProgramSource {
     defines?: Array<{ name: string; value: boolean | number }>;
     needAlphaBlending: boolean;
     blendMode?: "alpha" | "additive";
+    blend?: CompiledShaderBlend;
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
@@ -30,8 +32,8 @@ export interface ShaderMaterialProgramSource {
     depthBias?: number;
     depthBiasSlopeScale?: number;
     /**
-     * The material binds the mesh's thin-instance matrices and its vertex
-     * stage reads them, so the pin's own thin-instance module appends the
+     * The material binds the mesh's thin-instance matrices, so the pin's
+     * own thin-instance module appends the
      * four matrix lanes to its `VertexInput`.
      */
     useThinInstances?: boolean;

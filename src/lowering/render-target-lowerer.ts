@@ -192,6 +192,7 @@ RenderTargetHandle create_render_target(
         options.resolve_surface_size,
         {},
         options.depth_format,
+        options.depth_compare,
     });
     return RenderTargetHandle{
         static_cast<std::uint32_t>(engine.render_targets.size() - 1)};

@@ -2,6 +2,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
+import { shadowCasterMaterialWrite } from "./shadow-caster-material.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -503,6 +504,8 @@ export interface AssignmentContext
             | "isRuntimeResourceConstruction"
             | "isInRuntimeControlFlow"
             | "checker"
+            | "program"
+            | "expectStaticArrayElements"
             | "classLowerer"
             | "classOf"
             | "dataTypes"
@@ -3289,6 +3292,30 @@ function emitIdAssignment(
     return false;
 }
 
+function emitShadowCasterMaterialAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, target } = state;
+    if (target.kind !== "material") return false;
+    requireSimpleAssignment(context, expression, "material shadow caster");
+    if (
+        context.hasRegisteredScene() ||
+        context.engineLifecycle.engineHasStarted() ||
+        context.isRuntimeResourceConstruction()
+    )
+        context.fail(
+            expression,
+            "Shadow caster material field writes require unconditional setup before scene registration.",
+        );
+    const caster = context.compileValue(expression.right);
+    context.emit({
+        kind: "expression",
+        code: `${shadowCasterMaterialWrite(context, target, caster, expression)};`,
+    });
+    return true;
+}
+
 function emitRenderOnTopAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -4021,6 +4048,7 @@ const targetPropertyHandlers1 = new EmissionMap<
     ["fixedDeltaMs", emitFixedDeltaMsAssignment],
     ["renderOrder", emitRenderOrderAssignment],
     ["renderOnTop", emitRenderOnTopAssignment],
+    ["_shadowCasterMaterial", emitShadowCasterMaterialAssignment],
     ["name", emitNameAssignment],
     ["id", emitIdAssignment],
     ["receiveShadows", emitReceiveShadowsAssignment],

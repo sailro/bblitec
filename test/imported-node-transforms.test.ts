@@ -112,7 +112,6 @@ test(
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const worlds = [
             "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
-            "std::array<float, 16> transform_node_local_matrix(",
             "std::array<float, 16> transform_node_world(",
             "std::optional<std::array<float, 16>> mesh_root_world(",
             "std::array<float, 16> mesh_world_matrix(",
@@ -242,7 +241,6 @@ test(
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const worlds = [
             "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
-            "std::array<float, 16> transform_node_local_matrix(",
             "std::array<float, 16> transform_node_world(",
             "std::optional<std::array<float, 16>> mesh_root_world(",
             "std::array<float, 16> mesh_world_matrix(",
@@ -295,7 +293,7 @@ int main() {
     const auto pivot = node(Vec3d{10, 20, 30}, Vec4{0, 0, 0, 1}, Vec3{-2, 3, 1}, root.value);
     const auto locked = node(Vec3d{0, 0, 0}, Vec4{0, 0, 0, 1}, Vec3{1, 1, 1}, pivot.value);
     engine.transform_nodes[locked.value].local_matrix =
-        std::array<float, 16>{${matrix.map(float).join(", ")}};
+        js::F32Array{${matrix.map(float).join(", ")}};
     engine.transform_nodes[locked.value].local_matrix_locked = true;
     const auto leaf = node(Vec3d{0, 0, 0}, Vec4{0, 0.6f, 0, 0.8f}, Vec3{1, 1, 1}, locked.value);
     engine.meshes.emplace_back();

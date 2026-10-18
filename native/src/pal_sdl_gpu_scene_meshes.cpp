@@ -17,6 +17,7 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#include <unordered_set>
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif
@@ -228,9 +229,10 @@ void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
 }
 
 SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
-                                     const MaterialRecord& material,
+                                     const MaterialRecord& view,
                                      const upstream::ShaderVariantInfo& info,
                                      const std::string& name) {
+    const MaterialRecord& material = shader_resource_material(engine, view);
     const auto declared = std::find_if(
         info.storage_buffers.begin(), info.storage_buffers.end(),
         [&](const upstream::ShaderStorageBufferInfo& candidate) { return name == candidate.name; });
@@ -251,81 +253,67 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                                    [[maybe_unused]] const Scene& scene,
                                    [[maybe_unused]] const Engine& engine,
-                                   [[maybe_unused]] const MaterialRecord& material,
+                                   [[maybe_unused]] const MaterialRecord& view,
                                    std::uint32_t variant, const GpuMesh& mesh) {
-    const auto& names = state.shader_fragment_slots[variant].textures;
-    // A shadow pass can replace a textured receiver material with a
-    // texture-free caster while retaining the mesh's receiver-side cache.
-    // The active pipeline's reflected slots are authoritative: binding the
-    // cached receiver samplers to a zero-slot caster pipeline is invalid.
-    if (names.empty())
-        return;
+    const MaterialRecord& material = shader_resource_material(engine, view);
     const auto& uploaded = mesh_shader_textures(mesh);
-    if (uploaded.empty())
-        return;
-    state.shader_texture_binding_scratch.assign(uploaded.begin(), uploaded.end());
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
-    // The packed texture's declared slot, resolved once per program.
-    const std::vector<std::size_t>& declared_slots = state.shader_fragment_texture_slots[variant];
+    const auto resolve = [&](const std::string& name,
+                             std::size_t slot) -> SDL_GPUTextureSamplerBinding {
+        if (slot == std::numeric_limits<std::size_t>::max())
+            gpu_error(shader_sampler_unmapped(info, name).c_str());
 #if BBLITE_SHADOWS_CSM
-    for (std::size_t packed = 0; packed < names.size(); ++packed) {
-        const std::size_t slot = declared_slots[packed];
-        if (slot >= material.shader_csm_textures.size())
-            continue;
-        const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
-        if (generator.value == invalid_handle)
-            continue;
+        if (slot < material.shader_csm_textures.size() &&
+            material.shader_csm_textures[slot].value != invalid_handle) {
 #if BBLITE_SHADOW_RECEIVERS
-        if (generator.value >= state.shadow_generators.size()) {
-            pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
-        }
-        if (!handle_at(state.shadow_generators, generator).map ||
-            !state.shadow_comparison_sampler) {
-            gpu_error("Shader CSM receiver texture is not ready.");
-        }
-        state.shader_texture_binding_scratch[packed] = {
-            handle_at(state.shadow_generators, generator).map, state.shadow_comparison_sampler};
+            const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
+            if (generator.value >= state.shadow_generators.size())
+                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
+            if (!handle_at(state.shadow_generators, generator).map ||
+                !state.shadow_comparison_sampler)
+                gpu_error("Shader CSM receiver texture is not ready.");
+            return {handle_at(state.shadow_generators, generator).map,
+                    state.shadow_comparison_sampler};
 #else
-        gpu_error("Shader CSM texture in a build with no shadow receiver.");
+            gpu_error("Shader CSM texture in a build with no shadow receiver.");
 #endif
-    }
+        }
 #endif
-    // A render target's slot binds the target's current texture, so a rebuilt
-    // target is what this draw samples.
-    for (std::size_t packed = 0; !material.shader_render_textures.empty() && packed < names.size();
-         ++packed) {
-        const std::size_t slot = declared_slots[packed];
-        if (slot >= material.shader_render_textures.size() ||
-            !material.shader_render_textures[slot] ||
-            packed >= state.shader_texture_binding_scratch.size())
-            continue;
-        const RenderTextureRef& reference = *material.shader_render_textures[slot];
+        // Resolve targets per draw so resize/rebuild replaces both stages' views.
+        if (slot < material.shader_render_textures.size() &&
+            material.shader_render_textures[slot]) {
+            const RenderTextureRef& reference = *material.shader_render_textures[slot];
 #if BBLITE_RENDER_TASK_TRANSMISSION
-        if (reference.source == RenderTextureSource::transmission_color ||
-            reference.source == RenderTextureSource::transmission_depth) {
-            state.shader_texture_binding_scratch[packed] =
-                task_transmission_binding(state, engine, reference);
-            continue;
-        }
+            if (reference.source == RenderTextureSource::transmission_color ||
+                reference.source == RenderTextureSource::transmission_depth)
+                return task_transmission_binding(state, engine, reference);
 #endif
-        state.shader_texture_binding_scratch[packed] = {
-            sdl_render_texture_color(state, engine, reference), state.ground_sampler};
-    }
-    if (state.shader_texture_binding_scratch.size() != names.size()) {
-        gpu_error((std::string("Shader material texture binding count is stale for '") + info.name +
-                   "' (uploaded " + std::to_string(state.shader_texture_binding_scratch.size()) +
-                   ", compiled " + std::to_string(names.size()) + ").")
-                      .c_str());
-    }
-    for (std::size_t packed = 0; packed < state.shader_texture_binding_scratch.size(); ++packed) {
-        const SDL_GPUTextureSamplerBinding& binding = state.shader_texture_binding_scratch[packed];
-        if (!binding.texture || !binding.sampler) {
-            gpu_error((std::string("Shader material texture '") + names[packed] + "' is not ready.")
-                          .c_str());
+            return {sdl_shader_render_texture(state, engine, reference), state.ground_sampler};
         }
-    }
-    SDL_BindGPUFragmentSamplers(pass, 0, state.shader_texture_binding_scratch.data(),
-                                static_cast<Uint32>(state.shader_texture_binding_scratch.size()));
+        if (slot >= uploaded.size())
+            gpu_error(shader_sampler_shortfall(info, uploaded.size()).c_str());
+        const auto binding = uploaded[slot];
+        if (!binding.texture || !binding.sampler)
+            gpu_error(
+                (std::string("Shader material texture '") + name + "' is not ready.").c_str());
+        return binding;
+    };
+    // Active sidecars also handle texture-free shadow casters and textureLoad slots.
+    const auto bind = [&](const PinnedStageSlots& stage, const ShaderStageTextureSlots& declared,
+                          bool fragment, const char* what) {
+        bind_stage_textures(
+            pass, stage, fragment, what, state.shader_texture_binding_scratch,
+            [&](const std::string& name, std::size_t packed) {
+                return resolve(name, declared.sampled[packed]);
+            },
+            [&](const std::string& name, std::size_t packed) {
+                return resolve(name, declared.storage[packed]);
+            });
+    };
+    bind(state.shader_vertex_slots[variant], state.shader_vertex_texture_slots[variant], false,
+         "shader vertex");
+    bind(state.shader_fragment_slots[variant], state.shader_fragment_texture_slots[variant], true,
+         "shader fragment");
 }
 
 void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResources& mesh) noexcept {
@@ -444,16 +432,18 @@ void upload_shader_material_textures(GpuState& state, const MaterialRecord& mate
     } else {
         const upstream::ShaderVariantInfo& shader_info =
             upstream::shader_variant_info(material.shader_variant);
-        const PinnedStageSlots& slots = state.shader_fragment_slots[material.shader_variant];
-        for (const std::string& texture_name : slots.textures) {
-            const auto declared =
-                std::find_if(shader_info.samplers.begin(), shader_info.samplers.end(),
-                             [&](const char* candidate) { return texture_name == candidate; });
-            if (declared == shader_info.samplers.end()) {
-                gpu_error(shader_sampler_unmapped(shader_info, texture_name).c_str());
+        std::unordered_set<std::string> reached;
+        for (const PinnedStageSlots* stage :
+             {&state.shader_vertex_slots[material.shader_variant],
+              &state.shader_fragment_slots[material.shader_variant]}) {
+            reached.insert(stage->textures.begin(), stage->textures.end());
+            reached.insert(stage->storage_textures.begin(), stage->storage_textures.end());
+        }
+        for (std::size_t slot = 0; slot < shader_info.samplers.size(); ++slot) {
+            if (!reached.contains(shader_info.samplers[slot])) {
+                textures.bindings.emplace_back();
+                continue;
             }
-            const std::size_t slot =
-                static_cast<std::size_t>(declared - shader_info.samplers.begin());
             if (slot >= material.shader_textures.size()) {
                 gpu_error(
                     shader_sampler_shortfall(shader_info, material.shader_textures.size()).c_str());
@@ -477,7 +467,8 @@ void upload_shader_material_textures(GpuState& state, const MaterialRecord& mate
 void refresh_shader_material_textures(GpuState& state, const Engine& engine) {
     bool changed = false;
     for (const auto& textures : state.shared_shader_material_textures) {
-        const auto* material = handle_find(engine.materials, textures->material);
+        const auto* view = handle_find(engine.materials, textures->material);
+        const auto* material = view ? &shader_resource_material(engine, *view) : nullptr;
         if (!material || textures->texture_version == material->shader_texture_version)
             continue;
         SharedShaderMaterialTextures replacement(state.device);
@@ -738,7 +729,8 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
         if (!gpu_mesh.shared_shader_textures) {
             auto created = std::make_unique<SharedShaderMaterialTextures>(state.device);
             created->material = item.material;
-            upload_shader_material_textures(state, *material, *created);
+            upload_shader_material_textures(state, shader_resource_material(engine, *material),
+                                            *created);
             state.shared_shader_material_textures.push_back(std::move(created));
             gpu_mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
         }

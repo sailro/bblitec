@@ -2227,10 +2227,10 @@ DiagnosticClusterUniforms diagnostic_cluster_uniforms(std::uint32_t cluster_base
 bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block) {
     if constexpr (upstream::public_camera_matrix_caches)
         return false;
-    if (block.system_matrices.size() != 1 || !block.gather.empty()) {
+    if (block.system_uniforms.size() != 1 || !block.gather.empty()) {
         return false;
     }
-    switch (block.system_matrices.front()) {
+    switch (block.system_uniforms.front().source) {
     case upstream::ShaderSystemMatrix::view_projection:
         return true;
     case upstream::ShaderSystemMatrix::world:
@@ -2239,6 +2239,7 @@ bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block
     case upstream::ShaderSystemMatrix::view:
     case upstream::ShaderSystemMatrix::projection:
     case upstream::ShaderSystemMatrix::camera_position:
+    case upstream::ShaderSystemMatrix::screen_size:
         return false;
     }
     return false;
@@ -2310,6 +2311,7 @@ ShaderPassMatrices shader_packet_system_matrices(const ShaderPacketSystemOwner& 
                           &state.world_view, &state.world_view_projection})
                         matrix->fill(0.0f);
                     state.camera_position.fill(0.0f);
+                    state.screen_size.fill(0.0f);
                 },
                 [&] { return mesh_block_world(scene, engine, mesh); },
                 [&](std::uint32_t dependency, const std::array<float, 16>& matrix) {
@@ -2323,6 +2325,9 @@ ShaderPassMatrices shader_packet_system_matrices(const ShaderPacketSystemOwner& 
                 [&] {
                     if (current.camera_position)
                         state.camera_position = *current.camera_position;
+                },
+                [&](double width, double height) {
+                    state.screen_size = {static_cast<float>(width), static_cast<float>(height)};
                 });
         });
     return shader_packet_published_matrices(owner, current);
@@ -2343,6 +2348,8 @@ ShaderPassMatrices shader_packet_published_matrices(const ShaderPacketSystemOwne
     result.world_view = &state.world_view;
     result.world_view_projection = &state.world_view_projection;
     result.camera_position = &state.camera_position;
+    result.target_width = state.screen_size[0];
+    result.target_height = state.screen_size[1];
     return result;
 }
 
@@ -2355,50 +2362,48 @@ void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
         0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
     floats.assign(block.float_size, 0.0f);
-    std::size_t head = 0;
-    const auto copy_from = [&](const float* source, std::size_t count, const char* name) {
+    const auto copy_from = [&](std::uint32_t offset, const float* source, std::size_t count,
+                               const char* name) {
         if (!source) {
             throw std::runtime_error(std::string("A shader material declares the '") + name +
                                      "' system uniform in a pass that renders with no such "
                                      "matrix.");
         }
-        std::copy_n(source, count, floats.begin() + head);
+        std::copy_n(source, count, floats.begin() + offset);
     };
-    for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
+    for (const auto& [matrix, offset] : block.system_uniforms) {
         // No default arm: a new enumerator has to be given a source here
         // rather than silently inheriting one.
         switch (matrix) {
         case upstream::ShaderSystemMatrix::world:
-            copy_from(pass.world ? pass.world->data() : identity.data(), 16, "world");
-            head += 16;
+            copy_from(offset, pass.world ? pass.world->data() : identity.data(), 16, "world");
             break;
         case upstream::ShaderSystemMatrix::world_view:
-            copy_from(pass.world_view ? pass.world_view->data() : nullptr, 16, "worldView");
-            head += 16;
+            copy_from(offset, pass.world_view ? pass.world_view->data() : nullptr, 16, "worldView");
             break;
         case upstream::ShaderSystemMatrix::view:
-            copy_from(pass.view ? pass.view->data() : nullptr, 16, "view");
-            head += 16;
+            copy_from(offset, pass.view ? pass.view->data() : nullptr, 16, "view");
             break;
         case upstream::ShaderSystemMatrix::projection:
-            copy_from(pass.projection ? pass.projection->data() : nullptr, 16, "projection");
-            head += 16;
+            copy_from(offset, pass.projection ? pass.projection->data() : nullptr, 16,
+                      "projection");
             break;
         case upstream::ShaderSystemMatrix::view_projection:
-            copy_from(pass.view_projection, 16, "viewProjection");
-            head += 16;
+            copy_from(offset, pass.view_projection, 16, "viewProjection");
             break;
         case upstream::ShaderSystemMatrix::world_view_projection:
-            copy_from(pass.world_view_projection ? pass.world_view_projection->data()
+            copy_from(offset,
+                      pass.world_view_projection ? pass.world_view_projection->data()
                                                  : pass.view_projection,
                       16, "worldViewProjection");
-            head += 16;
             break;
         case upstream::ShaderSystemMatrix::camera_position:
-            copy_from(pass.camera_position ? pass.camera_position->data() : nullptr, 3,
+            copy_from(offset, pass.camera_position ? pass.camera_position->data() : nullptr, 3,
                       "cameraPosition");
-            // vec3 uniform members consume one 16-byte slot.
-            head += 4;
+            break;
+        case upstream::ShaderSystemMatrix::screen_size:
+            floats[offset] = static_cast<float>(pass.target_width);
+            floats[offset + 1] = static_cast<float>(pass.target_height);
             break;
         }
     }

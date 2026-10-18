@@ -377,7 +377,7 @@ export function lowerObjectComponents(
  */
 export function lowerMat4MultiplyWriterCpp(
     context: LoweringContext,
-    target: "f32" | "f64" = "f32",
+    target: "f32" | "f64" | "view" = "f32",
 ): string {
     return lowerPinnedFunction(
         context,
@@ -386,8 +386,11 @@ export function lowerMat4MultiplyWriterCpp(
         [
             {
                 pinned: "dst",
-                kind: target === "f32" ? "mat4" : "mat4F64",
+                kind: target === "f64" ? "mat4F64" : "mat4",
                 cpp: "dst",
+                ...(target === "view"
+                    ? { cppType: "js::F32Array", mutableRecord: true }
+                    : {}),
             },
             { pinned: "d", kind: "index", cpp: "d" },
             { pinned: "a", kind: "mat4", cpp: "a", cppType: "MatA" },
@@ -397,9 +400,11 @@ export function lowerMat4MultiplyWriterCpp(
         ],
         {
             cppName:
-                target === "f32"
-                    ? "mat4_multiply_into"
-                    : "mat4_multiply_into_f64",
+                target === "view"
+                    ? "mat4_multiply_into_view"
+                    : target === "f32"
+                      ? "mat4_multiply_into"
+                      : "mat4_multiply_into_f64",
             returns: "void",
             templateParameters: ["typename MatA", "typename MatB"],
         },

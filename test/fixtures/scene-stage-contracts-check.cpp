@@ -263,6 +263,7 @@ struct SdlGraph : Graph {
     struct ShaderTaskTarget {
         SDL_GPUTextureFormat color, depth;
         SDL_GPUSampleCount samples;
+        std::optional<DepthCompare> depth_compare;
     };
     int task_pass = 0, graph_scene = 0, graph_meshes = 0;
     SDL_GPUCommandBuffer* command = nullptr;
@@ -281,6 +282,7 @@ struct SdlGraph : Graph {
     } target;
     struct {
         SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
+        std::optional<DepthCompare> depth_compare;
     } target_record;
     bool task_depth_pointer = false;
     static SDL_GPUSampleCount target_sample_count(const auto&, const auto& record) {
@@ -323,12 +325,16 @@ struct SdlGraph : Graph {
 struct DawnGraph : Graph {
     struct DawnTaskTarget {
         WGPUTextureFormat color, depth;
+        std::optional<DepthCompare> depth_compare;
     };
     struct {
         WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm,
                           depth_format = WGPUTextureFormat_Depth32Float;
         unsigned width = 640, height = 480;
     } target;
+    struct {
+        std::optional<DepthCompare> depth_compare;
+    } target_record;
     bool borrowed_depth_view = false;
     DawnRenderPass task_pass;
     unsigned samples = 4;

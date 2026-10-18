@@ -28,6 +28,15 @@
 
 namespace bbl::pal {
 
+/** Shader views inherit resource bindings from their source material. */
+inline const MaterialRecord& shader_resource_material(const Engine& engine,
+                                                      const MaterialRecord& material) {
+    return material.shader_material && material.source_material.value != invalid_handle
+               ? handle_at(engine.materials, material.source_material)
+               : material;
+}
+const MaterialRecord& shader_resource_material(const Engine&, const MaterialRecord&&) = delete;
+
 #if BBLITE_NODE_VARIANTS > 0
 /** The composed graph's declared streams decide which pool a draw binds. */
 inline bool node_variant_instanced(const upstream::NodeVariantEntry& view) {

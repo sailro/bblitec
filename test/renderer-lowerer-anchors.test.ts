@@ -190,10 +190,7 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
         plan.source,
         /std::array<float, 16> mesh_local_matrix\(const MeshRecord& mesh\) \{\n {4}return trs_matrix\(mesh\);/,
     );
-    assert.match(
-        plan.source,
-        /const TransformNodeRecord& node\) \{\n {4}if \(node\.local_matrix\) return \*node\.local_matrix;\n {4}return trs_matrix\(node\);/,
-    );
+    assert.match(plan.source, /transform_node_world_view\(engine, node\)/);
     assert.match(
         plan.source,
         /const std::array<double, 16> local = trs_local_matrix\(mesh\);/,

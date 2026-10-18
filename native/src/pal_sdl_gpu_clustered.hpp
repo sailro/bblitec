@@ -4,7 +4,7 @@
 // The clustered light field's SDL_GPU resources.
 //
 // The container is a generated record and its binning is generated code; what
-// this file owns is the three data textures the composed fragment reads.
+// this file owns is the three data textures and the params storage transport.
 // Integer payloads use SDL's storage-read lane. The float texture retains
 // a sampler binding; its textureLoad never consults the nearest/clamp sampler.
 //
@@ -26,12 +26,13 @@
 
 namespace bbl::pal {
 
-/** The three data textures, their shared sampler, and what was uploaded. */
+/** The data textures, their sampler, params storage, and what was uploaded. */
 struct ClusteredLightGpuResources {
     SDL_GPUTexture* lights = nullptr;
     SDL_GPUTexture* cells = nullptr;
     SDL_GPUTexture* indices = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    SDL_GPUBuffer* params = nullptr;
     ClusteredUploads uploaded;
     bool created = false;
 };
@@ -92,8 +93,8 @@ inline void create_clustered_textures(SDL_GPUDevice* device,
  * it wrote.
  *
  * The refresh returns before touching anything while its own dirty key
- * holds, so a still frame uploads nothing. The params block needs no upload
- * here: the draw pushes the container's own lanes as its uniform block.
+ * holds, so a still frame uploads nothing. The params block also has a storage
+ * transport for composed stages that exceed SDL's four uniform slots.
  */
 inline void upload_clustered_lights(SDL_GPUDevice* device, Engine& engine,
                                     ClusteredLightContainer& container, CameraHandle camera,
@@ -102,7 +103,13 @@ inline void upload_clustered_lights(SDL_GPUDevice* device, Engine& engine,
     create_clustered_textures(device, container, gpu);
     sync_clustered_payloads(
         engine, container, gpu.uploaded, camera, target_width, target_height,
-        [](const void*, std::size_t) {},
+        [&](const void* bytes, std::size_t size) {
+            if (!gpu.params)
+                gpu.params =
+                    upload_buffer(device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, bytes, size);
+            else
+                update_buffer(device, gpu.params, bytes, size);
+        },
         [&](ClusteredTexture slot, const void* bytes, std::size_t size,
             const ClusteredTextureWrite& write) {
             const auto texture = slot == ClusteredTexture::lights  ? gpu.lights
@@ -126,6 +133,8 @@ inline void release_clustered_lights_resources([[maybe_unused]] SDL_GPUDevice* d
         SDL_ReleaseGPUTexture(device, gpu.indices);
     if (gpu.sampler)
         SDL_ReleaseGPUSampler(device, gpu.sampler);
+    if (gpu.params)
+        SDL_ReleaseGPUBuffer(device, gpu.params);
     gpu = ClusteredLightGpuResources{};
 }
 
