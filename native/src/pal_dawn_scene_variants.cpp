@@ -1009,7 +1009,7 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
         }
         (void)unfilterable_emissive;
         if (!matched) {
-#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+#if BBLITE_STANDARD_PLUGIN_TEXTURES
             // A material plugin's own declaration. The name alone does not
             // resolve it -- two plugin lists may declare the same WGSL
             // name -- so the row is found by the material's own signature

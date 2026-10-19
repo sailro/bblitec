@@ -347,16 +347,6 @@ void release(GpuState& state) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.transmission_grab_pipeline);
     }
 #endif
-    for (SDL_GPUGraphicsPipeline* pipeline : state.depth_only_pipelines) {
-        if (pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
-        }
-    }
-    for (SDL_GPUGraphicsPipeline* pipeline : state.depth_only_double_sided_pipelines) {
-        if (pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
-        }
-    }
 #if BBLITE_PBR_VARIANTS > 0
     state.pinned_pipelines.clear();
 #endif
@@ -597,7 +587,7 @@ class SdlSceneRun {
                                  task->render.depth.source == RenderTextureSource::geometry_depth
                                      ? state.depth_format
                                      : gpu.depth_format,
-                                 target_sample_count(state, record)};
+                                 target_sample_count(state, record), record.depth_compare};
         }
         [[maybe_unused]] const auto samples =
             target ? std::optional<SDL_GPUSampleCount>{target->samples}
@@ -882,6 +872,7 @@ public:
             shader_fragment_shaders.resize(shader_variant_total);
             state.shader_vertex_slots.resize(shader_variant_total);
             state.shader_fragment_slots.resize(shader_variant_total);
+            state.shader_vertex_texture_slots.resize(shader_variant_total);
             state.shader_fragment_texture_slots.resize(shader_variant_total);
             for (std::uint32_t variant = 0; variant < shader_variant_total; ++variant) {
                 const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
@@ -904,17 +895,28 @@ public:
                 shader_fragment_shaders[variant] = std::move(fragment_stage.shader);
                 state.shader_vertex_slots[variant] = std::move(vertex_stage.slots);
                 state.shader_fragment_slots[variant] = std::move(fragment_stage.slots);
-                std::vector<std::size_t>& declared_slots =
-                    state.shader_fragment_texture_slots[variant];
-                for (const std::string& name : state.shader_fragment_slots[variant].textures) {
-                    const auto declared =
-                        std::find_if(info.samplers.begin(), info.samplers.end(),
-                                     [&](const char* candidate) { return name == candidate; });
-                    declared_slots.push_back(
-                        declared == info.samplers.end()
-                            ? std::numeric_limits<std::size_t>::max()
-                            : static_cast<std::size_t>(declared - info.samplers.begin()));
-                }
+                const auto texture_slots = [&](const PinnedStageSlots& stage) {
+                    const auto declared_slots = [&](const std::vector<std::string>& names) {
+                        std::vector<std::size_t> slots;
+                        slots.reserve(names.size());
+                        for (const auto& name : names) {
+                            const auto found = std::find_if(
+                                info.samplers.begin(), info.samplers.end(),
+                                [&](const char* candidate) { return name == candidate; });
+                            slots.push_back(
+                                found == info.samplers.end()
+                                    ? std::numeric_limits<std::size_t>::max()
+                                    : static_cast<std::size_t>(found - info.samplers.begin()));
+                        }
+                        return slots;
+                    };
+                    return ShaderStageTextureSlots{declared_slots(stage.textures),
+                                                   declared_slots(stage.storage_textures)};
+                };
+                state.shader_vertex_texture_slots[variant] =
+                    texture_slots(state.shader_vertex_slots[variant]);
+                state.shader_fragment_texture_slots[variant] =
+                    texture_slots(state.shader_fragment_slots[variant]);
             }
         }
         auto id_fragment_shader =
@@ -1070,30 +1072,6 @@ public:
                 "SDL_CreateGPUGraphicsPipeline transmission grab");
         }
 #endif
-        for (std::size_t index = 0; use_no_color_material && state.depth_only_fragment_shader &&
-                                    index < state.depth_only_pipelines.size();
-             ++index) {
-            SDL_GPUGraphicsPipelineCreateInfo depth_pipeline_info = pipeline_info;
-            depth_pipeline_info.fragment_shader = state.depth_only_fragment_shader.get();
-            depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-            depth_pipeline_info.multisample_state.sample_count =
-                index == 0 ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
-            depth_pipeline_info.target_info.color_target_descriptions = nullptr;
-            depth_pipeline_info.target_info.num_color_targets = 0;
-            depth_pipeline_info.target_info.depth_stencil_format = state.depth_format;
-            depth_pipeline_info.target_info.has_depth_stencil_target = true;
-            state.depth_only_pipelines[index] =
-                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &depth_pipeline_info);
-            if (!state.depth_only_pipelines[index]) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline depth-only");
-            }
-            depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-            state.depth_only_double_sided_pipelines[index] =
-                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &depth_pipeline_info);
-            if (!state.depth_only_double_sided_pipelines[index]) {
-                gpu_error("SDL_CreateGPUGraphicsPipeline depth-only double-sided");
-            }
-        }
         if (use_shader_materials) {
             const std::uint32_t shader_variant_total = upstream::shader_variant_count();
             state.shader_pipelines.resize(shader_variant_total, nullptr);
@@ -1112,7 +1090,9 @@ public:
                 // backFaceCulling selects the cull mode, and
                 // depthWrite=false turns depth writes off.
                 SDL_GPUColorTargetDescription shader_target = color_target;
-                if (info.alpha_blending) {
+                if (info.blend) {
+                    shader_target.blend_state = blend_state_from(*info.blend);
+                } else if (info.alpha_blending) {
                     shader_target.blend_state = blend_state_from(
                         info.additive_blending ? shader_additive_blend : transparent_blend);
                 }
@@ -2180,7 +2160,7 @@ public:
                     const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
                     auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
-                    const auto& graph_plan =
+                    [[maybe_unused]] const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
                     const PixelViewport graph_extent =
                         scene_surface_extent(engine, graph_scene, width, height);
@@ -2289,14 +2269,6 @@ public:
                         return source_texture(source);
                     };
 #endif
-                    const auto gpu_mesh_index = [&](MeshHandle handle) {
-                        for (std::size_t index = 0; index < graph_plan.items.size(); ++index) {
-                            if (graph_plan.items[index].mesh == handle) {
-                                return index;
-                            }
-                        }
-                        return graph_meshes.size();
-                    };
                     // The compiler-owned default render task replaces the
                     // ordinary scene pass when another feature (notably a
                     // shadow generator) materializes the frame graph. Its
@@ -3034,27 +3006,9 @@ public:
                             }
 #endif
                             if (!target_record.has_color) {
-                                update_material_bindings(
-                                    graph_scene, engine, handle_at(task_draw_lists, handle).opaque,
-                                    task_pass_matrices, graph_meshes, bind_thin_buffers);
-                                update_material_bindings(
-                                    graph_scene, engine,
-                                    handle_at(task_draw_lists, handle).transparent,
-                                    task_pass_matrices, graph_meshes, bind_thin_buffers);
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
                                         "Depth-only render task has no depth attachment.");
-                                }
-                                if (target.depth_format != state.depth_format ||
-                                    (target_record.samples != 1 &&
-                                     target_record.samples !=
-                                         gpu_sample_count_value(state.sample_count))) {
-                                    throw std::runtime_error(
-                                        "Depth-only render task requires the renderer's depth format and sample count.");
-                                }
-                                if (task.render_meshes.empty()) {
-                                    throw std::runtime_error(
-                                        "Depth-only render task requires explicit meshes.");
                                 }
                                 SDL_GPUDepthStencilTargetInfo task_depth{};
                                 task_depth.texture = target.depth;
@@ -3076,60 +3030,23 @@ public:
                                     SDL_BeginGPURenderPass(command, nullptr, 0, &task_depth)};
                                 set_task_camera_viewport(task_pass, task_camera, target.width,
                                                          target.height);
-                                const std::size_t pipeline_index =
-                                    target_record.samples == 4 ? 1u : 0u;
-                                for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-                                    SDL_BindGPUGraphicsPipeline(
-                                        task_pass, sided_mode == 0
-                                                       ? state.depth_only_pipelines[pipeline_index]
-                                                       : state.depth_only_double_sided_pipelines
-                                                             [pipeline_index]);
-                                    for (const RenderTaskMesh& entry : task.render_meshes) {
-                                        const auto material_handle =
-                                            render_task_mesh_material(engine, entry);
-                                        const MaterialRecord& material =
-                                            handle_at(engine.materials, material_handle);
-                                        if (!material.no_color) {
-                                            throw std::runtime_error(
-                                                "Depth-only render task requires a no-color material view.");
-                                        }
-                                        if (material.double_sided != (sided_mode == 1)) {
-                                            continue;
-                                        }
-                                        // geometry-renderer-task.ts skips a hidden mesh at the draw
-                                        // itself. This path consumes no draw list -- it walks the task's
-                                        // own meshes and resolves each against the plan -- so it cannot
-                                        // inherit append_draw's answer and asks the same predicate.
-                                        if (!upstream::mesh_draws(
-                                                handle_at(engine.meshes, entry.mesh))) {
-                                            continue;
-                                        }
-                                        const std::size_t mesh_index = gpu_mesh_index(entry.mesh);
-                                        if (mesh_index >= graph_meshes.size()) {
-                                            throw std::runtime_error(
-                                                "Depth task mesh is not in the scene.");
-                                        }
-                                        GpuMesh& mesh = graph_meshes[mesh_index];
-#if BBLITE_THIN_INSTANCES
-                                        publish_thin_binding(*entry.thin_binding, mesh,
-                                                             bind_thin_buffers);
+                                upstream::sort_transparent_draws(
+                                    handle_at(task_draw_lists, handle).transparent, engine,
+                                    task_camera);
+                                draw_scene(graph_scene, graph_meshes, task_pass,
+                                           state.shader_pipelines, state.shader_a2c_pipelines,
+                                           task_matrix, task_camera, task_pass_matrices, handle,
+                                           handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                           nullptr, nullptr, nullptr, false
+#if BBLITE_HAS_TAA
+                                           ,
+                                           nullptr, {}, {}
 #endif
-                                        push_mesh_stage_blocks(
-                                            command, graph_scene, engine,
-                                            handle_at(engine.meshes, entry.mesh));
-                                        const SDL_GPUBufferBinding index_binding{
-                                            mesh.indices,
-                                            0,
-                                        };
-                                        bind_mesh_vertex_buffers(task_pass, mesh);
-                                        SDL_BindGPUIndexBuffer(task_pass, &index_binding,
-                                                               SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                                        encode_sdl_gpu_indexed_draw(
-                                            task_pass, mesh.index_count,
-                                            mesh.indirect_args ? 0u : mesh.instance_count(),
-                                            mesh.indirect_args);
-                                    }
-                                }
+                                           ,
+                                           ShaderTaskTarget{
+                                               SDL_GPU_TEXTUREFORMAT_INVALID, target.depth_format,
+                                               target_sample_count(state, target_record),
+                                               target_record.depth_compare});
                                 task_pass.end();
                                 depth_timing.run();
                                 if (target.depth_copy)
@@ -3292,7 +3209,8 @@ public:
                                                             ? state.depth_format
                                                             : target.depth_format)
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
-                                                 target_sample_count(state, target_record)},
+                                                 target_sample_count(state, target_record),
+                                                 target_record.depth_compare},
                                 &pass_breaks, resume_pass);
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT

@@ -2951,6 +2951,10 @@ export class DeclarationLowerer {
                         writable(bound).recordOwnKeys =
                             plainRecordSnapshot.recordOwnKeys ??
                             Object.keys(properties);
+                        this.context.dataLowerer.retainRecordArrayLiteralFacts(
+                            bound,
+                            declaration.initializer,
+                        );
                     }
                 }
                 const resourceElements =
@@ -3786,6 +3790,12 @@ export class DeclarationLowerer {
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
+            ...(initializerSnapshot?.runtimeElementTemplate
+                ? {
+                      runtimeElementTemplate:
+                          initializerSnapshot.runtimeElementTemplate,
+                  }
+                : {}),
             ...(annotated.kind === "struct"
                 ? nativeDataMetadata(
                       this.context.dataLowerer.leafValue(boundCpp, annotated),
@@ -3858,6 +3868,20 @@ export class DeclarationLowerer {
                           boundValue,
                       )
                     : boundValue;
+        if (
+            !sharedDataBinding &&
+            !selfReferentialBinding &&
+            !selfLiteral &&
+            ts.isObjectLiteralExpression(initializer) &&
+            initializerSnapshot?.kind === "record" &&
+            this.context.bindings.recordPropertiesAreCurrent(
+                initializerSnapshot,
+            )
+        )
+            this.context.dataLowerer.retainRecordArrayLiteralFacts(
+                represented,
+                declaration.initializer,
+            );
         // The literal or the shared cell already bound the name.
         if (selfReferentialBinding || selfLiteral) {
             this.context.bindings.rebindVariable(name, represented);

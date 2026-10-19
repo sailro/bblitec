@@ -40,7 +40,7 @@ export function objectIdentityCallArgument(
     }
     return expression.arguments[0];
 }
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { isStringValue, presenceCpp, type Value } from "./types.js";
 import { CompileError } from "./compile-error.js";
@@ -71,6 +71,7 @@ import {
 import { isJsonValue } from "./json-bridge.js";
 import { absenceKind, excludesObjectColour, isNullable } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
+import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -1715,12 +1716,12 @@ export class StaticEvaluator {
     }
 
     /**
-     * The literal a call evaluates to when its callee is a parameterless
-     * module-scope function whose whole body returns one
-     * (`function uniforms() { return [...] as const; }`).
+     * The literal a module-scope function returns directly. Read-only scalar
+     * arguments substitute their known values; other entries retain their
+     * source bindings and are evaluated by the consuming native lowering.
      *
      * The returned expression replaces the call at the use site, which is
-     * exactly what the call evaluates: no parameters to bind, no locals, and
+     * exactly what the call evaluates: no remaining parameters or locals, and
      * module-scope free names resolve to the same bindings wherever the call
      * is. A body reading `this`, `arguments` or `new.target`, an async or
      * generator function, a recursive chain and a result that is not a
@@ -1730,7 +1731,7 @@ export class StaticEvaluator {
         call: ts.CallExpression,
         resolving: ReadonlySet<ts.Symbol>,
     ): ts.Expression | undefined {
-        if (call.arguments.length > 0 || call.questionDotToken) {
+        if (call.questionDotToken) {
             return undefined;
         }
         const callee = this.unwrap(call.expression);
@@ -1747,7 +1748,8 @@ export class StaticEvaluator {
         );
         if (
             !declaration?.body ||
-            declaration.parameters.length > 0 ||
+            declaration.parameters.length !== call.arguments.length ||
+            declaration.asteriskToken ||
             declaration.getSourceFile().isDeclarationFile ||
             !isModuleScopeFunction(declaration) ||
             ts
@@ -1760,8 +1762,81 @@ export class StaticEvaluator {
         if (!returned || readsInvocationContext(returned)) {
             return undefined;
         }
+        const substitutions = new Map<ts.Symbol, ts.Expression>();
+        for (const [index, parameter] of declaration.parameters.entries()) {
+            const argument = call.arguments[index]!;
+            if (
+                !ts.isIdentifier(parameter.name) ||
+                parameter.initializer ||
+                parameter.dotDotDotToken ||
+                ts.isSpreadElement(argument) ||
+                !parameterIsReadOnly(
+                    this.checker,
+                    declaration,
+                    parameter.name,
+                ) ||
+                this.evaluationOrder.writesStorage(argument) ||
+                this.evaluationOrder.hasModuleEffects(argument)
+            )
+                return undefined;
+            const value = this.resolveValue(argument);
+            const scalar = value.parameterBinding
+                ? undefined
+                : (value.staticString ??
+                  value.staticBoolean ??
+                  value.staticNumber);
+            const binding = this.resolveSymbol(parameter.name);
+            if (
+                !binding ||
+                scalar === undefined ||
+                (typeof scalar === "number" && !Number.isFinite(scalar))
+            )
+                return undefined;
+            const file = ts.createSourceFile(
+                `${argument.getSourceFile().fileName}.scalar-literal.ts`,
+                `(${Object.is(scalar, -0) ? "-0" : JSON.stringify(scalar)});`,
+                ts.ScriptTarget.ESNext,
+                true,
+            );
+            const statement = file.statements[0];
+            if (!statement || !ts.isExpressionStatement(statement))
+                return undefined;
+            substitutions.set(binding, this.unwrap(statement.expression));
+        }
+        const transformed = ts.transform(returned, [
+            (context) => {
+                const visit: ts.Visitor = (node) => {
+                    if (ts.isShorthandPropertyAssignment(node)) {
+                        const binding = this.resolveSymbol(node.name);
+                        const value = binding && substitutions.get(binding);
+                        if (value) {
+                            const property =
+                                ts.factory.createPropertyAssignment(
+                                    node.name,
+                                    value,
+                                );
+                            ts.setOriginalNode(property, node);
+                            writable(property).parent = node.parent;
+                            return property;
+                        }
+                    }
+                    if (ts.isIdentifier(node)) {
+                        const binding = this.resolveSymbol(node);
+                        const value = binding && substitutions.get(binding);
+                        if (value) return value;
+                    }
+                    const updated = ts.visitEachChild(node, visit, context);
+                    if (updated !== node)
+                        writable(updated).parent = node.parent;
+                    return updated;
+                };
+                return (root) => ts.visitNode(root, visit, ts.isExpression)!;
+            },
+        ]);
+        const substituted = transformed.transformed[0]!;
+        transformed.dispose();
         const resolved = this.resolveStaticLiteral(
-            returned,
+            substituted,
             new EmissionSet([...resolving, symbol]),
         );
         return isStaticLiteral(resolved) ? resolved : undefined;
@@ -1896,7 +1971,7 @@ export class StaticEvaluator {
      * `staticNumberValue`, also reading the numbers a named record's fields
      * hold. Only the text folds ask: reading a field may compile a getter.
      */
-    private staticNumberThroughRecords(
+    public staticNumberThroughRecords(
         expression: ts.Expression,
     ): number | undefined {
         return staticNumberValue(
@@ -1961,6 +2036,8 @@ export class StaticEvaluator {
         );
         if (!unwrapped) return undefined;
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
+        if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return "true";
+        if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return "false";
         if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
@@ -2036,6 +2113,9 @@ export class StaticEvaluator {
             }
             if (value?.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
+            }
+            if (value?.staticBoolean !== undefined && !value.parameterBinding) {
+                return String(value.staticBoolean);
             }
             if (
                 ts.isIdentifier(unwrapped) &&
@@ -2138,7 +2218,7 @@ export class StaticEvaluator {
         if (folded !== undefined) return folded;
         this.fail(
             expression,
-            "Template substitutions must be static strings or numbers.",
+            "Template substitutions must have generation-known primitive values.",
             "static-value-required",
         );
     }

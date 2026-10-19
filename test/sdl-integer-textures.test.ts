@@ -64,6 +64,7 @@ SDL_GPUTexture* SDL_CreateGPUTexture(SDL_GPUDevice*, const SDL_GPUTextureCreateI
     auto texture = next_handle<SDL_GPUTexture*>(); allocations[texture].info = *info; return texture;
 }
 void SDL_ReleaseGPUTexture(SDL_GPUDevice*, SDL_GPUTexture* texture) { allocations.erase(texture); }
+void SDL_ReleaseGPUBuffer(SDL_GPUDevice*, SDL_GPUBuffer*) {}
 SDL_GPUSampler* SDL_CreateGPUSampler(SDL_GPUDevice*, const SDL_GPUSamplerCreateInfo*) { return next_handle<SDL_GPUSampler*>(); }
 void SDL_ReleaseGPUSampler(SDL_GPUDevice*, SDL_GPUSampler*) {}
 SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice*) { return supported_formats; }
@@ -92,10 +93,7 @@ void upload_2d_texture_into(SDL_GPUDevice*, SDL_GPUTexture* texture, const void*
 ${cppRecord(shared, "struct PinnedStageBinding")}
 ${cppRecord(shared, "struct PinnedStageSlots")}
 ${cppFunction(shared, "inline PinnedStageSlots read_pinned_stage_slots(")}
-template<typename Resolve>
-${cppFunction(shared, "inline std::vector<SDL_GPUTextureSamplerBinding> resolve_stage_textures(")}
-template<typename Resolve>
-${cppFunction(shared, "inline void bind_stage_textures(")}
+${cppSection(shared, "template <typename Resolve>\ninline void resolve_stage_textures(", "/**\n * The storage sibling")}
 ${cppFunction(shared, "inline OwnedSdlShader load_shader(")}
 ${cppFunction(shared, "inline SDL_GPUTexture* upload_2d_texture(")}
 struct ClusteredLightContainer { std::uint32_t data_texture_width = 8, light_rows = 2, slice_rows = 3, mask_rows = 4; };

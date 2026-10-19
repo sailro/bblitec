@@ -2,6 +2,7 @@ import {
     isStringValue,
     nativeDataMetadata,
     optionalPresentCpp,
+    withCommonResourceMetadata,
     withNativeMetadata,
 } from "./types.js";
 // The data-container method knowledge: the method-name sets every
@@ -2156,9 +2157,7 @@ function compileArrayFind(
     const resultType =
         (dataType.element.kind === "json" ? dataType.element : undefined) ??
         (method === "find" ? lowerer.dataTypeAt(call) : undefined) ??
-        (method === "findLast"
-            ? lowerer.context.dataTypes.nullableType(dataType.element, true)
-            : { kind: "optional" as const, inner: dataType.element });
+        lowerer.context.dataTypes.nullableType(dataType.element, true);
     const result = lowerer.context.allocateTemporaryCppName("find_result");
     lowerer.emitArrayCallbackLoop(
         call,
@@ -2698,6 +2697,7 @@ function compileArrayMap(
               ? { kind: "vector", element: dataType.element }
               : undefined));
     let mappedType = requested;
+    let elementTemplate: Value | undefined;
     if (
         method === "map" &&
         call.arguments.length === 1 &&
@@ -2785,6 +2785,11 @@ function compileArrayMap(
                             callback,
                         ),
                     };
+                if (method === "map" && mappedType.element.kind === "handle")
+                    elementTemplate = withCommonResourceMetadata(
+                        lowerer.leafValue("", mappedType.element),
+                        [result],
+                    );
                 if (method === "flatMap" && isJsonValue(result)) {
                     const owner = lowerer.context.bindings.pinValueToTemporary(
                         result,
@@ -2939,7 +2944,10 @@ function compileArrayMap(
         );
     lowerer.context.emit(`${collectorCppType(state, mappedType)} ${output};`);
     for (const line of lines) lowerer.context.emit(line);
-    return collectedArray(state, output, mappedType);
+    const collected = collectedArray(state, output, mappedType);
+    return elementTemplate
+        ? { ...collected, runtimeElementTemplate: elementTemplate }
+        : collected;
 }
 
 /** flatMap stores one level of elements from an array result, or the scalar result itself. */

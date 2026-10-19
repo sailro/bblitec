@@ -322,7 +322,7 @@ template<class State>
 ${cppFunction(plan.header, "std::array<float, 16>& shader_system_matrix(")}
 template<class Cache,class AlphaCutoff,class WriteSystem>
 ${cppFunction(plan.header, "void update_shader_packet_system(")}
-template<class Clear,class ReadWorld,class Store,class StoreProduct,class StoreCameraPosition>
+template<class Clear,class ReadWorld,class Store,class StoreProduct,class StoreCameraPosition,class StoreScreenSize>
 ${cppFunction(plan.header, "void write_shader_packet_system(")}
 template<class Custom,class System>
 ${cppFunction(plan.header, "void update_shader_binding(")}

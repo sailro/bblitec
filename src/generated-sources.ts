@@ -299,7 +299,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/material_views.cpp",
-        features: ["material:no-color-view"],
+        features: ["material:no-color-view", ...shadowGeneratorFeatures],
     },
     {
         source: "upstream/src/splat_geometry.cpp",

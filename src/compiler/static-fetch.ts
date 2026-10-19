@@ -81,6 +81,7 @@ export function compileStaticFetch(
             context.fail(
                 url,
                 `Generation-time fetch URL '${url.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
+                "static-value-required",
             );
         }
     }

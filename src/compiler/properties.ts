@@ -79,6 +79,7 @@ import {
 import { numberConstantValue } from "./number-intrinsics.js";
 import { readFrozenParticleProperty } from "./particle-buffer.js";
 import { recordAt } from "./record-access.js";
+import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { staticFetchProperty } from "./static-fetch.js";
 import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
@@ -1141,6 +1142,14 @@ export const propertyRules: readonly PropertyRule[] = [
         optionalHandle: true,
     },
     {
+        owner: "material",
+        property: "_shadowCasterMaterial",
+        value: "material",
+        record: ["materials", "shadow_caster_material"],
+        optionalHandle: true,
+        impure: true,
+    },
+    {
         // Material is the polymorphic source object, and every loader copies
         // its authored name onto it. A mapped walk over `scene.meshes` uses this
         // field to find one shared glTF material before mutating its texture.
@@ -1432,6 +1441,17 @@ export const propertyRules: readonly PropertyRule[] = [
         // ArrayLike<number> helper can accept it alongside number[].
         dataType: { kind: "vector", element: { kind: "number" } },
         helper: "bbl::mesh_world_matrix_array",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        alwaysTruthy: true,
+        feature: "mesh:geometry-access",
+    },
+    {
+        owner: "transform-node",
+        property: "worldMatrix",
+        value: "data",
+        dataType: { kind: "f32array" },
+        helper: "bbl::transform_node_world_matrix_view",
         helperTakesEngine: true,
         helperReturnsFreshData: true,
         alwaysTruthy: true,
@@ -3396,6 +3416,19 @@ export class PropertyAccessLowerer {
                 );
             if (collection) return collection;
         }
+        if (owner.kind === "scene" && property === "surface") {
+            if (!owner.scenePrimarySurface)
+                this.context.fail(
+                    expression,
+                    "SceneContext.surface requires a known primary-surface scene.",
+                );
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "engine",
+                cpp: engine,
+                engineCpp: engine,
+            };
+        }
         if (owner.kind === "surface" && property === "engine") {
             if (!owner.engineCpp) {
                 this.context.fail(
@@ -3945,6 +3978,13 @@ export class PropertyAccessLowerer {
                 recordProperties: cameraVectorProperties(cameraVector),
             };
         }
+        const clustered = clusteredLightProperty(
+            this.context,
+            owner,
+            expression.name.text,
+            expression,
+        );
+        if (clustered) return clustered;
         if (
             owner.kind === "light" &&
             (expression.name.text === "position" ||

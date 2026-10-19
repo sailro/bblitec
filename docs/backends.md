@@ -44,7 +44,8 @@ native events to the owning realm; promise reactions stay on the realm thread.
 - bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL/MSL/SPIR-V writers with SDL's slots and writes the
   `.slots` sidecar from the same assignment. DXC compiles HLSL with Dawn's default-pipeline arguments (IEEE strict).
 - A `.slots` sidecar starts with `@entry <entry point>` and lists `@binding <group> <binding> <name> <resource>` for
-  every declared binding: stage visibility, kind, slot order, uniform size. Large uniform blocks may use read-only storage.
+  every declared binding: stage visibility, kind, slot order, uniform size. Uniform blocks exceeding SDL's size or slot
+  limits may use read-only storage without changing their layout.
 - Dawn layouts: sprite, billboard, picking, splat, post-process, ID-diagnostic and UI groups from `.slots` lines; the
   per-pass scene group from the pin's `getSceneBindGroupLayout`; composed material/effect/text/screen-space/compute
   layouts from generated descriptor tables; single-pipeline runtime modules from Dawn reflection.
@@ -52,7 +53,8 @@ native events to the owning realm; promise reactions stay on the realm thread.
   at group 0 on both backends.
 - SDL integer texture loads use storage-texture slots. Vulkan binds a sampled texture and its sampler as one combined
   image sampler.
-- Native interstage structs put the position first (Tint patch) so separately compiled D3D12 stages link.
+- Shader-material stages use matching D3D12 signature order: position first when the fragment declares it, otherwise
+  locations first. Other native interstage structs put position first through the Tint patch.
 - SPIR-V 1.3; SDL_GPU requests Vulkan 1.1. Vertex inputs are compacted; the sidecar maps attributes to locations.
 - Metal: `main0`, flattened bindings, buffer lengths at index 30.
 - Dawn pipeline keys: format, samples, depth, blend, cull, topology, compare. Reached layouts set device limits.
@@ -66,7 +68,7 @@ native events to the owning realm; promise reactions stay on the realm thread.
   resources; surface loss is reported at the next acquisition (patched).
 - Unavailable immediate presentation falls back to FIFO with a diagnostic.
 - SDL Metal builds mips with per-level linear blits.
-- Colour-less depth sampled by materials uses an R32 copy `(depth, 0, 0, 1)`.
+- Colour-less targets expose an R32 copy `(depth, 0, 0, 1)` to colour-texture consumers; shader depth slots bind the depth attachment.
 - Standalone sprite/text UNORM clears round to the nearest byte.
 - Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer.
 - Transmission uses the pin's grab modules; cube mips build one face at a time over 2D levels.

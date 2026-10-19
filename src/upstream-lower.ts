@@ -837,6 +837,7 @@ interface ComposedShader {
     alsoStages?: ShaderModuleDeclaration["alsoStages"];
     constants?: ShaderModuleDeclaration["constants"];
     entryPoint?: string;
+    positionFirst?: boolean;
 }
 
 /** The one entry point a module declares for `stage`, read off the module. */
@@ -1685,7 +1686,10 @@ ${lowerThinInstanceSync(context)}
         }
         emitReached(
             "upstream/src/compressed_texture.cpp",
-            () => new CompressedTextureLowerer(context).lower(),
+            () =>
+                new CompressedTextureLowerer(context).lower(
+                    features.includes("texture:ktx2"),
+                ),
             "upstream/include/bblite/upstream/compressed_texture.hpp",
         );
         emitReached("upstream/src/material_views.cpp", () =>
@@ -2050,6 +2054,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // scene composes them, which also skips standard_variants.hpp.
 #define BBLITE_STANDARD_VARIANTS ${
                 (options.pinnedStandardVariants?.length ?? 0) > 0 ? 1 : 0
+            }
+#define BBLITE_STANDARD_PLUGIN_TEXTURES ${
+                options.standardPluginBindings?.some((list) => list.length > 0)
+                    ? 1
+                    : 0
             }
 // The Standard skeleton hook standard_variants.hpp carries, and the colour
 // alpha feature word renderer_plan.hpp carries: each is emitted exactly when
@@ -4030,6 +4039,7 @@ ${shadow.blurFragmentWgsl}`,
                                     alsoStages,
                                     entryPoint,
                                     constants,
+                                    positionFirst,
                                 }): ShaderModuleDeclaration & {
                                     sha256: string;
                                 } => ({
@@ -4044,6 +4054,9 @@ ${shadow.blurFragmentWgsl}`,
                                     ),
                                     ...(alsoStages ? { alsoStages } : {}),
                                     ...(constants ? { constants } : {}),
+                                    ...(positionFirst === undefined
+                                        ? {}
+                                        : { positionFirst }),
                                 }),
                             ),
                     },

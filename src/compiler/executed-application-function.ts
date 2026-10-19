@@ -45,6 +45,13 @@ import { sharedUpstreamStore } from "../upstream-source.js";
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
 
+/** Fresh literal data passed into the closed generation realm. */
+export type ExecutedArgument =
+    | ExecutedScalar
+    | null
+    | readonly ExecutedArgument[]
+    | { readonly [name: string]: ExecutedArgument };
+
 interface ExecutedFunctionContext {
     readonly checker: ts.TypeChecker;
     readonly sourceFiles?: readonly ts.SourceFile[];
@@ -79,20 +86,20 @@ interface FilePart {
 
 /**
  * A function-like node the closure can call as a value, or a module-scope
- * `const` whose value the closure evaluates, as its module does, once.
+ * `const` or a closed call whose value the closure evaluates.
  */
 export type ExecutedTarget =
-    ts.FunctionLikeDeclaration | ts.VariableDeclaration;
+    ts.FunctionLikeDeclaration | ts.VariableDeclaration | ts.CallExpression;
 
 /**
  * Execute `target` with `args` and return its plain-data result: a
- * function's return value, or a module constant's value (no arguments).
+ * function's return value, or a constant or call's value (no arguments).
  * `label` names the target in refusals.
  */
 export function executeApplicationFunction(
     context: ExecutedFunctionContext,
     target: ExecutedTarget,
-    args: readonly (ExecutedScalar | undefined)[],
+    args: readonly (ExecutedArgument | undefined)[],
     label: string,
 ): unknown {
     const closure = new ExecutedClosure(context, target, label);
@@ -121,16 +128,21 @@ export function executeApplicationFunction(
         const executed: unknown = Reflect.apply(build, undefined, [
             program.bindings,
         ]);
-        if (ts.isVariableDeclaration(target)) {
+        if (ts.isVariableDeclaration(target) || ts.isCallExpression(target)) {
             if (args.length > 0) {
-                throw new Error(`${label} is a constant, not a function.`);
+                throw new Error(`${label} is a value, not a function.`);
             }
             result = executed;
         } else {
             if (typeof executed !== "function") {
                 throw new Error(`${label} is not a function once executed.`);
             }
-            result = Reflect.apply(executed, undefined, [...args]);
+            const realmArgs = args.map((value): unknown =>
+                value !== null && typeof value === "object"
+                    ? Reflect.apply(parse, undefined, [JSON.stringify(value)])
+                    : value,
+            );
+            result = Reflect.apply(executed, undefined, realmArgs);
         }
     } catch (error: unknown) {
         return context.fail(
@@ -689,7 +701,11 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const target = this.target;
         const file = target.getSourceFile();
         const text = file.text.slice(target.getStart(file), target.end);
-        if (ts.isArrowFunction(target) || ts.isFunctionExpression(target)) {
+        if (
+            ts.isArrowFunction(target) ||
+            ts.isFunctionExpression(target) ||
+            ts.isCallExpression(target)
+        ) {
             return text;
         }
         if (ts.isFunctionDeclaration(target)) return `(${text})`;

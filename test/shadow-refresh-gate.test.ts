@@ -349,7 +349,7 @@ test("preserves requested depth-only fragments in custom shadow pipelines", () =
     );
     assert.match(
         dawn,
-        /pipeline_key =\s*std::make_tuple\(kind, shader_variant, samples, color_format,[\s\S]{0,160}shadow_pass\);/,
+        /pipeline_key =\s*std::make_tuple\(kind, shader_variant, samples, color_format,[\s\S]{0,160}shadow_pass,\s*target \? target->depth_compare : std::nullopt\);/,
     );
     assert.match(
         dawn,
@@ -380,8 +380,8 @@ test("preserves requested depth-only fragments in custom shadow pipelines", () =
     // is not the optional morph-storage group from the ordinary mesh
     // layout -- and every task supplies its own light-space uniform block.
     assert.match(
-        dawn,
-        /WGPUBindGroupLayout shader_group_layout\([\s\S]{0,600}case 0:[\s\S]{0,300}storage_layout_entry\(binding\+\+, WGPUShaderStage_Vertex\)/,
+        cppFunction(dawn, "WGPUBindGroupLayout shader_group_layout("),
+        /case 0:\s*case 2:[\s\S]*group == 0 \? WGPUShaderStage_Vertex : WGPUShaderStage_Fragment;[\s\S]*storage_layout_entry\(binding\+\+, visibility\)/,
     );
     assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
     assert.match(

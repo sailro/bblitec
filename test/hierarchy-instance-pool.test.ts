@@ -181,7 +181,6 @@ test(
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const worlds = [
             "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
-            "std::array<float, 16> transform_node_local_matrix(",
             "std::array<float, 16> transform_node_world(",
             "std::optional<std::array<float, 16>> mesh_root_world(",
             "std::array<float, 16> mesh_world_matrix(",

@@ -1171,6 +1171,7 @@ export async function composeScenePbrVariants(
     meshFeatureSets?: readonly number[],
     scene: {
         linearImageProcessing?: boolean;
+        clusteredLights?: { hasSpots: boolean };
         metallicReflectanceRegistered?: boolean;
         pluginsRegistered?: boolean;
         /**
@@ -1227,6 +1228,7 @@ export async function composeScenePbrVariants(
         // builder's separate `_occlusionImage ? 1 : 0` rule does not reach
         // this scene-code path.
         const input: PinnedMaterialInput = {};
+        stampClusteredLightState(input, scene.clusteredLights);
         if (material.localCubemapCandidates !== undefined) {
             await applyPinnedLocalCubemap(
                 input,
@@ -1433,7 +1435,16 @@ export async function composeScenePbrVariants(
               : {};
         // A material that names its own sets composes over those: a
         // caster's no-colour view is drawn on its caster and nowhere else.
-        for (const meshFeatures of material.meshFeatureSets ?? featureSets) {
+        const materialFeatures = material.meshFeatureSets ?? featureSets;
+        const drawFeatures =
+            material.noColorView || material.esmShadowView
+                ? new Set(
+                      materialFeatures.map(
+                          (features) => features & ~receiveBit,
+                      ),
+                  )
+                : materialFeatures;
+        for (const meshFeatures of drawFeatures) {
             for (const arm of arms) {
                 // A receiving mesh reaches fewer arms than the scene does, from
                 // the port's one statement of the pin's own light-mode rule --

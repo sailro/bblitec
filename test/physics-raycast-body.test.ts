@@ -275,7 +275,7 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
         namespace bbl {
         Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
         void mark_mesh_dirty(Engine&, MeshHandle) {}
-        void mark_transform_node_dirty(Engine&, TransformNodeHandle) {}
+        void mark_transform_node_dirty(Engine&, TransformNodeHandle, bool) {}
         void register_scene(Scene& scene) { scene.engine->rendering_contexts.push_back("scene", std::make_shared<Scene>(scene)); }
         void start_engine(Engine& engine) {
             assert(engine.scenes().size() == 1);

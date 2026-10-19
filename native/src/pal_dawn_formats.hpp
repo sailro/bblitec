@@ -85,12 +85,18 @@ inline WGPUCompareFunction dawn_depth_compare(DepthCompare compare) {
 
 inline WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
     switch (factor) {
+    case BlendFactor::zero:
+        return WGPUBlendFactor_Zero;
     case BlendFactor::one:
         return WGPUBlendFactor_One;
     case BlendFactor::src_alpha:
         return WGPUBlendFactor_SrcAlpha;
     case BlendFactor::one_minus_src_alpha:
         return WGPUBlendFactor_OneMinusSrcAlpha;
+    case BlendFactor::dst:
+        return WGPUBlendFactor_Dst;
+    case BlendFactor::dst_alpha:
+        return WGPUBlendFactor_DstAlpha;
     }
     return WGPUBlendFactor_One;
 }

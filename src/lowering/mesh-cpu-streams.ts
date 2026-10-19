@@ -21,7 +21,7 @@ export const meshCpuStreamParameters =
 const meshCpuStreamArguments =
     "positions, normals, indices, uvs, uvs2, tangents, colors";
 const meshUploadedStreamArguments =
-    "positions, normals, indices, retained_upload_stream(uvs), retained_upload_stream(uvs2), retained_upload_stream(tangents), retained_upload_stream(colors)";
+    "retained_upload_stream(positions), retained_upload_stream(normals), retained_upload_stream(indices), retained_upload_stream(uvs), retained_upload_stream(uvs2), retained_upload_stream(tangents), retained_upload_stream(colors)";
 
 /** The optional source capture hook retains additional aliases only while enabled. */
 function lowerFactoryRecoveryCapture(context: LoweringContext): string {
@@ -189,9 +189,13 @@ ${writes.join("\n")}
             .join("\n") +
         `
 ${lowerFactoryRecoveryCapture(context)}
-const std::vector<float>& retained_upload_stream(const std::optional<js::F32Array>& source) {
-    static const std::vector<float> empty;
-    return source ? static_cast<const std::vector<float>&>(*source) : empty;
+template <typename T>
+js::TypedArray<T> retained_upload_stream(const js::TypedArray<T>& source) {
+    // Only the upload needs contiguous elements. CPU streams retain the original view.
+    return source.owns_elements() ? source : source.copy_range(0, source.size());
+}
+js::F32Array retained_upload_stream(const std::optional<js::F32Array>& source) {
+    return source ? retained_upload_stream(*source) : js::F32Array{};
 }
 MeshHandle create_retained_mesh_from_data(Engine& engine, const std::string& name, ${meshCpuStreamParameters}) {
     const auto mesh = create_mesh_from_data(engine, name, ${meshUploadedStreamArguments});

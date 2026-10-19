@@ -51,7 +51,8 @@ function assetHierarchyCloneCpp(): string {
             TransformNodeRecord& copy = ${recordAt("engine.transform_nodes", "made")};
             copy.rotation = original.rotation;
             copy.has_rotation_quaternion = original.has_rotation_quaternion;
-            copy.local_matrix = original.local_matrix;
+            if (original.local_matrix)
+                copy.local_matrix.emplace(original.local_matrix->begin(), original.local_matrix->end());
             copy.local_matrix_locked = original.local_matrix_locked;
             copies.emplace(from.value, made);
             return made;
@@ -894,15 +895,20 @@ void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
 // or through a physics body's pose write, so the marker is unconditional.
 void mark_transform_node_dirty(
     Engine& engine,
-    TransformNodeHandle node) {
+    TransformNodeHandle node,
+    bool local) {
     if (node.value >= engine.transform_nodes.size()) return;
     TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
     ++record.transform_version;
+    if (record.matrix_cache) {
+        record.matrix_cache->world.reset();
+        if (local) record.matrix_cache->local.reset();
+    }
     for (const MeshHandle child : record.parented_meshes) {
         mark_mesh_dirty(engine, child);
     }
     for (const TransformNodeHandle& child : record.parented_nodes) {
-        mark_transform_node_dirty(engine, child);
+        mark_transform_node_dirty(engine, child, false);
     }
 }
 `;
@@ -1128,7 +1134,7 @@ void set_transform_node_parent(
             old_children.end());
     }
     record.parent = parent;
-    mark_transform_node_dirty(engine, node);
+    mark_transform_node_dirty(engine, node, false);
     if (parent.value < engine.transform_nodes.size()) {
         std::vector<TransformNodeHandle>& new_children =
             ${recordAt("engine.transform_nodes", "parent")}.parented_nodes;
@@ -1294,7 +1300,7 @@ void apply_transform_node_local(
         static_cast<float>(decomposed.scale.x),
         static_cast<float>(decomposed.scale.y),
         static_cast<float>(decomposed.scale.z)};
-    if (preserve_matrix) record.local_matrix = local;
+    if (preserve_matrix) record.local_matrix.emplace(local.begin(), local.end());
     mark_transform_node_dirty(engine, node);
 }
 
@@ -1360,7 +1366,8 @@ void reparent_transform_node(
     if (!inverse_parent) {
         const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "child")};
         if (record.local_matrix) {
-            const std::array<float, 16> raw = *record.local_matrix;
+            std::array<float, 16> raw{};
+            std::copy_n(record.local_matrix->begin(), 16, raw.begin());
             apply_transform_node_local(engine, child, raw, false);
         }
         set_transform_node_position(
@@ -1857,6 +1864,12 @@ js::Array<double> mesh_world_matrix_array(
     const std::array<float, 16> world =
         upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh")});
     return js::Array<double>(world.begin(), world.end());
+}
+
+js::F32Array transform_node_world_matrix_view(
+    const Engine& engine,
+    TransformNodeHandle node) {
+    return upstream::transform_node_world_view(engine, node);
 }
 
 js::Array<double> mesh_bound_min_array(

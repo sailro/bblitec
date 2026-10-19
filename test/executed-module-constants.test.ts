@@ -75,7 +75,7 @@ test("refuses a module constant whose run would not describe the program's", () 
                 fragment(`
     const BLOCK = \`fn laneBase() -> f32 { return \${${varying}}; }\`;
 `),
-            /Expected a string literal|without a static string|Template substitutions/,
+            /Expected a string literal|without a static string|Template substitutions|run at generation would not describe/,
         );
     }
 });

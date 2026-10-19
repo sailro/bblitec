@@ -76,9 +76,12 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             } void graph() { ${encode.slice(graphStart, graphEnd)} }`,
             );
         } else {
-            const graphStart = encode.search(
-                /draw_list_into\(\s*task_pass,\s*render_task\.draw_lists\.opaque,/,
-            );
+            const graphStart =
+                [
+                    ...encode.matchAll(
+                        /draw_list_into\(\s*task_pass,\s*render_task\.draw_lists\.opaque,/g,
+                    ),
+                ].at(-1)?.index ?? -1;
             // The pass ends after the transparent list's split hook.
             const graphEnd = encode.indexOf(
                 "wgpuRenderPassEncoderEnd(task_pass);",

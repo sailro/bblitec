@@ -59,7 +59,7 @@ const renderPassModule = "src/frame-graph/render-pass.ts";
  * `depthClearValue ?? 0`. Every such fallback in the module must agree —
  * a second site with another value would mean the convention forked.
  */
-function pinnedDepthClearValue(context: LoweringContext): number {
+export function pinnedDepthClearValue(context: LoweringContext): number {
     const file = context.sourceFile(renderPassModule);
     const fallbacks = context
         .findNodes(

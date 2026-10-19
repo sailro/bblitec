@@ -236,7 +236,7 @@ struct VertexOutput {
     const fragment = emitNativeWgslProgram(program, "fragment");
     assert.match(
         vertex,
-        /@group\(0\) @binding\(0\) var<storage, read> vertexData/,
+        /@group\(0\) @binding\(2\) var<storage, read> vertexData/,
     );
     assert.doesNotMatch(vertex, /fragmentData/);
     assert.match(fragment, /@group\(2\) @binding\(0\) var albedo:/);

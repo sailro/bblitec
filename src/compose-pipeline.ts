@@ -924,6 +924,7 @@ export async function composeScenePipeline({
                 ),
                 {
                     linearImageProcessing,
+                    ...(clusteredLights ? { clusteredLights } : {}),
                     metallicReflectanceRegistered:
                         assetMetallicReflectanceRegistered,
                     pluginsRegistered:

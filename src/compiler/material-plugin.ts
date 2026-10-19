@@ -20,6 +20,8 @@ import type {
 // Names already served by the generated Standard binding table.
 import { standardBuiltinBindingNames } from "../pinned-standard-variants.js";
 import type { Value } from "./types.js";
+import { materialPluginOrder } from "../pinned-material-plugins.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 
 /** Which family's bind path the material a plugin attaches to takes. */
 type MaterialPluginFamily = "standard" | "pbr";
@@ -28,10 +30,13 @@ type MaterialPluginFamily = "standard" | "pbr";
 interface MaterialPluginContext extends Pick<
     LoweringServices,
     | "checker"
+    | "program"
+    | "evaluationOrder"
     | "resolveStaticExpression"
     | "unwrap"
     | "propertyName"
     | "probeStaticArrayLiteral"
+    | "expectStaticArrayElements"
     | "compileStaticString"
     | "compileValue"
     | "bindings"
@@ -70,8 +75,8 @@ export function emitMaterialPluginResources(
         kind: "expression",
         code: `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signatureIndex}));`,
     });
-    const samplers = plugins.manifests.flatMap(
-        (plugin) => plugin.samplers ?? [],
+    const samplers = materialPluginOrder(plugins.manifests).flatMap(
+        (index) => plugins.manifests[index]!.samplers ?? [],
     );
     plugins.textures.forEach((texture, index) => {
         context.expectSameEngine(target, texture.value, texture.node);
@@ -200,9 +205,6 @@ interface FoldedMaterialPlugins {
 
 /** The plugin members whose presence reaches machinery this port lacks. */
 const refusedMembers: Readonly<Record<string, string>> = {
-    priority:
-        "orders the plugins on one material, which only a second plugin " +
-        "can observe",
     isEnabled:
         "is the pin's toggle; a disabled plugin still takes an index, and " +
         "the toggle is a run-time rebuild",
@@ -354,10 +356,13 @@ export function foldMaterialPluginList(
     const folded = array.elements.map((element) =>
         foldMaterialPlugin(context, element, family, declared),
     );
+    const ordered = materialPluginOrder(
+        folded.map((plugin) => plugin.manifest),
+    ).map((index) => folded[index]!);
     return {
         manifests: folded.map((plugin) => plugin.manifest),
-        textures: folded.flatMap((plugin) => plugin.textures),
-        uniformWriters: folded.flatMap((plugin) =>
+        textures: ordered.flatMap((plugin) => plugin.textures),
+        uniformWriters: ordered.flatMap((plugin) =>
             plugin.uniformWriter ? [plugin.uniformWriter] : [],
         ),
     };
@@ -519,6 +524,7 @@ function foldPluginObject(
     owner?: Value,
 ): FoldedMaterialPlugin {
     let name: string | undefined;
+    let priority: number | undefined;
     let getCustomCode: ts.FunctionLikeDeclaration | undefined;
     let getSamplers: ts.FunctionLikeDeclaration | undefined;
     let bindTextures: ts.FunctionLikeDeclaration | undefined;
@@ -567,6 +573,28 @@ function foldPluginObject(
                 context.fail(property, "MaterialPlugin.name has no value.");
             }
             name = context.compileStaticString(property.initializer);
+            continue;
+        }
+        if (member === "priority") {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                recordFieldIsWritten(
+                    context,
+                    context.checker.getTypeAtLocation(object),
+                    member,
+                    false,
+                )
+            )
+                context.fail(
+                    property,
+                    "MaterialPlugin.priority must be constant.",
+                );
+            priority = context.compileValue(property.initializer).staticNumber;
+            if (priority === undefined || !Number.isFinite(priority))
+                context.fail(
+                    property,
+                    "MaterialPlugin.priority must be a finite constant number.",
+                );
             continue;
         }
         if (member === "getCustomCode") {
@@ -745,6 +773,7 @@ function foldPluginObject(
     return {
         manifest: {
             name,
+            ...(priority !== undefined ? { priority } : {}),
             ...(fragment ? { fragment } : {}),
             ...(vertex ? { vertex } : {}),
             ...(samplers ? { samplers } : {}),
@@ -762,13 +791,7 @@ function foldPluginFieldDeclarations(
     expression: ts.Expression,
     uniform: boolean,
 ): readonly MaterialPluginUniformManifest[] {
-    const array = context.probeStaticArrayLiteral(expression);
-    if (!array)
-        context.fail(
-            expression,
-            "Plugin shader fields require a static array.",
-        );
-    return array.elements.map((element) => {
+    return context.expectStaticArrayElements(expression).map((element) => {
         const object = context.unwrap(element);
         if (!ts.isObjectLiteralExpression(object))
             context.fail(
@@ -838,17 +861,10 @@ function foldSamplerDeclarations(
         declaration,
         `MaterialPlugin "${plugin}"'s getSamplers`,
     );
-    const array = context.probeStaticArrayLiteral(returned);
-    if (!array) {
-        context.fail(
-            returned,
-            "getSamplers returns a static array of texture and sampler " +
-                "declarations; the pin reads it once, at composition.",
-        );
-    }
+    const elements = context.expectStaticArrayElements(returned);
     const pinned = pinnedPluginContract();
     const builtins = standardBuiltinBindingNames();
-    return array.elements.map((element) => {
+    return elements.map((element) => {
         const object = context.unwrap(context.resolveStaticExpression(element));
         if (!ts.isObjectLiteralExpression(object)) {
             context.fail(
@@ -1355,7 +1371,6 @@ function foldPluginTexture(
     const compiled = knownValue ?? context.compileValue(node);
     const value: Value =
         compiled.kind === "texture" &&
-        !compiled.textureStorage &&
         compiled.dataType?.kind === "handle" &&
         compiled.dataType.handle === "texture"
             ? { ...compiled, textureStorage: "stored" }

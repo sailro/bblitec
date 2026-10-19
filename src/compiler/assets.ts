@@ -340,8 +340,8 @@ export function assetRecord(
                       // scene fetched.
                       SPLAT_ASSET_KINDS.has(kind)
                       ? `${basenameWithoutExtension(sourceName)}.splat`
-                      : // Basis keeps its .ktx asset name for the packaged mip payload.
-                        kind === "basis"
+                      : // Transcoded textures use .ktx names for the packaged mip payload.
+                        kind === "basis" || kind === "ktx2"
                         ? `${basenameWithoutExtension(sourceName)}.ktx`
                         : sourceName;
     const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");

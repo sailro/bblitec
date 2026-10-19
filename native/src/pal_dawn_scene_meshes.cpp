@@ -93,7 +93,8 @@ void upload_shader_material_textures(DawnState& state, const MaterialRecord& mat
 void refresh_shader_material_textures(DawnState& state, const Engine& engine) {
     bool changed = false;
     for (const auto& textures : state.shared_shader_material_textures) {
-        const auto* material = handle_find(engine.materials, textures->material);
+        const auto* view = handle_find(engine.materials, textures->material);
+        const auto* material = view ? &shader_resource_material(engine, *view) : nullptr;
         if (!material || textures->texture_version == material->shader_texture_version)
             continue;
         DawnSharedShaderMaterialTextures replacement;
@@ -240,7 +241,8 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     if (material_handle.value >= engine.materials.size()) {
         pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
     }
-    const MaterialRecord& material = handle_at(engine.materials, material_handle);
+    const MaterialRecord& material =
+        shader_resource_material(engine, handle_at(engine.materials, material_handle));
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
     const bool shared_scene_matrix =
         info.vertex.present && block_is_shared_scene_matrix(info.vertex);
@@ -270,10 +272,15 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                 continue;
             }
 #endif
-            if (reference->source != RenderTextureSource::render_target || reference->depth_only)
-                throw std::runtime_error("A shader slot samples a render target's colour.");
+            if (reference->source != RenderTextureSource::render_target)
+                throw std::runtime_error("A shader slot requires a render target.");
+            const auto& target =
+                pal::resolve_render_target(engine, reference->target, pal::frame_pass_target_user);
             render_views[slot] =
-                dawn_render_target_texture(state, engine, reference->target, false).second;
+                dawn_render_target_texture(state, engine, reference->target,
+                                           reference->depth_only ||
+                                               pal::render_target_samples_depth(target))
+                    .second;
         }
     }
     const auto existing = mesh.shader_bindings.find(key);
@@ -287,8 +294,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         bindings = std::move(existing->second);
         mesh.shader_bindings.erase(existing);
         bindings.resources.reset();
-        if (bindings.storage_buffers != material.shader_storage_buffers)
-            bindings.storage.reset();
+        bindings.storage.reset();
     }
 
     shader_pipeline_layout_for(state, variant);
@@ -315,28 +321,6 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
         return handle_at(state.shader_storage_buffers, handle).buffer;
     };
-
-    std::vector<WGPUBindGroupEntry> storage_entries;
-    for (std::size_t slot = 0; slot < info.storage_buffers.size(); ++slot) {
-        if (!info.storage_buffers[slot].vertex)
-            continue;
-        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        entry.binding = static_cast<std::uint32_t>(storage_entries.size());
-        entry.buffer = storage_buffer(slot);
-        entry.size = WGPU_WHOLE_SIZE;
-        storage_entries.push_back(entry);
-    }
-    if (!storage_entries.empty() && !bindings.storage) {
-        WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        descriptor.layout = layouts[0];
-        descriptor.entryCount = storage_entries.size();
-        descriptor.entries = storage_entries.data();
-        bindings.storage = require_dawn_resource(
-            wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
-        if (!bindings.storage) {
-            dawn_error("Shader storage bind group creation failed.");
-        }
-    }
 
     if (info.vertex.present && !bindings.scene) {
         if (!shared_scene_matrix) {
@@ -409,24 +393,29 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         sampler_entry.sampler = sampler;
         resource_entries.push_back(sampler_entry);
     }
-    std::uint32_t fragment_storage_binding = static_cast<std::uint32_t>(info.samplers.size() * 2);
-    for (std::size_t slot = 0; slot < info.storage_buffers.size(); ++slot) {
-        if (!info.storage_buffers[slot].fragment)
+    for (const std::size_t group : {0u, 2u}) {
+        auto entries = resource_entries;
+        std::uint32_t binding = static_cast<std::uint32_t>(info.samplers.size() * 2);
+        for (std::size_t slot = 0; slot < info.storage_buffers.size(); ++slot) {
+            const auto& storage = info.storage_buffers[slot];
+            if (!(group == 0 ? storage.vertex : storage.fragment))
+                continue;
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = binding++;
+            entry.buffer = storage_buffer(slot);
+            entry.size = WGPU_WHOLE_SIZE;
+            entries.push_back(entry);
+        }
+        if (entries.empty())
             continue;
-        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        entry.binding = fragment_storage_binding++;
-        entry.buffer = storage_buffer(slot);
-        entry.size = WGPU_WHOLE_SIZE;
-        resource_entries.push_back(entry);
-    }
-    if (!resource_entries.empty()) {
         WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        descriptor.layout = layouts[2];
-        descriptor.entryCount = resource_entries.size();
-        descriptor.entries = resource_entries.data();
-        bindings.resources = require_dawn_resource(
-            wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
-        if (!bindings.resources) {
+        descriptor.layout = layouts[group];
+        descriptor.entryCount = entries.size();
+        descriptor.entries = entries.data();
+        auto& resources = group == 0 ? bindings.storage : bindings.resources;
+        resources = require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &descriptor),
+                                          "mesh bind group");
+        if (!resources) {
             dawn_error("Shader resource bind group creation failed.");
         }
     }
@@ -450,7 +439,6 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
     bindings.render_views = render_views;
     bindings.resource_version = material.shader_resource_version;
-    bindings.storage_buffers = material.shader_storage_buffers;
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif
@@ -695,7 +683,8 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             state.shared_shader_material_textures.push_back(std::move(created));
             mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
             ++mesh.shared_shader_textures->users;
-            upload_shader_material_textures(state, *material, *mesh.shared_shader_textures);
+            upload_shader_material_textures(state, shader_resource_material(engine, *material),
+                                            *mesh.shared_shader_textures);
         } else {
             ++mesh.shared_shader_textures->users;
         }

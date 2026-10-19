@@ -67,7 +67,10 @@ export class AssetRegistry {
                 this.decoderBootstrapDepths.at(-1) !==
                     this.context.runtimeControlFlowDepth) ||
             [...this.context.assets.values()].some(
-                (asset) => asset.kind === "gltf" || asset.kind === "basis",
+                (asset) =>
+                    asset.kind === "gltf" ||
+                    asset.kind === "basis" ||
+                    asset.kind === "ktx2",
             )
         )
             this.context.fail(
@@ -87,7 +90,7 @@ export class AssetRegistry {
     ): CompileAsset {
         const asset = registerAsset(this.context, source, kind, faceSize);
         const decoders = this.assetDecoders.get("configuration");
-        if (kind === "gltf" && decoders)
+        if ((kind === "gltf" || kind === "ktx2") && decoders)
             writable(asset).assetDecoders = decoders;
         return asset;
     }

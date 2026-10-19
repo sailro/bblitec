@@ -222,6 +222,8 @@ export interface ShaderUniformBlockReflection {
     size: number;
     /** The system matrices this stage reads, in declaration order. */
     systemMatrices: ShaderSystemMatrix[];
+    /** Byte offsets of the corresponding system members in the stage block. */
+    systemOffsets: number[];
     members: ShaderUniformMemberReflection[];
 }
 
@@ -2483,11 +2485,8 @@ export function statementUsesPath(
  * generated variant table names it by. Declaration order here IS the
  * emitted `enum class ShaderSystemMatrix` order, so the two cannot drift.
  *
- * `shader-material.ts#isSystemUniform` names nine; these are the five a
- * reached program declares, in the pin's own declaration order. The other
- * four refuse at generation -- not because they are underivable
- * (`worldView` is one multiply away) but because nothing measures them,
- * and an unreached arm is one this port would be guessing at.
+ * `shader-material.ts#isSystemUniform` names nine; alphaCutoff remains
+ * unsupported. Each stage keeps the caller's declaration order.
  */
 export const shaderSystemMatrixTable = [
     { name: "world", enumerator: "world", type: "mat4x4<f32>", floatSize: 16 },
@@ -2516,12 +2515,17 @@ export const shaderSystemMatrixTable = [
         type: "mat4x4<f32>",
         floatSize: 16,
     },
-    // WGSL uniform vec3 values occupy one aligned vec4 slot.
     {
         name: "cameraPosition",
         enumerator: "camera_position",
         type: "vec3<f32>",
-        floatSize: 4,
+        floatSize: 3,
+    },
+    {
+        name: "screenSize",
+        enumerator: "screen_size",
+        type: "vec2<f32>",
+        floatSize: 2,
     },
 ] as const;
 
@@ -2617,33 +2621,19 @@ function stageReadsUniform(
     );
 }
 
-/**
- * Whether a stage samples the declared sampler `name`.
- *
- * Both halves of the pin's generated pair count: a body naming only the
- * `<name>Sampler` companion still needs the binding, and the two are
- * declared and bound together either way.
- */
-function stageReadsSampler(module: ShaderModule, name: string): boolean {
-    return moduleUsesPath(
-        module,
-        (parts) => parts[0] === name || parts[0] === `${name}Sampler`,
-    );
-}
-
 function stageReadsStorageBuffer(module: ShaderModule, name: string): boolean {
     return moduleUsesPath(module, (parts) => parts[0] === name);
 }
 
 /**
- * A custom uniform's alignment, from the layout rule the capture decoder
+ * A uniform's alignment, from the layout rule the capture decoder
  * reads browser buffers through -- the same rule on both sides of a
  * `scene -- diff`, so a stride fix reaches generation and diagnosis at once.
  */
 function uniformTypeAlignment(type: ShaderType): number {
     const layout = layoutOf(parseWgslType(type).shape);
     if (!layout) {
-        throw new Error(`Custom uniform type '${type}' has no uniform layout.`);
+        throw new Error(`Uniform type '${type}' has no uniform layout.`);
     }
     return layout.align;
 }
@@ -2657,10 +2647,9 @@ function reflectUniformBlock(
     module: ShaderModule,
     uniforms: Array<{ name: string; type: ShaderType }>,
 ): ShaderUniformBlockReflection | undefined {
-    // Declaration order is the layout: each matrix the stage reads takes
-    // four vec4 slots at the head of the block. Custom members then follow
-    // WGSL host-shareable alignment (not merely component packing): notably,
-    // a vec3 starts on a 16-byte boundary even after a scalar.
+    // System and custom members share WGSL host-shareable alignment in
+    // declaration order: notably, a vec3 starts on a 16-byte boundary even
+    // after a scalar.
     const systemMatrices = uniforms
         .filter(
             ({ name }) =>
@@ -2675,10 +2664,16 @@ function reflectUniformBlock(
     );
     if (systemMatrices.length === 0 && custom.length === 0) return undefined;
 
-    let byteOffset = systemMatrices.reduce(
-        (sum, name) => sum + shaderSystemUniformFloatSize(name) * 4,
-        0,
-    );
+    let byteOffset = 0;
+    const systemOffsets = systemMatrices.map((name) => {
+        byteOffset = roundUp(
+            uniformTypeAlignment(shaderSystemUniformType(name)),
+            byteOffset,
+        );
+        const offset = byteOffset;
+        byteOffset += shaderSystemUniformFloatSize(name) * 4;
+        return offset;
+    });
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
         const count = typeComponents(uniform.type);
@@ -2701,6 +2696,7 @@ function reflectUniformBlock(
         space: stage === "vertex" ? 1 : 3,
         size: roundUp(16, byteOffset),
         systemMatrices,
+        systemOffsets,
         members,
     };
 }
@@ -2770,19 +2766,9 @@ export function lowerWgslShaderProgram(
             throw new Error(`Unsupported vertex attribute '${name}'.`);
         return { name, ...attribute };
     });
-    const lanes =
-        source.useThinInstances === undefined
-            ? vertexInstanceLanes(source.vertexSource)
-            : undefined;
-    const readsInstanceColors =
-        source.useThinInstanceColors === true || lanes?.instanceColors === true;
-    const readsThinInstances =
-        source.useThinInstances === true ||
-        readsInstanceColors ||
-        lanes?.thinInstances === true;
-    if (readsThinInstances) {
+    if (source.useThinInstances === true) {
         attributes.push(...instanceAttributes);
-        if (readsInstanceColors) {
+        if (source.useThinInstanceColors === true) {
             attributes.push(instanceColorAttribute);
         }
     }
@@ -2790,19 +2776,7 @@ export function lowerWgslShaderProgram(
     for (const name of sceneSystemUniforms)
         if (!uniforms.some((uniform) => uniform.name === name))
             uniforms.push({ name, type: shaderSystemUniformType(name) });
-    // A sampler pair binds in the fragment stage alone here. The pin
-    // declares both stages' visibility, but SDL_GPU gives a vertex texture
-    // its own register space, and no reached scene samples in a vertex
-    // stage, so one that does refuses rather than binding at the fragment
-    // stage's registers.
     const samplerDeclarations = shaderSamplerDeclarations(source);
-    for (const { name } of samplerDeclarations) {
-        if (stageReadsSampler(vertex, name)) {
-            throw new Error(
-                `Shader material sampler '${name}' is read by the vertex stage, which is not lowered.`,
-            );
-        }
-    }
     const samplers = samplerDeclarations.map(({ name }) => name);
     const storageBuffers = (source.storageBuffers ?? []).map((buffer) => ({
         ...buffer,
@@ -2885,15 +2859,3 @@ const instanceColorAttribute: {
     location: number;
     type: ShaderType;
 } = { name: "instanceColor", location: 20, type: "vec4<f32>" };
-
-/** The instance lanes a vertex source reads when its program does not state them. */
-export function vertexInstanceLanes(vertexSource: string): {
-    readonly thinInstances: boolean;
-    readonly instanceColors: boolean;
-} {
-    const instanceColors = /\binstanceColor\b/.test(vertexSource);
-    return {
-        instanceColors,
-        thinInstances: instanceColors || /\bworld[0123]\b/.test(vertexSource),
-    };
-}

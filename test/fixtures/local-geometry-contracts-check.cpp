@@ -75,11 +75,13 @@ void check_shader_blocks() {
     ShaderPassMatrices pass{vp.data(), &view, &projection};
     pass.camera_position = &camera;
     using Matrix = upstream::ShaderSystemMatrix;
-    upstream::ShaderVariantStageBlock block{
-        true,
-        {Matrix::world, Matrix::world_view, Matrix::world_view_projection, Matrix::camera_position},
-        56,
-        {{52, 2, 2}}};
+    upstream::ShaderVariantStageBlock block{true,
+                                            {{Matrix::world, 0},
+                                             {Matrix::world_view, 16},
+                                             {Matrix::world_view_projection, 32},
+                                             {Matrix::camera_position, 48}},
+                                            56,
+                                            {{52, 2, 2}}};
     MaterialRecord material;
     material.shader_uniform_values = {6, 7, 8, 9};
     std::vector<float> reference;
@@ -106,7 +108,7 @@ void check_shader_blocks() {
     for (const auto matrix :
          {Matrix::world, Matrix::world_view, Matrix::world_view_projection, Matrix::view,
           Matrix::projection, Matrix::view_projection, Matrix::camera_position}) {
-        block.system_matrices = {matrix};
+        block.system_uniforms = {{matrix, 0}};
         block.gather.clear();
         assert(block_is_shared_scene_matrix(block) == (matrix == Matrix::view_projection));
     }

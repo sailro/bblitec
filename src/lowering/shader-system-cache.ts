@@ -567,9 +567,10 @@ export function lowerShaderSystemWriter(context: LoweringContext): string {
                     `${indent}store_product(dependency, matrix, ${lowerer.expression(write.arguments[4]!)});`,
                 ];
             }
-            // screenSize and alphaCutoff: the compiler refuses both names on
-            // a scene's shader material (shader-material.ts), so no reached
-            // layout declares them. Each refuses at its first store.
+            if (context.expressionMatchesShape(write, "data[f] = targetWidth"))
+                return [
+                    `${indent}store_screen_size(target_width, target_height);`,
+                ];
             if (
                 context.expressionMatchesShape(
                     write,
@@ -580,24 +581,21 @@ export function lowerShaderSystemWriter(context: LoweringContext): string {
             if (
                 context.expressionMatchesShape(
                     write,
-                    "data[f] = targetWidth",
-                ) ||
-                context.expressionMatchesShape(
-                    write,
                     'data[f] = material._uniformValues.get("alphaCutoff")?.value[0] ?? 0.4',
                 )
             )
                 return [
-                    `${indent}throw std::runtime_error("A shader material's screenSize and alphaCutoff system uniforms are not supported.");`,
+                    `${indent}throw std::runtime_error("A shader material's alphaCutoff system uniform is not supported.");`,
                 ];
             return undefined;
         },
     });
     return `// ${context.provenance(rendererModule, "writeSystemUniforms", "declared system layout")}
-template<class Clear, class ReadWorld, class Store, class StoreProduct, class StoreCameraPosition>
+template<class Clear, class ReadWorld, class Store, class StoreProduct, class StoreCameraPosition, class StoreScreenSize>
 void write_shader_packet_system(const CameraRecord* camera, std::span<const std::uint32_t> layout,
     double target_width, double target_height, Clear&& clear, ReadWorld&& read_world, Store&& store,
-    StoreProduct&& store_product, StoreCameraPosition&& store_camera_position) {
+    StoreProduct&& store_product, StoreCameraPosition&& store_camera_position,
+    StoreScreenSize&& store_screen_size) {
     clear();
     std::optional<std::array<float, 16>> world;
     std::optional<std::array<float, 16>> view;
@@ -667,6 +665,7 @@ void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRec
         camera, material.shader_system_dependencies, target_width, target_height, [] {},
         [] { return std::array<float, 16>{}; },
         [](std::uint32_t, const std::array<float, 16>&) {},
-        [](std::uint32_t, const std::array<float, 16>&, const std::array<float, 16>&) {}, [] {});
+        [](std::uint32_t, const std::array<float, 16>&, const std::array<float, 16>&) {}, [] {},
+        [](double, double) {});
 }`;
 }

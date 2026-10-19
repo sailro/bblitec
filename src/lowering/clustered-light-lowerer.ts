@@ -179,7 +179,7 @@ export function clusteredOptionFields(
 
 /**
  * The native options struct a clustered factory takes, in the interface's
- * own order: a tuple as the compiler's `Vec3d`, a number as a double, an
+ * own order: a retained tuple, a number as a double, an
  * optional one absent until the scene names it.
  */
 export function clusteredOptionsStruct(
@@ -190,7 +190,7 @@ export function clusteredOptionsStruct(
         (field) =>
             `    ${
                 field.kind === "vec3"
-                    ? "Vec3d"
+                    ? "js::Tuple<3>"
                     : field.optional
                       ? "std::optional<double>"
                       : "double"
@@ -219,9 +219,7 @@ export function clusteredOptionBindings(
             const binding: PinnedBinding =
                 field.kind === "vec3"
                     ? {
-                          cpp: `std::array<double, 3>{${["x", "y", "z"]
-                              .map((lane) => `${member}.${lane}`)
-                              .join(", ")}}`,
+                          cpp: member,
                           type: "f64-buffer",
                       }
                     : field.optional
@@ -449,7 +447,7 @@ const SCALAR_HELPERS: readonly ClusteredHelper[] = [
                 kind: "record",
                 cpp: "position",
                 annotation: "readonly [number, number, number]",
-                cppType: "std::array<double, 3>",
+                cppType: "js::Tuple<3>",
                 binding: { cpp: "position", type: "f64-buffer" },
             },
             { pinned: "view", kind: "numberArray", cpp: "view" },

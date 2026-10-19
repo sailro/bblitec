@@ -186,6 +186,13 @@ export function compileImmediatePromise(
     if (method === "finally" && !context.options.workers)
         throw new ApplicationRealmRequired();
     if (method !== "then") return undefined;
+    // Retaining the chain observes its settlement and identity. The immediate
+    // callback path only emits effects; the application realm owns the result.
+    if (
+        isImmediateReactionResultUsed(context, call) &&
+        !context.options.workers
+    )
+        throw new ApplicationRealmRequired();
     if (call.arguments.length < 1 || call.arguments.length > 2) {
         context.fail(
             call,
@@ -343,13 +350,8 @@ function compileImmediateCatch(
     };
 }
 
-/**
- * Whether the awaited call's result is consumed. A discarded `Promise.all`
- * keeps emitting its elements as bare statements; a declaration, assignment,
- * return, or argument keeps the eagerly settled tuple/vector value.
- */
-export function isPromiseResultUsed(call: ts.CallExpression): boolean {
-    let node: ts.Node = call;
+function unwrappedResultUse(expression: ts.Expression): ts.Node {
+    let node: ts.Node = expression;
     while (
         ts.isAwaitExpression(node.parent) ||
         ts.isParenthesizedExpression(node.parent) ||
@@ -359,6 +361,36 @@ export function isPromiseResultUsed(call: ts.CallExpression): boolean {
     ) {
         node = node.parent;
     }
+    return node;
+}
+
+function isImmediateReactionResultUsed(
+    context: PromiseLoweringContext,
+    call: ts.CallExpression,
+): boolean {
+    const element = unwrappedResultUse(call);
+    const array = element.parent;
+    if (ts.isArrayLiteralExpression(array)) {
+        const aggregate = array.parent;
+        if (
+            ts.isCallExpression(aggregate) &&
+            aggregate.arguments[0] === array &&
+            ts.isPropertyAccessExpression(aggregate.expression) &&
+            aggregate.expression.name.text === "all" &&
+            context.libraryGlobal(aggregate.expression.expression) === "Promise"
+        )
+            return isImmediateReactionResultUsed(context, aggregate);
+    }
+    return isPromiseResultUsed(call);
+}
+
+/**
+ * Whether the awaited call's result is consumed. A discarded `Promise.all`
+ * keeps emitting its elements as bare statements; a declaration, assignment,
+ * return, or argument keeps the eagerly settled tuple/vector value.
+ */
+export function isPromiseResultUsed(call: ts.CallExpression): boolean {
+    const node = unwrappedResultUse(call);
     return !(
         ts.isExpressionStatement(node.parent) ||
         ts.isVoidExpression(node.parent)

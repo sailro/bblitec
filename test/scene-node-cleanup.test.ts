@@ -60,7 +60,7 @@ test("SceneNode removal dispatches retained nodes and snapshots children before 
 namespace bbl {
 std::vector<std::uint32_t> removed;
 void require_scene_engine(Scene& scene){assert(scene.engine);}
-void mark_transform_node_dirty(Engine&,TransformNodeHandle) {}
+void mark_transform_node_dirty(Engine&,TransformNodeHandle,bool) {}
 ${cppFunction(sceneCore, "void require_acyclic_transform_node_parent(")}
 ${cppFunction(sceneCore, "void set_transform_node_parent(")}
 void remove_from_scene(Scene& scene,MeshHandle mesh){

@@ -7,12 +7,18 @@ namespace bbl::pal {
 
 inline const char* text_blend_factor_name(BlendFactor factor) {
     switch (factor) {
+    case BlendFactor::zero:
+        return "zero";
     case BlendFactor::one:
         return "one";
     case BlendFactor::src_alpha:
         return "src-alpha";
     case BlendFactor::one_minus_src_alpha:
         return "one-minus-src-alpha";
+    case BlendFactor::dst:
+        return "dst";
+    case BlendFactor::dst_alpha:
+        return "dst-alpha";
     }
     throw std::runtime_error("Unmapped text blend factor.");
 }

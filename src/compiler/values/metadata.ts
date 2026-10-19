@@ -164,6 +164,7 @@ const resourceMetadataFields = {
     "render-target": ["renderTargetSignature"],
     camera: ["cameraProgram", "cameraKind"],
     scene: [
+        "scenePrimarySurface",
         "sceneCamera",
         "sceneEnvironmentState",
         "sceneTopologyState",

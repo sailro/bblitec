@@ -69,6 +69,7 @@ export interface AssetIntrinsicContext
             | "cppString"
             | "objectProperty"
             | "compileBoolean"
+            | "conditions"
             | "bindings"
             | "staticAssetUrlCandidates"
             | "sourceFiles"
@@ -820,6 +821,30 @@ function compileLoadKtxTexture2D(
     };
 }
 
+function compileLoadKtx2Texture2D(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const url = context.compileStringLiteral(argumentAt(call, 1));
+    const asset = context.assetRegistry.registerAsset(url, "ktx2");
+    const srgb = call.arguments[2]
+        ? context.conditions.compileCondition(call.arguments[2])
+        : "false";
+    context.reachFeature("texture:compressed", call);
+    context.reachFeature("texture:ktx2", call);
+    return {
+        kind: "texture",
+        textureStorage: "file",
+        textureObjectInvertY: true,
+        cpp: `bbl::load_ktx2_texture(${engine.cpp}, bbl::asset_path(${context.cppString(asset.output)}), ${srgb})`,
+        textureFile: {},
+        engineCpp: engine.engineCpp ?? engine.cpp,
+    };
+}
+
 function compileLoadSkybox(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
@@ -1159,6 +1184,7 @@ const assetIntrinsicHandlers = new EmissionMap<
     ],
     ["loadBabylon", compileLoadBabylon],
     ["loadTexture2D", compileLoadTexture2D],
+    ["loadKtx2Texture2D", compileLoadKtx2Texture2D],
     [
         "loadKtxTexture2D",
         (context, call) =>

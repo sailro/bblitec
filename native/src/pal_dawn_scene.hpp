@@ -151,7 +151,6 @@ struct DawnShaderBindings {
     /** The render-target views the resource group was built from, by sampler slot. */
     std::vector<WGPUTextureView> render_views;
     std::optional<std::uint64_t> resource_version;
-    std::vector<StorageBufferHandle> storage_buffers;
 };
 
 struct DawnShaderBindingKey {
@@ -485,10 +484,12 @@ mesh_shader_textures(const DawnMesh& mesh) {
 struct DawnTaskTarget {
     WGPUTextureFormat color;
     WGPUTextureFormat depth;
+    std::optional<DepthCompare> depth_compare{};
 };
 using DawnVariantPipelineKey = std::tuple<std::size_t, WGPUTextureFormat, WGPUTextureFormat>;
-using DawnMeshPipelineKey = std::tuple<upstream::RenderPipelineKind, std::uint32_t, std::uint32_t,
-                                       WGPUTextureFormat, WGPUTextureFormat, bool>;
+using DawnMeshPipelineKey =
+    std::tuple<upstream::RenderPipelineKind, std::uint32_t, std::uint32_t, WGPUTextureFormat,
+               WGPUTextureFormat, bool, std::optional<DepthCompare>>;
 
 struct DawnPipeline {
     WGPURenderPipeline pipeline = nullptr;
@@ -527,24 +528,9 @@ struct DawnRenderTarget {
     std::uint32_t allocation = 0;
 };
 
-/**
- * A depth-only task's group 1 for one mesh: the task's view-projection beside
- * the mesh's own stage blocks (`serve_mesh_stage_binding`), and the world
- * buffer it was built over -- a mesh uploaded again carries new blocks.
- */
-struct DawnDepthOnlyGroup {
-    WGPUBuffer mesh_world = nullptr;
-    DawnBindGroup group{};
-#if BBLITE_GPU_MORPH_STORAGE
-    DawnBindGroup morph{};
-#endif
-};
-
 struct DawnRenderTask {
     upstream::RenderDrawLists draw_lists;
     DawnBuffer view_projection{};
-    // Depth-only passes bind group 1 per mesh, keyed by the mesh's slot.
-    std::unordered_map<std::uint32_t, DawnDepthOnlyGroup> depth_only_groups;
     // A task the scene gave its own camera composes its own view-projection
     // and eye position, so it needs its own copy of the pin's per-pass scene
     // block; the lights beside it are the scene's and stay shared. Null for
@@ -1032,14 +1018,10 @@ struct DawnState : DawnDevice {
     // sibling, so the pass's two sampling modes are both the pin's.
     WGPUSampler post_process_bilinear_sampler = nullptr;
 #endif
-    WGPUShaderModule depth_only_module = nullptr;
     WGPUShaderModule blit_vertex_module = nullptr;
     WGPUShaderModule blit_fragment_module = nullptr;
     WGPUShaderModule depth_copy_module = nullptr;
     WGPURenderPipeline depth_copy_pipeline = nullptr;
-    // Depth-only pipelines by [sided][samples==4].
-    std::map<std::tuple<bool, std::uint32_t, WGPUTextureFormat>, WGPURenderPipeline>
-        depth_only_pipelines;
     // Blit pipelines keyed by target (format, samples).
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>, WGPURenderPipeline> blit_pipelines;
     std::uint32_t frame_graph_width = 0;
@@ -1231,7 +1213,6 @@ struct DawnState : DawnDevice {
     // and rebuild together with the meshes.
     void release_render_tasks() {
         for (DawnRenderTask& task : render_tasks) {
-            task.depth_only_groups.clear();
             if (task.pinned_frame_group) {
                 task.pinned_frame_group.reset();
             }
@@ -1721,10 +1702,6 @@ struct DawnState : DawnDevice {
             wgpuSamplerRelease(shadow_filtering_sampler);
         }
 #endif
-        for (auto& [key, pipeline] : depth_only_pipelines) {
-            if (pipeline)
-                wgpuRenderPipelineRelease(pipeline);
-        }
         for (auto& [key, pipeline] : blit_pipelines) {
             if (pipeline)
                 wgpuRenderPipelineRelease(pipeline);
@@ -1734,9 +1711,6 @@ struct DawnState : DawnDevice {
         }
         if (depth_copy_module) {
             wgpuShaderModuleRelease(depth_copy_module);
-        }
-        if (depth_only_module) {
-            wgpuShaderModuleRelease(depth_only_module);
         }
         if (blit_fragment_module) {
             wgpuShaderModuleRelease(blit_fragment_module);

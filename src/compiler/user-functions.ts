@@ -1490,17 +1490,48 @@ export class UserFunctionLowerer {
         )
             return undefined;
         const signature = this.checker.getSignatureFromDeclaration(declaration);
-        const flags =
-            signature && this.checker.getReturnTypeOfSignature(signature).flags;
+        const returned =
+            signature && this.checker.getReturnTypeOfSignature(signature);
+        const flags = returned?.flags;
+        const stringResult =
+            returned !== undefined &&
+            (returned.isUnion() ? returned.types : [returned]).every(
+                (member) => (member.flags & ts.TypeFlags.StringLike) !== 0,
+            );
+        const nullableScalarResult =
+            returned?.isUnion() === true &&
+            returned.types.some(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+                    0,
+            ) &&
+            returned.types.every(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.StringLike |
+                            ts.TypeFlags.NumberLike |
+                            ts.TypeFlags.BooleanLike |
+                            ts.TypeFlags.Null |
+                            ts.TypeFlags.Undefined)) !==
+                    0,
+            );
         if (
             flags === undefined ||
-            (flags & (ts.TypeFlags.BooleanLike | ts.TypeFlags.StringLike)) === 0
+            (!stringResult &&
+                !nullableScalarResult &&
+                (flags & ts.TypeFlags.BooleanLike) === 0)
         )
             return undefined;
-        const knownArgument =
-            (flags & ts.TypeFlags.StringLike) !== 0
-                ? generationKnownStringArgument
-                : generationKnownPrimitive;
+        const knownArgument = (value: Value): boolean =>
+            stringResult
+                ? generationKnownStringArgument(value) ||
+                  (value.kind === "record" &&
+                      context.bindings.recordPropertiesAreCurrent(value) &&
+                      Object.values(value.recordProperties ?? {}).some(
+                          generationKnownPrimitive,
+                      ))
+                : generationKnownPrimitive(value);
         if (
             call.arguments.some((argument) => {
                 const node = unwrapExpression(argument);
@@ -1527,11 +1558,14 @@ export class UserFunctionLowerer {
                 const value = this.lower(context, ir, values, call);
                 if (
                     value.staticBoolean !== undefined ||
-                    value.staticString !== undefined
+                    value.staticString !== undefined ||
+                    (nullableScalarResult &&
+                        (value.kind === "json-null" ||
+                            value.staticNumber !== undefined))
                 )
                     return value;
                 if (
-                    (flags & ts.TypeFlags.StringLike) !== 0 &&
+                    stringResult &&
                     this.canExecuteStringHelper(context, declaration)
                 ) {
                     // The native lowering above owns argument effects. A pure

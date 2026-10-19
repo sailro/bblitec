@@ -49,6 +49,8 @@ export type HandleKind =
     | "transmission-grab"
     | "scene-node"
     | "light"
+    | "clustered-light"
+    | "clustered-light-container"
     | "shadow-generator"
     | "hierarchy-instance-pool"
     | "thin-instance-pool"

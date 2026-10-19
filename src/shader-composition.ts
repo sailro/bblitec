@@ -5,6 +5,8 @@ import type { ShaderStageConstant } from "./shader-ir.js";
 interface ShaderStageDeclaration {
     entryPoint: string;
     constants?: readonly ShaderStageConstant[];
+    /** Matching HLSL signature order for a linked vertex/fragment pair. */
+    positionFirst?: boolean;
 }
 
 export interface ShaderModuleDeclaration extends ShaderStageDeclaration {
@@ -38,8 +40,17 @@ function stageDeclaration(
     const entryPoint = text(value.entryPoint, "Shader entryPoint");
     if (!/^[A-Za-z_]\w*$/.test(entryPoint))
         throw new Error(`Invalid shader entryPoint '${entryPoint}'.`);
+    if (
+        value.positionFirst !== undefined &&
+        typeof value.positionFirst !== "boolean"
+    )
+        throw new Error("Shader positionFirst must be a boolean.");
+    const position =
+        value.positionFirst === undefined
+            ? {}
+            : { positionFirst: value.positionFirst };
     if (value.constants === undefined || value.constants === null)
-        return { entryPoint };
+        return { entryPoint, ...position };
     if (!Array.isArray(value.constants))
         throw new Error("Shader constants must be an array.");
     const constants: ShaderStageConstant[] = [];
@@ -68,6 +79,7 @@ function stageDeclaration(
     }
     return {
         entryPoint,
+        ...position,
         constants: constants.sort((left, right) => left.id - right.id),
     };
 }

@@ -1,14 +1,12 @@
 import { EmissionSet } from "../emission-transaction.js";
 import { nativeTextureFormats } from "../../native-texture-format.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
+import {
+    nativeDepthCompare,
+    pinnedDepthClearValue,
+    pinnedReverseDepthCompare,
+} from "../../lowering/pinned-depth-state.js";
 import type { LoweringServices } from "../lowering-services.js";
-// Frame-graph option lowering: render targets, render/geometry/copy
-// tasks, and the scene's default-render-task flag.
-//
-// Each function turns a task factory's options argument into the
-// C++ options struct literal the PAL executes, and the geometry task
-// also returns the manifest entry the generated shader table indexes
-// by reach order. The intrinsic lowerer in engine.ts calls these
-// through its context.
 // Frame-graph option lowering: render targets, render/geometry/copy
 // tasks, and the scene's default-render-task flag.
 //
@@ -92,9 +90,37 @@ export function compileRenderTargetOptions(
     validateObjectProperties(
         context,
         object,
-        ["lbl", "format", "dFormat", "samples", "size"],
-        "Reached render targets support lbl, format, dFormat, samples, and size.",
+        [
+            "lbl",
+            "format",
+            "dFormat",
+            "samples",
+            "size",
+            "depthCompare",
+            "depthClearValue",
+        ],
+        "Reached render targets support lbl, format, dFormat, samples, size, and the pinned default depthCompare/depthClearValue.",
     );
+    const depthCompare = context.objectProperty(object, "depthCompare");
+    const depthClear = context.objectProperty(object, "depthClearValue");
+    if (
+        depthCompare &&
+        context.compileStringLiteral(depthCompare) !==
+            pinnedReverseDepthCompare(sharedPinnedContext())
+    )
+        context.fail(
+            depthCompare,
+            "Render targets require the pinned default depthCompare.",
+        );
+    if (
+        depthClear &&
+        compileStaticNumber(context, depthClear, "depthClearValue") !==
+            pinnedDepthClearValue(sharedPinnedContext())
+    )
+        context.fail(
+            depthClear,
+            "Render targets require the pinned default depthClearValue.",
+        );
     const samples = context.objectProperty(object, "samples");
     const colorFormat = context.objectProperty(object, "format");
     const depthFormat = context.objectProperty(object, "dFormat");
@@ -171,7 +197,7 @@ export function compileRenderTargetOptions(
         !!format &&
         ts.isPropertyAccessExpression(format) &&
         format.name.text === "format" &&
-        ts.isIdentifier(format.expression) &&
+        ts.isIdentifier(context.unwrap(format.expression)) &&
         context.compileValue(format.expression).kind === "engine";
     const depthFormats = new Map([
         ["depth16unorm", "depth16_unorm"],
@@ -201,6 +227,8 @@ export function compileRenderTargetOptions(
             `Unsupported render target depth format '${depth}'.`,
         );
     let cpp = `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    if (depthCompare)
+        cpp = `[&]() { auto options = ${cpp}; options.depth_compare = bbl::DepthCompare::${nativeDepthCompare(pinnedReverseDepthCompare(sharedPinnedContext()))}; return options; }()`;
     if (colorClass || depthClass) {
         cpp = `[&]() { auto options = ${cpp}; ${colorClass ? `options.format = bbl::TextureFormatClass::${colorClass}; options.has_format = true;` : ""} ${depthClass ? `options.depth_format = bbl::DepthTextureFormat::${depthClass};` : ""} return options; }()`;
     }

@@ -405,6 +405,9 @@ export function compileEngineIntrinsic(
             const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
                 kind: "scene",
+                ...(engine.kind === "engine"
+                    ? { scenePrimarySurface: true as const }
+                    : {}),
                 ...(engine.surfaceCanvas
                     ? { surfaceCanvas: true as const }
                     : {}),

@@ -223,24 +223,19 @@ WGPUBindGroupLayout shader_group_layout(DawnState& state, std::uint32_t variant,
         const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
         std::vector<WGPUBindGroupLayoutEntry> entries;
         switch (group) {
-        case 0: {
-            std::uint32_t binding = 0;
-            for (const upstream::ShaderStorageBufferInfo& storage : info.storage_buffers) {
-                if (storage.vertex)
-                    entries.push_back(storage_layout_entry(binding++, WGPUShaderStage_Vertex));
-            }
-            break;
-        }
         case 1:
             if (info.vertex.present)
                 entries.push_back(uniform_layout_entry(0, WGPUShaderStage_Vertex));
             break;
+        case 0:
         case 2: {
-            // Fragment storage follows the texture/sampler pairs.
+            const WGPUShaderStage visibility =
+                group == 0 ? WGPUShaderStage_Vertex : WGPUShaderStage_Fragment;
+            // Each stage's storage follows the texture/sampler pairs.
             std::uint32_t binding = static_cast<std::uint32_t>(info.samplers.size() * 2);
             for (const upstream::ShaderStorageBufferInfo& storage : info.storage_buffers) {
-                if (storage.fragment)
-                    entries.push_back(storage_layout_entry(binding++, WGPUShaderStage_Fragment));
+                if (group == 0 ? storage.vertex : storage.fragment)
+                    entries.push_back(storage_layout_entry(binding++, visibility));
             }
             for (std::size_t slot = 0; slot < info.samplers.size(); ++slot) {
                 const upstream::ShaderSamplerShape shape = slot < info.sampler_shapes.size()
@@ -248,13 +243,13 @@ WGPUBindGroupLayout shader_group_layout(DawnState& state, std::uint32_t variant,
                                                                : upstream::ShaderSamplerShape{};
                 WGPUBindGroupLayoutEntry texture = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
                 texture.binding = static_cast<std::uint32_t>(slot * 2);
-                texture.visibility = WGPUShaderStage_Fragment;
+                texture.visibility = visibility;
                 texture.texture.sampleType = shader_sample_type(shape.sample_type);
                 texture.texture.viewDimension = shader_view_dimension(shape.view_dimension);
                 entries.push_back(texture);
                 WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
                 sampler.binding = static_cast<std::uint32_t>(slot * 2 + 1);
-                sampler.visibility = WGPUShaderStage_Fragment;
+                sampler.visibility = visibility;
                 sampler.sampler.type =
                     shape.comparison ? WGPUSamplerBindingType_Comparison
                     : shape.sample_type == upstream::ShaderSamplerSampleType::unfilterable_float
@@ -304,7 +299,8 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     auto& pipeline_map = state.pipelines;
     const auto pipeline_key =
         std::make_tuple(kind, shader_variant, samples, color_format,
-                        has_depth ? depth_format : WGPUTextureFormat_Undefined, shadow_pass);
+                        has_depth ? depth_format : WGPUTextureFormat_Undefined, shadow_pass,
+                        target ? target->depth_compare : std::nullopt);
     const auto existing = pipeline_map.find(pipeline_key);
     if (existing != pipeline_map.end())
         return existing->second;
@@ -405,7 +401,9 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     depth_stencil.depthWriteEnabled =
         depth_write_off ? WGPUOptionalBool_False : WGPUOptionalBool_True;
     depth_stencil.depthCompare = dawn_depth_compare(
-        shader_info.depth_compare ? *shader_info.depth_compare : pass_depth_compare(shadow_pass));
+        target && target->depth_compare ? *target->depth_compare
+        : shadow_pass ? pass_depth_compare(true)
+                      : shader_info.depth_compare.value_or(pass_depth_compare(false)));
     depth_stencil.depthBias = shader_info.depth_bias;
     depth_stencil.depthBiasSlopeScale = shader_info.depth_bias_slope_scale;
     // Depth-less render-task targets need attachment-compatible
@@ -422,7 +420,10 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = color_format;
     WGPUBlendState blend{};
-    if (traits.transparent || shader_info.alpha_blending) {
+    if (shader_info.blend) {
+        blend = blend_state_from(*shader_info.blend);
+        color_target.blend = &blend;
+    } else if (traits.transparent || shader_info.alpha_blending) {
         blend = blend_state_from(shader_info.additive_blending ? shader_additive_blend
                                                                : transparent_blend);
         color_target.blend = &blend;
@@ -439,71 +440,6 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
         dawn_error("wgpuDeviceCreateRenderPipeline");
     DawnPipeline& slot = pipeline_map[pipeline_key];
     slot.pipeline = pipeline.release();
-    return slot;
-}
-
-WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
-                                           std::uint32_t samples, WGPUTextureFormat format) {
-    WGPURenderPipeline& slot =
-        state.depth_only_pipelines[std::make_tuple(double_sided, samples, format)];
-    if (slot)
-        return slot;
-    if (!state.depth_only_module) {
-        state.depth_only_module = load_wgsl_module(state, "depth-only.frag");
-    }
-    // Explicit stage layouts let both culling variants share the mesh's
-    // morph group and the task's camera/world/deformation group.
-    const std::array<DawnLayoutStage, 1> stages{{{"pbr.vert", WGPUShaderStage_Vertex}}};
-    DawnBindGroupLayout morph_layout{create_dawn_reflected_layout(state.device, stages, 0)};
-    DawnBindGroupLayout mesh_layout{create_dawn_reflected_layout(state.device, stages, 1)};
-    const std::array<WGPUBindGroupLayout, 2> group_layouts{morph_layout.get(), mesh_layout.get()};
-    WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.bindGroupLayoutCount = group_layouts.size();
-    layout_descriptor.bindGroupLayouts = group_layouts.data();
-    DawnPipelineLayout layout{wgpuDeviceCreatePipelineLayout(state.device, &layout_descriptor)};
-    auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
-    fill_base_vertex_attributes(attributes.data());
-    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
-    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
-    vertex_layouts[0].attributeCount = attributes.size();
-    vertex_layouts[0].attributes = attributes.data();
-#if BBLITE_GPU_INSTANCING
-    auto instance_attributes = vertex_attribute_array<4>();
-    for (std::uint32_t column = 0; column < 4; ++column) {
-        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
-        instance_attributes[column].offset = column * 16;
-        instance_attributes[column].shaderLocation = instance_matrix_first_location + column;
-    }
-    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
-    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
-    vertex_layouts[1].attributeCount = instance_attributes.size();
-    vertex_layouts[1].attributes = instance_attributes.data();
-#endif
-    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = layout;
-    descriptor.vertex.module = state.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.vertex.bufferCount = BBLITE_GPU_INSTANCING ? 2 : 1;
-    descriptor.vertex.buffers = vertex_layouts.data();
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-    descriptor.primitive.cullMode = double_sided ? WGPUCullMode_None : WGPUCullMode_Back;
-    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = format;
-    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-    depth_stencil.depthCompare = dawn_depth_compare(upstream::pinned_depth_compare);
-    descriptor.depthStencil = &depth_stencil;
-    descriptor.multisample.count = samples;
-    descriptor.multisample.mask = ~0u;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = state.depth_only_module;
-    fragment.entryPoint = string_view("mainFragment");
-    fragment.targetCount = 0;
-    descriptor.fragment = &fragment;
-    slot = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!slot)
-        dawn_error("depth-only pipeline creation failed.");
     return slot;
 }
 
@@ -1000,7 +936,8 @@ class DawnSceneRun {
             has_depth = borrowed || record.has_depth;
             target =
                 DawnTaskTarget{gpu.color_format,
-                               borrowed ? WGPUTextureFormat_Depth24PlusStencil8 : gpu.depth_format};
+                               borrowed ? WGPUTextureFormat_Depth24PlusStencil8 : gpu.depth_format,
+                               record.depth_compare};
         }
         [[maybe_unused]] const auto shader =
             geometry ? static_cast<std::size_t>(geometry->geometry.shader_index) : npos;
@@ -2135,10 +2072,9 @@ public:
                     if (task.kind != FrameTaskKind::render)
                         continue;
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
-                    const RenderTargetRecord& target_record = pal::resolve_render_target(
-                        engine, task.render.target, pal::task_target_user(task));
                     const DawnRenderTarget& target =
-                        handle_at(state.render_targets, task.render.target);
+                        pal::resolve_gpu_target(engine, state.render_targets, task.render.target,
+                                                pal::task_target_user(task));
                     CameraRecord* const task_camera = task_pass_camera(engine, task);
                     // `_writePassSceneUBO` folds the camera's own viewport into
                     // whichever extent the task was configured for -- the
@@ -2205,6 +2141,8 @@ public:
                     // The billboards a scene-stage task draws bind the task's own
                     // pass block, as the pin binds each task's scene group: the
                     // task's camera and matrices, as the SDL_GPU twin pushes.
+                    const RenderTargetRecord& target_record = pal::resolve_render_target(
+                        engine, task.render.target, pal::task_target_user(task));
                     if (task.render.scene_stages && target_record.has_color && !shadow_task) {
                         const upstream::SceneUniforms& billboard_block =
                             write_billboard_scene_block(data_.pass_blocks.task(handle), graph_scene,
@@ -2217,7 +2155,7 @@ public:
                     }
 #endif
 #if BBLITE_PINNED_MATERIALS
-                    // A colour task that is not a caster pass reads its OWN
+                    // A task that is not a caster pass reads its OWN
                     // pass block, which is the rule the SDL_GPU backend states
                     // as `if (!shadow_task)` around its own push. The matrix
                     // is built from the task's aspect, which comes from the
@@ -2225,7 +2163,7 @@ public:
                     // width). A caster pass writes none: its `task_matrix` is
                     // the zero matrix, and a written block would hand every
                     // receiver zeros.
-                    if (target_record.has_color && !shadow_task) {
+                    if (!shadow_task) {
                         // The task's own pass block, in the pin's own shape: the
                         // frame's writer over the task's camera and matrix, kept
                         // as it was by a camera-less task.
@@ -2238,19 +2176,8 @@ public:
                                                                 sizeof(task_scene_block));
                     }
 #endif
-                    // A colour task's own draws, prepared under its own
-                    // camera. Both halves are skipped for a depth-only task
-                    // and each for its own reason, so neither is riding the
-                    // other's test: it encodes through
-                    // `depth_only_pipeline_for`, which reads none of the
-                    // blocks or groups these writes build; and its draws write
-                    // depth without blending, so back-to-front order changes
-                    // nothing to sort for. The SDL backend sorts in exactly
-                    // its colour and geometry task arms for the same reasons.
-                    if (target_record.has_color) {
-                        upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine,
-                                                         task_camera);
-                    }
+                    upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine,
+                                                     task_camera);
                 }
             }
             pass_scene = &scene;
@@ -2996,8 +2923,6 @@ public:
                 for (std::size_t graph_layer = 0;
                      graph_layer < data_.active_registered_scenes.size(); ++graph_layer) {
                     const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
-                    const auto& graph_plan =
-                        graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
                     auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     pass_scene = &graph_scene;
@@ -3050,23 +2975,12 @@ public:
                                                         : static_cast<double>(target.height),
                                 data_.pass_blocks.task(handle));
                             if (task.render.shadow_generator.value == invalid_handle) {
-                                if (target_record.has_color) {
-                                    write_material_uniforms(render_task.draw_lists.opaque,
-                                                            binding_camera.pass(), false,
-                                                            render_task.view_projection);
-                                    write_material_uniforms(render_task.draw_lists.transparent,
-                                                            binding_camera.pass(), false,
-                                                            render_task.view_projection);
-                                } else {
-                                    // Depth-only draws use their dedicated pipeline, but the
-                                    // source task still updates every binding before drawing.
-                                    update_material_bindings(
-                                        graph_scene, engine, render_task.draw_lists.opaque,
-                                        binding_camera.pass(), graph_meshes, bind_thin_buffers);
-                                    update_material_bindings(
-                                        graph_scene, engine, render_task.draw_lists.transparent,
-                                        binding_camera.pass(), graph_meshes, bind_thin_buffers);
-                                }
+                                write_material_uniforms(render_task.draw_lists.opaque,
+                                                        binding_camera.pass(), false,
+                                                        render_task.view_projection);
+                                write_material_uniforms(render_task.draw_lists.transparent,
+                                                        binding_camera.pass(), false,
+                                                        render_task.view_projection);
                             }
 #endif
 #if BBLITE_HAS_TAA
@@ -3255,11 +3169,6 @@ public:
                                     throw std::runtime_error("Depth-only render task has no depth "
                                                              "attachment.");
                                 }
-                                if (task.render_meshes.empty()) {
-                                    throw std::runtime_error(
-                                        "Depth-only render task requires explicit "
-                                        "meshes.");
-                                }
                                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                                 depth_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
@@ -3284,150 +3193,18 @@ public:
                                     wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
                                 set_task_camera_viewport(task_pass, pass_camera, target.width,
                                                          target.height);
-                                // Group 1 is the shared stage's: the task's
-                                // view-projection beside the mesh's own
-                                // deformation and world blocks.
-                                const auto depth_only_group =
-                                    [&](const MeshHandle handle,
-                                        const DawnMesh& mesh) -> const DawnDepthOnlyGroup& {
-                                    DawnDepthOnlyGroup& cached =
-                                        render_task.depth_only_groups[handle.value];
-                                    if (cached.group &&
-                                        cached.mesh_world == mesh.mesh_world_uniform)
-                                        return cached;
-                                    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
-                                        depth_only_pipeline_for(state, false, samples,
-                                                                target.depth_format),
-                                        1)};
-                                    std::array<WGPUBindGroupEntry, mesh_world_uniform_binding + 1>
-                                        entries{};
-                                    for (std::uint32_t binding = 0; binding < entries.size();
-                                         ++binding) {
-                                        entries[binding] = WGPU_BIND_GROUP_ENTRY_INIT;
-                                        entries[binding].binding = binding;
-                                        if (!serve_mesh_stage_binding(entries[binding],
-                                                                      render_task.view_projection,
-                                                                      mesh)) {
-                                            dawn_error("the depth-only stage's group 1 has no "
-                                                       "binding " +
-                                                       std::to_string(binding) + ".");
-                                        }
-                                    }
-                                    WGPUBindGroupDescriptor descriptor =
-                                        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                                    descriptor.layout = layout;
-                                    descriptor.entryCount = entries.size();
-                                    descriptor.entries = entries.data();
-                                    cached.group = DawnBindGroup{require_dawn_resource(
-                                        wgpuDeviceCreateBindGroup(state.device, &descriptor),
-                                        "depth-only bind group")};
-#if BBLITE_GPU_MORPH_STORAGE
-                                    DawnBindGroupLayout morph_layout{
-                                        wgpuRenderPipelineGetBindGroupLayout(
-                                            depth_only_pipeline_for(state, false, samples,
-                                                                    target.depth_format),
-                                            0)};
-                                    std::array<WGPUBindGroupEntry, 2> morph_entries{};
-                                    for (std::uint32_t binding = 0; binding < morph_entries.size();
-                                         ++binding) {
-                                        morph_entries[binding] = WGPU_BIND_GROUP_ENTRY_INIT;
-                                        morph_entries[binding].binding = binding;
-                                        morph_entries[binding].buffer =
-                                            binding == 0 ? mesh.morph_deltas : mesh.morph_weights;
-                                        morph_entries[binding].size = WGPU_WHOLE_SIZE;
-                                    }
-                                    descriptor.layout = morph_layout;
-                                    descriptor.entryCount = morph_entries.size();
-                                    descriptor.entries = morph_entries.data();
-                                    cached.morph = DawnBindGroup{require_dawn_resource(
-                                        wgpuDeviceCreateBindGroup(state.device, &descriptor),
-                                        "depth-only morph bind group")};
-#endif
-                                    cached.mesh_world = mesh.mesh_world_uniform;
-                                    return cached;
-                                };
-                                for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-                                    wgpuRenderPassEncoderSetPipeline(
-                                        task_pass,
-                                        depth_only_pipeline_for(state, sided_mode == 1, samples,
-                                                                target.depth_format));
-                                    for (const RenderTaskMesh& entry : task.render_meshes) {
-                                        const auto material_handle =
-                                            render_task_mesh_material(engine, entry);
-                                        const MaterialRecord& material =
-                                            handle_at(engine.materials, material_handle);
-                                        if (!material.no_color) {
-                                            throw std::runtime_error(
-                                                "Depth-only render task requires "
-                                                "a no-color material view.");
-                                        }
-                                        if (material.double_sided != (sided_mode == 1)) {
-                                            continue;
-                                        }
-                                        // geometry-renderer-task.ts skips a hidden mesh at the draw
-                                        // itself. This path consumes no draw list -- it walks the task's
-                                        // own meshes and resolves each against the plan -- so it cannot
-                                        // inherit append_draw's answer and asks the same predicate.
-                                        if (!upstream::mesh_draws(
-                                                handle_at(engine.meshes, entry.mesh))) {
-                                            continue;
-                                        }
-                                        std::size_t mesh_index = graph_meshes.size();
-                                        for (std::size_t index = 0; index < graph_plan.items.size();
-                                             ++index) {
-                                            if (graph_plan.items[index].mesh.value ==
-                                                entry.mesh.value) {
-                                                mesh_index = index;
-                                                break;
-                                            }
-                                        }
-                                        if (mesh_index >= graph_meshes.size()) {
-                                            throw std::runtime_error(
-                                                "Depth task mesh is not in the "
-                                                "scene.");
-                                        }
-                                        DawnMesh& mesh = graph_meshes[mesh_index];
-#if BBLITE_THIN_INSTANCES
-                                        publish_thin_binding(*entry.thin_binding, mesh,
-                                                             bind_thin_buffers);
-#endif
-                                        // The row refresh keeps every other
-                                        // item's blocks current; a
-                                        // ShaderMaterial item's stage owns its
-                                        // own, so this draw writes them.
-                                        if (graph_plan.items[mesh_index].material_kind ==
-                                            upstream::RenderMaterialKind::shader) {
-                                            write_mesh_stage_blocks(
-                                                state, graph_scene, engine,
-                                                handle_at(engine.meshes, entry.mesh), mesh);
-                                        }
-                                        const DawnDepthOnlyGroup& bindings =
-                                            depth_only_group(entry.mesh, mesh);
-#if BBLITE_GPU_MORPH_STORAGE
-                                        wgpuRenderPassEncoderSetBindGroup(
-                                            task_pass, 0, bindings.morph, 0, nullptr);
-#endif
-                                        wgpuRenderPassEncoderSetBindGroup(
-                                            task_pass, 1, bindings.group, 0, nullptr);
-                                        wgpuRenderPassEncoderSetVertexBuffer(
-                                            task_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-#if BBLITE_GPU_INSTANCING
-                                        wgpuRenderPassEncoderSetVertexBuffer(
-                                            task_pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
-#endif
-                                        wgpuRenderPassEncoderSetIndexBuffer(task_pass, mesh.indices,
-                                                                            WGPUIndexFormat_Uint32,
-                                                                            0, WGPU_WHOLE_SIZE);
-                                        encode_dawn_indexed_draw(
-                                            task_pass, mesh.index_count,
-#if BBLITE_GPU_INSTANCING
-                                            mesh.indirect_args ? 0u : mesh.instance_count(),
-                                            mesh.indirect_args);
-#else
-                                        1, nullptr);
-#endif
-                                    }
-                                }
+                                WGPURenderPipeline bound_pipeline = nullptr;
+                                const DawnTaskTarget depth_target{WGPUTextureFormat_Undefined,
+                                                                  target.depth_format,
+                                                                  target_record.depth_compare};
+                                draw_list_into(task_pass, render_task.draw_lists.opaque, samples,
+                                               bound_pipeline, true, render_task.pinned_frame_group,
+                                               false, invalid_handle, render_task.view_projection,
+                                               depth_target);
+                                draw_list_into(
+                                    task_pass, render_task.draw_lists.transparent, samples,
+                                    bound_pipeline, true, render_task.pinned_frame_group, false,
+                                    invalid_handle, render_task.view_projection, depth_target);
                                 wgpuRenderPassEncoderEnd(task_pass);
                                 task_pass.reset();
                                 // Only a colour-less sampled-depth target has the copy
@@ -3569,7 +3346,8 @@ public:
                                 DawnTaskTarget{target.color_format,
                                                borrowed_depth_view
                                                    ? WGPUTextureFormat_Depth24PlusStencil8
-                                                   : target.depth_format});
+                                                   : target.depth_format,
+                                               target_record.depth_compare});
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {
                                 draw_task_billboards(BillboardDepthMode::cutout);
@@ -3583,7 +3361,8 @@ public:
                                     DawnTaskTarget{target.color_format,
                                                    borrowed_depth_view
                                                        ? WGPUTextureFormat_Depth24PlusStencil8
-                                                       : target.depth_format});
+                                                       : target.depth_format,
+                                                   target_record.depth_compare});
                             };
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {

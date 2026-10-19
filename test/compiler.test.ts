@@ -1739,10 +1739,8 @@ test("'??' reaches sinks and conditions through the same dispatch", () => {
         result.cpp,
         /bblscene::Item v_fn\d+_chosen = \(static_cast<bool>\(v_fn\d+_bag\.primary\) \? v_fn\d+_bag\.primary : v_fn\d+_bag\.backup\);/,
     );
-    assert.match(
-        result.cpp,
-        /if \(\(v_bblite_nullish_\d+\.has_value\(\) \? \(\*v_bblite_nullish_\d+\) : false\)\)/,
-    );
+    assert.match(result.cpp, /double v_count = 0\.0;/);
+    assert.doesNotMatch(result.cpp, /v_count = \(v_count \+ 1\.0\)/);
 });
 
 test("uses the value as well as presence for optional boolean truthiness", () => {
@@ -1962,8 +1960,7 @@ test("lowers optional data property and element chains generically", () => {
         result.cpp,
         /\[\[maybe_unused\]\] const bblscene::Def& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
     );
-    assert.match(result.cpp, /bbl::js::Nullable<bblscene::Trigger>/);
-    assert.match(result.cpp, /v_bblite_optional_compare_\d+\.has_value\(\) &&/);
+    assert.match(result.cpp, /bool v_matched = false;/);
     assert.match(result.cpp, /#include <bblite\/js_data\.hpp>/);
     // The element read binds once; a missing index reads as the default
     // (empty) reference, so the chain tests the reference it bound.
@@ -2745,17 +2742,16 @@ test("hoists module record factories out of hot dynamic lookups", () => {
         const selected = opaque(Math.random() < 0.5 ? 1 : 2);
     `);
 
-    // One inline accessor per table: a hot lookup inlines it, and the
-    // entries build in a function of their own.
+    // Entry initialization owns the fresh records once; hot lookups borrow
+    // the retained table without rebuilding either entry.
+    const entry = cppFunction(result.cpp, "int main()");
+    assert.equal((entry.match(/bblscene::definition\(/g) ?? []).length, 2);
+    assert.equal((result.cpp.match(/bblscene::definition\(/g) ?? []).length, 2);
     assert.match(
-        result.cpp,
-        /inline bbl::js::Map<double, bblscene::Definition>& (bbl_static_table_\d+)\(\) \{\s+static thread_local bbl::js::Map<double, bblscene::Definition> values = \1_values\(\);/,
+        entry,
+        /bbl::js::Map<double, bblscene::Definition> v_DEFINITIONS =/,
     );
-    assert.match(
-        result.cpp,
-        /bbl::js::Map<double, bblscene::Definition> bbl_static_table_\d+_values\(\) \{\s+return bbl::js::Map<double, bblscene::Definition>\{/,
-    );
-    assert.doesNotMatch(result.cpp, /bool opaque\([^)]*\) \{\s+bbl::js::Map/);
+    assert.match(result.cpp, /v_DEFINITIONS\.get\(v_fn\d+_id\)/);
 });
 
 test("returns the value of chained numeric field assignments", () => {
@@ -7872,7 +7868,7 @@ test("compares handles read from runtime arrays by object identity", () => {
 
     const snapshots = [
         ...result.cpp.matchAll(
-            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, ([^\n]+)\};/g,
+            /const auto (\w+) = bbl::js::snapshot_value\(std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, ([^\n]+)\}\);/g,
         ),
     ];
     assert.equal(snapshots.length, 2);
@@ -9152,7 +9148,7 @@ test("narrows an assigned nullable retained-UI class field", () => {
     assert.match(result.cpp, /ui_append_to_root/);
     assert.match(
         result.cpp,
-        /if \(\(\*(v_bblite_class_field_root_\d+)\)\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] const auto (\w+) = \(\*\(\*\1\)\);\s*bbl::ui_remove\(\(\*\(\2\)\.first\), \(\2\)\.second\);/,
+        /if \(\(\*(v_bblite_class_field_root_\d+)\)\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] const auto (\w+) = bbl::js::snapshot_value\(\(\*\(\*\1\)\)\);\s*bbl::ui_remove\(\(\*\(\2\)\.first\), \(\2\)\.second\);/,
     );
     assert.match(
         result.cpp,
@@ -17661,19 +17657,19 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
         ],
     );
     // SDL_GPU gives a vertex texture its own register space.
-    assert.throws(
-        () =>
-            compileSource(
-                SHADER_SAMPLER_SOURCE(
-                    `samplers: ["albedo"],`,
-                    "return textureSample(albedo,albedoSampler,input.uv);",
-                ).replace(
-                    "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);",
-                    "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0)+textureSample(albedo,albedoSampler,input.uv);",
-                ),
-                labDeployment,
-            ),
-        /read by the vertex stage/,
+    const vertexSampler = compileSource(
+        SHADER_SAMPLER_SOURCE(
+            `samplers: ["albedo"],`,
+            "return textureSample(albedo,albedoSampler,input.uv);",
+        ).replace(
+            "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);",
+            "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0)+textureSampleLevel(albedo,albedoSampler,input.uv,0.0);",
+        ),
+        labDeployment,
+    );
+    assert.match(
+        vertexSampler.manifest.customShaderPrograms[0]!.vertexSource,
+        /textureSampleLevel\(albedo,albedoSampler,input\.uv,0\.0\)/,
     );
     // The pin reserves both halves of the generated pair.
     assert.throws(
@@ -19916,7 +19912,7 @@ function assertAnimationSeekSelection(
 ): void {
     const snapshots = [
         ...cpp.matchAll(
-            /const auto (\w+) = std::pair<bbl::StoredEngine, bbl::AnimationGroupHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\};/g,
+            /const auto (\w+) = bbl::js::snapshot_value\(std::pair<bbl::StoredEngine, bbl::AnimationGroupHandle>\{bbl::StoredEngine\{v_engine\}, (\w+)\}\);/g,
         ),
     ];
     const isOwnedSharedResult = (name: string): boolean => {

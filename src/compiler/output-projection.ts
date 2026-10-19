@@ -238,6 +238,7 @@ export const featureSources: Record<Feature, string[]> = {
     "sprite:custom-shader": [],
     "texture:file": [],
     "texture:compressed": [],
+    "texture:ktx2": [],
     "texture:pixels": [],
     "texture:pixels-writes": [],
     "sprite:billboard": [],

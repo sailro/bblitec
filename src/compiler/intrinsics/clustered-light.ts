@@ -38,9 +38,11 @@ export interface ClusteredLightIntrinsicContext
             | "propertyName"
             | "expectObjectLiteral"
             | "objectProperty"
-            | "compileVec3"
+            | "dataLowerer"
             | "compileNumber"
             | "requireDefaultEngine"
+            | "requireEngine"
+            | "expectSameEngine"
             | "sceneManifest"
         > {}
 
@@ -95,7 +97,10 @@ function optionsCpp(
         return [
             `.${field.name} = ${
                 field.kind === "vec3"
-                    ? context.compileVec3(property, "double")
+                    ? context.dataLowerer.compileForSink(property, {
+                          kind: "tuple",
+                          arity: 3,
+                      })
                     : context.compileNumber(property, "double")
             }`,
         ];
@@ -121,7 +126,7 @@ function validateOptions(
 function containerValue(
     context: ClusteredLightIntrinsicContext,
     expression: ts.Expression,
-): { cpp: string; state: ClusteredContainerState } {
+): { value: Value; state: ClusteredContainerState } {
     const value = context.compileValue(expression);
     context.expectKind(value, "clustered-light-container", expression);
     const state = value.clusteredContainerState;
@@ -132,7 +137,7 @@ function containerValue(
                 "`createClusteredLightContainer` value.",
         );
     }
-    return { cpp: value.cpp, state };
+    return { value, state };
 }
 
 function appendLight(
@@ -151,7 +156,7 @@ function appendLight(
                 "and its own refresh throws rather than growing either.",
         );
     }
-    const engine = context.requireDefaultEngine(call);
+    const engine = context.requireEngine(container.value, call);
     const literal = context.expectObjectLiteral(argumentAt(call, 1));
     // Each `??` is resolved by the lowered factory itself, from the pin's
     // own default, so the call site names only what the scene named.
@@ -175,10 +180,10 @@ function appendLight(
     }
     return {
         kind: "clustered-light",
+        engineCpp: engine,
         cpp:
             `bbl::create_clustered_${spot ? "spot" : "point"}_light(` +
-            `${engine}, ${container.cpp}, ${options})`,
-        requiresExplicitDiscard: true,
+            `${engine}, ${container.value.cpp}, ${options})`,
     };
 }
 
@@ -205,6 +210,7 @@ export function compileClusteredLightIntrinsic(
             );
             return {
                 kind: "clustered-light-container",
+                engineCpp: engine,
                 cpp:
                     `bbl::create_clustered_light_container(` +
                     `${engine}, ${options})`,
@@ -223,6 +229,7 @@ export function compileClusteredLightIntrinsic(
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
             const container = containerValue(context, argumentAt(call, 1));
+            context.expectSameEngine(scene, container.value, call);
             if (container.state.frozen) {
                 context.fail(
                     call,
@@ -244,19 +251,21 @@ export function compileClusteredLightIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::add_clustered_light_container(` +
-                    `${context.requireDefaultEngine(call)}, ` +
-                    `${scene.cpp}, ${container.cpp})`,
+                    `${context.requireEngine(container.value, call)}, ` +
+                    `${scene.cpp}, ${container.value.cpp})`,
             };
         }
 
-        case "markClusteredLightContainerDirty":
-            context.fail(
-                call,
-                "`markClusteredLightContainerDirty` is unreached: no scene " +
-                    "mutates a light after building it, so this port has no " +
-                    "in-place edit for the call to publish.",
-            );
-            break;
+        case "markClusteredLightContainerDirty": {
+            context.expectArgumentCount(call, 1, 1);
+            const container = context.compileValue(argumentAt(call, 0));
+            context.expectKind(container, "clustered-light-container", call);
+            context.reachFeature("light:clustered", call);
+            return {
+                kind: "void",
+                cpp: `bbl::mark_clustered_light_container_dirty(${context.requireEngine(container, call)}, ${container.cpp})`,
+            };
+        }
 
         default:
             return undefined;

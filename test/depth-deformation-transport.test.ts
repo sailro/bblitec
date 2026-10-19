@@ -66,16 +66,24 @@ int main() {
         ]);
         execFileSync(executable);
     }
-    for (const file of ["pal_sdl_gpu.cpp", "pal_sdl_gpu_scene_targets.cpp"]) {
-        assert.match(
-            readFileSync(`native/src/${file}`, "utf8"),
-            /push_mesh_stage_blocks\(/,
-        );
-    }
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    assert.match(dawn, /task_pass, 0, bindings\.morph/);
     assert.match(
-        cppFunction(dawn, "WGPURenderPipeline depth_only_pipeline_for("),
-        /create_dawn_reflected_layout\(state\.device, stages, 0\)/,
+        readFileSync("native/src/pal_sdl_gpu_scene_targets.cpp", "utf8"),
+        /push_mesh_stage_blocks\(/,
     );
+    for (const backend of ["sdl_gpu", "dawn"]) {
+        const driver = readFileSync(`native/src/pal_${backend}.cpp`, "utf8");
+        assert.match(
+            driver,
+            backend === "dawn"
+                ? /pinned_variant_pipeline\(/
+                : /draw_pinned_variant\(/,
+        );
+        assert.match(
+            driver,
+            backend === "dawn"
+                ? /standard_variant_pipeline\(/
+                : /draw_standard_variant\(/,
+        );
+        assert.doesNotMatch(driver, /depth_only_pipeline_for\(/);
+    }
 });

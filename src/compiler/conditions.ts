@@ -71,6 +71,7 @@ interface ConditionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "requireDefaultEngine"
+            | "symbols"
             | "unwrap"
         > {}
 
@@ -143,6 +144,11 @@ export class ConditionLowerer {
         const unwrapped = this.context.options.workers
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
+        if (
+            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+            this.context.symbols.isGlobalUndefined(unwrapped)
+        )
+            return "false";
         // A BigInt is truthy unless it is zero.
         if (isBigIntTyped(this.context.checker, unwrapped)) {
             const condition = this.context.dataLowerer.truthinessCondition(

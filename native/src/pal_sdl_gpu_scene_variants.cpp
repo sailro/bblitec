@@ -764,6 +764,10 @@ void draw_pinned_variant(
         [&](const std::string& name, [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             if (name == "gp")
                 return geometry_params_buffer;
+#if BBLITE_HAS_CLUSTERED_LIGHTS
+            if (name == "clusteredLightParams")
+                return state.clustered.params;
+#endif
 #if BBLITE_LOCAL_CUBEMAP
             if (local_cubemap) {
                 if (name == "localProbeData")
@@ -1384,7 +1388,7 @@ PinnedResource standard_resource_for(GpuState& state, const GpuMesh& mesh,
         }
         break;
     }
-#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+#if BBLITE_STANDARD_PLUGIN_TEXTURES
     // A material plugin's own declaration. The name alone does not resolve
     // it -- two plugin lists may declare the same WGSL name -- so the row
     // is found by the material's own signature index, and the texture is

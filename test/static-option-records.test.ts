@@ -133,7 +133,7 @@ test("refuses a spread whose record generation cannot settle", () => {
                 `uniforms: ["worldViewProjection"],
             ...(Math.random() > 0.5 ? { depthWrite: false } : {}),`,
             ),
-        /Reached shader materials support/,
+        /Conditional static options require a side-effect-free predicate/,
     );
 });
 
