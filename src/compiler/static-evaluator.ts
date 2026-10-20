@@ -1595,7 +1595,7 @@ export class StaticEvaluator {
      * handed to an INTRINSIC cannot -- those declare no body to inline --
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
-    private isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
+    public isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
         const symbol = ts.isIdentifier(declaration.name)
             ? declaredSymbol(this.checker, declaration.name)
             : undefined;

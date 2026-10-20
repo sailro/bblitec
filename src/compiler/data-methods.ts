@@ -20,6 +20,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
+import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
     argumentAt,
@@ -390,6 +391,60 @@ function plainRecordReceiver(lowerer: DataLowerer): Value | undefined {
         : undefined;
 }
 
+/**
+ * Whether every use of a const array binding in its scope only reads it:
+ * read-only members, indexed reads, iteration and spreads. Nothing can then
+ * change the array its initializer produced.
+ */
+function arrayOnlyRead(
+    context: Pick<DataLowerer["context"], "symbols" | "checker">,
+    identifier: ts.Identifier,
+): boolean {
+    const symbol = context.symbols.valueSymbol(identifier);
+    const declaration = symbol?.valueDeclaration;
+    if (!symbol || !declaration || !ts.isVariableDeclaration(declaration))
+        return false;
+    const scope =
+        ts.findAncestor(declaration.parent, ts.isFunctionLike) ??
+        declaration.getSourceFile();
+    let written = false;
+    const visit = (node: ts.Node): void => {
+        if (written) return;
+        if (
+            ts.isIdentifier(node) &&
+            node !== declaration.name &&
+            context.symbols.valueSymbol(node) === symbol
+        ) {
+            const parent = node.parent;
+            const read =
+                (ts.isPropertyAccessExpression(parent) &&
+                    parent.expression === node &&
+                    (parent.name.text === "length" ||
+                        (readOnlyDataMethods.has(parent.name.text) &&
+                            !callbackTakesReceiver(
+                                context.checker,
+                                parent.name.text,
+                                ts.isCallExpression(parent.parent)
+                                    ? parent.parent.arguments[0]
+                                    : undefined,
+                            )))) ||
+                (ts.isElementAccessExpression(parent) &&
+                    parent.expression === node &&
+                    !(
+                        ts.isBinaryExpression(parent.parent) &&
+                        parent.parent.left === parent
+                    )) ||
+                (ts.isForOfStatement(parent) && parent.expression === node) ||
+                ts.isSpreadElement(parent);
+            if (!read) written = true;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(scope);
+    return !written;
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -413,6 +468,28 @@ export function compileDataMethodCall(
             : undefined;
     if (moduleMapGet) {
         return moduleMapGet;
+    }
+    // A module constant Map read with a generation-known key.
+    if (
+        method === "get" &&
+        call.arguments.length === 1 &&
+        ts.isIdentifier(callee.expression)
+    ) {
+        const key = lowerer.context.probeEmission(
+            () => {
+                const value = lowerer.context.compileValue(argumentAt(call, 0));
+                return value.staticString ?? value.staticNumber;
+            },
+            () => false,
+        );
+        const entry =
+            key === undefined
+                ? undefined
+                : lowerer.context.executedModuleConstantMapEntry(
+                      callee.expression,
+                      key,
+                  );
+        if (entry) return entry;
     }
     const ownerExpression = lowerer.context.unwrap(callee.expression);
     if (
@@ -785,26 +862,149 @@ export function compileDataMethodCall(
         }
     }
     const snapshotOwner = dynamicOwner?.staticElementsOwner ?? dynamicOwner;
+    // Native elements whose generation facts are whole -- records, or
+    // strings and numbers known at generation -- can each specialize a map
+    // callback that needs them (an asset URL built from a name).
     const nativeRecordElements =
         method === "map" &&
         dynamicOwner?.dataType?.kind === "vector" &&
-        dynamicOwner.dataType.element.kind === "struct" &&
+        (dynamicOwner.dataType.element.kind === "struct" ||
+            dynamicOwner.dataType.element.kind === "string" ||
+            dynamicOwner.dataType.element.kind === "number") &&
         snapshotOwner?.staticElements?.every(
             (element, index) =>
                 element.staticElementsOwner === snapshotOwner &&
                 element.staticElementIndex === index &&
-                element.recordProperties !== undefined,
+                (element.recordProperties !== undefined ||
+                    element.staticString !== undefined ||
+                    element.staticNumber !== undefined),
         )
             ? snapshotOwner.staticElements
             : undefined;
+    // A native array that resolves to a constant literal of strings and
+    // numbers (`opts.names ?? NAMES`) has those elements whatever storage
+    // it compiled to, so a callback needing them can specialize per element.
+    const literalElements = (): Value[] | undefined => {
+        if (
+            method !== "map" ||
+            tupleOwnerElements !== undefined ||
+            nativeRecordElements !== undefined ||
+            dynamicOwner?.kind !== "data" ||
+            dynamicOwner.dataType?.kind !== "vector" ||
+            call.arguments.length !== 1 ||
+            !lowerer.context.requiresStaticDataIteration(call.arguments[0]!)
+        )
+            return undefined;
+        // Through const locals, and `??` or `?:` the static record settles.
+        const arrayLiteral = (
+            expression: ts.Expression,
+            depth = 0,
+        ): ts.Expression | undefined => {
+            if (depth > 4) return undefined;
+            const resolved = lowerer.context.unwrap(
+                lowerer.context.resolveStaticExpression(expression),
+            );
+            if (ts.isArrayLiteralExpression(resolved)) return resolved;
+            if (
+                ts.isBinaryExpression(resolved) &&
+                resolved.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                const chosen =
+                    lowerer.context.evaluator.tryResolveNullish(resolved);
+                return chosen && arrayLiteral(chosen, depth + 1);
+            }
+            if (ts.isConditionalExpression(resolved)) {
+                const condition = lowerer.context.probeEmission(
+                    () =>
+                        lowerer.context.conditions.compileCondition(
+                            resolved.condition,
+                        ),
+                    () => false,
+                );
+                return condition === "true" || condition === "false"
+                    ? arrayLiteral(
+                          condition === "true"
+                              ? resolved.whenTrue
+                              : resolved.whenFalse,
+                          depth + 1,
+                      )
+                    : undefined;
+            }
+            if (!ts.isIdentifier(resolved)) return undefined;
+            const declaration =
+                lowerer.context.symbols.valueSymbol(resolved)?.valueDeclaration;
+            if (
+                !declaration ||
+                !ts.isVariableDeclaration(declaration) ||
+                !declaration.initializer ||
+                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) ===
+                    0
+            )
+                return undefined;
+            // A module constant the generation run evaluates stands for
+            // its elements even when its initializer computes them.
+            return (
+                arrayLiteral(declaration.initializer, depth + 1) ??
+                (ts.isSourceFile(declaration.parent.parent.parent)
+                    ? resolved
+                    : undefined)
+            );
+        };
+        // Spread elements flatten through the same resolution.
+        const literalItems = (
+            expression: ts.Expression,
+            depth = 0,
+        ): Value[] | undefined => {
+            const literal = arrayLiteral(expression);
+            if (!literal || depth > 4) return undefined;
+            if (ts.isIdentifier(literal))
+                return lowerer.context
+                    .executedModuleConstantElements(literal)
+                    ?.slice();
+            if (!ts.isArrayLiteralExpression(literal)) return undefined;
+            const items: Value[] = [];
+            for (const element of literal.elements) {
+                if (ts.isSpreadElement(element)) {
+                    const spread = literalItems(element.expression, depth + 1);
+                    if (!spread) return undefined;
+                    items.push(...spread);
+                } else if (
+                    ts.isStringLiteralLike(element) ||
+                    ts.isNumericLiteral(element)
+                )
+                    items.push(lowerer.context.compileValue(element));
+                else return undefined;
+            }
+            return items;
+        };
+        const items =
+            literalItems(ownerExpression) ??
+            (ts.isIdentifier(ownerExpression) &&
+            arrayOnlyRead(lowerer.context, ownerExpression)
+                ? lowerer.context
+                      .executedInitializerElements(ownerExpression)
+                      ?.slice()
+                : undefined);
+        if (!items) return undefined;
+        return items.map((element, index) => ({
+            ...element,
+            staticElementsOwner: dynamicOwner,
+            staticElementIndex: index,
+        }));
+    };
+    const staticLiteralElements = literalElements();
     const requiresStaticMap =
         method === "map" &&
         (tupleOwnerElements !== undefined ||
-            nativeRecordElements !== undefined) &&
+            nativeRecordElements !== undefined ||
+            staticLiteralElements !== undefined) &&
         call.arguments.length === 1 &&
         lowerer.context.requiresStaticDataIteration(call.arguments[0]!);
     if (
-        (tupleOwnerElements || (requiresStaticMap && nativeRecordElements)) &&
+        (tupleOwnerElements ||
+            (requiresStaticMap &&
+                (nativeRecordElements || staticLiteralElements))) &&
         dynamicOwner &&
         method === "map"
     ) {
@@ -828,7 +1028,10 @@ export function compileDataMethodCall(
         const storedCallback = requiresStaticMap
             ? undefined
             : lowerer.prepareCallbackValue(callback, "tuple_map");
-        const elements = tupleOwnerElements ?? nativeRecordElements!;
+        const elements =
+            tupleOwnerElements ??
+            nativeRecordElements ??
+            staticLiteralElements!;
         const elementCount = elements.length;
         const snapshotIntact = (): boolean =>
             !nativeRecordElements ||
@@ -3170,6 +3373,35 @@ function compileArrayPush(state: ArrayMethodState): Value {
                         : snapshotOwner.runtimeElementTemplate,
                     candidates,
                 );
+            }
+            // Bare handle storage holds no engine: an element read is the
+            // entry engine's resource, not the pushed value's own carrier
+            // (which may be a binding scoped to the pushing block).
+            const element = dataType.element;
+            const template = snapshotOwner.runtimeElementTemplate;
+            const entryEngine = lowerer.context.defaultEngine();
+            if (
+                template &&
+                element.kind === "handle" &&
+                !element.ownedEngine &&
+                belongsToEntryEngine(element.handle) &&
+                entryEngine !== undefined &&
+                template.engineCpp !== undefined &&
+                template.engineCpp !== entryEngine
+            ) {
+                const {
+                    ownedCpp: _owned,
+                    resourceStorageCpp: _storage,
+                    nativeCompanionCaptures: _captures,
+                    ...rest
+                } = template;
+                snapshotOwner.runtimeElementTemplate = {
+                    ...rest,
+                    engineCpp: entryEngine,
+                    ...(rest.dataType?.kind === "handle"
+                        ? { dataType: element }
+                        : {}),
+                };
             }
         }
         lowerer.invalidateStaticElements(narrowed, true);

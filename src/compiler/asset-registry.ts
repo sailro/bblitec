@@ -21,7 +21,10 @@ interface AssetRegistryOwnerContext
         AssetRegistryContext,
         Pick<
             LoweringServices,
-            "hasFeature" | "isInRuntimeControlFlow" | "reachFeature"
+            | "hasFeature"
+            | "isInRuntimeControlFlow"
+            | "reachFeature"
+            | "sceneManifest"
         > {
     definiteCollectionMutation(): boolean;
     readonly features: ReadonlySet<Feature>;
@@ -144,21 +147,14 @@ export class AssetRegistry {
      * The asset manifest is keyed by source, and composition expands each
      * record by `containerCount`. Contiguous repeats therefore preserve
      * A,A,B,B exactly, while an interleaved repeat such as A,B,A would be
-     * emitted as A,A,B. Refuse the latter at its returning load instead of
-     * assigning composed material/mesh handles to the wrong container.
+     * emitted as A,A,B; such a program profiles its containers instead.
      */
-    public recordGltfContainerLoad(asset: CompileAsset, node: ts.Node): void {
+    public recordGltfContainerLoad(asset: CompileAsset): void {
         if (
             (asset.containerCount ?? 0) > 0 &&
             this.lastGltfContainerAsset !== asset
         ) {
-            this.context.fail(
-                node,
-                `glTF asset '${asset.source}' is loaded again after a ` +
-                    "different glTF source; repeated loads must be " +
-                    "contiguous because generation groups containers by " +
-                    "their source-keyed asset record.",
-            );
+            this.context.sceneManifest.recordProfiledGltfLoads();
         }
         // One record can back several containers, because assets are keyed
         // by source. A fact generation stamps on the record reaches all of

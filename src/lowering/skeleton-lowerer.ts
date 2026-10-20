@@ -194,6 +194,7 @@ void attach_scene_skeleton(
     mesh_record.gpu_deformation = true;
     mesh_record.pinned_bone_palette = true;
     mesh_record.skinned = true;
+    mesh_record.skeleton_attached = true;
     mesh_record.bone_matrices = record.bone_matrices;
     ++mesh_record.bone_matrices_version;
     ++mesh_record.transform_version;

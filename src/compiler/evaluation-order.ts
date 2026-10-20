@@ -934,11 +934,10 @@ export class EvaluationOrder {
                     : loopTargets(current);
             if (targets.length > 0) {
                 targets.forEach((target) => this.write(access, target, unit));
-            } else if (
-                ts.isAwaitExpression(current) ||
-                ts.isTaggedTemplateExpression(current)
-            ) {
+            } else if (ts.isAwaitExpression(current)) {
                 cannotFollow(access);
+            } else if (ts.isTaggedTemplateExpression(current)) {
+                this.taggedTemplate(access, current);
             } else if (
                 ts.isCallExpression(current) ||
                 ts.isNewExpression(current)
@@ -1134,13 +1133,42 @@ export class EvaluationOrder {
     }
 
     /**
+     * A tag runs as a call of its strings and values: the engine's tag
+     * (`wgsl`) from its pinned body, a program function from its own. Any
+     * other tag cannot be followed.
+     */
+    private taggedTemplate(
+        access: DirectAccess,
+        node: ts.TaggedTemplateExpression,
+    ): void {
+        const engine = this.engineAccess(node);
+        if (engine) {
+            merge(access.reads, engine.reads);
+            merge(access.writes, engine.writes);
+            return;
+        }
+        const declaration =
+            this.checker.getResolvedSignature(node)?.declaration;
+        const tag = unwrapExpression(node.tag);
+        const named =
+            declaration &&
+            !declaration.getSourceFile().isDeclarationFile &&
+            (ts.isIdentifier(tag) || ts.isPropertyAccessExpression(tag))
+                ? this.namedFunction(tag)
+                : undefined;
+        if (named) access.callees.add(named);
+        else cannotFollow(access);
+    }
+
+    /**
      * What an engine call touches, from the pinned bodies its typing names:
      * everything when it names none or runs code the pinned bodies cannot
      * follow, otherwise the objects and engine state they read and write.
      * Undefined for a call that is not the engine's.
      */
     private engineAccess(
-        call: ts.CallExpression | ts.NewExpression,
+        call:
+            ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression,
     ): Access | undefined {
         if (!this.engine || ts.isNewExpression(call)) return undefined;
         const declaration =

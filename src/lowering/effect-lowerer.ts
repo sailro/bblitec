@@ -152,6 +152,60 @@ export interface EffectFactoryOptions {
     readonly disposal?: boolean;
     readonly taskBuild?: boolean;
     readonly taskDisposal?: boolean;
+    readonly taskMethodSlots?: boolean;
+}
+
+/**
+ * An effect task's `record` and `dispose` as scene code reads and replaces
+ * them: the frame graph's record (`recordTask`) and `dispose()` call the
+ * replacement when there is one, and the pin's own method is the default a
+ * replacement typically wraps (`const record = task.record.bind(task)`).
+ */
+function lowerEffectTaskMethods(bindGroup: boolean, disposal: boolean): string {
+    const task = recordAt("engine.frame_tasks", "handle");
+    return `
+// The pin's EffectRenderTask.record: it builds the wrapper's bind group and
+// restores the pipeline dispose cleared.
+static void record_effect_task_default(Engine& engine, TaskHandle handle) {
+    FrameTaskRecord& task = ${task};
+${bindGroup ? "    require_effect_bind_group(engine, task.effect.effect);\n" : ""}\
+    task.disposed = false;
+}
+
+js::Callback<void()> effect_task_method(Engine& engine, TaskHandle handle, bool dispose) {
+    FrameTaskRecord& task = ${task};
+    if (task.kind != FrameTaskKind::effect)
+        throw std::runtime_error("Effect task methods require an effect render task.");
+    const js::Callback<void()>& replaced = dispose ? task.dispose_override : task.record_override;
+    if (replaced) return replaced;
+    Engine* owner = &engine;
+    if (dispose)
+${
+    disposal
+        ? "        return js::Callback<void()>([owner, handle] { dispose_effect_render_task_default(*owner, handle); });"
+        : '        throw std::runtime_error("EffectRenderTask.dispose is not lowered here.");'
+}
+    return js::Callback<void()>([owner, handle] { record_effect_task_default(*owner, handle); });
+}
+
+void set_effect_task_method(Engine& engine, TaskHandle handle, bool dispose, js::Callback<void()> method) {
+    FrameTaskRecord& task = ${task};
+    if (task.kind != FrameTaskKind::effect)
+        throw std::runtime_error("Effect task methods require an effect render task.");
+    (dispose ? task.dispose_override : task.record_override) = std::move(method);
+}
+
+void record_effect_task(Engine& engine, TaskHandle handle) {
+    FrameTaskRecord& task = ${task};
+    if (task.record_override) {
+        // A copy: the replacement may replace itself while it runs.
+        const auto method = task.record_override;
+        method();
+        return;
+    }
+    record_effect_task_default(engine, handle);
+}
+`;
 }
 
 export class EffectLowerer {
@@ -194,6 +248,7 @@ export class EffectLowerer {
         disposal = false,
         taskBuild = false,
         taskDisposal = false,
+        taskMethodSlots = false,
     }: EffectFactoryOptions = {}): LoweredSource {
         return {
             modulePath: effectModule,
@@ -304,6 +359,11 @@ void set_effect_texture(
     EffectWrapperHandle effect,
     const EffectBindingKey& key,
     const StoredTexture& texture) {
+    // A render-target facade that passed through plain data keeps its owner.
+    if (const auto* file = std::get_if<FileTexture>(&texture); file && file->data.render_source) {
+        set_effect_texture(engine, effect, key, file->data.render_source->reference);
+        return;
+    }
     const auto* pixels = std::get_if<PixelsTexture>(&texture);
     if (!pixels)
         throw std::runtime_error("Effect file-texture bindings are not represented.");
@@ -370,7 +430,7 @@ TaskHandle create_effect_render_task(
     return TaskHandle{
         static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
 }
-${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context) : ""}
+${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
 } // namespace bbl
 `,
         };

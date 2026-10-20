@@ -53,6 +53,8 @@ import { recordAt } from "../record-access.js";
 import { compileNullableHitRecord } from "./hit-record.js";
 import { writeVec3Lanes } from "./vec3-write.js";
 import { emitPresentOption, retainedOptions } from "./retained-options.js";
+import { constructedFieldPresent } from "../constructed-fields.js";
+import { creationInSegment } from "../creation-segments.js";
 
 /** Attribute uploads change existing buffers without recording composition facts. */
 export const runtimeOnlyMeshIntrinsics: ReadonlySet<string> = new EmissionSet([
@@ -88,6 +90,8 @@ export const nativeMeshDataIntrinsics: ReadonlySet<string> = new EmissionSet([
     "removeThinInstance",
     "updateMeshGeometry",
     "updateMeshGeometryCapacity",
+    "resizeMeshGeometry",
+    "resizeSharedMeshGeometry",
 ]);
 
 export interface MeshIntrinsicContext
@@ -1294,7 +1298,8 @@ function compileMeshOptionalStreams(
             return { cpp: "std::nullopt", present: false };
         const optional =
             value.dataType?.kind === "optional" &&
-            value.optionalFoundCpp !== "true";
+            value.optionalFoundCpp !== "true" &&
+            !constructedFieldPresent(context, argument);
         const type: DataType = {
             kind: "optional",
             inner: { kind: "f32array" },
@@ -1388,7 +1393,15 @@ function compileCreateMeshFromData(
             : factory,
         engineCpp: engine.engineCpp ?? engine.cpp,
         directMorphCompatible: true,
-        ...(runtimeStreams ? { runtimeMeshStreams: true as const } : {}),
+        ...(runtimeStreams
+            ? {
+                  runtimeMeshStreams: streams
+                      .slice(1)
+                      .every((stream) => stream.present !== undefined)
+                      ? ("uv" as const)
+                      : (true as const),
+              }
+            : {}),
     };
 }
 
@@ -1971,8 +1984,12 @@ function compileSetThinInstances(
     });
     const count = context.compileNumber(argumentAt(call, 2), "double");
     context.reachFeature("mesh:thin-instances", call);
+    const creation = creationInSegment(context, argumentAt(call, 0), call);
     context.sceneManifest.recordThinInstanceMesh(
-        mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
+        mesh.sceneMeshIndex ??
+            mesh.sceneMeshProfileIndex ??
+            (creation && context.sceneManifest.meshCreationProfile(creation)),
+        creation !== undefined,
     );
     return {
         kind: "void",
@@ -1996,8 +2013,11 @@ function compileSetThinInstanceColors(
     context.reachFeature("mesh:thin-instance-colors", call);
     // The pin's ShaderMaterial reads this stream's presence off the
     // mesh to decide its instanced prelude, so the record notes it.
+    const creation = creationInSegment(context, argumentAt(call, 0), call);
     context.sceneManifest.recordThinInstanceColorMesh(
-        mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
+        mesh.sceneMeshIndex ??
+            mesh.sceneMeshProfileIndex ??
+            (creation && context.sceneManifest.meshCreationProfile(creation)),
     );
     return {
         kind: "void",

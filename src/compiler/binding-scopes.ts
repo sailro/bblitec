@@ -3176,6 +3176,35 @@ export class BindingScopes {
                 };
                 continue;
             }
+            // Any other runtime value the record holds (an optional string a
+            // `??` built) is the one it was built with: later readers, a
+            // closure among them, read that snapshot, not the builder's
+            // temporary.
+            if (
+                property.kind === "data" &&
+                property.dataType &&
+                property.cpp.length > 0 &&
+                !property.nativeBinding &&
+                !this.context.hasStableNativeBinding(property)
+            ) {
+                const cppType = this.context.dataTypes.cppType(
+                    property.dataType,
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: cppName,
+                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
+                    attributes: "[[maybe_unused]] ",
+                });
+                properties[name] = {
+                    ...property,
+                    cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
+                    sharedRecordScalar: true,
+                };
+                continue;
+            }
             properties[name] = property;
         }
         if (packedScalars.length) {

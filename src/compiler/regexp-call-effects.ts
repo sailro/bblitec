@@ -3,6 +3,7 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     accessedPropertySymbol,
     declarationInDefaultLibrary,
+    declaredIn,
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
@@ -167,6 +168,32 @@ function onlyObserved(
 ): boolean {
     const expression = outermostWrapper(value);
     const parent = expression.parent;
+    // Another builtin constructor's prototype is not on a RegExp's lookup
+    // path for `test`/`exec` (RegExp.prototype owns both), whatever code
+    // does with it (`GPUAdapter.prototype.requestDevice = ...`).
+    const constructorName =
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "prototype" &&
+        ts.isIdentifier(unwrapExpression(expression.expression))
+            ? (unwrapExpression(expression.expression) as ts.Identifier)
+            : undefined;
+    const owner =
+        constructorName &&
+        declaredIn(
+            resolvedSymbol(checker, constructorName),
+            "default-lib",
+            "dom",
+            "webgpu",
+        )
+            ? constructorName.text
+            : undefined;
+    if (
+        owner !== undefined &&
+        owner !== "RegExp" &&
+        owner !== "Function" &&
+        owner !== "eval"
+    )
+        return true;
     if (
         ts.isPropertyAccessExpression(expression) &&
         expression.name.text === "prototype" &&

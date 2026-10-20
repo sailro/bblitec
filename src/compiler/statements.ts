@@ -97,6 +97,7 @@ import { ownEntries, ownKeysKnown } from "./object-statics.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 import { exponentiationCall } from "./math-intrinsics.js";
 import { renderNativeEmission } from "./native-statements.js";
+import { isNativeInertCall } from "./native-inert-calls.js";
 
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 
@@ -1063,6 +1064,8 @@ export class StatementLowerer {
         if (ts.isExpressionStatement(statement)) {
             if (context.pageLoader?.lowerEntryImport(statement)) return;
             this.loweredTerminators.delete(statement);
+            // A helper whose every effect is native-inert lowers to nothing.
+            if (isNativeInertCall(context, statement.expression)) return;
             if (
                 context.asyncActivations.emitActivationBoundary(statement, () =>
                     this.emitExpression(context, statement.expression),
@@ -5307,9 +5310,14 @@ export class StatementLowerer {
         if (!ts.isPropertyAccessExpression(owner)) {
             return false;
         }
-        // Value compilation also applies the checker's non-null narrowing
-        // to a handle destructured from a retained record.
-        const target = context.compileValue(owner.expression);
+        // A handle stored as optional data narrows where the checker proves
+        // it present (value compilation narrows a destructured one).
+        const compiled = context.compileValue(owner.expression);
+        const target =
+            context.dataLowerer.presentStoredHandle(
+                compiled,
+                owner.expression,
+            ) ?? compiled;
         if (
             target.kind === "camera" &&
             ["position", "target", "upVector"].includes(owner.name.text)

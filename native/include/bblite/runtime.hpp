@@ -1638,6 +1638,12 @@ struct FrameTaskRecord {
     std::shared_ptr<SceneState> source_scene{};
     /** Allocated only for a source whose retained UBO is reached by TAA. */
     std::shared_ptr<PersistentSceneUniforms> scene_uniforms{};
+    /**
+     * Scene code's replacement of the task's own `record` / `dispose`
+     * (`task.record = () => { ...; record(); }`); empty runs the pin's.
+     */
+    js::Callback<void()> record_override;
+    js::Callback<void()> dispose_override;
 };
 
 struct RenderTargetTexture {
@@ -2412,6 +2418,8 @@ struct TransformNodeRecord {
     MeshVisibility visible;
     /** Bumped each time `create_transform_node` reuses this slot. */
     std::uint32_t generation = 0;
+    /** The import whose `buildNodeHierarchy` made this node (`imported_hierarchy_unlinked`). */
+    AssetHandle import_owner{};
     /** Whether `reclaim_transform_nodes` reclaimed this record. */
     bool retired = false;
     std::string name;
@@ -2533,6 +2541,22 @@ struct MeshRecord {
      * own TRS under its parents.
      */
     std::optional<std::array<float, 16>> parent_world;
+    /** The import that made this mesh (`imported_hierarchy_unlinked`). */
+    AssetHandle import_owner{};
+    /**
+     * A `parent` naming no record of this port: the pin's
+     * IWorldMatrixProvider, any object with `worldMatrix` and
+     * `worldMatrixVersion`. Both read through the program's own property
+     * access; the world composes under `provider_world()` and
+     * `refresh_world_matrix_providers` polls `provider_version()`. The
+     * identity is the object's, for the setter's unchanged-parent return.
+     */
+    std::function<std::array<float, 16>()> provider_world;
+    std::function<double()> provider_version;
+    const void* provider_identity = nullptr;
+    std::optional<double> provider_seen_version;
+    /** The provider's world read when its version last moved (the pin's cached world). */
+    std::optional<std::array<float, 16>> provider_world_snapshot;
     /**
      * `cloneMeshNode` left the imported hierarchy behind: the clone keeps
      * its source's local lanes but no longer inherits the root mirror the
@@ -2597,6 +2621,13 @@ struct MeshRecord {
      * Written only in VAT builds, since those two are its only readers.
      */
     bool skinned = false;
+    /**
+     * Whether the pin's `mesh.skeleton` / `mesh.morphTargets` would be set
+     * by the loader or a scene skeleton attachment, in every build: a
+     * skinned node with joint and weight streams, a primitive with targets.
+     */
+    bool skeleton_attached = false;
+    bool morph_targets_attached = false;
     /**
      * Whether scene code attached morph targets (`createMorphTargets`):
      * deformation picking keys its morph projection on the attachment.
@@ -2889,6 +2920,8 @@ struct MaterialRecord {
     // The family-specific public albedo property retains its original
     // Texture2D producer arm and identity, separately from upload data.
     std::optional<StoredTexture> source_albedo_texture{};
+    /** A loaded material's public emissive Texture2D, when it has one. */
+    std::optional<StoredTexture> source_emissive_texture{};
     bool source_colors_registered = false;
     bool source_pbr_group_builder = false;
     std::uint32_t pbr_composition_profile = invalid_handle;
@@ -3600,6 +3633,12 @@ struct AssetRecord {
      */
     TransformNodeHandle root_node{};
     std::vector<TransformNodeHandle> nodes;
+    /**
+     * load-gltf.ts buildNodeHierarchy fills `children` only; addToScene sets
+     * the parent links. Until the root is added, an imported node's or
+     * mesh's `worldMatrix` reads its own local matrix.
+     */
+    bool hierarchy_linked = false;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -4510,6 +4549,8 @@ struct Engine {
     std::vector<MaterialRecord> materials;
     /** Source materials `enableMaterialTracking` installed observable colors on. */
     std::vector<MaterialHandle> tracked_materials;
+    /** Meshes a world-matrix provider parents (`MeshRecord::provider_world`). */
+    std::vector<MeshHandle> provider_meshes;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
         std::shared_ptr<pal::StorageBufferOwner> gpu;
@@ -4960,6 +5001,11 @@ void register_managed_resource_disposer(Engine& engine, std::function<void()> di
  */
 inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
     return handle_names_record(engine.meshes, mesh);
+}
+
+/** Whether `owner`, an import, has not had its root added to a scene (`AssetRecord::hierarchy_linked`). */
+inline bool imported_hierarchy_unlinked(const Engine& engine, AssetHandle owner) {
+    return owner.value < engine.assets.size() && !engine.assets[owner.value].hierarchy_linked;
 }
 
 /**
@@ -5581,6 +5627,9 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
         return record.standard_material &&
                (record.base_color_texture.has_image() || record.has_diffuse_render_texture);
     }
+    if (slot == MaterialTextureSlot::emissive) {
+        return record.source_emissive_texture.has_value();
+    }
     throw std::runtime_error("Material source presence is not represented for this texture slot.");
 }
 
@@ -5589,6 +5638,9 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
     if (!material_texture_present(engine, material, slot))
         return FileTexture{};
     const MaterialRecord& record = handle_at(engine.materials, material);
+    if (slot == MaterialTextureSlot::emissive) {
+        return *record.source_emissive_texture;
+    }
     if (!record.source_albedo_texture) {
         throw std::runtime_error("This material texture producer has no retained source identity.");
     }
@@ -6543,6 +6595,69 @@ void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double p
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
 /** The same one level up, recursing into both of a node's child arms. */
 void mark_transform_node_dirty(Engine& engine, TransformNodeHandle node, bool local = true);
+
+/** A provider's `worldMatrix` as the pin's Float32Array world storage reads it. */
+template <typename Values>
+[[nodiscard]] std::array<float, 16> provider_world_matrix(const Values& values) {
+    if (values.size() < 16)
+        throw std::runtime_error(
+            "A world-matrix provider's worldMatrix has fewer than 16 elements.");
+    std::array<float, 16> matrix{};
+    for (std::size_t cell = 0; cell < 16; ++cell)
+        matrix[cell] = static_cast<float>(values[cell]);
+    return matrix;
+}
+
+/** Drops a provider parent: a node parent, or none, takes the field. */
+inline void clear_mesh_world_matrix_provider(MeshRecord& record) {
+    record.provider_world = {};
+    record.provider_version = {};
+    record.provider_identity = nullptr;
+    record.provider_seen_version.reset();
+    record.provider_world_snapshot.reset();
+}
+
+/** The generated `mark_mesh_dirty` walk, for the PAL's provider poll. */
+inline void mark_provider_child_dirty(Engine& engine, MeshHandle mesh) {
+    MeshRecord* record = current_mesh_record(engine, mesh);
+    if (!record)
+        return;
+    ++record->transform_version;
+    for (const MeshHandle child : record->parented_meshes)
+        mark_provider_child_dirty(engine, child);
+}
+
+/**
+ * world-matrix-state.ts pollForeignParent for every provider-parented mesh,
+ * once per frame after the frame's callbacks: a new version invalidates the
+ * mesh's subtree. The version getter is program code, so each record is
+ * found again after it runs.
+ */
+inline void refresh_world_matrix_providers(Engine& engine) {
+    if (engine.provider_meshes.empty())
+        return;
+    std::erase_if(engine.provider_meshes, [&engine](MeshHandle mesh) {
+        const MeshRecord* record = current_mesh_record(engine, mesh);
+        return !record || !record->provider_version;
+    });
+    const std::vector<MeshHandle> meshes = engine.provider_meshes;
+    for (const MeshHandle mesh : meshes) {
+        const MeshRecord* polled = current_mesh_record(engine, mesh);
+        if (!polled || !polled->provider_version)
+            continue;
+        const double version = polled->provider_version();
+        MeshRecord* record = current_mesh_record(engine, mesh);
+        if (!record || record->provider_seen_version == version)
+            continue;
+        record->provider_seen_version = version;
+        std::array<float, 16> world = record->provider_world();
+        record = current_mesh_record(engine, mesh);
+        if (!record)
+            continue;
+        record->provider_world_snapshot = world;
+        mark_provider_child_dirty(engine, mesh);
+    }
+}
 /** Install a mesh quaternion as its rotation source of truth. */
 void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion);
 void flatten_line_attributes(const std::vector<std::vector<Vec3>>& lines,
@@ -6831,6 +6946,12 @@ void set_mesh_transform_parent(Engine& engine, MeshHandle mesh, TransformNodeHan
 // feature that owns the mesh parent lane, while the overload above is
 // generated with the transform-node factories.
 void set_mesh_transform_parent(Engine& engine, MeshHandle mesh, MeshHandle parent);
+// The same field holding an object that is no node (an IWorldMatrixProvider):
+// its world and version read through `world` and `version`; `identity`
+// names the object for the unchanged-parent return.
+void set_mesh_world_matrix_provider(Engine& engine, MeshHandle mesh, const void* identity,
+                                    std::function<std::array<float, 16>()> world,
+                                    std::function<double()> version);
 // `mesh.children.push(child)`, the traversal twin of
 // `push_transform_node_child`.
 void push_mesh_child(Engine& engine, MeshHandle mesh, MeshHandle child);
@@ -7127,6 +7248,13 @@ void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
 void dispose_render_task(Engine& engine, TaskHandle task);
 /** `EffectRenderTask.dispose()`. */
 void dispose_effect_render_task(Engine& engine, TaskHandle task);
+/** `task.record` / `task.dispose` of an effect task: its replacement, else the pin's own. */
+js::Callback<void()> effect_task_method(Engine& engine, TaskHandle task, bool dispose);
+/** `task.record = method` / `task.dispose = method`. */
+void set_effect_task_method(Engine& engine, TaskHandle task, bool dispose,
+                            js::Callback<void()> method);
+/** The frame graph's record of one effect task: through its replacement when it has one. */
+void record_effect_task(Engine& engine, TaskHandle task);
 /** A refreshed task's rebind publishes its generation in the pin's renderable order. */
 void order_refreshed_render_task(FrameTaskRecord& task);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
@@ -7150,6 +7278,15 @@ inline AssetHandle cloned_asset_container(const SceneNodeHandle& node) {
 inline AssetHandle asset_container_root(Engine& engine, AssetHandle asset) {
     if (!engine.assets.at(asset.value).has_synthetic_root)
         throw std::runtime_error("This asset container has no represented synthetic root.");
+    return asset;
+}
+
+/** A container whose entities are its synthetic root alone: a glTF load that added no light. */
+inline AssetHandle asset_container_sole_root(Engine& engine, AssetHandle asset) {
+    const AssetRecord& record = engine.assets.at(asset.value);
+    if (!record.has_synthetic_root || !record.lights.empty())
+        throw std::runtime_error(
+            "This asset container's entities are not its synthetic root alone.");
     return asset;
 }
 

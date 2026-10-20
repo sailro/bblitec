@@ -269,6 +269,13 @@ export interface CompileManifest {
     sceneMaterialGltfAssetsBefore?: number[];
     /** These material rows are native call-site profiles, not physical counts. */
     runtimeMaterialProfiles?: number[];
+    /**
+     * Some glTF load runs a generation-unknown number of times or after a
+     * runtime-profiled material, so creation order cannot place containers:
+     * each distinct document composes once and its loaded materials and
+     * meshes announce their profiles natively.
+     */
+    profiledGltfLoads?: true;
     sceneMeshes: SceneMeshManifest[];
     /** Scene-code lights added outside a repeating/deferred callback, in
      *  scene order. When `dynamicSceneLights` is false this is the complete
@@ -1954,7 +1961,9 @@ export function runtimeMeshValue(value: Value): Value {
               }
             : {}),
         ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
-        ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
+        ...(value.runtimeMeshStreams
+            ? { runtimeMeshStreams: value.runtimeMeshStreams }
+            : {}),
         ...(value.sceneMeshProfileIndex !== undefined
             ? { sceneMeshProfileIndex: value.sceneMeshProfileIndex }
             : {}),
@@ -2103,13 +2112,20 @@ export function commonResourceValue(
             };
         }
     }
+    const runtimeStreams = candidates.flatMap((candidate) =>
+        candidate.runtimeMeshStreams ? [candidate.runtimeMeshStreams] : [],
+    );
     if (
         (common.kind === "mesh" ||
             common.kind === "transform-node" ||
             common.kind === "scene-node") &&
-        candidates.some((candidate) => candidate.runtimeMeshStreams)
+        runtimeStreams.length > 0
     )
-        common.runtimeMeshStreams = true;
+        common.runtimeMeshStreams = runtimeStreams.every(
+            (streams) => streams === "uv",
+        )
+            ? "uv"
+            : true;
     if (!candidates.every((candidate) => candidate.directMorphCompatible))
         delete common.directMorphCompatible;
     if (value.kind === "mesh") {
@@ -2541,9 +2557,10 @@ export interface ValueFields {
      * attribute stream whose presence is a run-time answer, so the
      * attribute set the Standard and PBR variant keys need is not
      * generation-known. Carried on the value because the refusal belongs at
-     * the material assignment, which is where the pairing exists.
+     * the material assignment, which is where the pairing exists. `"uv"`:
+     * only the uv stream's presence is decided at run time.
      */
-    runtimeMeshStreams?: true;
+    runtimeMeshStreams?: true | "uv";
     /** Stable identity shared by every Value alias of one light handle. */
     lightIdentity?: LightIdentity;
     /**
@@ -2843,6 +2860,8 @@ export interface ValueFields {
     staticString?: string;
     /** Local text whose standalone writes update its generation-known value. */
     orderedTextDeclaration?: ts.VariableDeclaration;
+    /** Runtime control-flow depth at that declaration: deeper writes may not run. */
+    orderedTextControlDepth?: number;
     /** A retained const initializer's text; reading its lexical home may still throw. */
     lexicalStaticString?: string;
     /**
@@ -3105,6 +3124,7 @@ export type Feature =
     | "mesh:morph-targets"
     | "mesh:transform-node"
     | "mesh:mirrored"
+    | "mesh:world-matrix-provider"
     | "mesh:plane"
     | "mesh:sphere"
     | "mesh:thin-instances"
@@ -3289,6 +3309,7 @@ export type Feature =
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
     | "frame-graph:task-disposal"
+    | "frame-graph:task-method-slots"
     | "frame-graph:live-task-add"
     | "renderer:frame-graph"
     | "effect:wrapper"

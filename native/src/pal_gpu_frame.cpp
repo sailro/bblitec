@@ -144,6 +144,7 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
             registered->state->process_material_groups(*registered);
     }
     project_tracked_material_colors(engine);
+    refresh_world_matrix_providers(engine);
     return scene_delta_ms;
 }
 
@@ -157,6 +158,7 @@ double advance_frame(Engine& engine, FrameClock& frame_clock, double frame_delta
     engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     project_tracked_material_colors(engine);
+    refresh_world_matrix_providers(engine);
     return delta_ms;
 }
 
@@ -175,6 +177,7 @@ double advance_frame(Engine& engine, FrameGraphContext& context, FrameClock& fra
         callback(callback_delta_ms);
     }
     project_tracked_material_colors(engine);
+    refresh_world_matrix_providers(engine);
     return delta_ms;
 }
 

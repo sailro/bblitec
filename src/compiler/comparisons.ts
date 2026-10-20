@@ -195,10 +195,12 @@ export function foldBooleanComparison(
               : undefined;
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
-        return value?.kind === "boolean" &&
-            (value.cpp === "true" || value.cpp === "false")
-            ? value.cpp
-            : undefined;
+        if (value?.kind !== "boolean") return undefined;
+        if (value.cpp === "true" || value.cpp === "false") return value.cpp;
+        // A binding whose generation-known value outlives its storage name.
+        return value.staticBoolean === undefined
+            ? undefined
+            : String(value.staticBoolean);
     };
     return context.probeEmission(() => {
         const left = settled(expression.left);

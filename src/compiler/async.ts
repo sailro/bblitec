@@ -56,9 +56,13 @@ import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
 import { isNullable, isTypeReference } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { propertyNeverObserved } from "./unread-properties.js";
+import { CompileError } from "./compile-error.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
+    | "program"
+    | "probeEmission"
     | "checker"
     | "cppString"
     | "dataLowerer"
@@ -1753,6 +1757,16 @@ export class AsyncLowerer {
                         expected,
                     );
                 }
+                // The completion was proven above, so a void reaction
+                // settles a nullable resource as its absent value.
+                if (
+                    result.value.kind === "void" &&
+                    settlement?.result?.kind === "optional" &&
+                    settlement.result.inner.kind === "handle"
+                ) {
+                    context.emitDiscardedValue(result.value);
+                    result.value = { kind: "json-null", cpp: "std::nullopt" };
+                }
                 if (!cleanup)
                     result.value = this.ownResult(
                         result.value,
@@ -2545,6 +2559,9 @@ export class AsyncLowerer {
             );
         };
         const recordProperties = { ...value.recordProperties };
+        // A field nothing can read back needs no storage, so one that
+        // cannot be owned is left out rather than refused.
+        const unobserved = new Set<string>();
         for (const [name, field] of Object.entries(recordProperties)) {
             if (
                 field.conditionalOwnKey ||
@@ -2552,12 +2569,28 @@ export class AsyncLowerer {
                 value.recordSetters?.[name]
             )
                 continue;
-            recordProperties[name] = this.ownResult(
-                field,
-                node,
-                fieldType(name),
-                [...ancestors, value],
-            );
+            try {
+                recordProperties[name] = this.context.probeEmission(
+                    () =>
+                        this.ownResult(field, node, fieldType(name), [
+                            ...ancestors,
+                            value,
+                        ]),
+                    () => true,
+                );
+            } catch (error) {
+                if (
+                    !(error instanceof CompileError) ||
+                    !propertyNeverObserved(
+                        this.context.program,
+                        this.context.checker,
+                        name,
+                    )
+                )
+                    throw error;
+                delete recordProperties[name];
+                unobserved.add(name);
+            }
         }
         value = { ...value, recordProperties };
         if (!result) {
@@ -2581,6 +2614,16 @@ export class AsyncLowerer {
                         field,
                     );
                 }
+                if (unobserved.has(name)) continue;
+                if (
+                    !mapped &&
+                    propertyNeverObserved(
+                        this.context.program,
+                        this.context.checker,
+                        name,
+                    )
+                )
+                    continue;
                 if (
                     !mapped ||
                     field?.conditionalOwnKey ||
@@ -2592,9 +2635,24 @@ export class AsyncLowerer {
                         node,
                         `Asynchronous result property '${name}' has no owned representation.`,
                     );
+                // An array of resources the producer already holds keeps
+                // that storage: an owned copy would split its identity.
+                const held =
+                    field?.kind === "data" &&
+                    !field.freshData &&
+                    (field.dataType?.kind === "vector" ||
+                        field.dataType?.kind === "span") &&
+                    field.dataType.element.kind === "handle" &&
+                    !field.dataType.element.ownedEngine &&
+                    (mapped.kind === "vector" || mapped.kind === "span") &&
+                    mapped.element.kind === "handle" &&
+                    mapped.element.handle === field.dataType.element.handle
+                        ? field.dataType
+                        : undefined;
                 fields.push({
                     sourceName: name,
-                    type: mapped,
+                    type: held ?? mapped,
+                    ...(held ? { declarations: [] } : {}),
                     ...(property && propertyIsReadOnly(property)
                         ? { readOnly: true }
                         : {}),

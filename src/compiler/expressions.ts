@@ -32,6 +32,7 @@ import type { UiProjection } from "./ui-projection.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
@@ -208,6 +209,7 @@ import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
+import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -271,6 +273,7 @@ export interface ExpressionContext
         Pick<
             LoweringServices,
             | "noteImpureRead"
+            | "conditionOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
             | "audioSessionCpp"
@@ -1370,6 +1373,12 @@ export class ExpressionLowerer {
         }
         if (ts.isCallExpression(unwrapped)) {
             const value = this.compileCall(unwrapped);
+            const profile = value.sceneMeshIndex ?? value.sceneMeshProfileIndex;
+            if (value.kind === "mesh" && profile !== undefined)
+                this.context.sceneManifest.recordMeshCreation(
+                    unwrapped,
+                    profile,
+                );
             return assertedNonNull
                 ? this.context.dataLowerer.narrowOptional(
                       value,
@@ -2624,7 +2633,8 @@ export class ExpressionLowerer {
                     (member.kind === "data" && member.dataType !== undefined) ||
                     member.kind === "number" ||
                     member.kind === "boolean" ||
-                    member.kind === "string";
+                    member.kind === "string" ||
+                    isHandleKind(member.kind);
         if (!movable(value)) return undefined;
         const members: Value[] = [];
         const expressions: string[] = [];
@@ -2664,16 +2674,24 @@ export class ExpressionLowerer {
             const read = move(
                 kind === "string" ? `std::string(${member.cpp})` : member.cpp,
             );
-            const result: Value =
-                kind === "data" && member.dataType
-                    ? this.context.dataLowerer.leafValue(read, member.dataType)
-                    : {
-                          kind:
-                              kind === "number" || kind === "string"
-                                  ? kind
-                                  : "boolean",
-                          cpp: read,
-                      };
+            // A resource keeps its kind and facts; its handle is the moved one.
+            const {
+                resourceStorageCpp: _storage,
+                ownedCpp: _owned,
+                nativeBinding: _binding,
+                ...resource
+            } = member;
+            const result: Value = isHandleKind(kind)
+                ? { ...resource, cpp: read }
+                : kind === "data" && member.dataType
+                  ? this.context.dataLowerer.leafValue(read, member.dataType)
+                  : {
+                        kind:
+                            kind === "number" || kind === "string"
+                                ? kind
+                                : "boolean",
+                        cpp: read,
+                    };
             // A found flag, stated truthiness or identity is read beside
             // the value.
             return {
@@ -3592,6 +3610,40 @@ export class ExpressionLowerer {
         });
     }
 
+    /**
+     * `task.record.bind(task)` on an effect task: the method already acts
+     * on its task, so binding it to that same task is the method itself.
+     */
+    private boundEffectTaskMethod(
+        call: ts.CallExpression,
+        target: ts.Expression,
+    ): Value | undefined {
+        if (
+            !ts.isPropertyAccessExpression(target) ||
+            target.name.text !== "bind" ||
+            call.arguments.length !== 1
+        )
+            return undefined;
+        const method = this.context.unwrap(target.expression);
+        if (
+            !ts.isPropertyAccessExpression(method) ||
+            !isEffectTaskMethodName(method.name.text)
+        )
+            return undefined;
+        const owner = this.context.unwrap(method.expression);
+        const receiver = this.context.unwrap(argumentAt(call, 0));
+        if (
+            !ts.isIdentifier(owner) ||
+            !ts.isIdentifier(receiver) ||
+            this.context.symbols.valueSymbol(owner) !==
+                this.context.symbols.valueSymbol(receiver)
+        )
+            return undefined;
+        const task = this.context.bindings.lookupOptional(owner);
+        if (task?.kind !== "task" || !task.effectTask) return undefined;
+        return this.compileValue(method);
+    }
+
     private compileCall(call: ts.CallExpression): Value {
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
@@ -3616,6 +3668,8 @@ export class ExpressionLowerer {
                 target,
             );
         }
+        const boundTaskMethod = this.boundEffectTaskMethod(call, target);
+        if (boundTaskMethod) return boundTaskMethod;
         const hostFunction = ts.isIdentifier(target)
             ? this.context.bindings.lookupOptional(target)?.hostFunction
             : ts.isPropertyAccessExpression(target)
@@ -4291,10 +4345,11 @@ export class ExpressionLowerer {
         if (executedVideo) {
             return executedVideo;
         }
-        const userFunction = this.context.userFunctions.compile(
+        const userFunction = compileWithRuntimeCaseSplit(
             this.context,
             call,
-            callee,
+            () =>
+                this.context.userFunctions.compile(this.context, call, callee),
         );
         if (userFunction) {
             return userFunction;
@@ -5729,6 +5784,48 @@ export class ExpressionLowerer {
                 inferred =
                     this.context.dataTypes.markStoredObjectReferences(stored);
         }
+        // An array-like over two typed arrays of one kind (`ArrayLike<number>`
+        // holding either Float32Array) selects that typed array itself.
+        const checkerTyped = (arm: ts.Expression): boolean =>
+            TYPED_ARRAY_KINDS.has(
+                this.context.checker
+                    .getNonNullableType(
+                        this.context.checker.getTypeAtLocation(arm),
+                    )
+                    .getSymbol()?.name ?? "",
+            );
+        if (
+            (inferred?.kind === "vector" || inferred?.kind === "span") &&
+            inferred.element.kind === "number" &&
+            (checkerTyped(unwrapped.whenTrue) ||
+                checkerTyped(unwrapped.whenFalse))
+        ) {
+            const armType = (arm: ts.Expression): DataType | undefined =>
+                this.context.probeEmission(
+                    () =>
+                        this.inRuntimeControlFlow(() => this.compileValue(arm))
+                            .dataType,
+                    () => false,
+                );
+            const typed = (type: DataType | undefined): boolean =>
+                type !== undefined &&
+                [...TYPED_ARRAY_KINDS.values()].some(
+                    (kind) => kind === type.kind,
+                );
+            // A number array arm (a native matrix read the pin keeps in a
+            // Float32Array) stores into the other arm's typed array.
+            const numbers = (type: DataType | undefined): boolean =>
+                type?.kind === "vector" && type.element.kind === "number";
+            const whenTrue = armType(unwrapped.whenTrue);
+            const whenFalse = armType(unwrapped.whenFalse);
+            if (
+                typed(whenTrue) &&
+                (dataTypesEqual(whenTrue!, whenFalse!) || numbers(whenFalse))
+            )
+                inferred = whenTrue;
+            else if (typed(whenFalse) && numbers(whenTrue))
+                inferred = whenFalse;
+        }
         // A native handle union can describe a reference whose actual
         // carrier keeps absence beside its payload, rather than in a union.
         // Preserve that representation for the shared null-defaulted selection.
@@ -6355,6 +6452,11 @@ export class ExpressionLowerer {
                     }
                     continue;
                 }
+                // `...undefined` and `...null` spread no key at all.
+                if (spread.kind === "void" || spread.kind === "json-null") {
+                    this.context.emitDiscardedValue(spread);
+                    continue;
+                }
                 if (
                     spread.kind !== "record" &&
                     spread.recordProperties === undefined
@@ -6368,9 +6470,7 @@ export class ExpressionLowerer {
                             isJsonValue(spread) ||
                             spread.kind === "string" ||
                             spread.kind === "number" ||
-                            spread.kind === "boolean" ||
-                            spread.kind === "void" ||
-                            spread.kind === "json-null")
+                            spread.kind === "boolean")
                     )
                         return undefined;
                     this.context.fail(
@@ -7344,7 +7444,9 @@ export class ExpressionLowerer {
         // Resolve engine-handle searches before the plain-data method
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
-        const found = this.context.handleCollections.compileFind(call, callee);
+        const found =
+            this.context.handleCollections.compileFind(call, callee) ??
+            this.context.handleCollections.compileFilter(call, callee);
         if (found) {
             return found;
         }

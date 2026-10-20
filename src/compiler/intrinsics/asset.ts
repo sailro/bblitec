@@ -5,6 +5,8 @@ import {
 } from "../emission-transaction.js";
 import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
 import type { LoweringServices } from "../lowering-services.js";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
@@ -20,6 +22,7 @@ import {
 } from "../../pinned-address-modes.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
+import { localAssetPath } from "../../asset-source.js";
 import {
     knownDescriptorElements,
     knownDescriptorProperties,
@@ -27,6 +30,7 @@ import {
 } from "../retained-descriptor.js";
 import {
     externalGltfResourceUri,
+    externalGltfResourceUris,
     gltfDocumentFromBytes,
 } from "../../gltf-document.js";
 import { pinnedGltfThinInstanceSelection } from "../../pinned-gltf-feature-selection.js";
@@ -331,7 +335,81 @@ function fetchedGltfSource(
     return source;
 }
 
+/**
+ * Whether a local glTF document and the buffers and images it fetches beside
+ * itself are all present: one missing fails its load in the pin (the fetch
+ * rejects), so it is no document a runtime URL can select.
+ */
+function gltfResourcesReadable(source: string, entryFileName: string): boolean {
+    const document = localAssetPath(source, resolve(entryFileName));
+    if (!document) return true;
+    try {
+        return externalGltfResourceUris(readFileSync(document)).every((uri) =>
+            existsSync(join(dirname(document), decodeURIComponent(uri))),
+        );
+    } catch {
+        return false;
+    }
+}
+
 const gltfThinInstanceSelections = new EmissionWeakMap<CompileAsset, boolean>();
+
+/** Registers one container load of `source` and reaches what its document needs. */
+function registerGltfContainer(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    source: string,
+): CompileAsset {
+    const asset = context.assetRegistry.registerAsset(source, "gltf");
+    context.assetRegistry.recordGltfContainerLoad(asset);
+    if (!context.options.readAssetBytes) return asset;
+    let instancing = gltfThinInstanceSelections.get(asset);
+    if (instancing === undefined) {
+        const document = gltfDocumentFromBytes(
+            context.options.readAssetBytes(
+                context.assetPayloads.get(asset.source) ?? asset.source,
+                context.options.fileName,
+            ),
+        );
+        if (!document)
+            context.fail(
+                call,
+                `Cannot read the glTF document for '${asset.source}'.`,
+            );
+        instancing = pinnedGltfThinInstanceSelection()(document);
+        gltfThinInstanceSelections.set(asset, instancing);
+    }
+    if (instancing) context.reachFeature("mesh:thin-instances", call);
+    return asset;
+}
+
+/** `loadGltf`'s value: the container load of `pathCpp` (a promise in a realm). */
+function gltfLoadValue(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    engine: Value,
+    pathCpp: string,
+    identity: Pick<Value, "asset" | "assetKind">,
+): Value {
+    context.reachFeature("loader:gltf", call);
+    context.reachFeature("renderer:scene", call);
+    const cameras = context.hasFeature("loader:gltf-cameras");
+    const result: Value = {
+        kind: "asset",
+        cpp: `bbl::load_gltf(${engine.cpp}, ${pathCpp}${cameras ? ", true" : ""})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+        ...identity,
+        assetRootState: { reparented: false },
+    };
+    return context.options.workers
+        ? {
+              kind: "promise",
+              cpp: `bbl::pal::load_realm_gltf${cameras ? "<true>" : ""}(${engine.cpp}, ${pathCpp})`,
+              promiseType: "bbl::AssetHandle",
+              promiseResult: result,
+          }
+        : result;
+}
 
 function compileLoadGltf(
     context: AssetIntrinsicContext,
@@ -340,50 +418,45 @@ function compileLoadGltf(
     context.expectArgumentCount(call, 2, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const source =
-        fetchedGltfSource(context, argumentAt(call, 1)) ??
-        context.compileStringLiteral(argumentAt(call, 1));
-    const asset = context.assetRegistry.registerAsset(source, "gltf");
-    context.assetRegistry.recordGltfContainerLoad(asset, call);
-    context.reachFeature("loader:gltf", call);
-    context.reachFeature("renderer:scene", call);
-    if (context.options.readAssetBytes) {
-        let instancing = gltfThinInstanceSelections.get(asset);
-        if (instancing === undefined) {
-            const document = gltfDocumentFromBytes(
-                context.options.readAssetBytes(
-                    context.assetPayloads.get(asset.source) ?? asset.source,
-                    context.options.fileName,
-                ),
-            );
-            if (!document)
-                context.fail(
-                    call,
-                    `Cannot read the glTF document for '${asset.source}'.`,
-                );
-            instancing = pinnedGltfThinInstanceSelection()(document);
-            gltfThinInstanceSelections.set(asset, instancing);
-        }
-        if (instancing) context.reachFeature("mesh:thin-instances", call);
+    const fetched = fetchedGltfSource(context, argumentAt(call, 1));
+    const dynamic =
+        fetched === undefined
+            ? compileDynamicPackagedAsset(
+                  context,
+                  argumentAt(call, 1),
+                  "gltf",
+                  (file) =>
+                      /\.(?:glb|gltf)(?:[?#]|$)/i.test(file) &&
+                      gltfResourcesReadable(file, context.options.fileName),
+              )
+            : undefined;
+    // A runtime URL selects among the packaged documents its inference
+    // finds; each container announces its own rows through the loader's
+    // path-keyed profile table.
+    if (dynamic?.dynamicAssetPathCpp !== undefined) {
+        for (const source of dynamic.packagedSources ?? [])
+            registerGltfContainer(context, call, source);
+        context.sceneManifest.recordProfiledGltfLoads();
+        return gltfLoadValue(
+            context,
+            call,
+            engine,
+            dynamic.dynamicAssetPathCpp,
+            { assetKind: "gltf" },
+        );
     }
-    const result: Value = {
-        kind: "asset",
-        cpp:
-            `bbl::load_gltf(${engine.cpp}, ` +
-            `bbl::asset_path(` +
-            `${context.cppString(asset.output)})${context.hasFeature("loader:gltf-cameras") ? ", true" : ""})`,
-        engineCpp: engine.engineCpp ?? engine.cpp,
-        asset,
-        assetRootState: { reparented: false },
-    };
-    return context.options.workers
-        ? {
-              kind: "promise",
-              cpp: `bbl::pal::load_realm_gltf${context.hasFeature("loader:gltf-cameras") ? "<true>" : ""}(${engine.cpp}, bbl::asset_path(${context.cppString(asset.output)}))`,
-              promiseType: "bbl::AssetHandle",
-              promiseResult: result,
-          }
-        : result;
+    const asset = registerGltfContainer(
+        context,
+        call,
+        fetched ?? context.compileStringLiteral(argumentAt(call, 1)),
+    );
+    return gltfLoadValue(
+        context,
+        call,
+        engine,
+        `bbl::asset_path(${context.cppString(asset.output)})`,
+        { asset },
+    );
 }
 
 function compileLoadSplat(

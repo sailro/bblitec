@@ -179,17 +179,27 @@ function fieldLane(request: UboWriterRequest, name: string): number {
     return slot.offset / 4;
 }
 
-/** The field and lane a `data[...]` write lands in. */
+/**
+ * The field and lane a `data[...]` write lands in, or nothing for an
+ * alignment gap between fields (a writer counting `off + 4` from a field the
+ * layout did not align lands there), which no shader reads.
+ */
 function slotAtLane(
     request: UboWriterRequest,
     lane: number,
-): { field: string; lane: number; lanes: number } {
+): { field: string; lane: number; lanes: number } | undefined {
     for (const slot of request.slots) {
         const start = slot.offset / 4;
         if (lane >= start && lane < start + slot.lanes) {
             return { field: slot.name, lane: lane - start, lanes: slot.lanes };
         }
     }
+    const starts = request.slots.map((slot) => slot.offset / 4);
+    if (
+        starts.some((start) => start < lane) &&
+        starts.some((start) => start > lane)
+    )
+        return undefined;
     throw new Error(
         `Pinned writer writes lane ${lane}, which no declared field covers.`,
     );
@@ -1382,14 +1392,13 @@ function emitPlainStatement(
         }
         const lane = dataLane(state, target.argumentExpression);
         const slot = slotAtLane(state.request, lane);
+        const value = emitExpression(state, statement.expression.right);
+        if (!slot) return [`    static_cast<void>(${value});`];
         const member =
             slot.lanes === 1
                 ? `out.${slot.field}`
                 : `out.${slot.field}[${slot.lane}]`;
-        return [
-            `    ${member} = static_cast<float>(` +
-                `${emitExpression(state, statement.expression.right)});`,
-        ];
+        return [`    ${member} = static_cast<float>(${value});`];
     }
     // `for (const ext of _getPbrExts().values()) { ext.writeUbo(...) }` — each
     // extension writer is lowered into its own function, so the pin's own
@@ -1422,12 +1431,13 @@ function emitPlainStatement(
                 `        ${bufferWriter.cpp}(values, 0, ${args.map((arg) => emitExpression(state, arg)).join(", ")});`,
                 ...Array.from({ length: bufferWriter.lanes }, (_, index) => {
                     const slot = slotAtLane(state.request, baseLane + index);
+                    if (!slot) return [];
                     const target =
                         slot.lanes === 1
                             ? `out.${slot.field}`
                             : `out.${slot.field}[${slot.lane}]`;
-                    return `        ${target} = values[${index}];`;
-                }),
+                    return [`        ${target} = values[${index}];`];
+                }).flat(),
                 "    }",
             ];
         }

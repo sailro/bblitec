@@ -36,3 +36,13 @@ export class CompileError extends Error {
         this.subject = subject;
     }
 }
+
+/** `attempt`'s result, or nothing where it refuses (other errors propagate). */
+export function unlessRefused<T>(attempt: () => T): T | undefined {
+    try {
+        return attempt();
+    } catch (error) {
+        if (error instanceof CompileError) return undefined;
+        throw error;
+    }
+}

@@ -33,7 +33,10 @@ import { glbDocument } from "./gltf-document.js";
 import { nodeGeometryAssetRefusal } from "./node-geometry-assets.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
-import type { MeshProfileTable } from "./lowering/resource-profiles.js";
+import type {
+    GltfContainerProfile,
+    MeshProfileTable,
+} from "./lowering/resource-profiles.js";
 import {
     composeGltfMaterials,
     composeRenderableVariants,
@@ -176,6 +179,8 @@ interface ComposedScenePipeline {
      */
     renderableMeshFeatures: number[];
     meshProfiles: MeshProfileTable | undefined;
+    /** Each document's profile bases when its loads are profiled. */
+    gltfContainerProfiles: GltfContainerProfile[] | undefined;
     pinnedVariants: readonly PinnedVariantManifestEntry[];
     runtimeMeshFeatures: number | undefined;
     standardComposition: StandardSceneComposition | undefined;
@@ -349,9 +354,15 @@ export async function composeScenePipeline({
     const uniqueGltfAssets = result.manifest.assets.filter(
         (asset) => asset.kind === "gltf",
     );
-    const gltfAssets = uniqueGltfAssets.flatMap((asset) =>
-        Array.from({ length: asset.containerCount ?? 1 }, () => asset),
-    );
+    // Profiled loads have no creation order to follow: each document
+    // composes once and every container it loads announces its composed
+    // material and mesh rows natively (`GltfContainerProfile`).
+    const profiledGltfLoads = result.manifest.profiledGltfLoads === true;
+    const gltfAssets = profiledGltfLoads
+        ? uniqueGltfAssets
+        : uniqueGltfAssets.flatMap((asset) =>
+              Array.from({ length: asset.containerCount ?? 1 }, () => asset),
+          );
     const gltfRenderableFeaturesByAsset = new Map<
         CompileAsset,
         ReturnType<typeof gltfRenderableFeatures>
@@ -448,20 +459,19 @@ export async function composeScenePipeline({
     const sceneMeshRows = new Array<number>(result.manifest.sceneMeshes.length);
     const sceneMeshesByLoadCount = new Map<number, number[]>();
     result.manifest.sceneMeshes.forEach((mesh, index) => {
-        if (
-            mesh.gltfAssetsBefore < 0 ||
-            mesh.gltfAssetsBefore > gltfAssets.length
-        ) {
+        const loadCount = profiledGltfLoads ? 0 : mesh.gltfAssetsBefore;
+        if (loadCount < 0 || loadCount > gltfAssets.length) {
             refuseGeneration(
                 "loader:gltf",
                 "A scene-code mesh records an impossible glTF load count.",
                 result.manifest.featureSites,
             );
         }
-        const bucket = sceneMeshesByLoadCount.get(mesh.gltfAssetsBefore) ?? [];
+        const bucket = sceneMeshesByLoadCount.get(loadCount) ?? [];
         bucket.push(index);
-        sceneMeshesByLoadCount.set(mesh.gltfAssetsBefore, bucket);
+        sceneMeshesByLoadCount.set(loadCount, bucket);
     });
+    const gltfAssetRows: number[] = [];
     const appendSceneMesh = async (index: number): Promise<void> => {
         const mesh = result.manifest.sceneMeshes[index]!;
         sceneMeshRows[index] = renderableMeshFeatures.length;
@@ -482,6 +492,7 @@ export async function composeScenePipeline({
             }
             const features = await pendingFeatures;
             gltfRenderableFeatureSets.push(features);
+            gltfAssetRows.push(renderableMeshFeatures.length);
             renderableMeshFeatures.push(...features);
         }
     }
@@ -634,7 +645,9 @@ export async function composeScenePipeline({
         gltfMaterialPrefix.push(gltfMaterialPrefix.at(-1)! + count);
     }
     const sceneMaterialLoadCounts =
-        result.manifest.sceneMaterialGltfAssetsBefore ??
+        (profiledGltfLoads
+            ? undefined
+            : result.manifest.sceneMaterialGltfAssetsBefore) ??
         new Array<number>(result.manifest.sceneMaterialCount).fill(
             gltfAssets.length,
         );
@@ -1205,26 +1218,55 @@ export async function composeScenePipeline({
             mesh.runtimeInstances ? [sceneMeshRows[index]!] : [],
         ),
     );
+    // A profiled program's scene rows come first, so every row past them
+    // is a container's, announced by its load rather than counted as the
+    // next original. The same holds for materials: the documents occupy
+    // the first composed slots, and each loaded material's profile maps
+    // onto its own slot after the scene's PBR profiles.
+    const firstContainerRow = profiledGltfLoads
+        ? sceneMeshRows.length
+        : renderableMeshFeatures.length;
+    const rows = renderableMeshFeatures.map((_, row) => row);
+    const scenePbrMaterialIndices = absoluteScenePbrMaterials.map(
+        (material) => material.materialsBefore,
+    );
+    const gltfContainerProfiles = profiledGltfLoads
+        ? gltfAssets.map((asset, index) => ({
+              output: asset.output,
+              materials:
+                  scenePbrMaterialIndices.length + assetMaterialBases[index]!,
+              meshes: gltfAssetRows[index]!,
+          }))
+        : undefined;
+    if (profiledGltfLoads) {
+        for (let slot = 0; slot < totalAssetMaterials; slot += 1) {
+            scenePbrMaterialIndices.push(slot);
+        }
+    }
     return {
         lightKinds,
         toneMappingStates,
         gltfAssets,
         materialIndexBase: totalAssetMaterials,
-        scenePbrMaterialIndices: absoluteScenePbrMaterials.map(
-            (material) => material.materialsBefore,
-        ),
+        scenePbrMaterialIndices,
         casterViewCount,
         renderableMeshFeatures,
         meshProfiles:
-            runtimeProfileRows.size > 0
+            runtimeProfileRows.size > 0 || profiledGltfLoads
                 ? {
-                      sceneRows: sceneMeshRows,
-                      staticRows: renderableMeshFeatures
-                          .map((_, row) => row)
-                          .filter((row) => !runtimeProfileRows.has(row)),
+                      sceneRows: [
+                          ...sceneMeshRows,
+                          ...rows.slice(firstContainerRow),
+                      ],
+                      staticRows: rows.filter(
+                          (row) =>
+                              row < firstContainerRow &&
+                              !runtimeProfileRows.has(row),
+                      ),
                       rowCount: renderableMeshFeatures.length,
                   }
                 : undefined,
+        gltfContainerProfiles,
         pinnedVariants,
         runtimeMeshFeatures,
         standardComposition,

@@ -149,11 +149,19 @@ export function gltfDocumentFromBytes(
 
 /** The first non-data buffer/image URI, unresolved by the pin for raw input. */
 export function externalGltfResourceUri(bytes: Uint8Array): string | undefined {
+    return externalGltfResourceUris(bytes)[0];
+}
+
+/** Every buffer and image URI a glTF document fetches beside itself. */
+export function externalGltfResourceUris(bytes: Uint8Array): string[] {
     const document = gltfDocumentFromBytes(bytes);
-    if (!document) return undefined;
+    if (!document) return [];
     return [...asRecords(document.buffers), ...asRecords(document.images)]
         .map((resource) => asString(resource.uri))
-        .find((uri) => uri !== undefined && !uri.startsWith("data:"));
+        .filter(
+            (uri): uri is string =>
+                uri !== undefined && !uri.startsWith("data:"),
+        );
 }
 
 /** Reads a .glb's JSON chunk. Returns nothing for anything else. */

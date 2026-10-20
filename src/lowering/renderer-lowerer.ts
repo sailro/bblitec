@@ -370,6 +370,8 @@ export class RendererLowerer {
             picking?: boolean;
             /** The scene reaches `enableMirroredMeshes`. */
             mirroredMeshes?: boolean;
+            /** A mesh parent can be an IWorldMatrixProvider record. */
+            worldMatrixProviders?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             /**
@@ -1012,6 +1014,8 @@ ${
             floatingOrigin?: boolean;
             picking?: boolean;
             mirroredMeshes?: boolean;
+            /** A mesh parent can be an IWorldMatrixProvider record. */
+            worldMatrixProviders?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             publicCameraMatrices?: boolean;
@@ -1337,7 +1341,9 @@ inline void require_shader_instance_layout(const RenderItem& item, const Engine&
     const auto& mesh = ${recordAt("engine.meshes", "item.mesh")};
     const bool has_pool = ${options.gpuInstancing ? "item.thin_binding ? static_cast<bool>(item.thin_binding->pool) : " : ""}static_cast<bool>(mesh.thin_instances);
     const bool has_colors = ${options.gpuInstancing ? "item.thin_binding ? item.thin_binding->shader_has_color : " : ""}(mesh.thin_instances && mesh.thin_instances->colors.has_value() && info.thin_instance_color_option.value_or(1.0) != 0.0);
-    if (has_pool != info.thin_instances || (has_pool && has_colors != info.instance_colors)) {
+    // A colour pool the program has no lane for is never read: the pin's
+    // appended lane goes unused, so only a missing pool or colours refuse.
+    if (has_pool != info.thin_instances || (has_pool && info.instance_colors && !has_colors)) {
         throw std::runtime_error(std::string("Shader material '") + info.name +
             "' cannot draw with this thin-instance layout; its matrix and color lanes differ from the compiled program.");
     }
@@ -1550,6 +1556,8 @@ PbrUniforms build_pbr_uniforms(
             floatingOrigin?: boolean;
             picking?: boolean;
             mirroredMeshes?: boolean;
+            /** A mesh parent can be an IWorldMatrixProvider record. */
+            worldMatrixProviders?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             /** The scene composed a node-material geometry-output view. */
@@ -2256,6 +2264,12 @@ std::array<float, 16> mesh_world_matrix(
             transform_node_world(engine, mesh.transform_parent),
             local);
     }
+    if (mesh.provider_world) {
+        // Before the first poll the provider is read live.
+        return matrix_product(
+            mesh.provider_world_snapshot ? *mesh.provider_world_snapshot : mesh.provider_world(),
+            local);
+    }
     const std::optional<std::array<float, 16>> root = mesh_root_world(mesh);
     return root ? matrix_product(*root, local) : local;
 }
@@ -2311,7 +2325,8 @@ std::array<double, 16> mesh_world_matrix_f64(
     std::array<double, 16> world{};
     if (
         mesh.parent.value < engine.meshes.size() ||
-        mesh.transform_parent.value < engine.transform_nodes.size()) {
+        mesh.transform_parent.value < engine.transform_nodes.size() ||
+        mesh.provider_world) {
         const std::array<float, 16> parented = mesh_world_matrix(engine, mesh);
         std::copy(parented.begin(), parented.end(), world.begin());
         return world;
