@@ -241,7 +241,10 @@ import {
     presentMembers,
     typeCanCarryReference,
 } from "./compiler/type-facts.js";
-import { StaticEvaluator } from "./compiler/static-evaluator.js";
+import {
+    retainedStaticText,
+    StaticEvaluator,
+} from "./compiler/static-evaluator.js";
 import { programObservations } from "./compiler/program-observations.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
@@ -1015,6 +1018,7 @@ class Compiler implements LoweringServices {
     >;
     private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
+    public readonly thrownValueKinds: ReadonlySet<"string">;
     public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
 
     public constructor(
@@ -1030,6 +1034,7 @@ class Compiler implements LoweringServices {
         this.dynamicBindings = storage.dynamicBindings;
         this.ownedRecords = storage.records;
         this.absenceTags = storage.absenceTags;
+        this.thrownValueKinds = storage.thrownValueKinds;
         this.tupleArraySlots = storage.tupleArraySlots;
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -2570,7 +2575,26 @@ class Compiler implements LoweringServices {
         source: ts.Expression,
         destination?: ts.Expression,
         constructedArray = false,
+        sourceValue?: Value,
     ): boolean {
+        const destinationName = destination && this.unwrap(destination);
+        if (destinationName && ts.isIdentifier(destinationName)) {
+            const binding = this.bindings.lookupOptional(destinationName);
+            const declaration =
+                this.symbols.valueSymbol(destinationName)?.valueDeclaration;
+            if (
+                binding &&
+                binding.orderedTextDeclaration === declaration &&
+                declaration !== undefined
+            ) {
+                const text = this.isInRuntimeControlFlow()
+                    ? undefined
+                    : (sourceValue?.staticString ??
+                      retainedStaticText(this, source));
+                if (text === undefined) delete writable(binding).staticString;
+                else writable(binding).staticString = text;
+            }
+        }
         const dataType = target.dataType;
         const storedType =
             dataType?.kind === "optional" ? dataType.inner : dataType;
@@ -5830,7 +5854,35 @@ class Compiler implements LoweringServices {
         return this.runtimeControlFlowDepth > 0;
     }
 
-    public enterRuntimeIteration(): void {
+    public enterRuntimeIteration(body?: ts.Node): void {
+        if (body) {
+            const frame = this.parameterizedResourceIterations.at(-1);
+            const counted =
+                frame?.statement.statement === body &&
+                frame.iterationDepth === this.runtimeIterationDepth;
+            this.bindings.visitRepeatedCollectionWrites(
+                body,
+                (value, elementsUnchanged) => {
+                    const state =
+                        value.collectionCardinality ??
+                        value.staticElementsOwner?.collectionCardinality;
+                    // Counted construction keeps its final size, but no iteration
+                    // may observe that aggregate as its current collection size.
+                    if (counted && state)
+                        for (const current of this
+                            .parameterizedResourceIterations)
+                            if (
+                                !state.createdIn.includes(current) &&
+                                current.iterations > 1
+                            )
+                                state.varyingIn.add(current);
+                    this.bindings.invalidateStaticElements(
+                        value,
+                        counted || elementsUnchanged,
+                    );
+                },
+            );
+        }
         this.runtimeIterationDepth += 1;
     }
 
@@ -8216,7 +8268,7 @@ class Compiler implements LoweringServices {
     ): T {
         if (!preserveControlFlow) {
             this.enterRuntimeControlFlow();
-            this.enterRuntimeIteration();
+            this.enterRuntimeIteration(declaration);
         }
         try {
             const checkpoint = this.checkpointResourceConstruction();
@@ -9527,6 +9579,7 @@ class Compiler implements LoweringServices {
     }
 
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
+        if (kind === "string" && isStringValue(value)) return;
         if (value.kind !== kind) {
             this.fail(node, `Expected ${kind}, received ${value.kind}.`);
         }

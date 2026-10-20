@@ -499,11 +499,11 @@ test("lowers a light vector set to its own kind's entry point", () => {
     `);
     assert.match(
         point.cpp,
-        /bbl::set_point_light_position\([^;]*bbl::Vec3\{2\.0f, bbl::handle_at\([^)]*\)\.position\.y, [^}]*\.position\.z\}\);/,
+        /const float (v_bblite_light_component_\d+) = 2\.0f;\s*bbl::set_light_position_component\([^;]*, 0u, \1\);/,
     );
     assert.match(
         point.cpp,
-        /bbl::set_point_light_position\([^;]*bbl::Vec3\{bbl::handle_at\([^)]*\)\.position\.x, bbl::handle_at\([^)]*\)\.position\.y, 4\.0f\}\);/,
+        /const float (v_bblite_light_component_\d+) = 4\.0f;\s*bbl::set_light_position_component\([^;]*, 2u, \1\);/,
     );
 });
 
@@ -3090,7 +3090,7 @@ test("calls a class method on a record returned by a helper", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `auto (v_bblite_array_receiver_\\d+) = \\(\\*${selected[1]}\\);[\\s\\S]*\\1\\.push_back\\(v_fn\\d+_amount\\)`,
+            `auto (v_bblite_array_receiver_\\d+) = bbl::js::snapshot_value\\(\\(\\*${selected[1]}\\)\\);[\\s\\S]*\\1\\.push_back\\(v_fn\\d+_amount\\)`,
         ),
     );
 });
@@ -3346,7 +3346,7 @@ test("stores runtime indexed-string keys and values in an open Record", () => {
 
     assert.match(
         result.cpp,
-        /\.set\(\(\*bbl::js::string_index\([^\r\n]+, \(\*bbl::js::string_index\([^\r\n]+\)\);/,
+        /\.set\(bbl::js::snapshot_value\(\(\*bbl::js::string_index\([^\r\n]+, bbl::js::snapshot_value\(\(\*bbl::js::string_index\([^\r\n]+\)\);/,
     );
 });
 
@@ -8039,7 +8039,7 @@ test("iterates strings through their JavaScript characters", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = \\2;`,
+            `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];\\s+\\[\\[maybe_unused\\]\\] std::string \\w+ = bbl::js::snapshot_value\\(\\2\\);`,
         ),
     );
 });

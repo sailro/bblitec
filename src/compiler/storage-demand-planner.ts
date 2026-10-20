@@ -25,6 +25,8 @@ import {
 } from "./native-record-storage.js";
 import { NumericSlotStorageRequired } from "./numeric-slot-storage.js";
 import { EnumArrayStorageRequired } from "./enum-array-storage.js";
+import { EnumRecordStorageRequired } from "./enum-record-storage.js";
+import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 
@@ -38,7 +40,9 @@ type StorageDemand =
     | CompletionStorageRequired
     | TupleArraySlotRequired
     | NumericSlotStorageRequired
-    | EnumArrayStorageRequired;
+    | EnumArrayStorageRequired
+    | EnumRecordStorageRequired
+    | ThrownValueStorageRequired;
 
 export function storageRequest(error: StorageDemand): StorageRequest {
     if (error instanceof DynamicBindingStorageRequired)
@@ -75,6 +79,10 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         };
     if (error instanceof EnumArrayStorageRequired)
         return { kind: "enum-array", unions: error.unions };
+    if (error instanceof EnumRecordStorageRequired)
+        return { kind: "enum-record", schema: error.schema };
+    if (error instanceof ThrownValueStorageRequired)
+        return { kind: "thrown-value", valueKind: error.kind };
     return { kind: "generic", demand: error.demand };
 }
 
@@ -89,7 +97,9 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof CompletionStorageRequired ||
         error instanceof TupleArraySlotRequired ||
         error instanceof NumericSlotStorageRequired ||
-        error instanceof EnumArrayStorageRequired
+        error instanceof EnumArrayStorageRequired ||
+        error instanceof EnumRecordStorageRequired ||
+        error instanceof ThrownValueStorageRequired
     );
 }
 

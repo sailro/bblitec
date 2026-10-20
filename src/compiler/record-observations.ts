@@ -54,7 +54,7 @@ const answers = new WeakMap<
     WeakMap<ts.Type, Map<string, string | null>>
 >();
 /** @unjournaled Pure functions of the checked program, kept across replays. */
-const arrayCopyAnswers = new WeakMap<
+const arrayWriteAnswers = new WeakMap<
     ts.Type,
     WeakMap<ts.Type, string | null>
 >();
@@ -232,17 +232,29 @@ export function arrayCopyObservation(
     source: ts.Type,
     target: ts.Type,
 ): string | undefined {
-    let byTarget = arrayCopyAnswers.get(source);
-    if (!byTarget) arrayCopyAnswers.set(source, (byTarget = new WeakMap()));
+    return (
+        arrayWriteObservation(context, source, target) ??
+        arrayIdentityObservation(context, target)
+    );
+}
+
+/** Writes that may change an array's contents; identity observations do not change its size. */
+export function arrayWriteObservation(
+    context: RecordObservationContext,
+    source: ts.Type,
+    target: ts.Type,
+): string | undefined {
+    let byTarget = arrayWriteAnswers.get(source);
+    if (!byTarget) arrayWriteAnswers.set(source, (byTarget = new WeakMap()));
     let answer = byTarget.get(target);
     if (answer === undefined) {
-        answer = observedArrayCopy(context, source, target) ?? null;
+        answer = observedArrayWrites(context, source, target) ?? null;
         byTarget.set(target, answer);
     }
     return answer ?? undefined;
 }
 
-function observedArrayCopy(
+function observedArrayWrites(
     context: RecordObservationContext,
     source: ts.Type,
     target: ts.Type,
@@ -309,10 +321,15 @@ function observedArrayCopy(
             writtenHolder,
             (write) => !writesNewArray(checker, write),
             observations.arrayWrites,
+        ) ||
+        writesWhere(
+            observations,
+            writtenHolder,
+            (write) => !writesNewArray(checker, write),
         )
     )
         return "the program changes the elements of such arrays";
-    return arrayIdentityObservation(context, target);
+    return undefined;
 }
 
 /**

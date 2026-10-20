@@ -456,6 +456,7 @@ public:
                         state.gpu.device, engine, task.effect.effect, output.format,
                         gpu_sample_count_value(target_samples(state, record)));
                 }
+                upload_effect_pixels(state.gpu.device, engine, pass, task.effect.effect);
                 SDL_GPUColorTargetInfo target{};
                 target.texture =
                     target_texture(state, engine, task.effect.target, swapchain, false, user);
@@ -474,6 +475,9 @@ public:
                 record_effect_pass(
                     command, render_pass, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                        if (source.depth_only)
+                            throw std::runtime_error(
+                                "Standalone frame graphs do not allocate sampled depth targets.");
                         if (resolve_render_target(engine, source.target, user).swapchain)
                             throw std::runtime_error(
                                 "An effect cannot sample the swapchain target.");

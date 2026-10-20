@@ -42,6 +42,7 @@ import type {
 } from "../shader-ir.js";
 import {
     composeStandaloneWgsl,
+    shaderSamplerDeclarations,
     shaderUniformSlots,
     shaderUniformValueLayout,
 } from "../shader-material-programs.js";
@@ -798,7 +799,11 @@ export class RendererLowerer {
     ) {
         const systemLayout = shaderSystemLayouts(this.context);
         const shaderVariantTable = reachedShaderPrograms.map((program) => {
-            const reflection = lowerWgslShaderProgram(program).reflection;
+            const reflection =
+                program.drawReachable === false
+                    ? undefined
+                    : lowerWgslShaderProgram(program).reflection;
+            const samplerDeclarations = shaderSamplerDeclarations(program);
             // Canonical custom-uniform value layout: declaration
             // order, sized by component count. The material record
             // stores this flat vector; per-stage gathers map it into
@@ -817,7 +822,7 @@ export class RendererLowerer {
                 });
             }
             const stageBlock = (stage: "vertex" | "fragment") => {
-                const block = reflection.uniformBlocks.find(
+                const block = reflection?.uniformBlocks.find(
                     (candidate) => candidate.stage === stage,
                 );
                 if (!block) {
@@ -847,21 +852,30 @@ export class RendererLowerer {
             };
             return {
                 name: program.name,
-                samplers: reflection.samplers,
-                samplerDeclarations: reflection.samplerDeclarations,
+                drawReachable: program.drawReachable !== false,
+                samplers: samplerDeclarations.map(({ name }) => name),
+                samplerDeclarations,
                 externalTextures: program.externalTextures?.length ?? 0,
-                storageBuffers: reflection.storageBuffers,
+                storageBuffers:
+                    reflection?.storageBuffers ??
+                    program.storageBuffers.map((buffer) => ({
+                        ...buffer,
+                        vertex: false,
+                        fragment: false,
+                    })),
                 topology: program.topology ?? "triangle-list",
                 instanceColors:
                     program.useThinInstanceColors === true ||
-                    reflection.attributes.some(
+                    (reflection?.attributes.some(
                         (attribute) => attribute.name === "instanceColor",
-                    ),
+                    ) ??
+                        false),
                 thinInstances:
                     program.useThinInstances === true ||
-                    reflection.attributes.some(
+                    (reflection?.attributes.some(
                         (attribute) => attribute.name === "world0",
-                    ),
+                    ) ??
+                        false),
                 runtimeInstanceLayoutCheck:
                     program.runtimeInstanceLayoutCheck === true,
                 thinInstanceColorOption: program.thinInstanceColorOption,
@@ -891,9 +905,9 @@ export class RendererLowerer {
                 system: systemLayout([
                     ...new Set([
                         ...program.uniforms,
-                        ...reflection.uniformBlocks.flatMap(
+                        ...(reflection?.uniformBlocks.flatMap(
                             (block) => block.systemMatrices,
-                        ),
+                        ) ?? []),
                     ]),
                 ]),
             };
@@ -925,6 +939,7 @@ export class RendererLowerer {
                 (info) =>
                     `    ShaderVariantInfo{
         "${info.name}",
+        ${info.drawReachable},
         ShaderTopology::${info.topology === "line-list" ? "line_list" : "triangle_list"},
         ${info.instanceColors},
         ${info.thinInstances},
@@ -1272,6 +1287,7 @@ struct ShaderUniformInfo {
 
 struct ShaderVariantInfo {
     const char* name = "";
+    bool draw_reachable = true;
     ShaderTopology topology = ShaderTopology::triangle_list;
     // The material reads the mesh's per-instance RGBA stream, so its
     // pipeline declares the lane the pin's own thin-instance module
@@ -2644,6 +2660,7 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 ? this.compiledSceneUniformsWgsl()
                 : "";
         for (const source of options.shaderPrograms) {
+            if (source.drawReachable === false) continue;
             const name = source.name;
             const program = lowerWgslShaderProgram(source);
             // D3D12 links separately compiled signatures by register. Both
@@ -2855,9 +2872,9 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
     public shaderMaterialReflections(
         programs: CompiledShaderProgram[],
     ): ShaderProgramReflection[] {
-        return programs.map(
-            (program) => lowerWgslShaderProgram(program).reflection,
-        );
+        return programs
+            .filter((program) => program.drawReachable !== false)
+            .map((program) => lowerWgslShaderProgram(program).reflection);
     }
 
     public fidelityManifest(): RendererFidelityManifest {

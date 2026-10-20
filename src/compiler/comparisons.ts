@@ -152,7 +152,7 @@ export interface ComparisonContext extends Pick<
 > {}
 
 /**
- * `<boolean> === <boolean>` where both sides settle at generation.
+ * A strict comparison to a boolean where both sides settle at generation.
  *
  * Returns the answer as `"true"`/`"false"`, or nothing where either side
  * is a run-time value, which leaves the comparison to the arms of
@@ -171,12 +171,17 @@ export function foldBooleanComparison(
     ) {
         return undefined;
     }
-    const booleanLike = (side: ts.Expression): boolean =>
-        (context.checker.getNonNullableType(
+    const booleanLike = (side: ts.Expression): boolean => {
+        const type = context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(side),
-        ).flags &
-            ts.TypeFlags.BooleanLike) !==
-        0;
+        );
+        // A specialized option can hold a known boolean even when its
+        // declaration also permits an object. The value proof below still
+        // requires a concrete boolean on at least one side.
+        return (type.isUnion() ? type.types : [type]).some(
+            (member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0,
+        );
+    };
     if (!booleanLike(expression.left) || !booleanLike(expression.right))
         return undefined;
     const settled = (side: ts.Expression): string | undefined => {
@@ -189,6 +194,7 @@ export function foldBooleanComparison(
               ? context.propertyAccess.compilePropertyAccess(resolved)
               : undefined;
         if (value?.kind === "json-null") return "nullish";
+        if (value?.kind === "record" && !value.cpp) return "object";
         return value?.kind === "boolean" &&
             (value.cpp === "true" || value.cpp === "false")
             ? value.cpp
@@ -198,9 +204,11 @@ export function foldBooleanComparison(
         const left = settled(expression.left);
         const right = settled(expression.right);
         if (left === undefined || right === undefined) return undefined;
-        // Nullable booleans can still distinguish null from undefined;
+        // Object identity and null versus undefined remain undecided;
         // only their inequality with a concrete boolean is established.
-        if (left === "nullish" && right === "nullish") return undefined;
+        const boolean = (value: string): boolean =>
+            value === "true" || value === "false";
+        if (!boolean(left) && !boolean(right)) return undefined;
         return String((left === right) === equals);
     });
 }
@@ -222,6 +230,12 @@ export function compileClassInstanceOf(
         return undefined;
     }
     const value = context.compileValue(expression.left);
+    const instance = context.classLowerer.instanceOf(
+        value,
+        declaration,
+        expression.left,
+    );
+    if (instance !== undefined) return instance;
     if (isJsonValue(value)) {
         const type = context.dataTypes.fromSharedReturnType(
             context.checker.getDeclaredTypeOfSymbol(symbol),
@@ -234,12 +248,6 @@ export function compileClassInstanceOf(
             );
         return `${value.cpp}.instance_of<${context.dataTypes.cppType(type)}>()`;
     }
-    const instance = context.classLowerer.instanceOf(
-        value,
-        declaration,
-        expression.left,
-    );
-    if (instance !== undefined) return instance;
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const classType = context.dataTypes.fromTsType(
             context.checker.getDeclaredTypeOfSymbol(symbol),

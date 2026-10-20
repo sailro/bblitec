@@ -576,6 +576,9 @@ inline const char* topology_name(MeshTopology topology) {
     return "unknown";
 }
 
+#endif // BBLITE_HAS_PBR_RENDERER
+
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_EFFECT_WRAPPER
 inline const char* filter_name(TextureFilter filter) {
     return filter == TextureFilter::nearest ? "nearest" : "linear";
 }
@@ -643,6 +646,9 @@ inline void write_texture_slot(JsonWriter& json, const char* slot, const Texture
     json.end_object();
 }
 
+#endif // texture bindings
+
+#if BBLITE_HAS_PBR_RENDERER
 inline void write_texture_transform(JsonWriter& json, const char* name,
                                     const TextureTransform& transform) {
     // An identity transform is the overwhelming majority and says
@@ -1488,15 +1494,30 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
             json.begin_object();
             json.field("name", slot.name);
             json.field("set", slot.set);
-            json.field("color", slot.texture.color);
-            // The rounded byte IS the texture (`create_solid_texture`),
-            // so the texel is what a browser upload can be paired with.
-            json.key("texel");
-            json.begin_array();
-            for (const std::uint8_t channel : slot.texture.texel) {
-                json.value(static_cast<std::uint32_t>(channel));
+            if (slot.pixels_texture) {
+                const auto& texture = *slot.pixels_texture;
+                json.field("kind", "pixels");
+                json.field("width", texture.width);
+                json.field("height", texture.height);
+                json.field("srgb", texture.srgb);
+                json.field("version", texture.rgba.version());
+                json.key("image");
+                write_texture_slot(json, slot.name.c_str(), pixels_texture_data(texture));
+            } else if (slot.render_texture) {
+                json.field("kind", "render-target");
+                json.field("depth", slot.render_texture->depth_only);
+                json.handle("target", slot.render_texture->target.value);
+            } else {
+                json.field("color", slot.texture.color);
+                // The rounded byte IS the texture (`create_solid_texture`),
+                // so the texel is what a browser upload can be paired with.
+                json.key("texel");
+                json.begin_array();
+                for (const std::uint8_t channel : slot.texture.texel) {
+                    json.value(static_cast<std::uint32_t>(channel));
+                }
+                json.end_array();
             }
-            json.end_array();
             json.end_object();
         }
         json.end_array();

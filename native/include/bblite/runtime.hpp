@@ -2795,7 +2795,10 @@ struct EffectTextureSlot {
     std::string name;
     /** The descriptor's binding number, which `setEffectTexture` also matches. */
     std::uint32_t binding = 0;
+    bool depth_texture = false;
     SolidTexture texture{};
+    /** Shared CPU texels retain their identity and live upload versions. */
+    std::optional<PixelsTexture> pixels_texture;
     /** A render target's texture, resolved where a frame graph records the pass. */
     std::optional<RenderTextureRef> render_texture;
     bool set = false;
@@ -3234,6 +3237,7 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
 
 struct LightRecord {
     LightKind kind = LightKind::directional;
+    double parameter_version = 0.0;
     Vec3 position{};
     Vec3 rotation{};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
@@ -5510,6 +5514,15 @@ inline MaterialHandle mark_shader_material_transmissive(Engine& engine, Material
     return material;
 }
 
+/** The shader factory's authored alpha flag; other material families omit it. */
+inline js::Nullable<bool> shader_material_alpha_blending(const Engine& engine,
+                                                         MaterialHandle material) {
+    const auto& record = handle_at(engine.materials, material);
+    if (!record.shader_material)
+        return {};
+    return {record.alpha_mode == MaterialAlphaMode::blend};
+}
+
 /** A tracked color element write marks the source UBO dirty; the next draw reads the array. */
 inline void project_tracked_material_colors(Engine& engine) {
     for (const MaterialHandle handle : engine.tracked_materials) {
@@ -6779,13 +6792,11 @@ LightHandle create_directional_light(Engine& engine, Vec3 direction, double inte
 LightHandle create_point_light(Engine& engine, Vec3 position, double intensity = 1.0);
 LightHandle create_spot_light(Engine& engine, Vec3 position, Vec3 direction, double angle,
                               float exponent, double intensity = 1.0);
-// A light's position and direction are ObservableVec3 upstream: writing one
-// marks the light's local matrix dirty, and the next read rebuilds it. These
-// entry points are that pair — the field write plus the rebuild — and each is
-// emitted beside its own kind's factory, so a scene reaching no light of a
-// kind links none of them. Only the vectors a reached scene writes are
-// lowered; the rest refuse at compile time (src/compiler/assignments.ts).
+// Per-kind ObservableVec3 setters. Lighting and shadow fits read these fields;
+// light_world_matrix recomposes the current transform when consumed.
 void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_hemispheric_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_hemispheric_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_directional_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // src/scene/transform-node.ts createTransformNode: a SceneNode with the
@@ -7429,12 +7440,17 @@ void remove_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_
 bool sprite_2d_id_alive(const Engine& engine, Sprite2DLayerHandle layer, std::uint32_t sprite_id);
 
 EffectWrapperHandle create_effect_wrapper(Engine& engine, std::uint32_t variant);
+TextureSamplerState effect_texture_sampler();
 void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
                          const std::vector<float>& values);
 /** `setEffectTexture`'s binding: a number, or a name or number as a string. */
 using EffectBindingKey = std::variant<std::string, double>;
 void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         SolidTexture texture);
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                        PixelsTexture texture);
+void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                        const StoredTexture& texture);
 void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         RenderTextureRef texture);
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
@@ -7548,6 +7564,8 @@ struct MeshCpuGeometry {
 [[nodiscard]] js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset);
 [[nodiscard]] js::F32Array transform_node_world_matrix_view(const Engine& engine,
                                                             TransformNodeHandle node);
+[[nodiscard]] js::NumericArrayView scene_node_world_matrix_view(Engine& engine,
+                                                                const SceneNodeHandle& node);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 

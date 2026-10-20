@@ -3,7 +3,7 @@ import type { AssetDecoders } from "./asset-decoders.js";
 import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
-import { isDataUrl, javascriptModuleUrl, parseDataUrl } from "./data-url.js";
+import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
@@ -18,10 +18,15 @@ import { asObject, asStrings, type JsonRecord } from "./json-fields.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
-    installPinnedImportHook,
 } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
 import { dirname, extname, resolve } from "node:path";
+
+import {
+    BasisuObservation,
+    BasisuArmRefusal,
+    loadPinnedBasisuFeature,
+} from "./pinned-gltf-basisu.js";
 
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
 const BASISU_EXTENSION = "KHR_texture_basisu";
@@ -172,109 +177,6 @@ function imageMimeType(uri: string, contentType?: string): string {
         default:
             throw new Error(`Unsupported external glTF image type: ${uri}.`);
     }
-}
-
-/** One upload `gltf-ext-basisu.ts` made: the image it read and its colour space. */
-interface BasisuUpload {
-    image: number;
-    srgb: boolean;
-}
-
-/**
- * One material's routing run, handed to the pin as its engine: the KTX2
- * stand-in receives the engine with every upload, so concurrent packaging
- * runs record into their own observation.
- */
-class BasisuObservation {
-    public readonly uploads: BasisuUpload[] = [];
-}
-
-/** Why the pinned extension took an arm this packager does not resolve. */
-class BasisuArmRefusal extends Error {}
-
-interface PinnedBasisuFeature {
-    id: string;
-    preMesh: (
-        json: JsonRecord,
-        binChunk: DataView,
-        baseUrl: string,
-    ) => Promise<unknown>;
-    applyMaterial: (
-        mat: JsonRecord,
-        ctx: JsonRecord,
-    ) => Promise<JsonRecord | null>;
-}
-
-let pinnedBasisuFeature: Promise<PinnedBasisuFeature> | undefined;
-
-/**
- * `gltf-ext-basisu.ts`, executed with its two transport imports answered.
- *
- * The KTX2 loader is where the pin hands over an image's bytes and the
- * colour space it wants, so its stand-in records that pair and returns a
- * token texture; the bytes are a marker naming the image (see
- * `basisuImageColorSpaces`). Its bitmap decoder is reached only by the composite
- * ORM arm, and `set-metallic-reflectance.js` only by the specular arm --
- * the two arms that do not end in a compressed upload of a core slot -- so
- * both stand-ins refuse, naming what the pin does there.
- */
-function loadPinnedBasisuFeature(): Promise<PinnedBasisuFeature> {
-    pinnedBasisuFeature ??= (async () => {
-        const { hook } = installPinnedImportHook(
-            (engine: unknown, image: number, srgb: boolean): void => {
-                if (!(engine instanceof BasisuObservation)) {
-                    throw new Error(
-                        "The pinned KTX2 upload reached a basisu routing run " +
-                            "with no observation.",
-                    );
-                }
-                engine.uploads.push({ image, srgb });
-            },
-        );
-        const { hook: refuse } = installPinnedImportHook(
-            (what: string): never => {
-                throw new BasisuArmRefusal(what);
-            },
-        );
-        const marker = "new DataView(buffer).getUint32(0, true)";
-        const ktx2 = javascriptModuleUrl(
-            `export async function uploadKtx2Texture2D(engine, buffer, sRGB) {
-    globalThis[${JSON.stringify(hook)}](engine, ${marker}, sRGB);
-    return { image: ${marker}, sRGB };
-}
-export async function decodeKtx2ImageBitmapFromBuffer() {
-    globalThis[${JSON.stringify(refuse)}]("composites separate occlusion and metallic-roughness images, which the pinned extension decodes to RGBA through an OffscreenCanvas rather than uploading compressed blocks");
-}`,
-        );
-        const reflectance = javascriptModuleUrl(
-            `export function setPbrMetallicReflectance() {
-    globalThis[${JSON.stringify(refuse)}]("reaches KHR_materials_specular textures, which the pinned extension uploads through setPbrMetallicReflectance rather than the core texture path");
-}`,
-        );
-        const module = await importPinnedModuleWithExports<{
-            default: PinnedBasisuFeature;
-        }>(
-            "loader-gltf/gltf-ext-basisu.js",
-            [],
-            new Map([
-                ["../texture/ktx2-loader.js", ktx2],
-                ["../material/pbr/set-metallic-reflectance.js", reflectance],
-            ]),
-        );
-        const feature = module.default;
-        if (
-            feature?.id !== BASISU_EXTENSION ||
-            !feature.preMesh ||
-            !feature.applyMaterial
-        ) {
-            throw new Error(
-                "Pinned gltf-ext-basisu.js no longer exports a default " +
-                    `${BASISU_EXTENSION} feature with preMesh and applyMaterial.`,
-            );
-        }
-        return feature;
-    })();
-    return pinnedBasisuFeature;
 }
 
 /** Every textureInfo (an object carrying a numeric `index`) under `value`. */
@@ -779,24 +681,50 @@ export async function packageGltf(
     // Select colour spaces before replacing the embedded images.
     const basisuColorSpaces = await basisuImageColorSpaces(source, document);
     const transcodedSamplers = new Map<number, number>();
+    const embeddedLength = binaryLength;
+    let embeddedBytes: Buffer | undefined;
     for (const [imageIndex, image] of asRecords(document.images).entries()) {
-        if (typeof image.uri !== "string") {
+        const uri = typeof image.uri === "string" ? image.uri : undefined;
+        let bytes: Uint8Array;
+        let mimeType: string;
+        if (uri !== undefined) {
+            const resource = await readResource(uri, source, resourceDirectory);
+            bytes = resource.bytes;
+            mimeType = imageMimeType(uri, resource.contentType);
+        } else {
             if (
-                image.mimeType === KTX2_MIME ||
-                basisuColorSpaces.has(imageIndex)
-            ) {
+                image.mimeType !== KTX2_MIME &&
+                !basisuColorSpaces.has(imageIndex)
+            )
+                continue;
+            const viewIndex = nonNegativeInteger(
+                image.bufferView,
+                `image ${imageIndex} bufferView`,
+            );
+            const view = bufferViews[viewIndex];
+            if (!view || view.buffer !== 0) {
                 throw new Error(
-                    `glTF ${source} embeds ${BASISU_EXTENSION} image ` +
-                        `${imageIndex} in its binary chunk, which this ` +
-                        "packager transcodes only from an external URI.",
+                    `glTF ${source} image ${imageIndex} has no packaged binary bufferView.`,
                 );
             }
-            continue;
+            const offset = nonNegativeInteger(
+                view.byteOffset,
+                `image ${imageIndex} byteOffset`,
+                0,
+            );
+            const length = nonNegativeInteger(
+                view.byteLength,
+                `image ${imageIndex} byteLength`,
+            );
+            if (offset + length > embeddedLength) {
+                throw new Error(
+                    `glTF ${source} image ${imageIndex} exceeds its binary buffer.`,
+                );
+            }
+            embeddedBytes ??= Buffer.concat(chunks, embeddedLength);
+            bytes = embeddedBytes.subarray(offset, offset + length);
+            mimeType = KTX2_MIME;
         }
-        const uri = image.uri;
-        const resource = await readResource(uri, source, resourceDirectory);
-        let bytes = resource.bytes;
-        let mimeType = imageMimeType(uri, resource.contentType);
         if (mimeType === KTX2_MIME) {
             const srgb = basisuColorSpaces.get(imageIndex);
             if (srgb === undefined) {
@@ -811,7 +739,7 @@ export async function packageGltf(
                 await import("./compiler/compressed-texture.js");
             const lowerer = compressedTextureLowerer();
             const transcoded = await transcodeKtx2Texture(
-                uri,
+                uri ?? `${source}#image-${imageIndex}`,
                 bytes,
                 await decoders.ktx2?.(),
             );

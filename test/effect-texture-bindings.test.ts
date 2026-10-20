@@ -38,15 +38,27 @@ test("effect textures take render targets and bindings by number or name", () =>
     );
 });
 
-test("effect textures refuse a render target's depth", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                program(
-                    `const depth=createRenderTargetTexture(engine,{lbl:"depth",format:"rgba8unorm",dFormat:"depth24plus",samples:1,size:{width:4,height:4}});if(depth.depthTexture)setEffectTexture(effect,1,depth.depthTexture);`,
-                ),
+test("effect textures bind a render target's depth with a depth layout", () => {
+    const compiled = compileSource(
+        program(
+            `const depth=createRenderTargetTexture(engine,{lbl:"depth",format:"rgba8unorm",dFormat:"depth24plus",samples:1,size:{width:4,height:4}});if(depth.depthTexture)setEffectTexture(effect,1,depth.depthTexture);`,
+        )
+            .replace(
+                '{binding:0,kind:"sampler",textureBinding:1},{name:"named",binding:1,kind:"texture"}',
+                '{name:"named",binding:1,kind:"texture",textureSampleType:"depth",viewDimension:"2d"}',
+            )
+            .replace(
+                "@group(0) @binding(0) var s:sampler;@group(0) @binding(1) var a:texture_2d<f32>;",
+                "@group(0) @binding(1) var a:texture_depth_2d;",
+            )
+            .replace(
+                "textureSample(a,s,input.uv)",
+                "vec4f(textureLoad(a,vec2i(0),0))",
             ),
-        /depth textures are not lowered/,
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::set_effect_texture\(v_engine, v_effect, bbl::EffectBindingKey\{static_cast<double>\(1\.0\)\}, .*depth/,
     );
 });
 

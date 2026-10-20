@@ -2,6 +2,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { typedArrayClassBytesPerElement } from "./data-types/typed-arrays.js";
+import { pinCpp } from "./evaluation-order.js";
 import type { ExpressionContext } from "./expressions.js";
 import type { LibraryGlobal } from "./symbols.js";
 import {
@@ -97,7 +98,22 @@ export function compileNumberPredicate(
     if (!predicate) return undefined;
     context.expectArgumentCount(call, 1, 1);
     context.reachJsData();
-    const value = context.compileValue(call.arguments[0]!);
+    const argumentNode = call.arguments[0]!;
+    // A predicate observes absence even when flow narrowing treats a live
+    // binding as present; another call may have replaced that binding.
+    const value =
+        context.probeEmission(() => {
+            const stored = context.dataLowerer.compileDataPath(
+                argumentNode,
+                "read",
+            );
+            const type = stored?.dataType;
+            return type?.kind === "number" ||
+                type?.kind === "json" ||
+                (type?.kind === "optional" && type.inner.kind === "number")
+                ? stored
+                : undefined;
+        }) ?? context.compileValue(argumentNode);
     if (value.staticNumber !== undefined) {
         const staticBoolean = predicate.fold(value.staticNumber);
         return {
@@ -119,13 +135,14 @@ export function compileNumberPredicate(
         );
         context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: "const auto&",
             name: argument,
             initializer: value.cpp,
         });
         cpp = optionalNumeric
             ? `(${optionalPresentCpp(argument)} && ${predicate.cpp}(*${argument}))`
             : `(${argument}.is_number() && ${predicate.cpp}(${argument}.to_number()))`;
+        cpp = pinCpp(context, cpp, "number_predicate_result", "const bool");
     } else if (numeric) cpp = `${predicate.cpp}(${value.cpp})`;
     else {
         context.emitDiscardedValue(value);

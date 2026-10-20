@@ -157,6 +157,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/camera_arc_rotate.cpp",
         features: [
+            "renderer:scene",
             "camera:arc-rotate",
             "camera:default",
             "camera:free",
@@ -167,6 +168,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/camera_controls.cpp",
         features: [
+            "renderer:scene",
             "camera:arc-rotate",
             "camera:default",
             "camera:free",

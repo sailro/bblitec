@@ -1,14 +1,8 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-// Shader-material lowering: variant matching and uniform resolution.
-//
-// A createShaderMaterial call either matches a predeclared program --
-// proven by lowering both sides through the typed WGSL IR and
-// comparing the IR, never the source text -- or registers the scene's
-// own WGSL as a scene-local variant. Reached programs are recorded in
-// reach order, which is the generated variant table's index order, and
-// the uniform setters resolve their offsets from the reflected layout
-// of the reached program.
+// Shader-material descriptors retain stable creation-order IDs and declared
+// resource slots. Scene-local stages lower through typed Shader IR after their
+// reached draws establish the mesh layout; unused descriptors need no stages.
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
@@ -45,6 +39,7 @@ import type {
     Value,
 } from "./types.js";
 import { isTypedArrayType, tupleComponents } from "./data-types.js";
+import { presenceCpp } from "./types.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -81,6 +76,9 @@ export interface ShaderMaterialContext
             | "symbols"
             | "dataLowerer"
             | "emit"
+            | "emitDiscardedValue"
+            | "probeEmission"
+            | "unwrap"
             | "fail"
         > {}
 
@@ -90,12 +88,76 @@ function absentShaderOption(
     expression: ts.Expression | undefined,
 ): boolean {
     if (!expression) return true;
-    const resolved = context.resolveStaticLiteral(expression);
-    return (
-        context.symbols.isNullishLiteral(resolved) ||
-        (ts.isIdentifier(resolved) &&
-            context.bindings.lookupOptional(resolved)?.kind === "json-null")
+    return context.probeEmission(
+        () => {
+            const resolved = context.unwrap(expression);
+            if (context.symbols.isNullishLiteral(resolved)) return true;
+            if (
+                ts.isArrayLiteralExpression(resolved) ||
+                ts.isObjectLiteralExpression(resolved)
+            )
+                return false;
+            const value = context.compileValue(resolved);
+            if (value.kind !== "json-null" && presenceCpp(value) !== "false")
+                return false;
+            context.emitDiscardedValue(value);
+            return true;
+        },
+        (absent) => absent,
     );
+}
+
+/** Constructor checks apply even when no draw compiles the material's stages. */
+function validateShaderAttributes(
+    context: ShaderMaterialContext,
+    expression: ts.Expression,
+    attributes: readonly string[],
+): void {
+    const pinned = sharedPinnedContext();
+    const file = pinned.sourceFile("src/material/shader/shader-vb-support.ts");
+    const table = pinned.moduleScopeConstant(file, "attributes");
+    if (!table || !ts.isObjectLiteralExpression(table)) {
+        return pinned.contractError(
+            file,
+            "Expected the shader attribute descriptor table.",
+        );
+    }
+    const supported = new Set<string>();
+    for (const property of table.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+            return pinned.contractError(
+                property,
+                "Expected a shader attribute descriptor.",
+            );
+        }
+        const name = pinned.propertyName(property.name);
+        if (name === undefined) {
+            return pinned.contractError(
+                property,
+                "Expected a named shader attribute.",
+            );
+        }
+        if (name !== "__proto__") supported.add(name);
+    }
+    const seen = new Set<string>();
+    for (const attribute of attributes) {
+        if (!supported.has(attribute)) {
+            context.fail(
+                expression,
+                `Unsupported shader attribute '${attribute}'.`,
+            );
+        }
+        if (seen.has(attribute)) {
+            context.fail(
+                expression,
+                `Duplicate shader attribute '${attribute}'.`,
+            );
+        }
+        seen.add(attribute);
+    }
+    if (!seen.has("position")) {
+        context.fail(expression, "Shader attributes must include 'position'.");
+    }
 }
 
 export function compileShaderMaterialOptions(
@@ -159,7 +221,14 @@ export function compileShaderMaterialOptions(
     const compiledFragment = context.compileShaderSource(fragmentExpression);
     const vertexSource = compiledVertex.source;
     const fragmentSource = compiledFragment.source;
+    if (!vertexSource || !fragmentSource) {
+        context.fail(
+            object,
+            "Shader vertexSource and fragmentSource must be nonempty.",
+        );
+    }
     const attributes = compileStaticStringArray(context, attributesExpression);
+    validateShaderAttributes(context, attributesExpression, attributes);
     const {
         signatures: declaredUniforms,
         defaults: uniformDefaults,
@@ -374,15 +443,6 @@ export function compileShaderMaterialOptions(
             : { thinInstanceColorOption }),
         ...depthBiasOptions,
     };
-    try {
-        lowerWgslShaderProgram(sceneProgram);
-    } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        context.fail(
-            object,
-            `Invalid reached shader material WGSL: ${message}`,
-        );
-    }
     for (const entry of uniformDefaults) {
         const declared = uniforms.find((signature) =>
             signature.startsWith(`${entry.name}:`),
@@ -410,6 +470,7 @@ export function compileShaderMaterialOptions(
         }
     }
     const reached = reachShaderProgram(context, sceneProgram);
+    context.sceneManifest.recordShaderMaterialSource(reached.name, object);
     const valueLayout = shaderUniformValueLayout(uniforms);
     const transmissive = compileOptionalStaticBoolean(
         context,

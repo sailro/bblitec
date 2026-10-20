@@ -18,6 +18,7 @@ test(
     () => {
         const source = shadowFactorySource(new LoweringContext(), [
             "shadow:csm",
+            "shadow:task",
         ]).source;
         const output = resolve("artifacts/shadow-registration-check");
         mkdirSync(output, { recursive: true });

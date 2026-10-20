@@ -364,6 +364,7 @@ test("compares transform-node parent handles by their stored ids", () => {
 test("omits the ESM selector local from a PCF-only caster view", () => {
     const pcf = shadowFactorySource(new LoweringContext(), [
         "shadow:pcf",
+        "shadow:task",
     ]).source;
     const casterView = pcf.slice(
         pcf.indexOf("MaterialHandle shadow_caster_view"),
@@ -373,6 +374,7 @@ test("omits the ESM selector local from a PCF-only caster view", () => {
 
     const esm = shadowFactorySource(new LoweringContext(), [
         "shadow:esm",
+        "shadow:task",
     ]).source;
     assert.match(
         esm.slice(
@@ -386,6 +388,7 @@ test("omits the ESM selector local from a PCF-only caster view", () => {
 test("clears an armed topology rebuild after replacement shadow tasks exist", () => {
     const source = shadowFactorySource(new LoweringContext(), [
         "shadow:pcf",
+        "shadow:task",
     ]).source;
 
     assert.match(

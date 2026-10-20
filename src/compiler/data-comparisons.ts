@@ -367,7 +367,7 @@ export function dataUnionEquality(
     }
     const snapshot = (node: ts.Expression): Operand => {
         const value = pinSlotFound(lowerer, compileOperand(node));
-        const type: DataType | undefined =
+        let type: DataType | undefined =
             value.kind === "string" ||
             value.kind === "number" ||
             value.kind === "boolean"
@@ -378,15 +378,22 @@ export function dataUnionEquality(
                 node,
                 "Union comparison requires represented scalar or reference operands.",
             );
+        // A specialized record is present, but has no native expression yet.
+        // The shared sink retains its owner before the comparison snapshots it.
+        let source = value.cpp;
+        if (value.kind === "record" && !source) {
+            if (type.kind === "optional") type = type.inner;
+            source = lowerer.compileKnownValueForSink(value, type, node);
+        }
         const cpp = lowerer.context.allocateTemporaryCppName("union_compare");
         const initializer =
             value.kind === "json-null"
                 ? `${lowerer.context.dataTypes.cppType(type)}{std::nullopt}`
                 : type.kind === "optional"
-                  ? `(${value.cpp}).to_optional()`
+                  ? `(${source}).to_optional()`
                   : type.kind === "handle"
                     ? lowerer.compileKnownValueForSink(value, type, node)
-                    : value.cpp;
+                    : source;
         lowerer.context.emit({
             kind: "declaration",
             type: "const auto",

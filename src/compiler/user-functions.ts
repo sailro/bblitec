@@ -73,6 +73,8 @@ import {
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { programObservations } from "./program-observations.js";
+import { sourceTypeHasObservedIdentity } from "./storage-demand-index.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import {
     hasUndefinedCompletion,
@@ -85,6 +87,7 @@ import {
 import {
     CompilerSymbols,
     declaredSymbol,
+    declaredInDefaultLibrary,
     isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
@@ -1197,6 +1200,7 @@ export interface UserFunctionContext
             | "asyncActivations"
             | "withOwnedCallbackBody"
             | "checker"
+            | "program"
             | "dataTypes"
             | "dataLowerer"
             | "useNativeValue"
@@ -1886,6 +1890,22 @@ export class UserFunctionLowerer {
         }
     }
 
+    private sharedReturnType(
+        context: UserFunctionContext,
+        type: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        const mapped = context.dataTypes.fromSharedReturnType(type, node);
+        return mapped?.kind === "struct" &&
+            sourceTypeHasObservedIdentity(
+                this.checker,
+                type,
+                programObservations(context.program).identities,
+            )
+            ? context.dataTypes.markStoredObjectReferences(mapped)
+            : mapped;
+    }
+
     private compileSharedCall(
         context: UserFunctionContext,
         ir: UserFunctionIr,
@@ -1950,7 +1970,7 @@ export class UserFunctionLowerer {
             );
         const returnType =
             returned &&
-            context.dataTypes.fromSharedReturnType(returned, ir.declaration);
+            this.sharedReturnType(context, returned, ir.declaration);
         if (returnType && context.dataTypes.carriesOpaqueIterator(returnType))
             return undefined;
         if (
@@ -3349,10 +3369,7 @@ export class UserFunctionLowerer {
                 ? ({ kind: "json" } as const)
                 : returnTsType
                   ? (context.dataTypes.dynamicJsonType(returnTsType) ??
-                    context.dataTypes.fromSharedReturnType(
-                        returnTsType,
-                        declaration,
-                    ))
+                    this.sharedReturnType(context, returnTsType, declaration))
                   : undefined;
             const returnType =
                 mappedReturnType?.kind === "struct" &&
@@ -3393,6 +3410,16 @@ export class UserFunctionLowerer {
                         declaration === root.declaration
                             ? rootArguments[index]?.dataType
                             : undefined;
+                    // Iterable is a protocol; the reached collection supplies
+                    // its storage. Retaining the expression as a static argument
+                    // would leave separately emitted bodies naming caller locals.
+                    if (
+                        !mapped &&
+                        supplied &&
+                        type.symbol?.name === "Iterable" &&
+                        declaredInDefaultLibrary(type.symbol)
+                    )
+                        mapped = supplied;
                     // A concrete typed view remains a live object when passed
                     // through ArrayLike<number>; widening into a double span
                     // would sever aliases and cannot read buffer-backed views.
@@ -3634,14 +3661,15 @@ export class UserFunctionLowerer {
             rootEntry.captured[index] = value;
         });
 
-        // Represented resource containers are specialized through their
-        // values. Give fresh argument storage its caller-side home before
-        // binding it inside a separately emitted body.
+        // Resource containers and JSON arguments are specialized through their
+        // values. Give expressions caller-side storage so the emitted body's
+        // closure captures their value, including any temporary dependencies.
         rootEntry.captured.forEach((value, index) => {
             if (
                 value?.kind === "data" &&
                 value.dataType &&
-                context.dataTypes.carriesHandle(value.dataType)
+                (value.dataType.kind === "json" ||
+                    context.dataTypes.carriesHandle(value.dataType))
             )
                 rootEntry.captured[index] =
                     context.bindings.pinValueToTemporary(
@@ -6525,7 +6553,8 @@ export class UserFunctionLowerer {
                       true,
                       undefined,
                       undefined,
-                      unchangedFields,
+                      (path) =>
+                          path.length === 1 && unchangedFields.has(path[0]!),
                   )
                 : ir.returnNeedsSnapshot
                   ? context.bindings.pinValueToTemporary(
@@ -6936,12 +6965,17 @@ export class UserFunctionLowerer {
         callNode: ts.Node,
         expectedResult?: DataType,
     ): DataType {
-        // A generic function's result at this call is its instantiated
-        // signature's (`acquire<T>(...): Promise<T | null>` with `T` bound).
-        const signature =
+        // A direct generic call carries its instantiated result. Callback
+        // lowering may instead name the enclosing collection call, whose
+        // signature belongs to the collection method, not this function.
+        const resolved =
             ir.declaration.typeParameters?.length &&
             ts.isCallExpression(callNode)
                 ? this.checker.getResolvedSignature(callNode)
+                : undefined;
+        const signature =
+            resolved?.declaration === ir.declaration
+                ? resolved
                 : this.checker.getSignatureFromDeclaration(ir.declaration);
         let type = signature
             ? context.dataTypes.fromTsType(

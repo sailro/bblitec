@@ -30,24 +30,21 @@
 
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_targets.hpp"
+#include "pal_effect_pixels.hpp"
 
 namespace bbl::pal {
 
-/**
- * The 1x1 texture `createSolidTexture2D` built: the texel the record already
- * carries, in an `rgba8unorm` with no mip chain and no sRGB view, paired with
- * the bilinear sampler (`getBilinearSampler`: linear min and mag), which for
- * a single texel is every sampler. Nothing here rounds -- the pin's own
- * rounding happened once, in the lowered `create_solid_texture`.
- */
-inline DawnSampledTexture upload_dawn_solid_texture(WGPUDevice device, WGPUQueue queue,
-                                                    const SolidTexture& texture) {
-    DawnSampledTexture sampled;
-    sampled.texture =
-        upload_dawn_rgba_texture(device, queue, texture.texel.data(), texture.texel.size(), 1, 1);
-    sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
-    sampled.sampler = create_texture_sampler(device, TextureSamplerState{});
-    return sampled;
+/** Upload factory pixels or the already-rounded texel of a solid texture. */
+inline DawnTexture upload_dawn_effect_image(WGPUDevice device, WGPUQueue queue,
+                                            const EffectTextureSlot& slot) {
+    if (slot.pixels_texture) {
+        const auto& texture = *slot.pixels_texture;
+        return DawnTexture{upload_dawn_rgba_texture(device, queue, texture.rgba.data(),
+                                                    texture.rgba.size(), texture.width,
+                                                    texture.height, 1, texture.srgb)};
+    }
+    return DawnTexture{upload_dawn_rgba_texture(device, queue, slot.texture.texel.data(),
+                                                slot.texture.texel.size(), 1, 1)};
 }
 
 /** One `EffectWrapper` as GPU state, for one target signature. */
@@ -59,6 +56,7 @@ struct DawnEffectPass {
     DawnBuffer uniforms;
     std::uint32_t uniform_bytes = 0;
     std::vector<DawnSampledTexture> textures;
+    EffectTextureImages<DawnTexture> texture_images;
     /** Bind-group entries a render target fills at record time: entry index, binding number. */
     std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
     /** The entries the group was last built from, kept to rebuild it on a new view. */
@@ -67,6 +65,7 @@ struct DawnEffectPass {
 
 inline void release_dawn_effect_pass(DawnEffectPass& pass) {
     release_dawn_extra_textures(pass.textures);
+    pass.texture_images = {};
     pass.group.reset();
     pass.uniforms.reset();
     pass.pipeline.reset();
@@ -88,7 +87,7 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     DawnEffectPass pass;
 
     // The descriptor's own layout, entry for entry: `bindingLayoutEntry`
-    // gives a uniform `{ type: "uniform" }`, a texture float/2d, and a
+    // gives a uniform `{ type: "uniform" }`, a texture float or depth/2d, and a
     // sampler `filtering`, all at fragment visibility unless the descriptor
     // named another — and the reached slice names none.
     // The textures first, in their declared order: a sampler can precede the
@@ -102,15 +101,21 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         if (binding.kind != upstream::EffectBindingKind::texture)
             continue;
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding.binding);
-        if (slot.render_texture) {
-            DawnSampledTexture sampled;
-            sampled.sampler = create_texture_sampler(device_state.device, TextureSamplerState{});
-            pass.textures.push_back(std::move(sampled));
-            render_bindings.push_back(binding.binding);
-        } else {
-            pass.textures.push_back(
-                upload_dawn_solid_texture(device_state.device, device_state.queue, slot.texture));
+        const auto image = pass.texture_images.add(
+            slot, pass.textures.size(), [&](const EffectTextureSlot& current) {
+                return upload_dawn_effect_image(device_state.device, device_state.queue, current);
+            });
+        DawnSampledTexture sampled;
+        if (image) {
+            sampled.texture = image->retain();
+            sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
         }
+        sampled.sampler = create_texture_sampler(device_state.device,
+                                                 slot.pixels_texture ? slot.pixels_texture->sampler
+                                                                     : effect_texture_sampler());
+        pass.textures.push_back(std::move(sampled));
+        if (slot.render_texture)
+            render_bindings.push_back(binding.binding);
     }
     std::vector<WGPUBindGroupLayoutEntry> layout_entries;
     std::vector<WGPUBindGroupEntry> group_entries;
@@ -135,7 +140,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
             group.size = binding.uniform_bytes;
             group_entries.push_back(group);
         } else if (binding.kind == upstream::EffectBindingKind::texture) {
-            layout.texture.sampleType = WGPUTextureSampleType_Float;
+            layout.texture.sampleType =
+                binding.depth_texture ? WGPUTextureSampleType_Depth : WGPUTextureSampleType_Float;
             layout.texture.viewDimension = WGPUTextureViewDimension_2D;
             if (std::find(render_bindings.begin(), render_bindings.end(), binding.binding) !=
                 render_bindings.end())
@@ -213,26 +219,74 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     return pass;
 }
 
-/**
- * `_update`: the uniform bytes the scene set.
- *
- * Written only when they moved. The pin's own split between mutating a
- * parameter and uploading the block is what makes that safe -- and the
- * reached slice never mutates one, since the per-frame `update` callback is
- * not lowered, so this is one queue write at startup rather than one a frame.
- */
-inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnEffectPass& pass,
+/** Refresh texture bindings, upload pixel writes and update dirty uniforms. */
+inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffectPass& pass,
                                     EffectWrapperHandle handle) {
+    EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
+    pass.texture_images.refresh(
+        wrapper,
+        [&](const EffectTextureSlot& slot) {
+            return upload_dawn_effect_image(device.device, device.queue, slot);
+        },
+        [&](std::size_t position, const EffectTextureSlot& slot,
+            const std::shared_ptr<DawnTexture>& image) {
+            auto& sampled = pass.textures.at(position);
+            sampled.texture = image ? image->retain() : DawnTexture{};
+            sampled.view =
+                image ? create_dawn_texture_view(sampled.texture, nullptr) : DawnTextureView{};
+            sampled.sampler = create_texture_sampler(
+                device.device,
+                slot.pixels_texture ? slot.pixels_texture->sampler : effect_texture_sampler());
+            const auto& variant = upstream::effect_variants.at(wrapper.variant);
+            std::size_t texture_position = 0;
+            for (std::size_t index = 0; index < variant.binding_count; ++index) {
+                const auto& binding =
+                    upstream::effect_variant_bindings.at(variant.first_binding + index);
+                auto& entry = pass.group_entries.at(index);
+                if (binding.kind == upstream::EffectBindingKind::texture) {
+                    if (texture_position++ == position) {
+                        entry.textureView = sampled.view;
+                        std::erase_if(pass.render_textures,
+                                      [&](const auto& row) { return row.first == index; });
+                        if (slot.render_texture)
+                            pass.render_textures.emplace_back(index, slot.binding);
+                    }
+                } else if (binding.kind == upstream::EffectBindingKind::sampler &&
+                           binding.texture == position) {
+                    entry.sampler = sampled.sampler;
+                }
+            }
+            pass.group.reset();
+        });
+    pass.texture_images.upload_writes(
+        [&](DawnTexture& image, std::span<const std::uint8_t> texels, PixelsTexels::Region region) {
+            WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            destination.texture = image.get();
+            destination.origin = {region.x, region.y, 0};
+            WGPUTexelCopyBufferLayout layout{};
+            layout.bytesPerRow = region.width * 4u;
+            layout.rowsPerImage = region.height;
+            const WGPUExtent3D size{region.width, region.height, 1};
+            DawnGpuDevice{device.queue}.write_texture(&destination, texels.data(), texels.size(),
+                                                      &layout, &size);
+        });
+    if (!pass.group && pass.render_textures.empty() && !pass.group_entries.empty()) {
+        WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        descriptor.layout = pass.group_layout;
+        descriptor.entryCount = pass.group_entries.size();
+        descriptor.entries = pass.group_entries.data();
+        pass.group = require_dawn_resource(wgpuDeviceCreateBindGroup(device.device, &descriptor),
+                                           "effect bind group");
+    }
     if (!pass.uniforms || pass.uniform_bytes == 0)
         return;
-    EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty())
         return;
     // The symmetric size validation (shared GPU helpers): a short write
     // leaves a stale tail behind the declared size.
     require_effect_uniform_size(wrapper, pass.uniform_bytes);
-    DawnGpuDevice{queue}.write_buffer(pass.uniforms, 0, wrapper.uniform_values.data(),
-                                      wrapper.uniform_values.size() * sizeof(float));
+    DawnGpuDevice{device.queue}.write_buffer(pass.uniforms, 0, wrapper.uniform_values.data(),
+                                             wrapper.uniform_values.size() * sizeof(float));
     wrapper.uniforms_dirty = false;
 }
 

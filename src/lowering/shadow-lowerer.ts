@@ -2000,6 +2000,7 @@ struct ShadowRefreshGate {
     Vec3 last_light_direction{};
     std::array<float, 16> last_light_matrix{};
     double last_light_angle = 0.0;
+    double last_light_parameter_version = 0.0;
     Vec3d last_fo_offset{};
 #if BBLITE_SHADOWS_CSM
     double last_camera_change_key = 0.0;
@@ -2037,17 +2038,9 @@ struct CsmCameraKey {
  * - the casters' version sum, plus the caster LIST's identity — the pin
  *   rebuilds its task state (and so re-renders) when \`ensure*\` is handed
  *   a new caster array, which is what \`caster_list_version\` counts;
- * - the light's world-matrix version. The record has no counter, so the
- *   gate compares the two fields that version tracks — the light's
- *   position and direction — which every writer, setter and animated
- *   glTF light pose alike, goes through. A same-value write re-renders
- *   upstream and skips here, which no pixel can tell apart. A spot's
- *   \`angle\` IS a fit input, but writing it moves neither signal: the
- *   pin keys \`worldMatrixVersion\`, which an angle write does not bump,
- *   so BOTH sides keep the stale map — the port mirrors the pin's
- *   insensitivity, not just its coverage. Its \`range\` reaches neither
- *   side's fit at all: both resolve it into the projection's far plane
- *   at creation.
+ * - light transform, direction and angle values, plus explicit parameter
+ *   invalidations. The transform is recomposed on consumption; an explicit
+ *   light callback invalidates even when its current values are unchanged.
  * - single-map generators: the floating-origin offset the fit subtracts
  *   (the pin keys the FO camera's version; off the mode both sides hold
  *   constants). The CSM generator keys its fitted camera instead, and no
@@ -2094,6 +2087,7 @@ inline bool shadow_refresh_due(
         light.direction.z == gate.last_light_direction.z &&
         light_matrix == gate.last_light_matrix &&
         light.angle == gate.last_light_angle &&
+        light.parameter_version == gate.last_light_parameter_version &&
         camera_unchanged) {
         return false;
     }
@@ -2104,6 +2098,7 @@ inline bool shadow_refresh_due(
     gate.last_light_direction = light.direction;
     gate.last_light_matrix = light_matrix;
     gate.last_light_angle = light.angle;
+    gate.last_light_parameter_version = light.parameter_version;
     gate.last_fo_offset = eye;
 #if BBLITE_SHADOWS_CSM
     if (csm_camera != nullptr) {
@@ -2301,12 +2296,46 @@ export function shadowFactorySource(
     // `enableCsmStaticCache`: static and dynamic caster passes per cascade
     // over a cache texture, and the pin's rejections.
     const csmCache = features.includes("shadow:csm-static-cache");
+    const shadowTasks = features.includes("shadow:task");
+    const shaderCasters = features.includes("material:shader");
+    if (shadowTasks) {
+        context.assertFunctionBodyShape(
+            context.functionDeclaration(hooksModule, "getNoColorView")
+                .declaration,
+            `{
+    const cached = cache.get(material);
+    if (cached) { return cached; }
+    const override = material._shadowCasterMaterial;
+    if (override) {
+        const overrideView = getNoColorView(override, cache);
+        cache.set(material, overrideView);
+        return overrideView;
+    }
+    const family = material._buildGroup._materialFamily;
+    let view: MaterialView;
+    if (family === "standard") {
+        view = createStandardNoColorMaterialView(material as Parameters<StandardNoColorFactory>[0]);
+    } else if (family === "pbr") {
+        view = createPbrNoColorMaterialView(material as Parameters<PbrNoColorFactory>[0]);
+    } else if (family === "node") {
+        view = createNodeNoColorMaterialView(material as Parameters<NodeNoColorFactory>[0]);
+    } else if (family === "shader") {
+        view = createShaderNoColorMaterialView(material as Parameters<typeof createShaderNoColorMaterialView>[0]);
+    }
+    cache.set(material, view!);
+    return view!;
+}`,
+            "PCF shadow material view dispatch",
+        );
+    }
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
     // caster-only binding.
     const nodeCasters = nodeEsmCasters || nodePcfCasters;
-    const casterView = (family: "standard" | "pbr" | "node"): string => {
+    const casterView = (
+        family: "standard" | "pbr" | "node" | "shader",
+    ): string => {
         const noColor =
             family === "node"
                 ? `create_node_no_color_material_view(engine, material)`
@@ -2321,12 +2350,14 @@ export function shadowFactorySource(
         // back to the no-colour view, which writes the wrong depth
         // encoding into an ESM map.
         const esmView =
-            family !== "node" || nodeEsmCasters
-                ? `create_${family}_esm_shadow_material_view(
+            family === "shader"
+                ? `throw std::runtime_error("The pinned loader has no ShaderMaterial ESM caster view.")`
+                : family !== "node" || nodeEsmCasters
+                  ? `create_${family}_esm_shadow_material_view(
                         engine,
                         material,
                         handle)`
-                : `throw std::runtime_error(
+                  : `throw std::runtime_error(
                         "This scene composed no node ESM caster module, "
                         "so a node material cannot cast into an ESM "
                         "shadow generator.")`;
@@ -2560,7 +2591,9 @@ ${
               ],
           })
 }
-namespace {
+${
+    shadowTasks
+        ? `namespace {
 
 MaterialHandle shadow_caster_view(
     Engine& engine,
@@ -2585,11 +2618,21 @@ ${
     const MaterialRecord& source = ${recordAt("engine.materials", "material")};
     const MaterialHandle view =
         source.shadow_caster_material.value != invalid_handle
-            ? source.shadow_caster_material
+            ? ${
+                esmShadows
+                    ? "(esm ? source.shadow_caster_material : shadow_caster_view(engine, handle, source.shadow_caster_material))"
+                    : "shadow_caster_view(engine, handle, source.shadow_caster_material)"
+            }
             : ${
                 nodeCasters
                     ? `source.node_material
             ? ${casterView("node")}
+            : `
+                    : ""
+            }${
+                shaderCasters
+                    ? `source.shader_material
+            ? ${casterView("shader")}
             : `
                     : ""
             }source.standard_material
@@ -2649,7 +2692,20 @@ void refresh_shadow_task_meshes(
         }
     }
 }
-${csmCache ? "" : "\n} // namespace\n"}${morphBounds ? deformableBoundsRegistration("src/shadow/enable-morph-target-shadows.ts#enableMorphTargetShadows", "enable_morph_target_shadows", "morph_shadow_bounds") : ""}${skeletonBounds ? deformableBoundsRegistration("src/shadow/enable-skeleton-shadows.ts#enableSkeletonShadows", "enable_skeleton_shadows", "skeleton_shadow_bounds") : ""}
+${csmCache ? "" : "\n} // namespace\n"}`
+        : csmCache
+          ? `
+void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle handle) {
+    // Cache preparation installs hooks but creates no passes. Only the
+    // reached scene scheduler can populate this generator's task list.
+    if (!${recordAt("engine.shadow_generators", "handle")}.caster_tasks.empty()) {
+        throw std::logic_error("Shadow tasks require reached shadow scheduling.");
+    }
+}
+`
+          : ""
+}
+${morphBounds ? deformableBoundsRegistration("src/shadow/enable-morph-target-shadows.ts#enableMorphTargetShadows", "enable_morph_target_shadows", "morph_shadow_bounds") : ""}${skeletonBounds ? deformableBoundsRegistration("src/shadow/enable-skeleton-shadows.ts#enableSkeletonShadows", "enable_skeleton_shadows", "skeleton_shadow_bounds") : ""}
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,
@@ -2670,10 +2726,12 @@ void set_shadow_task_caster_meshes(
     // place, so a re-registered list re-renders even when its version sum
     // happens to match the old list's.
     ++record.caster_list_version;
-    refresh_shadow_task_meshes(engine, generator);
+${shadowTasks ? "    refresh_shadow_task_meshes(engine, generator);\n" : ""}\
 }
 ${csmCache ? lowerCsmStaticCacheEnable(context) : ""}
-namespace {
+${
+    shadowTasks
+        ? `namespace {
 
 /**
  * One generator's depth-only pass, as ensurePcfShadowTaskState builds it.
@@ -2694,7 +2752,9 @@ namespace {
  */
 void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     Engine& engine = *scene.engine;
-    if (${recordAt("engine.shadow_generators", "handle")}.caster_meshes.empty()) {
+    // An absent input skips scheduling; a registered empty array still
+    // builds the clearing passes, as createShadowTask's truthiness check does.
+    if (${recordAt("engine.shadow_generators", "handle")}.caster_list_version == 0) {
         return;
     }
     const bool esm =${
@@ -2840,6 +2900,9 @@ void register_scene_with_shadow_support(Scene& scene) {
     }
     register_scene(scene);
     rebuild_scene_renderables(scene);
+}
+`
+        : ""
 }
 
 } // namespace bbl

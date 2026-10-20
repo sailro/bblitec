@@ -58,6 +58,7 @@ interface EngineLifecycleContext extends Pick<
     | "registerNativeConstBinding"
     | "symbols"
     | "unwrap"
+    | "withRecordScopes"
     | "asyncActivations"
     | "activeGeneratorType"
 > {
@@ -645,21 +646,30 @@ export class EngineLifecycle {
                               },
                           } satisfies Value)
                         : undefined;
-                const emitBody = () => {
-                    if (error)
-                        this.context.registerNativeConstBinding(error, true);
-                    const result = this.context.compileCallbackWithValues(
-                        callback,
-                        parameter ? [parameter] : [],
-                        registration.node,
-                    );
-                    this.context.emitDiscardedValue(result);
-                };
+                const callbackOwner =
+                    options.recordProperties?.[source]?.callbackRecordOwner ??
+                    options;
+                const emitBody = () =>
+                    this.context.withRecordScopes(callbackOwner, () => {
+                        if (error)
+                            this.context.registerNativeConstBinding(
+                                error,
+                                true,
+                            );
+                        const result = this.context.compileCallbackWithValues(
+                            callback,
+                            parameter ? [parameter] : [],
+                            registration.node,
+                        );
+                        this.context.emitDiscardedValue(result);
+                    });
                 if (shared) {
                     // The callback may read bindings declared later in its
                     // block, which it reaches only once a loss is delivered.
-                    this.context.callbacks.hoistForwardCallbackBindings(
-                        callback,
+                    this.context.withRecordScopes(callbackOwner, () =>
+                        this.context.callbacks.hoistForwardCallbackBindings(
+                            callback,
+                        ),
                     );
                     const closure = this.context.captureManagedClosureLines(
                         emitBody,

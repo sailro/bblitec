@@ -132,11 +132,13 @@ test("task-only rows preserve scene membership, packet owners and surviving GPU 
     const oracle = await pinnedTaskOwnership();
     const context = new LoweringContext();
     const compiled = compileSource(`
-import {createEngine,createShaderMaterial} from '@babylonjs/lite';
+import {addToScene,createBox,createEngine,createSceneContext,createShaderMaterial} from '@babylonjs/lite';
 const engine=await createEngine(document.createElement('canvas'));
 const material=createShaderMaterial({name:'task-owner',attributes:['position'],uniforms:[],
 vertexSource:'struct VertexOutput{@builtin(position) position:vec4f};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=vec4f(input.position,1.0);return out;}',
 fragmentSource:'@fragment fn mainFragment()->@location(0) vec4f{return vec4f(1.0);}'});
+const scene=createSceneContext(engine),mesh=createBox(engine);
+mesh.material=material;addToScene(scene,mesh);
 `);
     const renderer = new RendererLowerer(context).lowerRenderPlan({
         gpuInstancing: true,

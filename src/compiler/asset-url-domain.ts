@@ -12,7 +12,10 @@ import {
     isNullishLiteral,
     resolvedSymbol,
 } from "./symbols.js";
-import { objectIdentityCallArgument } from "./static-evaluator.js";
+import {
+    isObjectIdentityFunction,
+    objectIdentityCallArgument,
+} from "./static-evaluator.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import {
     isAssignmentExpression,
@@ -304,6 +307,8 @@ class AssetUrlDomain {
      * literal then contributes nothing. Operands of string operations reset it.
      */
     private nullish = false;
+    /** @unjournaled An optional member can produce undefined instead of throwing. */
+    private optionalProjection = false;
     /** @unjournaled Bindings the enclosing conditional tests truthy: never "". */
     private readonly truthy = new Set<ts.Symbol>();
 
@@ -353,9 +358,17 @@ class AssetUrlDomain {
         const node = unwrapExpression(expression);
         if (this.active.has(node)) return undefined;
         this.active.add(node);
+        const optionalProjection = this.optionalProjection;
+        if (
+            (ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)) &&
+            node.questionDotToken
+        )
+            this.optionalProjection = true;
         try {
             return this.value(node, projection, environment);
         } finally {
+            this.optionalProjection = optionalProjection;
             this.active.delete(node);
         }
     }
@@ -396,10 +409,12 @@ class AssetUrlDomain {
         environment: Environment,
     ): Domain {
         if (
-            this.nullish &&
+            (this.nullish ||
+                (projection.length > 0 && !this.optionalProjection)) &&
             (isNullishLiteral(this.context.checker, node) ||
                 ts.isVoidExpression(node))
         )
+            // A member read from null/undefined throws before selecting a URL.
             return nothing;
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
@@ -720,6 +735,15 @@ class AssetUrlDomain {
             projection[0] === element
         ) {
             const callback = call.arguments[from ? 1 : 0];
+            const iterable = from ? call.arguments[0] : callee.expression;
+            if (
+                callback &&
+                iterable &&
+                isObjectIdentityFunction(callback, (node) =>
+                    this.context.libraryGlobal(node),
+                )
+            )
+                return this.read(iterable, projection, environment);
             if (
                 !callback ||
                 !(
@@ -730,7 +754,6 @@ class AssetUrlDomain {
                 return undefined;
             const nested = new Map(environment);
             const parameter = callback.parameters[0];
-            const iterable = from ? call.arguments[0] : callee.expression;
             if (parameter && ts.isIdentifier(parameter.name) && iterable) {
                 const symbol = resolvedSymbol(
                     this.context.checker,

@@ -30,6 +30,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <utility>
 #include <stdexcept>
 #include <string>
@@ -40,14 +41,17 @@
 
 #include "pal_gpu_targets.hpp"
 #include "pal_sdl_gpu_shared.hpp"
+#include "pal_effect_pixels.hpp"
 
 namespace bbl::pal {
 
 /** One `EffectWrapper` as GPU state, for one target signature. */
 struct EffectResources {
     OwnedSdlPipeline pipeline;
-    /** The 1x1 texels `setEffectTexture` stored, in declared binding order. */
+    /** Sampled images in compiled binding order; images borrow from texture_images. */
     std::vector<SDL_GPUTextureSamplerBinding> textures;
+    EffectTextureImages<OwnedSdlTexture> texture_images;
+    std::unique_ptr<GpuBufferUploadBatch> pixel_uploads;
     /** Positions in `textures` a render target fills at record time, by binding number. */
     std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
     /** `textures` with those positions filled, rewritten in place at each record. */
@@ -68,21 +72,23 @@ inline void release_effect_resources(SDL_GPUDevice*, EffectResources&) noexcept;
 using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>,
                                   release_effect_resources>;
 
-/**
- * The 1x1 texture `createSolidTexture2D` built: the texel the record already
- * carries, in an `rgba8unorm` with no mip chain and no sRGB view, paired with
- * the bilinear sampler (`getBilinearSampler`: linear min and mag), which for
- * a single texel is every sampler. Nothing here rounds -- the pin's own
- * rounding happened once, in the lowered `create_solid_texture`.
- */
-inline void append_solid_texture(SDL_GPUDevice* device,
-                                 std::vector<SDL_GPUTextureSamplerBinding>& textures,
-                                 const SolidTexture& texture) {
-    auto& binding = textures.emplace_back();
-    binding.texture = upload_2d_texture(device, texture.texel.data(), texture.texel.size(), 1, 1,
-                                        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                                        "SDL_CreateGPUTexture effect solid");
-    binding.sampler = create_texture_sampler(device, TextureSamplerState{});
+/** Upload factory pixels or the already-rounded texel of a solid texture. */
+inline OwnedSdlTexture upload_effect_image(SDL_GPUDevice* device, const EffectTextureSlot& slot) {
+    if (slot.pixels_texture) {
+        const auto& texture = *slot.pixels_texture;
+        return OwnedSdlTexture{upload_2d_texture(device, texture.rgba.data(), texture.rgba.size(),
+                                                 texture.width, texture.height,
+                                                 texture.srgb
+                                                     ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+                                                     : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                                 "SDL_CreateGPUTexture effect pixels"),
+                               {device}};
+    }
+    return OwnedSdlTexture{upload_2d_texture(device, slot.texture.texel.data(),
+                                             slot.texture.texel.size(), 1, 1,
+                                             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                             "SDL_CreateGPUTexture effect solid"),
+                           {device}};
 }
 
 /**
@@ -156,25 +162,62 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
         if (declared == fragment.slots.bindings.end())
             throw std::runtime_error("Effect texture '" + name + "' has no declared binding.");
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, declared->binding);
-        if (slot.render_texture) {
-            auto& binding = pass.textures.emplace_back();
-            binding.sampler = create_texture_sampler(device, TextureSamplerState{});
+        const auto image = pass.texture_images.add(
+            slot, pass.textures.size(),
+            [&](const EffectTextureSlot& current) { return upload_effect_image(device, current); });
+        pass.textures.push_back(
+            {image ? image->get() : nullptr,
+             create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
+                                                                : effect_texture_sampler())});
+        if (slot.render_texture)
             pass.render_textures.emplace_back(pass.textures.size() - 1, slot.binding);
-        } else {
-            append_solid_texture(device, pass.textures, slot.texture);
-        }
     }
     return pass;
 }
 
 inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device,
                                      EffectResources& pass) noexcept {
+    pass.texture_images.release_bindings([&](std::size_t position) {
+        if (position < pass.textures.size())
+            pass.textures[position].texture = nullptr;
+    });
     release_sprite_fragment_textures(device, pass.textures);
     pass.pipeline.reset();
     pass = EffectResources{};
 }
 
 inline void release_effect_pass(SDL_GPUDevice*, EffectPass& pass) { pass.reset(); }
+
+/** Refresh texture bindings and submit pixel writes before beginning the render pass. */
+inline void upload_effect_pixels(SDL_GPUDevice* device, const Engine& engine, EffectPass& pass,
+                                 EffectWrapperHandle handle) {
+    const auto& wrapper = handle_at(engine.effect_wrappers, handle);
+    pass.texture_images.refresh(
+        wrapper, [&](const EffectTextureSlot& slot) { return upload_effect_image(device, slot); },
+        [&](std::size_t position, const EffectTextureSlot& slot,
+            const std::shared_ptr<OwnedSdlTexture>& image) {
+            auto& binding = pass.textures.at(position);
+            const auto sampler =
+                create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
+                                                                   : effect_texture_sampler());
+            SDL_ReleaseGPUSampler(device, binding.sampler);
+            binding = {image ? image->get() : nullptr, sampler};
+            std::erase_if(pass.render_textures,
+                          [&](const auto& entry) { return entry.first == position; });
+            if (slot.render_texture)
+                pass.render_textures.emplace_back(position, slot.binding);
+        });
+    pass.texture_images.upload_writes([&](OwnedSdlTexture& image,
+                                          std::span<const std::uint8_t> texels,
+                                          PixelsTexels::Region region) {
+        if (!pass.pixel_uploads)
+            pass.pixel_uploads = std::make_unique<GpuBufferUploadBatch>(device);
+        pass.pixel_uploads->upload_texture_region(image.get(), region.x, region.y, region.width,
+                                                  region.height, texels);
+    });
+    if (pass.pixel_uploads)
+        pass.pixel_uploads->submit();
+}
 
 /** A frame graph's render-target texture for an effect binding. */
 using EffectRenderTextureSource = std::function<SDL_GPUTexture*(const RenderTextureRef&)>;

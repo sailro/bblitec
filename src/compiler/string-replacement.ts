@@ -114,7 +114,7 @@ export function replacementCallback(
     context.increaseIndent();
     context.bindings.pushScope(context.allocateBlockPrefix());
     context.enterRuntimeControlFlow();
-    context.enterRuntimeIteration();
+    context.enterRuntimeIteration(call);
     try {
         const packetOwner = pattern
             ? context.registerNativeBinding(packet)

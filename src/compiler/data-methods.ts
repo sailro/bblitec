@@ -1,7 +1,9 @@
 import {
+    hasLiteralStringCpp,
     isStringValue,
     nativeDataMetadata,
     optionalPresentCpp,
+    snapshotReadCpp,
     withCommonResourceMetadata,
     withNativeMetadata,
 } from "./types.js";
@@ -2041,12 +2043,12 @@ function compileArraySort(
     const left = lowerer.context.allocateTemporaryCppName("sort_left");
     const right = lowerer.context.allocateTemporaryCppName("sort_right");
     lowerer.context.emit(
-        `std::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
+        `std::ranges::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
     );
     lowerer.context.increaseIndent();
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
-        lowerer.context.enterRuntimeIteration();
+        lowerer.context.enterRuntimeIteration(call);
         try {
             if (!callback && !comparatorValue) {
                 const text = (name: string): string => {
@@ -2508,7 +2510,7 @@ function compileArrayReduce(
         lowerer.context.emit(removedIndexGuard(lowerer, method, index, source));
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
-        lowerer.context.enterRuntimeIteration();
+        lowerer.context.enterRuntimeIteration(call);
         try {
             const arguments_: Value[] = [
                 {
@@ -3101,6 +3103,11 @@ function compileArrayPush(state: ArrayMethodState): Value {
         }
         added += count;
     }
+    const emptyBeforePush =
+        (
+            narrowed.staticElementsOwner?.collectionCardinality ??
+            narrowed.collectionCardinality
+        )?.count === 0;
     const knownPush = lowerer.context.recordArrayPush(narrowed, added);
     // A snapshot consumed by a later static iteration must be
     // path-complete. Intrinsics record their own generation-time reach
@@ -3141,26 +3148,27 @@ function compileArrayPush(state: ArrayMethodState): Value {
             const snapshotOwner = writable(
                 narrowed.staticElementsOwner ?? narrowed,
             );
+            const previous = snapshotOwner.runtimeElementTemplate;
             snapshotOwner.runtimeElementTemplate ??=
                 staticElements?.[0] ?? pushedValues[0]!;
-            if (pushedHandleKind === "mesh") {
+            if (
+                pushedHandleKind === "mesh" ||
+                pushedHandleKind === "material"
+            ) {
                 const candidates = [
-                    snapshotOwner.runtimeElementTemplate,
-                    ...(staticElements ?? []),
+                    ...(previous ? [previous] : []),
+                    // Unknown existing elements remain possible after append.
+                    ...(staticElements ??
+                        (previous || (knownPush && emptyBeforePush)
+                            ? []
+                            : [lowerer.leafValue("", dataType.element)])),
                     ...pushedValues,
                 ];
                 snapshotOwner.runtimeElementTemplate = commonResourceValue(
-                    runtimeMeshValue(snapshotOwner.runtimeElementTemplate),
+                    pushedHandleKind === "mesh"
+                        ? runtimeMeshValue(snapshotOwner.runtimeElementTemplate)
+                        : snapshotOwner.runtimeElementTemplate,
                     candidates,
-                );
-            } else if (pushedHandleKind === "material") {
-                snapshotOwner.runtimeElementTemplate = commonResourceValue(
-                    snapshotOwner.runtimeElementTemplate,
-                    [
-                        snapshotOwner.runtimeElementTemplate,
-                        ...(staticElements ?? []),
-                        ...pushedValues,
-                    ],
                 );
             }
         }
@@ -3465,14 +3473,17 @@ function compileMapDataMethod(
         if (storedType && slotHoldsOnlyNull(storedType)) {
             // The test reads the key again, so a key that is not a name or
             // a literal is read once, first.
-            if (!cppIdentifierPattern.test(key) && !/^"[^"\\]*"$/.test(key)) {
+            if (
+                !cppIdentifierPattern.test(key) &&
+                !hasLiteralStringCpp(keyValue, key)
+            ) {
                 const pinned =
                     lowerer.context.allocateTemporaryCppName("map_key");
                 lowerer.context.emit({
                     kind: "declaration",
                     type: "const auto",
                     name: pinned,
-                    initializer: key,
+                    initializer: snapshotReadCpp({ ...keyValue, cpp: key }),
                 });
                 key = pinned;
             }
@@ -3580,7 +3591,10 @@ function compileMapDataMethod(
             kind: "declaration",
             type: borrowKey ? "const auto&" : "const auto",
             name: key,
-            initializer: keyCpp,
+            initializer:
+                borrowKey || hasLiteralStringCpp(keyValue, keyCpp)
+                    ? keyCpp
+                    : `bbl::js::snapshot_value(${keyCpp})`,
         });
         const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
         if (

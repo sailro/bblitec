@@ -74,7 +74,7 @@ test("emits the render gate on the pin's own version rule", () => {
     // terms: casters, caster-list identity, light.
     assert.match(
         header,
-        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,1000}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_list_version == gate\.last_caster_list_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*light_matrix == gate\.last_light_matrix &&\s*light\.angle == gate\.last_light_angle &&\s*camera_unchanged\)/,
+        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,1000}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_list_version == gate\.last_caster_list_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*light_matrix == gate\.last_light_matrix &&\s*light\.angle == gate\.last_light_angle &&\s*light\.parameter_version == gate\.last_light_parameter_version &&\s*camera_unchanged\)/,
     );
     // A fresh gate cannot skip: the pin's -1 sentinels.
     assert.match(

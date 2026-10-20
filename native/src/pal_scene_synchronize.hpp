@@ -29,6 +29,7 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 #include "pal_camera_controls.hpp"
@@ -62,6 +63,37 @@ inline upstream::RenderDrawLists record_task_draw_lists(const upstream::RenderPl
         task.record_state = FrameTaskRecordState::recorded;
     task.render_meshes_dirty = false;
     return lists;
+}
+
+/** Retain one upload per material reached by the current task populations. */
+template <typename SharedTextures, typename TaskLists, typename Ensure>
+void retain_task_shader_textures(const std::vector<std::shared_ptr<Scene>>& scenes,
+                                 std::vector<std::unique_ptr<SharedTextures>>& cache,
+                                 TaskLists task_lists, Ensure ensure) {
+    for (const auto& textures : cache) {
+        if (textures->task_user) {
+            auto* retained = textures.get();
+            release_shared_user(retained, "Task shader texture reference count underflow.");
+            textures->task_user = false;
+        }
+    }
+    std::unordered_set<std::uint32_t> retained;
+    for (const auto& scene : scenes)
+        for (const TaskHandle task : scene->frame_passes()) {
+            const auto& lists = task_lists(task);
+            for (const auto* list : {&lists.opaque, &lists.transparent})
+                for (const auto& draw : list->commands) {
+                    if (draw.item.material_kind != upstream::RenderMaterialKind::shader)
+                        continue;
+                    if (!retained.insert(draw.item.material.value).second)
+                        continue;
+                    auto& textures = ensure(draw.item.material);
+                    if (!textures.task_user) {
+                        ++textures.users;
+                        textures.task_user = true;
+                    }
+                }
+        }
 }
 
 /**

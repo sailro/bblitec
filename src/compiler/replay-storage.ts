@@ -49,7 +49,9 @@ export type StorageRequest =
           declaration: NumericSlotDeclaration;
           numeric: NumericSlotKind;
       }
-    | { kind: "enum-array"; unions: readonly string[] };
+    | { kind: "enum-array"; unions: readonly string[] }
+    | { kind: "enum-record"; schema: string }
+    | { kind: "thrown-value"; valueKind: "string" };
 
 /**
  * The storage demands a compile replays with, keyed by the source each
@@ -86,6 +88,10 @@ export class ReplayStorage {
      * arrays store their members as strings (`EnumArrayStorageRequired`).
      */
     readonly stringElementUnions = new Set<string>();
+    /** @unjournaled Finite-key record schemas whose enumeration requires dictionary order. */
+    readonly orderedRecordSchemas = new Set<string>();
+    /** @unjournaled Reached primitive throws require dynamic catch storage across call boundaries. */
+    readonly thrownValueKinds = new Set<"string">();
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -161,6 +167,10 @@ export class ReplayStorage {
                         addNew(this.stringElementUnions, union) || added,
                     false,
                 );
+            case "enum-record":
+                return addNew(this.orderedRecordSchemas, request.schema);
+            case "thrown-value":
+                return addNew(this.thrownValueKinds, request.valueKind);
         }
     }
 

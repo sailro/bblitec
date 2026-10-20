@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 #if BBLITE_GPU_INSTANCING
@@ -246,6 +247,19 @@ find_shared_shader_material_textures(const std::vector<std::unique_ptr<SharedTex
                                         return candidate->material.value == material.value;
                                     });
     return found == cache.end() ? nullptr : found->get();
+}
+
+/** A task override keeps the geometry row but binds its own material's upload. */
+template <typename SharedTextures>
+inline const SharedTextures&
+shader_draw_textures(const std::vector<std::unique_ptr<SharedTextures>>& cache,
+                     const SharedTextures* mesh_textures, MaterialHandle material) {
+    const auto* textures = mesh_textures && mesh_textures->material == material
+                               ? mesh_textures
+                               : find_shared_shader_material_textures(cache, material);
+    if (!textures)
+        throw std::runtime_error("Shader draw material textures were not prepared.");
+    return *textures;
 }
 
 /**

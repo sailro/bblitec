@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import { snapshotReadCpp, type Value } from "./types.js";
 
 /** Keep the selected array alive before arguments can rebind its source. */
 export function captureArrayReceiver(
@@ -13,7 +13,7 @@ export function captureArrayReceiver(
         kind: "declaration",
         type: "auto",
         name: source,
-        initializer: owner.cpp,
+        initializer: snapshotReadCpp(owner),
     });
     return source;
 }

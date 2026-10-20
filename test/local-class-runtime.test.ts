@@ -596,7 +596,7 @@ test("shares a callback that calls an abstract method", () => {
     // taking both operands rather than a body inlined into the sort.
     assert.match(
         result.cpp,
-        /std::stable_sort\([^\n]*\n\s*auto&& \w+ = \w+sort_left\w*;\n\s*auto&& \w+ = \w+sort_right\w*;\n\s*\[\[maybe_unused\]\] const double \w+ = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{\}, bblscene::bbl_recursive_\w+\)/,
+        /std::ranges::stable_sort\([^\n]*\n\s*auto&& \w+ = \w+sort_left\w*;\n\s*auto&& \w+ = \w+sort_right\w*;\n\s*\[\[maybe_unused\]\] const double \w+ = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{\}, bblscene::bbl_recursive_\w+\)/,
     );
 });
 

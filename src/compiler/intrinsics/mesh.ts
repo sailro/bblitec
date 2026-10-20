@@ -54,6 +54,16 @@ import { compileNullableHitRecord } from "./hit-record.js";
 import { writeVec3Lanes } from "./vec3-write.js";
 import { emitPresentOption, retainedOptions } from "./retained-options.js";
 
+/** Attribute uploads change existing buffers without recording composition facts. */
+export const runtimeOnlyMeshIntrinsics: ReadonlySet<string> = new EmissionSet([
+    "updateMeshPositions",
+    "updateMeshUvs",
+    "updateMeshNormals",
+    "updateMeshColors",
+    "updateMeshTangents",
+    "updateMeshUv2",
+]);
+
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
  * but allocate no generation-owned mesh/material/asset ordinal. Keep that

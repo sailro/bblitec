@@ -107,8 +107,13 @@ function compileStorageBufferData(
     intrinsic: "createStorageBuffer" | "updateStorageBuffer",
 ) {
     const data = context.compileValue(expression);
-    if (data.kind !== "data" || !isTypedArrayType(data.dataType)) {
-        context.fail(expression, `${intrinsic} requires a typed-array view.`);
+    if (
+        data.kind !== "data" ||
+        (!isTypedArrayType(data.dataType) &&
+            data.dataType?.kind !== "dataview" &&
+            data.dataType?.kind !== "bufferview")
+    ) {
+        context.fail(expression, `${intrinsic} requires an ArrayBufferView.`);
     }
     return data;
 }

@@ -135,7 +135,7 @@ export function compileCollectionForEach(
     });
     lowerer.context.increaseIndent();
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
-    lowerer.context.enterRuntimeIteration();
+    lowerer.context.enterRuntimeIteration(call);
     lowerer.context.enterRuntimeControlFlow();
     try {
         const value =

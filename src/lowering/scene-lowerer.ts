@@ -1872,6 +1872,21 @@ js::F32Array transform_node_world_matrix_view(
     return upstream::transform_node_world_view(engine, node);
 }
 
+// SceneNode is the public union of these concrete nodes. NumericArrayView
+// retains the getter's container, including a transform node's lazy matrix owner.
+js::NumericArrayView scene_node_world_matrix_view(Engine& engine, const SceneNodeHandle& node) {
+    return std::visit([&engine](const auto& concrete) -> js::NumericArrayView {
+        using Handle = std::decay_t<decltype(concrete)>;
+        if constexpr (std::is_same_v<Handle, MeshHandle>) {
+            return js::NumericArrayView(mesh_world_matrix_array(engine, concrete));
+        } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
+            return js::NumericArrayView(transform_node_world_matrix_view(engine, concrete));
+        } else {
+            return js::NumericArrayView(asset_root_world_matrix_array(engine, concrete));
+        }
+    }, node);
+}
+
 js::Array<double> mesh_bound_min_array(
     const Engine& engine,
     MeshHandle mesh) {

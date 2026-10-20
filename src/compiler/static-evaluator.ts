@@ -1920,6 +1920,7 @@ export class StaticEvaluator {
     ): Value | undefined {
         if (
             !ts.isCallExpression(unwrapped) &&
+            !ts.isConditionalExpression(unwrapped) &&
             !ts.isIdentifier(unwrapped) &&
             !ts.isElementAccessExpression(unwrapped) &&
             !ts.isPropertyAccessExpression(unwrapped)

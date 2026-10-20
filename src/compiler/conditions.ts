@@ -761,7 +761,7 @@ export class ConditionLowerer {
                 if (dataCondition !== undefined) {
                     return dataCondition;
                 }
-                if (value.kind === "callback" || value.kind === "ui-element") {
+                if (value.kind === "ui-element") {
                     return "true";
                 }
                 if (value.kind === "json-null") {
@@ -795,9 +795,6 @@ export class ConditionLowerer {
             const condition =
                 this.context.dataLowerer.truthinessCondition(value);
             if (condition !== undefined) return condition;
-            if (value.kind === "callback") {
-                return "true";
-            }
             if (value.kind === "json-null") {
                 return "false";
             }

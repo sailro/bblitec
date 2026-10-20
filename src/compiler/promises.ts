@@ -21,6 +21,8 @@ export interface PromiseLoweringContext extends Pick<
     | "takeNativeTemporary"
     | "fail"
     | "reachJsData"
+    | "reachJson"
+    | "thrownValueKinds"
     | "options"
 > {}
 

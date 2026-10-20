@@ -456,6 +456,7 @@ struct DawnSharedMaterialTextures {
     std::vector<DawnSampledTexture> textures;
     std::vector<std::shared_ptr<DawnTexture>> image_leases;
     std::size_t users = 0;
+    bool task_user = false;
     void clear() noexcept {
         textures.clear();
         image_leases.clear();
@@ -1230,11 +1231,9 @@ struct DawnState : DawnDevice {
     void release_shader_bindings(std::optional<MaterialHandle> material = {}) {
         const auto release = [material](std::vector<DawnMesh>& mesh_list) {
             for (DawnMesh& mesh : mesh_list) {
-                if (material && (!mesh.shared_shader_textures ||
-                                 mesh.shared_shader_textures->material != *material))
-                    continue;
                 for (auto& [key, bindings] : mesh.shader_bindings) {
-                    (void)key;
+                    if (material && key.material != material->value)
+                        continue;
                     if (material) {
                         bindings.resources.reset();
                         bindings.resource_version.reset();
@@ -1544,7 +1543,10 @@ struct DawnState : DawnDevice {
 
     void prune_shared_shader_material_textures() {
         prune_unused_shared(shared_shader_material_textures,
-                            [](DawnSharedShaderMaterialTextures& textures) { textures.clear(); });
+                            [&](DawnSharedShaderMaterialTextures& textures) {
+                                release_shader_bindings(textures.material);
+                                textures.clear();
+                            });
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
         prune_unused_shared(shared_plugin_material_textures,
                             [](DawnSharedPluginMaterialTextures& textures) { textures.clear(); });
@@ -3146,6 +3148,8 @@ DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh);
  * `serve_mesh_stage_binding`.
  */
 void refresh_shader_material_textures(DawnState& state, const Engine& engine);
+DawnSharedShaderMaterialTextures&
+ensure_shader_material_textures(DawnState& state, const Engine& engine, MaterialHandle material);
 
 void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                              const MeshRecord& mesh, const DawnMeshResources& gpu);

@@ -14,6 +14,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { isJsonValue } from "./json-bridge.js";
 import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import type { DataStructField, DataType } from "./data-types.js";
 import {
@@ -3550,6 +3551,11 @@ export class ClassLowerer {
         declaration: ts.ClassLikeDeclaration,
         node: ts.Expression,
     ): string | undefined {
+        if (isJsonValue(value) && classErrorBase(this.table(declaration)))
+            value = this.context.dataValue(
+                `bbl::js::json_error(${value.cpp})`,
+                { kind: "error" },
+            );
         if (value.dataType?.kind === "error") {
             if (!classErrorBase(this.table(declaration))) {
                 this.context.emitDiscardedValue(value);
@@ -3618,9 +3624,15 @@ export class ClassLowerer {
     }
 
     public errorView(value: Value, node: ts.Node): Value | undefined {
-        if (value.dataType?.kind !== "error") return undefined;
+        if (value.dataType?.kind !== "error" && !isJsonValue(value))
+            return undefined;
         const type = this.context.checker.getTypeAtLocation(node);
         const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+        if (isJsonValue(value))
+            value = this.context.dataValue(
+                `bbl::js::json_error(${value.cpp})`,
+                { kind: "error" },
+            );
         return declaration && classErrorBase(this.table(declaration))
             ? this.errorRecord(value, declaration, node)
             : undefined;

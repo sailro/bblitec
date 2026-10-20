@@ -370,7 +370,7 @@ test("runtime ShaderMaterial instances update their own handles rather than a sh
     assert.deepEqual(result.manifest.shaderVariants, ["native-profile"]);
     assert.deepEqual(result.manifest.runtimeMaterialProfiles, [0]);
     assert.equal(
-        result.cpp.match(/bbl::set_shader_uniform_value\(/g)?.length,
+        result.cpp.match(/bbl::set_shader_uniform(?:_value)?\(/g)?.length,
         2,
     );
     assert.doesNotMatch(

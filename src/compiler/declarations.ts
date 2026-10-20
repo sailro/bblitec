@@ -22,6 +22,7 @@ import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
+    dataTypesEqual,
     isOpaqueReference,
     isHandleKind,
     isTypedArrayType,
@@ -1012,10 +1013,13 @@ export class DeclarationLowerer {
             (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 ||
             (!sharedClosureStorage &&
                 this.localTextBindingIsUnwritten(declaration));
+        const orderedText =
+            isStringValue(value) &&
+            this.localTextBindingHasOrderedWrites(declaration);
         const keepsInitializerText =
             value.staticString !== undefined &&
             !value.parameterBinding &&
-            initializerFactsStable();
+            (orderedText || initializerFactsStable());
         if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
@@ -1357,10 +1361,16 @@ export class DeclarationLowerer {
                 !narrowed.borrowedData &&
                 !narrowed.nativeVectorData;
             const narrowedFound = presenceFlagCpp(narrowed);
+            const settledFound =
+                (narrowedFound === "true" || narrowedFound === "false") &&
+                initializerFactsStable()
+                    ? narrowedFound
+                    : undefined;
             const optionalFoundCpp =
-                narrowedFound === undefined
+                narrowedFound === undefined || settledFound !== undefined
                     ? undefined
                     : this.context.allocateTemporaryCppName("element_found");
+            const localFound = settledFound ?? optionalFoundCpp;
             const referenceStruct =
                 narrowed.dataType.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(
@@ -1412,7 +1422,9 @@ export class DeclarationLowerer {
                 narrowed.ownedCpp === undefined &&
                 transferredCpp === selectedCpp &&
                 readsNativeStorage(narrowed) &&
-                (wrapperCopiesIdentity || referenceStruct)
+                (wrapperCopiesIdentity ||
+                    referenceStruct ||
+                    narrowed.dataType.kind === "string")
             ) {
                 this.context.reachJsData();
                 initializerCpp = snapshotReadCpp(narrowed);
@@ -1517,6 +1529,9 @@ export class DeclarationLowerer {
                         ...(sharedDataBinding
                             ? { sharedStorageCpp: cppName }
                             : {}),
+                        ...(orderedText
+                            ? { orderedTextDeclaration: declaration }
+                            : {}),
                         ...(narrowed.dataType.kind === "string" &&
                         narrowed.staticString !== undefined &&
                         !narrowed.parameterBinding &&
@@ -1605,8 +1620,8 @@ export class DeclarationLowerer {
                                       optionalPresentCpp(boundCpp),
                                   truthinessCpp: optionalPresentCpp(boundCpp),
                               }
-                            : optionalFoundCpp
-                              ? { optionalFoundCpp }
+                            : localFound
+                              ? { optionalFoundCpp: localFound }
                               : {}),
                         ...(statedTruthinessCpp(narrowed)
                             ? {
@@ -1657,7 +1672,6 @@ export class DeclarationLowerer {
             ![
                 "number",
                 "boolean",
-                "string",
                 "engine",
                 "scene",
                 "platform-keyboard-event",
@@ -1740,6 +1754,7 @@ export class DeclarationLowerer {
             nativeBinding: true,
         };
         // The local reads its own storage, not a counted loop's counter.
+        if (orderedText) writable(stored).orderedTextDeclaration = declaration;
         delete writable(stored).integerCounterCpp;
         if (!sharedBinding) delete writable(stored).sharedStorageCpp;
         if (value.kind === "animation-clip") {
@@ -1861,6 +1876,68 @@ export class DeclarationLowerer {
                 : present;
         }
         return common;
+    }
+
+    /** Only direct stores in this invocation may carry ordered text facts. */
+    private localTextBindingHasOrderedWrites(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        if (!ts.isIdentifier(declaration.name)) return false;
+        const owner = ts.findAncestor(declaration, ts.isFunctionLike);
+        if (!isSupportedFunction(owner) || !owner.body) return false;
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        const names = (node: ts.Node): boolean =>
+            ts.isIdentifier(node) &&
+            this.context.symbols.valueSymbol(node) === symbol;
+        const targets = (node: ts.Node): readonly ts.Expression[] =>
+            isAssignmentExpression(node)
+                ? assignmentTargets(node.left)
+                : isUpdateExpression(node)
+                  ? [this.context.unwrap(node.operand)]
+                  : (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                      !ts.isVariableDeclarationList(node.initializer)
+                    ? assignmentTargets(node.initializer)
+                    : [];
+        let writes = false;
+        let lastWrite = declaration.end;
+        let firstCapture = Infinity;
+        const unsafe = someAnalysisNode(owner.body, (node) => {
+            if (ts.isFunctionLike(node)) {
+                if (!someAnalysisNode(node, names)) return "skip";
+                // A fresh readonly closure may freeze text only after its last
+                // store. Hoisted declarations and captured writers stay native.
+                if (
+                    (!ts.isArrowFunction(node) &&
+                        !ts.isFunctionExpression(node)) ||
+                    someAnalysisNode(node, (child) =>
+                        targets(child).some(names),
+                    )
+                )
+                    return true;
+                firstCapture = Math.min(firstCapture, node.pos);
+                return "skip";
+            }
+            if (!targets(node).some(names)) return false;
+            writes = true;
+            lastWrite = Math.max(lastWrite, node.end);
+            if (
+                !isAssignmentExpression(node) ||
+                node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                !ts.isIdentifier(node.left) ||
+                !ts.isExpressionStatement(node.parent)
+            )
+                return true;
+            for (
+                let ancestor: ts.Node = node.parent.parent;
+                ancestor !== owner.body;
+                ancestor = ancestor.parent
+            ) {
+                if (!ts.isBlock(ancestor) && !ts.isIfStatement(ancestor))
+                    return true;
+            }
+            return false;
+        });
+        return writes && !unsafe && lastWrite <= firstCapture;
     }
 
     /** Preserve initialization-time text only when no reached path replaces it. */
@@ -2821,6 +2898,11 @@ export class DeclarationLowerer {
         if (!declaration.initializer) {
             return false;
         }
+        const createsObject =
+            ts.isObjectLiteralExpression(
+                this.context.unwrap(declaration.initializer),
+            ) ||
+            ts.isNewExpression(this.context.unwrap(declaration.initializer));
         if (this.context.dynamicBindings.has(declaration)) {
             const storage = this.context.dynamicBindings.get(declaration);
             if (storage) {
@@ -2915,9 +2997,7 @@ export class DeclarationLowerer {
                         type,
                     ),
                     ...(type.kind === "struct" &&
-                    ts.isObjectLiteralExpression(
-                        this.context.unwrap(declaration.initializer),
-                    ) &&
+                    createsObject &&
                     !this.context.sharedClosures.identifierIsRebound(name)
                         ? { optionalFoundCpp: "true" }
                         : {}),
@@ -3598,20 +3678,36 @@ export class DeclarationLowerer {
             }
         } else {
             const source = declaration.initializer;
-            const lowerInitializer = (): string =>
-                this.context.takeNativeTemporary(
-                    initializerSnapshot
-                        ? this.context.dataLowerer.compileKnownValueForSink(
-                              initializerSnapshot,
-                              annotated,
-                              source,
-                          )
-                        : this.context.dataLowerer.compileForSink(
-                              source,
-                              annotated,
-                          ),
+            // A fresh array moves into this tracked local without creating
+            // an untracked sink. Its indexed facts are rebound below.
+            const localArrayInitializer =
+                (conditionalArray || inferredSpreadArray) &&
+                initializerSnapshot?.freshData &&
+                initializerSnapshot.dataType?.kind === "vector" &&
+                dataTypesEqual(initializerSnapshot.dataType, annotated) &&
+                !sharedDataBinding &&
+                !selfReferentialBinding
+                    ? initializerSnapshot
+                    : undefined;
+            const lowerInitializer = (): string => {
+                if (localArrayInitializer)
+                    this.context.useNativeValue(localArrayInitializer);
+                return this.context.takeNativeTemporary(
+                    localArrayInitializer
+                        ? localArrayInitializer.cpp
+                        : initializerSnapshot
+                          ? this.context.dataLowerer.compileKnownValueForSink(
+                                initializerSnapshot,
+                                annotated,
+                                source,
+                            )
+                          : this.context.dataLowerer.compileForSink(
+                                source,
+                                annotated,
+                            ),
                     initializerBoundary,
                 );
+            };
             const initializerCpp = selfLiteral
                 ? withLiteralSelfBinding(
                       selfLiteral,
@@ -3633,6 +3729,19 @@ export class DeclarationLowerer {
                 this.borrowsConstBinding(declaration, sourceValue) &&
                 (annotated.kind !== "struct" ||
                     this.context.dataTypes.isReferenceStruct(annotated.name));
+            const ownsStoredInitializer =
+                !stableOwnerAlias &&
+                cppIdentifierPattern.test(initializerCpp) &&
+                !["number", "boolean", "enum"].includes(annotated.kind);
+            if (ownsStoredInitializer) this.context.reachJsData();
+            const ownedInitializer = ownsStoredInitializer
+                ? snapshotReadCpp(
+                      this.context.dataLowerer.leafValue(
+                          initializerCpp,
+                          annotated,
+                      ),
+                  )
+                : initializerCpp;
             if (!selfLiteral)
                 this.context.emit(
                     sharedDataBinding
@@ -3640,17 +3749,17 @@ export class DeclarationLowerer {
                               kind: "declaration",
                               type: "auto",
                               name: cppName,
-                              initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(${initializerCpp})`,
+                              initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(${ownedInitializer})`,
                           }
                         : selfReferentialBinding
-                          ? `(*${cppName}) = ${initializerCpp};`
+                          ? `(*${cppName}) = ${ownedInitializer};`
                           : {
                                 kind: "declaration",
                                 type: stableOwnerAlias
                                     ? "auto&"
                                     : this.context.dataTypes.cppType(annotated),
                                 name: cppName,
-                                initializer: initializerCpp,
+                                initializer: ownedInitializer,
                                 attributes: "[[maybe_unused]] ",
                             },
                 );
@@ -3779,14 +3888,15 @@ export class DeclarationLowerer {
         // `null` arm is not, and a flag generation already decided says so.
         const snapshotFound =
             initializerSnapshot && presenceFlagCpp(initializerSnapshot);
-        const settledPresence =
-            initializerSnapshot?.kind === "json-null"
-                ? "false"
-                : initializerSnapshot?.kind === "record"
-                  ? "true"
-                  : snapshotFound === "true" || snapshotFound === "false"
-                    ? snapshotFound
-                    : undefined;
+        const settledPresence = createsObject
+            ? "true"
+            : initializerSnapshot?.kind === "json-null"
+              ? "false"
+              : initializerSnapshot?.kind === "record"
+                ? "true"
+                : snapshotFound === "true" || snapshotFound === "false"
+                  ? snapshotFound
+                  : undefined;
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
@@ -3833,8 +3943,7 @@ export class DeclarationLowerer {
                     }
                   : {}),
             // Shared storage does not change a selected object's presence.
-            ...((ts.isConditionalExpression(initializer) ||
-                ts.isObjectLiteralExpression(initializer)) &&
+            ...((ts.isConditionalExpression(initializer) || createsObject) &&
             settledPresence !== undefined &&
             !this.context.sharedClosures.identifierIsRebound(name)
                 ? { optionalFoundCpp: settledPresence }
@@ -3889,7 +3998,10 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(name, represented);
         }
         if (
-            (recordArrayLiteral || scalarArrayLiteral || inferredSpreadArray) &&
+            (recordArrayLiteral ||
+                scalarArrayLiteral ||
+                conditionalArray ||
+                inferredSpreadArray) &&
             initializerSnapshot
         )
             this.context.dataLowerer.retainArrayLiteralFacts(

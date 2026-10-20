@@ -3,6 +3,7 @@ import { LoweredSource, LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { lightVersionBumpBody } from "./light-parameters.js";
 import { recordAt } from "../compiler/record-access.js";
 
 interface HemisphericDefaults {
@@ -250,6 +251,7 @@ ${body}
 void set_${kind}_light_${vector}(Engine& engine, LightHandle light, Vec3 value) {
     auto& record = ${recordAt("engine.lights", "light")};
     record.${vector} = value;
+    ${lightVersionBumpBody(this.context, "record.parameter_version")}
 }`,
             )
             .join("\n");
