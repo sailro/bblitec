@@ -685,13 +685,6 @@ export function compileShadowIntrinsic(
                 // builds, and a scene naming its casters before assigning
                 // their materials (scene 65) would otherwise record none.
             }
-            if (emitted.length === 0) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "A shadow generator with no casters renders an empty " +
-                        "map; no reached scene registers one.",
-                );
-            }
             if (generatorIndex === undefined) {
                 context.sceneManifest.recordDynamicShadowCastersForUnknownGenerator();
             } else {

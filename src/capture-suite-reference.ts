@@ -18,6 +18,7 @@ import {
 import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
 import ts from "typescript";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -76,6 +77,21 @@ function mimeType(path: string): string {
         default:
             return "application/octet-stream";
     }
+}
+
+function serveLocalFile(
+    response: ServerResponse,
+    path: string,
+    raw: boolean,
+): void {
+    response.writeHead(200, {
+        "Content-Type": raw ? "text/javascript; charset=utf-8" : mimeType(path),
+    });
+    response.end(
+        raw
+            ? `export default ${JSON.stringify(readFileSync(path, "utf8"))};\n`
+            : readFileSync(path),
+    );
 }
 
 /** The path a requested browser asset has under the pinned lab/public tree. */
@@ -368,52 +384,42 @@ export function suiteBrowserModuleDigest(
  * module, and a subpath keeps its own path under `lib/` with the `.js` the
  * package ships (a specifier that already carries one keeps it).
  *
- * The names are `compiler/symbols.ts`'s `babylonPackages`, spelled here as a
- * literal because the alternation has to be escaped for a regex. A test
- * asserts every name in that list is rewritten, so the two cannot drift.
+ * The shared module AST rewriter preserves quote styles and leaves ordinary
+ * strings and comments untouched.
  */
 export function pinnedPackageSpecifiers(
     source: string,
     entryUrl = pinnedBrowserEntryUrl,
 ): string {
-    const { physicsEngineModulePackage } = compilerSymbols();
-    return (
-        source
-            .replace(
-                /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
-                (_match, subpath?: string) =>
-                    subpath
-                        ? `"/node_modules/@babylonjs/lite/lib${
-                              subpath.endsWith(".js")
-                                  ? subpath
-                                  : `${subpath}.js`
-                          }"`
-                        : `"${entryUrl}"`,
-            )
-            .replaceAll(
-                `"${physicsEngineModulePackage}"`,
-                `"/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js"`,
-            )
-            // The navigation wrapper the pin dynamic-imports, resolved the
-            // way Havok is: each bare specifier to its package's own ESM
-            // entry. The wasm binary itself comes off the pinned lab/public
-            // proxy through the scene's `locateFile`.
-            .replaceAll(
-                '"@recast-navigation/core"',
-                '"/node_modules/@recast-navigation/core/dist/index.mjs"',
-            )
-            .replaceAll(
-                '"@recast-navigation/generators"',
-                '"/node_modules/@recast-navigation/generators/dist/index.mjs"',
-            )
-            .replaceAll(
-                '"@recast-navigation/wasm/wasm"',
-                '"/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js"',
-            )
-            .replaceAll(
-                "import.meta.env",
-                '(import.meta.env ?? { BASE_URL: "/", MODE: "production", PROD: true, DEV: false, SSR: false })',
-            )
+    const { babylonPackages, physicsEngineModulePackage } = compilerSymbols();
+    const entries: Readonly<Record<string, string>> = {
+        [physicsEngineModulePackage]: `/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js`,
+        "@recast-navigation/core":
+            "/node_modules/@recast-navigation/core/dist/index.mjs",
+        "@recast-navigation/generators":
+            "/node_modules/@recast-navigation/generators/dist/index.mjs",
+        "@recast-navigation/wasm/wasm":
+            "/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js",
+    };
+    return rewriteModuleSpecifiers(source, "reference.js", ({ text }) => {
+        const packageName = babylonPackages.find(
+            (name) => text === name || text.startsWith(`${name}/`),
+        );
+        if (packageName) {
+            const subpath = text.slice(packageName.length);
+            return {
+                specifier: subpath
+                    ? `/node_modules/@babylonjs/lite/lib${subpath.endsWith(".js") ? subpath : `${subpath}.js`}`
+                    : entryUrl,
+            };
+        }
+        const specifier = Object.hasOwn(entries, text)
+            ? entries[text]
+            : undefined;
+        return specifier === undefined ? undefined : { specifier };
+    }).replaceAll(
+        "import.meta.env",
+        '(import.meta.env ?? { BASE_URL: "/", MODE: "production", PROD: true, DEV: false, SSR: false })',
     );
 }
 
@@ -727,8 +733,7 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             existsSync(publicPath) &&
             statSync(publicPath).isFile()
         ) {
-            response.writeHead(200, { "Content-Type": mimeType(publicPath) });
-            response.end(readFileSync(publicPath));
+            serveLocalFile(response, publicPath, url.search === "?raw");
             return;
         }
         for (const servedRoot of servedRoots) {
@@ -785,17 +790,7 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 existsSync(path) &&
                 statSync(path).isFile()
             ) {
-                if (url.search === "?raw") {
-                    response.writeHead(200, {
-                        "Content-Type": "text/javascript; charset=utf-8",
-                    });
-                    response.end(
-                        `export default ${JSON.stringify(readFileSync(path, "utf8"))};\n`,
-                    );
-                    return;
-                }
-                response.writeHead(200, { "Content-Type": mimeType(path) });
-                response.end(readFileSync(path));
+                serveLocalFile(response, path, url.search === "?raw");
                 return;
             }
         }

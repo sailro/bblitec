@@ -523,6 +523,16 @@ class SdlSceneRun {
                     task_plan, engine, handle_at(engine.frame_tasks, handle));
             }
         }
+        auto& state = data_.resources.state;
+        retain_task_shader_textures(
+            data_.active_registered_scenes, state.shared_shader_material_textures,
+            [&](TaskHandle task) -> const upstream::RenderDrawLists& {
+                return handle_at(task_draw_lists, task);
+            },
+            [&](MaterialHandle material) -> SharedShaderMaterialTextures& {
+                return ensure_shader_material_textures(state, engine, material);
+            });
+        prune_shared_shader_material_textures(state);
     }
 
     void capture_render_state() {
@@ -876,6 +886,8 @@ public:
             state.shader_fragment_texture_slots.resize(shader_variant_total);
             for (std::uint32_t variant = 0; variant < shader_variant_total; ++variant) {
                 const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
+                if (!info.draw_reachable)
+                    continue;
                 const std::string vertex_name = std::string(info.name) + ".vert";
                 const std::string fragment_name = std::string(info.name) + ".frag";
                 // A shader material's stage is composed from the caller's
@@ -2706,7 +2718,7 @@ public:
                                                                          shader_info, name);
                                         });
                                     bind_shader_material_textures(state, task_pass, draw_context,
-                                                                  engine, *material,
+                                                                  engine, draw_item.material,
                                                                   draw_item.shader_variant, mesh);
                                     if (shader_info.vertex.present) {
                                         // A pure scene-matrix vertex block
@@ -3430,6 +3442,7 @@ public:
                                     gpu_sample_count_value(
                                         target_sample_count(state, target_record)));
                             }
+                            upload_effect_pixels(state.device, engine, pass, task.effect.effect);
                             SDL_GPUColorTargetInfo effect_target{};
                             effect_target.texture = target_texture(task.effect.target, false);
                             effect_target.load_op =
@@ -3445,6 +3458,9 @@ public:
                             record_effect_pass(command, effect_pass, engine, pass,
                                                task.effect.effect, source_texture);
                             effect_pass.end();
+                            if (target_record.swapchain) {
+                                capture_texture = effect_target.texture;
+                            }
                             continue;
                         }
 #endif
@@ -4076,8 +4092,8 @@ public:
                                                return shader_storage_buffer(
                                                    state, engine, *material, shader_info, name);
                                            });
-                        bind_shader_material_textures(state, pass, *pass_scene, engine, *material,
-                                                      item.shader_variant, mesh);
+                        bind_shader_material_textures(state, pass, *pass_scene, engine,
+                                                      item.material, item.shader_variant, mesh);
                         if (shader_info.vertex.present) {
                             scene_matrix_bound = block_is_shared_scene_matrix(shader_info.vertex);
                         }

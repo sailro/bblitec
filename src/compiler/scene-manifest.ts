@@ -20,6 +20,7 @@ import { nodeParticleManifest } from "./intrinsics/particle.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { SceneMaterialRecorder } from "./scene-materials.js";
 import { shaderThinInstanceLanes } from "./shader-material.js";
+import { lowerWgslShaderProgram } from "../shader-ir.js";
 import type {
     ClusteredContainerState,
     CompileManifest,
@@ -222,6 +223,11 @@ export class SceneManifestRecorder {
         string,
         string
     >();
+    private readonly shaderMaterialSources = new EmissionMap<string, ts.Node>();
+    private readonly shaderMaterialDraws = new EmissionMap<
+        number | undefined,
+        Set<string>
+    >();
     @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     @journaled private accessor runtimeMeshProfileCount = 0;
@@ -355,6 +361,15 @@ export class SceneManifestRecorder {
 
     /** Settles the records whose final shape depends on the whole entry. */
     public settle(): void {
+        for (const [index, variants] of this.shaderMaterialDraws) {
+            if (index === undefined) continue;
+            const mesh = this.sceneMeshes[index];
+            if (!mesh)
+                throw new Error(`Shader draw has no mesh profile ${index}.`);
+            writable(mesh).shaderVariants = [
+                ...new Set([...(mesh.shaderVariants ?? []), ...variants]),
+            ].sort();
+        }
         for (const mesh of this.sceneMeshes) {
             const current = [
                 ...(mesh.shaderVariant === undefined
@@ -411,10 +426,10 @@ export class SceneManifestRecorder {
                                             mesh.thinInstanceColors)
                                 );
                             }
-                            // A runtime material can select any reached
-                            // program. Its mesh supplies the layout; shader
-                            // text cannot establish that association.
-                            return true;
+                            // An unknown handle cannot establish a program's
+                            // first mesh layout. Keep unassigned descriptors
+                            // uncomposed; attempting to draw one refuses.
+                            return false;
                         })
                         .map(({ name }) => name);
                     writable(mesh).shaderVariants = [
@@ -440,6 +455,32 @@ export class SceneManifestRecorder {
         // After the whole entry, because the mesh a shader material ends up
         // on is what decides its instanced form and either may come first.
         this.settleShaderThinInstances();
+        const drawVariants = new Set([
+            ...(this.shaderMaterialDraws.get(undefined) ?? []),
+            ...this.sceneMeshes.flatMap((mesh) => [
+                ...(mesh.shaderVariant === undefined
+                    ? []
+                    : [mesh.shaderVariant]),
+                ...(mesh.shaderVariants ?? []),
+            ]),
+        ]);
+        for (const variant of [...drawVariants]) {
+            const caster = this.shadowCasterShaderVariants.get(variant);
+            if (caster !== undefined) drawVariants.add(caster);
+        }
+        for (const [name, site] of this.shaderMaterialSources) {
+            const program = this.reachedShaderProgram(name, site);
+            writable(program).drawReachable = drawVariants.has(name);
+            if (!program.drawReachable) continue;
+            try {
+                lowerWgslShaderProgram(program);
+            } catch (error: unknown) {
+                this.context.fail(
+                    site,
+                    `Invalid reached shader material WGSL: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
     }
 
     /** Whether generation registered a runtime-profiled scene mesh. */
@@ -956,6 +997,26 @@ export class SceneManifestRecorder {
         if (materialVariant !== undefined && casterVariant !== undefined) {
             this.shadowCasterShaderVariants.set(materialVariant, casterVariant);
         }
+    }
+
+    public recordShaderMaterialSource(name: string, site: ts.Node): void {
+        this.shaderMaterialSources.set(name, site);
+    }
+
+    /** A shader draw outside the mesh's own material assignment, such as a task override. */
+    public recordSceneShaderMaterialDraw(
+        meshIndex: number | undefined,
+        material: Value,
+    ): void {
+        const variants =
+            this.shaderMaterialDraws.get(meshIndex) ??
+            new EmissionSet<string>();
+        if (material.sceneShaderVariant !== undefined)
+            variants.add(material.sceneShaderVariant);
+        for (const variant of material.possibleSceneShaderVariants ?? [])
+            variants.add(variant);
+        if (variants.size > 0)
+            this.shaderMaterialDraws.set(meshIndex, variants);
     }
 
     /** Which material a scene-code mesh was assigned, by its mesh index. */

@@ -2094,6 +2094,9 @@ void validate_render_plan_items(const upstream::RenderPlan& plan) {
                 throw std::runtime_error("this shader material variant is not implemented "
                                          "yet.");
             }
+            if (!upstream::shader_variant_info(item.shader_variant).draw_reachable) {
+                throw std::runtime_error("Shader material draw has no composed program.");
+            }
         } else if (item.material_kind == upstream::RenderMaterialKind::node) {
 #if BBLITE_NODE_VARIANTS > 0
             if (item.shader_variant >= node_graph_count()) {

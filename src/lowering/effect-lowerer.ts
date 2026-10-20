@@ -210,6 +210,7 @@ export class EffectLowerer {
 
 namespace bbl {
 
+${this.lowerTextureSampler()}
 // createEffectWrapper: a pure-state handle. createBindingSlots allocates one
 // slot per declared binding, which generation already resolved into the
 // variant table, so creating the record is filling the texture slots the
@@ -228,6 +229,7 @@ EffectWrapperHandle create_effect_wrapper(
         EffectTextureSlot slot;
         slot.name = std::string(binding.name);
         slot.binding = binding.binding;
+        slot.depth_texture = binding.depth_texture;
         wrapper.textures.push_back(std::move(slot));
     }
     engine.effect_wrappers.push_back(std::move(wrapper));
@@ -275,9 +277,37 @@ void set_effect_texture(
     SolidTexture texture) {
     EffectTextureSlot& slot =
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    if (slot.depth_texture)
+        throw std::runtime_error("Effect depth bindings require a depth texture.");
     slot.texture = texture;
+    slot.pixels_texture.reset();
     slot.render_texture.reset();
     slot.set = true;
+}
+
+void set_effect_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const EffectBindingKey& key,
+    PixelsTexture texture) {
+    EffectTextureSlot& slot =
+        find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    if (slot.depth_texture)
+        throw std::runtime_error("Effect depth bindings require a depth texture.");
+    slot.pixels_texture = std::move(texture);
+    slot.render_texture.reset();
+    slot.set = true;
+}
+
+void set_effect_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const EffectBindingKey& key,
+    const StoredTexture& texture) {
+    const auto* pixels = std::get_if<PixelsTexture>(&texture);
+    if (!pixels)
+        throw std::runtime_error("Effect file-texture bindings are not represented.");
+    set_effect_texture(engine, effect, key, *pixels);
 }
 
 void set_effect_texture(
@@ -287,9 +317,12 @@ void set_effect_texture(
     RenderTextureRef texture) {
     EffectTextureSlot& slot =
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
-    if (texture.source != RenderTextureSource::render_target || texture.depth_only)
-        throw std::runtime_error("setEffectTexture samples a render target's colour texture.");
+    if (texture.source != RenderTextureSource::render_target)
+        throw std::runtime_error("setEffectTexture requires a render-target texture.");
+    if (texture.depth_only != slot.depth_texture)
+        throw std::runtime_error("Effect texture sample type does not match its binding layout.");
     slot.render_texture = texture;
+    slot.pixels_texture.reset();
     slot.set = true;
 }
 
@@ -412,6 +445,38 @@ static EffectTextureSlot& find_effect_texture_slot(
      * notice the pin changing one; this is where that change stops being
      * silent.
      */
+    private lowerTextureSampler(): string {
+        const sampler = this.context.functionDeclaration(
+            "src/resource/samplers.ts",
+            "getBilinearSampler",
+        );
+        this.context.assertExpressionShape(
+            returnedExpression(
+                this.context,
+                "src/resource/samplers.ts",
+                "getBilinearSampler",
+            ),
+            "getOrCreateSampler(engine, _bilinearDesc)",
+            "Effect texture facade sampler",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(sampler.file, "_bilinearDesc"),
+            '{ magFilter: "linear", minFilter: "linear" }',
+            "Effect texture bilinear descriptor",
+        );
+        return `// ${this.context.provenance("src/resource/samplers.ts", "getBilinearSampler")}
+// Admitted colour render-target and solid facades use this descriptor;
+// its omitted address and mipmap fields use WebGPU defaults.
+TextureSamplerState effect_texture_sampler() {
+    TextureSamplerState sampler;
+    sampler.mipmap_mode = TextureMipmapMode::nearest;
+    sampler.address_u = TextureAddressMode::clamp;
+    sampler.address_v = TextureAddressMode::clamp;
+    return sampler;
+}
+`;
+    }
+
     private assertPassContract(): void {
         assertFullscreenEffectContract(this.context, {
             modulePath: effectModule,
@@ -419,6 +484,55 @@ static EffectTextureSlot& find_effect_texture_slot(
             taskSymbol: "createEffectRenderTask",
             label: "effect",
         });
+        const layoutEntry = returnedExpression(
+            this.context,
+            effectModule,
+            "bindingLayoutEntry",
+            1,
+        );
+        if (!ts.isObjectLiteralExpression(layoutEntry)) {
+            this.context.contractError(
+                layoutEntry,
+                "Pinned effect texture layout is no longer an object literal.",
+            );
+        }
+        const textureLayout = this.context.propertyInitializer(
+            layoutEntry,
+            "texture",
+        );
+        if (!ts.isObjectLiteralExpression(textureLayout)) {
+            this.context.contractError(
+                textureLayout,
+                "Pinned effect texture layout no longer declares a texture object.",
+            );
+        }
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(textureLayout, "sampleType"),
+            'layout.textureSampleType ?? "float"',
+            "effect texture sample type default",
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(textureLayout, "viewDimension"),
+            'layout.viewDimension ?? "2d"',
+            "effect texture view dimension default",
+        );
+        const samplerEntry = returnedExpression(
+            this.context,
+            effectModule,
+            "bindingLayoutEntry",
+            2,
+        );
+        if (!ts.isObjectLiteralExpression(samplerEntry)) {
+            this.context.contractError(
+                samplerEntry,
+                "Pinned effect sampler layout is no longer an object literal.",
+            );
+        }
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(samplerEntry, "sampler"),
+            '{ type: layout.samplerType ?? "filtering" }',
+            "effect sampler binding type default",
+        );
 
         // The defaults the frontend restates beside the descriptor it reads.
         // Each is a value the pin can change silently -- a working build that

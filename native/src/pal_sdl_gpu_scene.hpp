@@ -396,6 +396,7 @@ struct SharedMaterialTextures : SdlSampledTextures {
     MaterialHandle material{};
     std::uint64_t texture_version = 0;
     std::size_t users = 0;
+    bool task_user = false;
 };
 
 /** Generated PBR/Standard texture-slot bindings owned once per material. */
@@ -1218,8 +1219,7 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 /** Bind ordinary shader textures and resolve CSM pseudo-textures live. */
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                                    [[maybe_unused]] const Scene& scene,
-                                   [[maybe_unused]] const Engine& engine,
-                                   [[maybe_unused]] const MaterialRecord& material,
+                                   [[maybe_unused]] const Engine& engine, MaterialHandle material,
                                    std::uint32_t variant, const GpuMesh& mesh);
 
 // Geometry-task helpers shared by the PBR and Standard variant
@@ -1926,6 +1926,8 @@ void prune_shared_shader_geometries(GpuState& state);
 
 void prune_shared_shader_material_textures(GpuState& state);
 void refresh_shader_material_textures(GpuState& state, const Engine& engine);
+SharedShaderMaterialTextures& ensure_shader_material_textures(GpuState& state, const Engine& engine,
+                                                              MaterialHandle material);
 
 void prune_shared_composed_material_textures(GpuState& state);
 

@@ -381,7 +381,7 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
 /** The rule in a table claiming this (owner kind, property) pair. */
 function ruleFor<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
-    owner: Value,
+    owner: Pick<Value, "kind">,
     property: string,
 ): Rule | undefined {
     return table.find(
@@ -429,6 +429,15 @@ export function readHandleCollection(
  * between two values run to run.
  */
 export const propertyRules: readonly PropertyRule[] = [
+    {
+        owner: "light",
+        property: "_bumpLightVersion",
+        value: "data",
+        dataType: { kind: "function", parameters: [] },
+        helper: "bbl::light_version_callback",
+        helperTakesEngine: true,
+        feature: "light:parameters",
+    },
     {
         owner: "compute-dispatch",
         property: "enabled",
@@ -1150,6 +1159,16 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        owner: "material",
+        property: "needAlphaBlending",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "boolean" } },
+        helper: "bbl::shader_material_alpha_blending",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        knownPresent: (owner: Value) => owner.shaderVariant !== undefined,
+    },
+    {
         // Material is the polymorphic source object, and every loader copies
         // its authored name onto it. A mapped walk over `scene.meshes` uses this
         // field to find one shared glTF material before mutating its texture.
@@ -1458,6 +1477,17 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "mesh:geometry-access",
     },
     {
+        owner: "scene-node",
+        property: "worldMatrix",
+        value: "data",
+        dataType: { kind: "numberindex" },
+        helper: "bbl::scene_node_world_matrix_view",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        alwaysTruthy: true,
+        feature: "mesh:geometry-access",
+    },
+    {
         owner: "asset-root",
         property: "worldMatrix",
         value: "data",
@@ -1660,6 +1690,20 @@ export function cameraRecordField(property: string): string | undefined {
             "record" in candidate,
     );
     return rule && "record" in rule ? rule.record?.[1] : undefined;
+}
+
+/** A primitive stored on the handle value itself has no resource setter. */
+export function isDirectDataProperty(
+    owner: ValueKind,
+    property: string,
+): boolean {
+    const rule = ruleFor(propertyRules, { kind: owner }, property);
+    return (
+        rule !== undefined &&
+        "field" in rule &&
+        rule.field !== undefined &&
+        rule.value === "data"
+    );
 }
 
 /**

@@ -1,5 +1,6 @@
 import { isUndefinedDataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { authoredErrorValue } from "./error-values.js";
 // The JSON bridge: `JSON.stringify` over the plain-data model, and
 // `JSON.parse` plus the surface a parsed document is interrogated with.
 //
@@ -41,11 +42,17 @@ interface JsonBridgeContext extends Pick<
     | "reachJson"
     | "dataLowerer"
     | "dataTypes"
+    | "classLowerer"
 > {}
 
 interface JsonStrictComparisonContext extends Pick<
     LoweringServices,
-    "compileValue" | "compileNumber" | "conditions" | "fail"
+    | "compileValue"
+    | "compileNumber"
+    | "conditions"
+    | "fail"
+    | "dataTypes"
+    | "cppString"
 > {}
 
 const jsonType: DataType = { kind: "json" };
@@ -467,6 +474,8 @@ export function compileJsonRead(
         if (!isJsonValue(owner)) {
             return undefined;
         }
+        if (context.classLowerer.errorView(owner, unwrapped.expression))
+            return undefined;
         const read = (selected: Value): Value =>
             jsonValue(
                 `${selected.cpp}.read_property(${context.cppString(unwrapped.name.text)})`,
@@ -480,6 +489,8 @@ export function compileJsonRead(
         if (!isJsonValue(owner)) {
             return undefined;
         }
+        if (context.classLowerer.errorView(owner, unwrapped.expression))
+            return undefined;
         const read = (selected: Value): Value =>
             compileJsonElementRead(
                 context,
@@ -528,6 +539,9 @@ export function compileJsonStrictComparison(
     if (isJsonValue(value)) {
         return `${documentCpp}.strict_equals(${value.cpp})`;
     }
+    const error = authoredErrorValue(context, value) ?? value;
+    if (error.dataType?.kind === "error")
+        return `${documentCpp}.strict_equals(bbl::js::JsonValue::from_native(bbl::js::Error(${error.cpp})))`;
     if (
         value.kind === "record" ||
         value.kind === "tuple" ||

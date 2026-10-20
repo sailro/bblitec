@@ -48,7 +48,10 @@ import {
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
-import { resizingArrayMethods } from "./receiver-methods.js";
+import {
+    mutatingArrayMethods,
+    resizingArrayMethods,
+} from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { isComposedAudioEnum } from "./audio-surface.js";
 
@@ -841,14 +844,17 @@ export function sharedFunctionHasCallEffects(
 /** A folded bound must not be invalidated by the loop or its called helpers. */
 export function loopBoundMayChange(
     context: Pick<ResourceLoopContext, "checker" | "symbols">,
-    body: ts.Statement,
+    body: ts.Node,
     bound: ts.Expression,
+    observation: "deep" | "array-elements" = "deep",
+    reachedNodes?: ReadonlySet<ts.Node>,
 ): boolean {
     const unwrapped = unwrapExpression(bound);
     const arrayLength =
         ts.isPropertyAccessExpression(unwrapped) &&
         unwrapped.name.text === "length" &&
         ts.isIdentifier(unwrapExpression(unwrapped.expression));
+    const arrayContents = arrayLength || observation === "array-elements";
     const dependencies: ts.Identifier[] = [];
     const reads = (node: ts.Node): void => {
         if (ts.isPropertyAccessExpression(node)) {
@@ -861,17 +867,22 @@ export function loopBoundMayChange(
     };
     reads(bound);
     if (dependencies.length === 0) return false;
-    const reached = new EmissionSet<ts.Node>();
-    walkReachedLoopNodes(context, body, (node) => {
-        reached.add(node);
-    });
+    const reached =
+        reachedNodes ??
+        (() => {
+            const nodes = new EmissionSet<ts.Node>();
+            walkReachedLoopNodes(context, body, (node) => {
+                nodes.add(node);
+            });
+            return nodes;
+        })();
     return dependencies.some((identifier) =>
         aliasedMutationScan(
             identifier,
             (name) => context.symbols.valueSymbol(name),
             {
                 aliasingInitializer: (initializer, scan) => {
-                    if (arrayLength)
+                    if (arrayContents)
                         return scan.namesAlias(unwrapExpression(initializer));
                     const root = rootIdentifier(initializer);
                     if (!root || !scan.namesAlias(root)) return false;
@@ -887,7 +898,7 @@ export function loopBoundMayChange(
                 mutates: (node, scan) => {
                     if (!reached.has(node)) return false;
                     const namesAlias = (expression: ts.Expression): boolean => {
-                        if (arrayLength) {
+                        if (arrayContents) {
                             const target = unwrapExpression(expression);
                             return (
                                 scan.namesAlias(target) ||
@@ -908,12 +919,14 @@ export function loopBoundMayChange(
                             namesAlias,
                             arrayLength
                                 ? (method) => resizingArrayMethods.has(method)
-                                : undefined,
+                                : arrayContents
+                                  ? (method) => mutatingArrayMethods.has(method)
+                                  : undefined,
                         ) ||
                         (ts.isCallExpression(node) &&
                             node.arguments.some(
                                 (argument, index) =>
-                                    (arrayLength
+                                    (arrayContents
                                         ? scan.namesAlias(
                                               unwrapExpression(argument),
                                           )

@@ -1001,6 +1001,17 @@ public:
 
 inline JsonArrayView JsonValue::elements() const { return JsonArrayView(*this); }
 
+/** A dynamic array slice owns its slots and retains nested value identities. */
+[[nodiscard]] inline Array<JsonValue> array_slice(const JsonArrayView& values, double begin_value,
+                                                  double end_value) {
+    const auto [begin, end] = relative_slice_bounds(values.size(), begin_value, end_value);
+    Array<JsonValue> result;
+    result.reserve(end - begin);
+    for (auto index = begin; index < end; ++index)
+        result.push_back(values[index]);
+    return result;
+}
+
 /** Object spread copies own enumerable properties while retaining nested values. */
 inline void json_spread_into(Map<std::string, JsonValue>& target, const JsonValue& source) {
     if (source.is_null() || source.is_undefined())
@@ -1027,12 +1038,37 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
 }
 
 [[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
+/** A source catch retains the thrown value independently of property reflection. */
+[[nodiscard]] inline JsonValue caught_value(const std::exception_ptr& exception) {
+    try {
+        std::rethrow_exception(exception);
+    } catch (const ThrownString& value) {
+        return JsonValue::from_string(value.value);
+    } catch (const std::exception&) {
+        return JsonValue::from_native(Error(exception));
+    }
+}
+
+/** Dynamic throws admit the same Error and string payloads as typed throws. */
+[[nodiscard]] inline std::exception_ptr thrown_exception(const JsonValue& value) {
+    if (value.is_string())
+        return std::make_exception_ptr(ThrownString(value.string_value()));
+    return value.asserted_instance<Error>();
+}
+
+/** Error narrowing retains the owner; other dynamic values have no Error record. */
+[[nodiscard]] inline Error json_error(const JsonValue& value) {
+    return value.instance_of<Error>() ? value.asserted_instance<Error>() : Error{};
+}
+
 [[nodiscard]] inline JsonValue json_value(const Error& value) {
     if (value.object())
         throw std::runtime_error(
             "Authored Error reflection requires represented property descriptors.");
     try {
         std::rethrow_exception(value);
+    } catch (const ThrownString& value) {
+        return JsonValue::from_string(value.value);
     } catch (const AggregateError&) {
         throw std::runtime_error(
             "AggregateError reflection requires represented property descriptors.");
@@ -1166,14 +1202,27 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
             return json_value(error_name(value));
         if (key == "message")
             return json_value(error_message(value));
+        if (value.object() && key != "stack")
+            throw std::runtime_error(
+                "Authored Error reflection requires represented property descriptors.");
         if (key == "cause" && error_has_own(value, key))
             return json_value(error_cause(value));
         if (key == "errors" && error_has_own(value, key))
             throw std::runtime_error("AggregateError.errors requires a retained error-array view.");
         return {};
     }
-    bbl::js::Array<std::string> own_keys() const override { return {}; }
-    bool has_own(std::string_view key) const override { return error_has_own(value, key); }
+    bbl::js::Array<std::string> own_keys() const override {
+        if (value.object())
+            throw std::runtime_error(
+                "Authored Error reflection requires represented property descriptors.");
+        return {};
+    }
+    bool has_own(std::string_view key) const override {
+        if (value.object())
+            throw std::runtime_error(
+                "Authored Error reflection requires represented property descriptors.");
+        return error_has_own(value, key);
+    }
     bool has_property(std::string_view key) const override {
         return key == "name" || key == "message" || has_own(key);
     }

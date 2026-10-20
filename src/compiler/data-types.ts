@@ -69,6 +69,7 @@ import {
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
+import { EnumRecordStorageRequired } from "./enum-record-storage.js";
 import {
     numericSlotRead,
     numericSlotStorage,
@@ -1367,6 +1368,30 @@ export class DataTypeRegistry {
     /** A string literal union's identity across replays: its sorted members. */
     public enumLiterals(name: string): string {
         return this.enumMembers(name).join("|");
+    }
+
+    /** Replay finite-key record storage when enumeration cannot prove its own order. */
+    public requireOrderedRecordKeys(type: DataType): void {
+        if (type.kind === "enummap")
+            throw new EnumRecordStorageRequired(
+                JSON.stringify(this.enumMembers(type.enumName)),
+            );
+        if (type.kind !== "struct") return;
+        let source = this.nativeRecordSources.get(type.name)?.type;
+        while (
+            source?.aliasSymbol?.name === "Readonly" &&
+            declaredInDefaultLibrary(source.aliasSymbol)
+        )
+            source = source.aliasTypeArguments?.[0];
+        if (source && this.isNamedRecordAlias(source))
+            throw new EnumRecordStorageRequired(
+                JSON.stringify(
+                    source
+                        .getProperties()
+                        .map((property) => property.name)
+                        .sort(),
+                ),
+            );
     }
 
     /** Whether arrays of the named literal union store its members as strings. */
@@ -4230,7 +4255,12 @@ export class DataTypeRegistry {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
                 const element = this.fromStoredTsType(elementType, node);
-                return element ? { kind: "span", element } : undefined;
+                return element
+                    ? {
+                          kind: element.kind === "boolean" ? "vector" : "span",
+                          element,
+                      }
+                    : undefined;
             }
             if (symbolName === "Array" || symbolName === "ReadonlyArray") {
                 const [elementType] = this.checker.getTypeArguments(reference);
@@ -4253,7 +4283,10 @@ export class DataTypeRegistry {
                 const storedElement = markIdentityFunctions(
                     this.markStoredObjectReferences(element),
                 );
-                return symbolName === "Array"
+                // Boolean arrays use deque storage to keep real boolean
+                // references; their readonly views cannot be contiguous spans.
+                return symbolName === "Array" ||
+                    storedElement.kind === "boolean"
                     ? { kind: "vector", element: storedElement }
                     : { kind: "span", element: storedElement };
             }
@@ -8127,6 +8160,17 @@ export class DataTypeRegistry {
             : null;
     }
 
+    private isNamedRecordAlias(type: ts.Type): boolean {
+        return (type.aliasSymbol?.declarations ?? []).some(
+            (declaration) =>
+                ts.isTypeAliasDeclaration(declaration) &&
+                ts.isTypeReferenceNode(declaration.type) &&
+                ts.isIdentifier(declaration.type.typeName) &&
+                libraryGlobal(this.checker, declaration.type.typeName) ===
+                    "Record",
+        );
+    }
+
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
         // `readonly` restricts writes in the type system only: a read-only
         // record is the record it wraps, one object and one representation.
@@ -8141,16 +8185,41 @@ export class DataTypeRegistry {
         const directRecordAlias =
             type.aliasSymbol?.name === "Record" &&
             declaredInDefaultLibrary(type.aliasSymbol);
-        const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(
-            (declaration) =>
-                ts.isTypeAliasDeclaration(declaration) &&
-                ts.isTypeReferenceNode(declaration.type) &&
-                ts.isIdentifier(declaration.type.typeName) &&
-                libraryGlobal(this.checker, declaration.type.typeName) ===
-                    "Record",
-        );
+        const namedRecordAlias = this.isNamedRecordAlias(type);
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;
+        }
+        if (namedRecordAlias && !directRecordAlias) {
+            const properties = type.getProperties();
+            if (
+                properties.length &&
+                this.storage.orderedRecordSchemas.has(
+                    JSON.stringify(
+                        properties.map((property) => property.name).sort(),
+                    ),
+                )
+            ) {
+                const values = properties.map((property) =>
+                    this.fromStoredTsType(
+                        this.checker.getTypeOfSymbol(property),
+                        node,
+                    ),
+                );
+                const value = values[0];
+                if (
+                    !value ||
+                    values.some(
+                        (member) => !member || !dataTypesEqual(member, value),
+                    )
+                )
+                    return undefined;
+                return {
+                    kind: "map",
+                    dictionary: true,
+                    key: { kind: "string" },
+                    value: this.markStoredObjectReferences(value),
+                };
+            }
         }
         const [keyType, valueType] = type.aliasTypeArguments ?? [];
         if (!keyType || !valueType) {
@@ -8190,7 +8259,12 @@ export class DataTypeRegistry {
         }
         // Asserted from `{}`, a closed record lacks each entry until it is
         // written, which a dictionary keeps apart from a stored value.
-        if (this.isPartialRecord(type))
+        if (
+            this.isPartialRecord(type) ||
+            this.storage.orderedRecordSchemas.has(
+                JSON.stringify(this.enumMembers(key.name)),
+            )
+        )
             return {
                 kind: "map",
                 key: { kind: "string" },

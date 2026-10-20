@@ -90,6 +90,19 @@ void upload_shader_material_textures(DawnState& state, const MaterialRecord& mat
     textures.texture_version = material.shader_texture_version;
 }
 
+DawnSharedShaderMaterialTextures&
+ensure_shader_material_textures(DawnState& state, const Engine& engine, MaterialHandle material) {
+    if (auto* existing =
+            find_shared_shader_material_textures(state.shared_shader_material_textures, material))
+        return *existing;
+    auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
+    created->material = material;
+    upload_shader_material_textures(
+        state, shader_resource_material(engine, handle_at(engine.materials, material)), *created);
+    state.shared_shader_material_textures.push_back(std::move(created));
+    return *state.shared_shader_material_textures.back();
+}
+
 void refresh_shader_material_textures(DawnState& state, const Engine& engine) {
     bool changed = false;
     for (const auto& textures : state.shared_shader_material_textures) {
@@ -348,7 +361,9 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
 
     std::vector<WGPUBindGroupEntry> resource_entries;
-    const auto& textures = mesh_shader_textures(mesh);
+    const auto& textures = shader_draw_textures(state.shared_shader_material_textures,
+                                                mesh.shared_shader_textures, material_handle)
+                               .textures;
     for (std::size_t slot = 0; slot < info.samplers.size(); ++slot) {
         WGPUTextureView view = nullptr;
         WGPUSampler sampler = nullptr;
@@ -675,19 +690,9 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
     // family's `shader_textures` list is empty, so its per-mesh upload
     // stays the no-op it always was.
     if (material && (material->shader_material || material->node_material)) {
-        mesh.shared_shader_textures = find_shared_shader_material_textures(
-            state.shared_shader_material_textures, item.material);
-        if (!mesh.shared_shader_textures) {
-            auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
-            created->material = item.material;
-            state.shared_shader_material_textures.push_back(std::move(created));
-            mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
-            ++mesh.shared_shader_textures->users;
-            upload_shader_material_textures(state, shader_resource_material(engine, *material),
-                                            *mesh.shared_shader_textures);
-        } else {
-            ++mesh.shared_shader_textures->users;
-        }
+        mesh.shared_shader_textures =
+            &ensure_shader_material_textures(state, engine, item.material);
+        ++mesh.shared_shader_textures->users;
     } else if (material) {
         for (const FileTexture& texture : material->shader_textures)
             upload_material_slot_texture(state, mesh.shader_textures.emplace_back(), texture.data,

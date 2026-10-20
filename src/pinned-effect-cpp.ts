@@ -30,7 +30,8 @@ export function pinnedEffectVariantsHeader(
                 `    {${stringLiteral(binding.name)}, ${binding.binding}u, ` +
                     `EffectBindingKind::${binding.kind}, ` +
                     `${binding.uniformBytes}u, ` +
-                    `${Math.max(0, binding.texture)}u},`,
+                    `${Math.max(0, binding.texture)}u, ` +
+                    `${binding.textureSampleType === "depth"}},`,
             );
         }
         entries.push(
@@ -77,6 +78,8 @@ struct EffectVariantBinding {
      *  this effect's own texture rows -- so a PAL indexes its uploaded
      *  textures directly rather than rescanning for a binding number. */
     std::uint32_t texture;
+    /** A declared depth texture; otherwise the pin's float sample layout. */
+    bool depth_texture;
 };
 
 ${cpp.table("EffectVariantBinding", "effect_variant_bindings", bindingRows.length, `${bindingRows.join("\n") || "    // No reached effect declares one."}`)}

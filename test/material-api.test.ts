@@ -189,7 +189,7 @@ ${cpp}
 #define main generated_main
 ${compiled.cpp}
 #undef main
-int main(){const auto& info=bbl::upstream::shader_variant_info(0);assert(info.value_count==18&&info.defaults.size()==18);assert(info.vertex.gather.size()==1&&info.vertex.gather[0][1]==1&&info.vertex.gather[0][2]==16);assert(generated_main()==0);}
+int main(){const auto& info=bbl::upstream::shader_variant_info(0);assert(info.value_count==18&&info.defaults.size()==18);assert(info.vertex.gather.empty());assert(generated_main()==0);}
 `,
         { expectedOutput: "" },
     );

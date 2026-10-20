@@ -255,6 +255,7 @@ struct Pass {
 using DawnEffectPass = Pass;
 using SpritePass = Pass;
 using DawnSpritePass = Pass;
+void upload_effect_pixels(SDL_GPUDevice*, const Engine&, Pass&, EffectWrapperHandle) {}
 void record_effect_pass(SDL_GPUCommandBuffer*, SDL_GPURenderPass*, Engine&, Pass&,
                         EffectWrapperHandle) {}
 void record_dawn_effect_pass(WGPURenderPassEncoder, const Pass&) {}

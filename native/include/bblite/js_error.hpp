@@ -18,6 +18,14 @@ template <typename T> struct ReturnCompletion : AbruptCompletion {
 };
 template <> struct ReturnCompletion<void> : AbruptCompletion {};
 
+/** A JavaScript string crosses native cleanup without becoming an Error object. */
+class ThrownString final : public std::exception {
+public:
+    explicit ThrownString(std::string source) : value(std::move(source)) {}
+    const char* what() const noexcept override { return value.c_str(); }
+    std::string value;
+};
+
 inline bool is_throw_completion(const std::exception_ptr& value) {
     if (!value)
         return false;

@@ -19,7 +19,7 @@ import {
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -1511,6 +1511,7 @@ type ScalarReadContext = Pick<
     | "emit"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
+    | "reachJsData"
 >;
 
 /**
@@ -1555,11 +1556,13 @@ export function readScalarOperand(
                   : undefined;
     if (!type) return undefined;
     const name = context.allocateTemporaryCppName(label);
+    const snapshot = type === "std::string" && readsNativeStorage(value);
+    if (snapshot) context.reachJsData();
     context.emit({
         kind: "declaration",
         type: `const ${type}`,
         name,
-        initializer: value.cpp,
+        initializer: snapshot ? snapshotReadCpp(value) : value.cpp,
         attributes: "[[maybe_unused]] ",
     });
     context.registerNativeBindingType(name, `const ${type}`);

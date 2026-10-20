@@ -2,6 +2,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { isLogicalAssignmentOperator, unwrapExpression } from "./syntax.js";
+import { contextualProperty } from "./type-facts.js";
 
 type Slot = ts.Declaration;
 interface Write {
@@ -18,7 +19,9 @@ function nameOf(node: ts.Node): string | undefined {
     if (ts.isPropertyAccessExpression(node)) return node.name.text;
     if (ts.isElementAccessExpression(node)) {
         const key = unwrapExpression(node.argumentExpression);
-        return ts.isStringLiteralLike(key) ? key.text : undefined;
+        return ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
+            ? key.text
+            : undefined;
     }
     if (
         (ts.isVariableDeclaration(node) ||
@@ -29,9 +32,12 @@ function nameOf(node: ts.Node): string | undefined {
             ts.isFunctionExpression(node) ||
             ts.isMethodDeclaration(node) ||
             ts.isMethodSignature(node) ||
-            ts.isPropertyAssignment(node)) &&
+            ts.isPropertyAssignment(node) ||
+            ts.isShorthandPropertyAssignment(node)) &&
         node.name &&
-        ts.isIdentifier(node.name)
+        (ts.isIdentifier(node.name) ||
+            ts.isStringLiteralLike(node.name) ||
+            ts.isNumericLiteral(node.name))
     )
         return node.name.text;
     return undefined;
@@ -111,13 +117,17 @@ export class FiniteArraySources {
                             });
                         }
                     } else if (
-                        ts.isVariableDeclaration(node) &&
+                        (ts.isVariableDeclaration(node) ||
+                            ts.isPropertyDeclaration(node) ||
+                            ts.isPropertyAssignment(node)) &&
                         node.initializer
                     ) {
                         this.recordBinding(
                             node,
                             unwrapExpression(node.initializer),
                         );
+                    } else if (ts.isShorthandPropertyAssignment(node)) {
+                        this.recordBinding(node, node.name);
                     }
                 },
                 { types: "skip" },
@@ -142,17 +152,37 @@ export class FiniteArraySources {
     private slot(node: ts.Node): Slot | undefined {
         while (ts.isTypeNode(node)) node = node.parent;
         if (
+            ts.isPropertyAssignment(node) ||
+            ts.isShorthandPropertyAssignment(node)
+        ) {
+            const name = nameOf(node);
+            const property =
+                name === undefined
+                    ? undefined
+                    : contextualProperty(this.checker, node.parent, name);
+            return (
+                property?.valueDeclaration ??
+                property?.declarations?.[0] ??
+                node
+            );
+        }
+        if (
             ts.isVariableDeclaration(node) ||
             ts.isPropertySignature(node) ||
             ts.isPropertyDeclaration(node) ||
             ts.isParameter(node) ||
             ts.isFunctionDeclaration(node) ||
-            ts.isMethodDeclaration(node) ||
-            ts.isPropertyAssignment(node)
+            ts.isMethodDeclaration(node)
         )
             return node;
         const symbol = resolvedSymbol(this.checker, node);
-        return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+        const declaration =
+            symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+        return declaration &&
+            (ts.isPropertyAssignment(declaration) ||
+                ts.isShorthandPropertyAssignment(declaration))
+            ? this.slot(declaration)
+            : declaration;
     }
 
     /** Aliases share one inventory; unrelated fields with the same name do not. */

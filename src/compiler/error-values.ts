@@ -91,18 +91,33 @@ export function caughtErrorValue(
         | "allocateTemporaryCppName"
         | "cppString"
         | "reachJsData"
+        | "reachJson"
+        | "thrownValueKinds"
         | "registerNativeConstBinding"
     >,
-    exceptionCpp: string,
+    exceptionCpp: string | undefined,
+    exceptionPointerCpp = "std::current_exception()",
 ): Value {
     const pinned = context.allocateTemporaryCppName("caught_error");
     context.reachJsData();
-    context.emit({ kind: "expression", code: `(void)${exceptionCpp};` });
+    if (exceptionCpp)
+        context.emit({ kind: "expression", code: `(void)${exceptionCpp};` });
+    if (context.thrownValueKinds.size) {
+        context.reachJson();
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::js::JsonValue",
+            name: pinned,
+            initializer: `bbl::js::caught_value(${exceptionPointerCpp})`,
+        });
+        context.registerNativeConstBinding(pinned);
+        return { kind: "data", dataType: { kind: "json" }, cpp: pinned };
+    }
     context.emit({
         kind: "declaration",
         type: "const bbl::js::Error",
         name: pinned,
-        initializer: "std::current_exception()",
+        initializer: exceptionPointerCpp,
     });
     context.registerNativeConstBinding(pinned);
     const message: Extract<Value, { kind: "data" }> = {

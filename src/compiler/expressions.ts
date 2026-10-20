@@ -52,6 +52,8 @@ import {
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
+import { provenUndefinedValue } from "./undefined-values.js";
+import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
@@ -767,7 +769,7 @@ export class ExpressionLowerer {
             const lexicalThis = ts.isArrowFunction(unwrapped)
                 ? this.context.activeThis()
                 : undefined;
-            return {
+            const callback: Value = {
                 kind: "callback",
                 cpp: "",
                 callbackDeclaration: unwrapped,
@@ -788,6 +790,41 @@ export class ExpressionLowerer {
                         : {}),
                 },
             };
+            const contextual =
+                this.context.checker.getContextualType(unwrapped);
+            if (
+                contextual?.getCallSignatures().length === 1 &&
+                contextual.getProperties().length > 0 &&
+                !mentionsTypeParameter(this.context.checker, contextual) &&
+                contextual
+                    .getProperties()
+                    .every(
+                        (property) =>
+                            (property.flags & ts.SymbolFlags.Optional) !== 0,
+                    )
+            ) {
+                const type = this.context.dataTypes.fromTsType(
+                    contextual,
+                    unwrapped,
+                );
+                if (
+                    type?.kind === "struct" &&
+                    this.context.dataTypes.structCall(type.name)
+                ) {
+                    // Static tuple iteration can bypass an array's data sink.
+                    // Give contextual function properties their shared owner
+                    // when the fresh function is created, before such reads.
+                    return this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            callback,
+                            type,
+                            unwrapped,
+                        ),
+                        type,
+                    );
+                }
+            }
+            return callback;
         }
 
         if (ts.isBinaryExpression(unwrapped)) {
@@ -2187,10 +2224,10 @@ export class ExpressionLowerer {
             projection === "values" &&
             object.kind === "data" &&
             object.dataType?.kind === "enummap" &&
-            (!object.recordOwnKeys ||
-                object.recordOwnKeys.every(
-                    (key, index) => key === enumOrder![index],
-                )) &&
+            object.recordOwnKeys &&
+            object.recordOwnKeys.every(
+                (key, index) => key === enumOrder![index],
+            ) &&
             resultType?.kind === "vector"
         ) {
             this.context.reachJsData();
@@ -3543,11 +3580,16 @@ export class ExpressionLowerer {
             (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
         )
             return undefined;
-        return this.context.probeEmission(() =>
-            this.compileValue(receiver).kind === "json-null"
-                ? { kind: "json-null", cpp: "std::nullopt" }
-                : undefined,
-        );
+        return this.context.probeEmission(() => {
+            const value = this.compileValue(receiver);
+            if (
+                value.kind !== "json-null" &&
+                !isUndefinedDataType(value.dataType)
+            )
+                return undefined;
+            this.context.emitDiscardedValue(value);
+            return { kind: "json-null", cpp: "std::nullopt" };
+        });
     }
 
     private compileCall(call: ts.CallExpression): Value {
@@ -5557,7 +5599,18 @@ export class ExpressionLowerer {
      * worker values included).
      */
     private compileSelectedOperand(expression: ts.Expression): Value {
-        return this.context.compileValue(expression);
+        const value = this.context.compileValue(expression);
+        if (
+            value.kind === "void" &&
+            !value.abruptCompletion &&
+            !value.coroutineResult &&
+            !value.erasedVoidCompletion &&
+            provenUndefinedValue(this.context, expression)
+        ) {
+            this.context.emitDiscardedValue(value);
+            return { kind: "json-null", cpp: "std::nullopt" };
+        }
+        return value;
     }
 
     private compileConditionalValue(

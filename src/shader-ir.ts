@@ -2,6 +2,7 @@ import {
     fieldOffsets,
     layoutOf,
     roundUp,
+    wgslVector,
     type WgslTypeShape,
 } from "./wgsl-layout.js";
 import {
@@ -2709,7 +2710,15 @@ export function lowerWgslShaderProgram(
         const module = parseWgslModule(text, stage, { helpers: true });
         for (const structure of module.structs) {
             for (const member of structure.members) {
-                if (!shaderTypes.has(member.type as ShaderType)) {
+                const type = parseWgslType(member.type).shape;
+                const scalar =
+                    wgslVector(type)?.element ??
+                    (type.arguments.length === 0 ? type.name : undefined);
+                if (
+                    !shaderTypes.has(member.type as ShaderType) &&
+                    scalar !== "i32" &&
+                    scalar !== "u32"
+                ) {
                     throw new Error(
                         `Unsupported WGSL shader type '${member.type}' in struct '${structure.name}'.`,
                     );

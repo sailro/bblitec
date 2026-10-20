@@ -46,6 +46,7 @@ import {
     isCompileTimeOnlyValue,
     isStringValue,
     keepsStaticMember,
+    objectTruthinessCpp,
     optionalPresentCpp,
     presenceFlagCpp,
     readsNativeStorage,
@@ -68,6 +69,7 @@ import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -132,6 +134,7 @@ export class BindingScopes {
     private readonly factIndex = new ScopedValueIndex(this.variableScopes);
     private readonly invalidatedRecordMaps = new EmissionWeakSet<object>();
     private readonly sharedRecordMaps = new EmissionWeakSet<object>();
+    private readonly unwrittenScalarRecordMaps = new EmissionWeakSet<object>();
     /** @unjournaled Derived from the program alone, on first use. */
     private readonly codeReadsByNode = new WeakMap<ts.Node, CodeReads>();
     /** @unjournaled Derived from the program alone, on first use. */
@@ -1183,6 +1186,28 @@ export class BindingScopes {
                 : value;
         if (
             narrowed.kind === "record" &&
+            this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(identifier),
+                identifier,
+            )?.kind === "json"
+        ) {
+            // A document parameter owns its argument before control flow in
+            // the callee can create a cached view in a narrower native scope.
+            narrowed = this.pinValueToTemporary(
+                this.context.dataLowerer.leafValue(
+                    this.context.dataLowerer.compileKnownValueForSink(
+                        narrowed,
+                        { kind: "json" },
+                        argument ?? identifier,
+                    ),
+                    { kind: "json" },
+                ),
+                "parameter_document",
+                argument ?? identifier,
+            );
+        }
+        if (
+            narrowed.kind === "record" &&
             !this.context.classOf(narrowed) &&
             !this.containsPlatformEvent(narrowed) &&
             ts.isParameter(identifier.parent) &&
@@ -1380,36 +1405,29 @@ export class BindingScopes {
                                     member.recordProperties ?? {},
                                 ).every(plainScalar)),
                     ));
-            const unchangedFields = new Set(
-                Object.entries(value.recordProperties ?? {})
-                    .filter(
-                        ([name, member]) =>
-                            (member.kind === "number" ||
-                                member.kind === "boolean" ||
-                                member.staticString !== undefined) &&
-                            parameterProjectionIsReadOnly(
-                                this.context.checker,
-                                parameterDeclaration.parent,
-                                parameterDeclaration.parent.parameters.indexOf(
-                                    parameterDeclaration,
-                                ),
-                                [name],
-                                independentFields,
-                                argument,
-                                member.staticString !== undefined ||
-                                    member.staticNumber !== undefined ||
-                                    member.staticBoolean !== undefined,
-                            ),
-                    )
-                    .map(([name]) => name),
-            );
             value = this.materializeRecordScalars(
                 value,
                 `${identifier.text}_parameter`,
                 true,
                 undefined,
                 undefined,
-                unchangedFields,
+                (path, member) =>
+                    (member.kind === "number" ||
+                        member.kind === "boolean" ||
+                        member.staticString !== undefined) &&
+                    parameterProjectionIsReadOnly(
+                        this.context.checker,
+                        parameterDeclaration.parent,
+                        parameterDeclaration.parent.parameters.indexOf(
+                            parameterDeclaration,
+                        ),
+                        path,
+                        independentFields,
+                        argument,
+                        member.staticString !== undefined ||
+                            member.staticNumber !== undefined ||
+                            member.staticBoolean !== undefined,
+                    ),
             );
         }
         if (value.kind === "void") {
@@ -1536,7 +1554,7 @@ export class BindingScopes {
             !borrowsImmutableBinding &&
             referenceValue &&
             !reference &&
-            nativeType !== "std::string" &&
+            (nativeType !== "std::string" || readsNativeStorage(value)) &&
             (stableNativeBinding ||
                 (parameter && value.nativeLvalue) ||
                 (ownsParameterValue && !value.nativeOwnedRvalue))
@@ -1640,13 +1658,23 @@ export class BindingScopes {
         delete writable(stored).integerCounterCpp;
         if (!sharedStorage) delete writable(stored).sharedStorageCpp;
         if (
-            value.kind === "data" &&
+            (value.kind === "data" || nativeRecordOwner) &&
             value.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(value.dataType.name)
         ) {
             const reference = writable(stored);
             reference.objectIdentityCpp = `${storedCpp}.get()`;
-            reference.optionalFoundCpp = `static_cast<bool>(${storedCpp})`;
+            const found =
+                objectTruthinessCpp(value) ??
+                (nativeRecordOwner ? "true" : undefined);
+            const stable = parameter
+                ? !reboundParameter
+                : ts.isIdentifier(identifier) &&
+                  !this.context.sharedClosures.identifierIsRebound(identifier);
+            reference.optionalFoundCpp =
+                stable && (found === "true" || found === "false")
+                    ? found
+                    : `static_cast<bool>(${storedCpp})`;
             reference.truthinessCpp = reference.optionalFoundCpp;
         }
         if (value.kind === "animation-clip") {
@@ -1687,6 +1715,80 @@ export class BindingScopes {
         }
     }
 
+    /** Collections whose carried facts can change between body executions. */
+    public visitRepeatedCollectionWrites(
+        body: ts.Node,
+        visitor: (value: Value, elementsUnchanged: boolean) => void,
+    ): void {
+        const visited = new Set<ts.Symbol>();
+        let reached: Set<ts.Node> | undefined;
+        const mayChange = (
+            bound: ts.Expression,
+            observation: "deep" | "array-elements" = "deep",
+        ): boolean => {
+            if (!reached) {
+                reached = new Set<ts.Node>();
+                walkReachedLoopNodes(this.context, body, (node) => {
+                    reached!.add(node);
+                });
+            }
+            return loopBoundMayChange(
+                this.context,
+                body,
+                bound,
+                observation,
+                reached,
+            );
+        };
+        for (let index = this.variableScopes.length - 1; index >= 0; index--) {
+            for (const [symbol, binding] of this.variableScopes[index]!) {
+                if (visited.has(symbol)) continue;
+                visited.add(symbol);
+                const declaration = symbol.valueDeclaration;
+                if (
+                    !declaration ||
+                    !(
+                        ts.isVariableDeclaration(declaration) ||
+                        ts.isParameter(declaration) ||
+                        ts.isBindingElement(declaration)
+                    ) ||
+                    !ts.isIdentifier(declaration.name)
+                )
+                    continue;
+                const collections: Value[] = [];
+                const seen = new Set<Value>();
+                const collect = (value: Value): void => {
+                    if (seen.has(value)) return;
+                    seen.add(value);
+                    if (
+                        value.collectionCardinality ||
+                        value.staticElements ||
+                        value.staticElementsOwner
+                    )
+                        collections.push(value);
+                    for (const member of Object.values(
+                        value.recordProperties ?? {},
+                    ))
+                        collect(member);
+                };
+                collect(binding.value);
+                if (collections.length && mayChange(declaration.name)) {
+                    // Mutating an existing handle's properties keeps the array's
+                    // membership and its common resource family unchanged.
+                    const elementsUnchanged =
+                        binding.value.dataType?.kind === "vector" &&
+                        binding.value.dataType.element.kind === "handle" &&
+                        !mayChange(declaration.name, "array-elements");
+                    for (const value of collections)
+                        visitor(
+                            value,
+                            value === binding.value && elementsUnchanged,
+                        );
+                }
+            }
+        }
+    }
+
     /** Invalidate one native array's complete snapshot through all aliases. */
     public invalidateStaticElements(
         value: Value,
@@ -1706,9 +1808,10 @@ export class BindingScopes {
                 if (
                     element.dataType?.kind === "union" ||
                     this.sharedRecordMaps.has(properties)
-                )
-                    this.invalidateRecordMap(properties);
-                else
+                ) {
+                    if (!this.unwrittenScalarRecordMaps.has(properties))
+                        this.invalidateRecordMap(properties);
+                } else
                     for (const key of Object.keys(properties))
                         delete writable(properties)[key];
             }
@@ -1766,9 +1869,15 @@ export class BindingScopes {
     }
 
     /** An indexed view retains the source record's field-map identity. */
-    public retainRecordPropertiesAlias(value: Value): void {
-        if (value.recordProperties)
+    public retainRecordPropertiesAlias(
+        value: Value,
+        unwrittenScalars = false,
+    ): void {
+        if (value.recordProperties) {
             this.sharedRecordMaps.add(value.recordProperties);
+            if (unwrittenScalars)
+                this.unwrittenScalarRecordMaps.add(value.recordProperties);
+        }
     }
 
     private invalidateRecordMap(
@@ -2533,17 +2642,20 @@ export class BindingScopes {
                                   : [],
                       )
                     : [];
-            return this.context.dataLowerer.withRetainedArraySinks(fields, () =>
-                retainFields(
-                    this.context.dataLowerer.leafValue(
-                        this.context.dataLowerer.compileKnownValueForSink(
-                            value,
+            return this.context.dataLowerer.withRetainedArraySinks(
+                value,
+                fields,
+                () =>
+                    retainFields(
+                        this.context.dataLowerer.leafValue(
+                            this.context.dataLowerer.compileKnownValueForSink(
+                                value,
+                                type,
+                                node,
+                            ),
                             type,
-                            node,
                         ),
-                        type,
                     ),
-                ),
             );
         };
         return this.context.probeEmission(() => {
@@ -2801,7 +2913,7 @@ export class BindingScopes {
         preserveIdentity = false,
         node?: ts.Expression,
         materialized = new Map<object, Value>(),
-        unchangedFields?: ReadonlySet<string>,
+        isUnchangedField?: (path: readonly string[], member: Value) => boolean,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -2850,6 +2962,15 @@ export class BindingScopes {
               });
         materialized.set(identity, result);
         const classFields = this.context.classOf(record) !== undefined;
+        const unchangedFields = isUnchangedField
+            ? new Set(
+                  Object.entries(record.recordProperties ?? {})
+                      .filter(([name, member]) =>
+                          isUnchangedField([name], member),
+                      )
+                      .map(([name]) => name),
+              )
+            : undefined;
         const scalarFields = Object.entries(
             record.recordProperties ?? {},
         ).filter(
@@ -2914,6 +3035,9 @@ export class BindingScopes {
                     preserveIdentity,
                     undefined,
                     materialized,
+                    isUnchangedField &&
+                        ((path, member) =>
+                            isUnchangedField([name, ...path], member)),
                 );
                 continue;
             }

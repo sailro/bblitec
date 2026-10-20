@@ -14,6 +14,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    objectProperty,
     propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
@@ -227,6 +228,26 @@ export function parameterProjectionIsReadOnly(
     capturedScalarFacts = false,
 ): boolean {
     const literal = argument && unwrapExpression(argument);
+    // A fresh wrapper may still contain a caller-owned child. Captured
+    // scalar facts require a literal owner at every enclosing projection.
+    let freshOwner = literal;
+    for (const key of path.slice(0, -1)) {
+        if (
+            !freshOwner ||
+            !ts.isObjectLiteralExpression(freshOwner) ||
+            !freshOwner.properties.every(
+                (member) =>
+                    (ts.isPropertyAssignment(member) ||
+                        ts.isShorthandPropertyAssignment(member)) &&
+                    !ts.isComputedPropertyName(member.name),
+            )
+        ) {
+            freshOwner = undefined;
+            break;
+        }
+        const child = objectProperty(freshOwner, key);
+        freshOwner = child && unwrapExpression(child);
+    }
     const keys =
         independentFields &&
         literal &&
@@ -253,8 +274,8 @@ export function parameterProjectionIsReadOnly(
         keys,
         capturedScalarFacts &&
             independentFields &&
-            literal !== undefined &&
-            ts.isObjectLiteralExpression(literal),
+            freshOwner !== undefined &&
+            ts.isObjectLiteralExpression(freshOwner),
     );
 }
 
@@ -327,6 +348,8 @@ function parameterProjection(
             parameter.name,
         );
         for (const key of selected) {
+            projectedType =
+                projectedType && checker.getNonNullableType(projectedType);
             const property: ts.Symbol | undefined =
                 projectedType && checker.getPropertyOfType(projectedType, key);
             projectedType = property
@@ -682,9 +705,7 @@ function parameterProjection(
             selected.some(
                 (entry) =>
                     mayAffectSelection(value.from, entry) &&
-                    (value.from.length > entry.path.length ||
-                        (entry.scalar &&
-                            value.from.length === entry.path.length)),
+                    (value.from.length > entry.path.length || entry.scalar),
             ),
         );
     };
@@ -746,18 +767,17 @@ function parameterProjection(
                 root,
                 (node) => {
                     if (absentOptionalCall(node)) return "skip";
-                    if (ts.isFunctionLike(node) && !inspectCaptures) {
-                        return (
-                            someAnalysisNode(
-                                node,
-                                (part) =>
-                                    absentOptionalCall(part)
-                                        ? "skip"
-                                        : ts.isIdentifier(part) &&
-                                          captures(part),
-                                { types: "skip" },
-                            ) || "skip"
+                    if (ts.isFunctionLike(node)) {
+                        const capturesSelection = someAnalysisNode(
+                            node,
+                            (part) =>
+                                absentOptionalCall(part)
+                                    ? "skip"
+                                    : ts.isIdentifier(part) && captures(part),
+                            { types: "skip" },
                         );
+                        if (!capturesSelection) return "skip";
+                        if (!inspectCaptures) return true;
                     }
                     if (isAssignmentExpression(node)) {
                         return (

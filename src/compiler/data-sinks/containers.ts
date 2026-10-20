@@ -6,7 +6,12 @@ import {
     isUndefinedDataType,
     type DataType,
 } from "../data-types.js";
-import { optionalValueCpp, presenceFlagCpp, type Value } from "../types.js";
+import {
+    optionalValueCpp,
+    presenceFlagCpp,
+    snapshotReadCpp,
+    type Value,
+} from "../types.js";
 import { writable } from "../emission-transaction.js";
 
 import {
@@ -226,7 +231,7 @@ function valueOptional(
                 node,
             );
         });
-        return `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { const auto ${source} = ${value.cpp}; if (${source}.is_null() || ${source}.is_undefined()) return ${absent}; ${lines.join("\n")} return ${converted}; }())`;
+        return `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { const auto ${source} = ${snapshotReadCpp(value)}; if (${source}.is_null() || ${source}.is_undefined()) return ${absent}; ${lines.join("\n")} return ${converted}; }())`;
     }
     if (value.dataType?.kind === "optional") {
         const sourceType = value.dataType.inner;
@@ -673,6 +678,8 @@ function valueSpan(
     }
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
+        if ((value.tupleElements?.length ?? 0) === 0)
+            return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
         (value.tupleElements ?? []).forEach((entry, index) =>
             lowerer.context.sceneManifest.recordDataLightSlot(entry, index),
         );

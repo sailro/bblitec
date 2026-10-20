@@ -11,6 +11,10 @@ import {
     pinnedModuleUrl,
 } from "./pinned-shader-composer.js";
 import { createRecordingDevice, RecordedTexture } from "./recording-device.js";
+import {
+    BasisuObservation,
+    loadPinnedBasisuFeature,
+} from "./pinned-gltf-basisu.js";
 
 interface TextureCarrier {
     texture: object;
@@ -30,14 +34,38 @@ export async function gltfSourceAlbedoIdentities(
     const unsupported = asStrings(document.extensionsUsed).find(
         (extension) =>
             extension.startsWith("KHR_materials_") ||
-            extension === "KHR_texture_transform" ||
-            extension === "KHR_texture_basisu",
+            extension === "KHR_texture_transform",
     );
     if (unsupported)
         throw new Error(
             `Source glTF albedo identity does not yet represent '${unsupported}' material or texture producers.`,
         );
     await ensurePinnedLoaderExecution();
+    // Let the extension own per-material caches and overrides. Only image bytes
+    // are replaced: each four-byte marker identifies the original image.
+    const basisu = asStrings(document.extensionsUsed).includes(
+        "KHR_texture_basisu",
+    )
+        ? await loadPinnedBasisuFeature()
+        : undefined;
+    const images = asRecords(document.images);
+    const markers = new DataView(
+        new ArrayBuffer(Math.max(1, images.length) * 4),
+    );
+    images.forEach((_, index) => markers.setUint32(index * 4, index, true));
+    const sourceDocument: JsonObject = basisu
+        ? {
+              ...structuredClone(document),
+              meshes: [],
+              images: images.map((_, index) => ({ bufferView: index })),
+              bufferViews: images.map((_, index) => ({
+                  buffer: 0,
+                  byteOffset: index * 4,
+                  byteLength: 4,
+              })),
+          }
+        : document;
+    if (basisu) await basisu.preMesh(sourceDocument, markers, "");
     const parser = JSON.stringify(
         pathToFileURL(join(pinnedLibraryRoot(), "loader-gltf/gltf-parser.js"))
             .href,
@@ -83,26 +111,51 @@ export function resolveImage(_json, _bin, index) {
     const { identityTexWrap } = await importPinnedModule<{
         identityTexWrap: (texture: object) => object;
     }>("loader-gltf/gltf-pbr-builder.js");
-    // The upload each texture last received is its identity: a decoded image
-    // through `copyExternalImageToTexture`, or the factor texel `uploadTex`
-    // writes when a slot has no image.
+    // The pin owns texture object identity. Record uploads to retain factor
+    // texels; compressed uploads use tokens without decoding image content.
     const { device } = createRecordingDevice({
         producer: "gltf-albedo-identity",
         device: ["createTexture", "createSampler", "createBuffer"],
         queue: ["copyExternalImageToTexture", "writeTexture"],
     });
-    const definitions = asRecords(document.materials);
+    const basisuTextures = new WeakSet<object>();
+    const engine = Object.assign(
+        new BasisuObservation((image, srgb) => {
+            const texture = device.createTexture({
+                size: { width: 1, height: 1 },
+                format: srgb ? "rgba8unorm-srgb" : "rgba8unorm",
+                usage: 6,
+            });
+            basisuTextures.add(texture);
+            return {
+                texture,
+                view: texture.createView(),
+                width: 1,
+                height: 1,
+                sourceImage: image,
+            };
+        }),
+        { _device: device },
+    );
+    const { runGltfMaterialFeatures } = await importPinnedModule<{
+        runGltfMaterialFeatures: (
+            material: unknown,
+            features: unknown[],
+            context: unknown,
+        ) => Promise<unknown>;
+    }>("loader-gltf/gltf-feature-registry.js");
+    const definitions = asRecords(sourceDocument.materials);
     // Include the pin's implicit default material as the last association.
     const indices = [...definitions.map((_, index) => index), -1];
     const cache: unknown[] = [];
     const bin = new ArrayBuffer(0);
     const assembled = await Promise.all(
         indices.map((index) =>
-            materials.assembleMaterial(document, bin, index, "", cache),
+            materials.assembleMaterial(sourceDocument, bin, index, "", cache),
         ),
     );
     const probeDocument = {
-        ...document,
+        ...sourceDocument,
         meshes: indices.map(() => ({ name: "material-probe" })),
         nodes: indices.map((_, mesh) => ({ mesh })),
     };
@@ -116,12 +169,14 @@ export function resolveImage(_json, _bin, index) {
         _indices: new Uint16Array([0]),
         _indexCount: 1,
     }));
-    const built = await loader.uploadMeshes(meshes, [], {
-        _engine: { _device: device },
+    const features = basisu ? [basisu] : [];
+    const built = await loader.uploadMeshes(meshes, features, {
+        _engine: engine,
         _json: probeDocument,
         _binChunk: bin,
         _baseUrl: "",
-        _matExts: [],
+        _matExts: features,
+        _runMatExts: runGltfMaterialFeatures,
         _wrapTex: identityTexWrap,
     });
     const identities = new Map<object, number>();
@@ -132,6 +187,7 @@ export function resolveImage(_json, _bin, index) {
         if (identity === undefined) {
             identity = identities.size;
             identities.set(source, identity);
+            if (basisuTextures.has(source.texture)) return identity;
             const upload =
                 source.texture instanceof RecordedTexture
                     ? source.texture.uploads.at(-1)

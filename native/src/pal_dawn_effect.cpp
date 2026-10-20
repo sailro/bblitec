@@ -140,7 +140,7 @@ public:
 #if BBLITE_EFFECT_WRAPPER_DISPOSAL
             require_effect_renderer_storage(engine, record.effect);
 #endif
-            upload_dawn_effect_pass(state.queue, engine, passes[index], record.effect);
+            upload_dawn_effect_pass(state, engine, passes[index], record.effect);
         }
     }
     void encode() {

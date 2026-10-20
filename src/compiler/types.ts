@@ -12,6 +12,7 @@ export {
     optionalValueCpp,
     contextCanvas,
     isPresentValue,
+    hasLiteralStringCpp,
     hasScalarFacts,
     keepsStaticMember,
     presenceCpp,
@@ -422,6 +423,8 @@ export interface EffectBindingManifest {
     name: string;
     binding: number;
     kind: "uniform" | "texture" | "sampler";
+    /** Explicit texture layout sample type; the pin defaults to float. */
+    textureSampleType?: "float" | "depth";
     /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
     uniformBytes: number;
     /**
@@ -807,6 +810,8 @@ export interface CompiledComputeProgram {
  * `createShaderMaterial` applies at creation.
  */
 export interface CompiledShaderProgram {
+    /** False for a created scene-local material with no reached draw. Its table ID and resource slots remain valid. */
+    readonly drawReachable?: boolean;
     readonly name: string;
     readonly vertexSource: string;
     readonly fragmentSource: string;
@@ -2107,18 +2112,30 @@ export function commonResourceValue(
         common.runtimeMeshStreams = true;
     if (!candidates.every((candidate) => candidate.directMorphCompatible))
         delete common.directMorphCompatible;
+    if (value.kind === "mesh") {
+        const profiles = candidates.map((candidate) => {
+            const profile =
+                candidate.sceneMeshIndex ?? candidate.sceneMeshProfileIndex;
+            return profile === undefined
+                ? candidate.possibleSceneMeshProfiles
+                : [profile];
+        });
+        if (profiles.length > 0 && profiles.every((indices) => indices?.length))
+            common.possibleSceneMeshProfiles = [
+                ...new Set(profiles.flatMap((indices) => indices ?? [])),
+            ].sort((left, right) => left - right);
+        else delete common.possibleSceneMeshProfiles;
+    }
     if (value.kind === "material") {
-        const variants = [
-            ...new EmissionSet(
-                candidates.flatMap((candidate) => [
-                    ...(candidate.sceneShaderVariant === undefined
-                        ? []
-                        : [candidate.sceneShaderVariant]),
-                    ...(candidate.possibleSceneShaderVariants ?? []),
-                ]),
-            ),
-        ].sort();
-        if (variants.length > 0) common.possibleSceneShaderVariants = variants;
+        const variants = candidates.map((candidate) =>
+            candidate.sceneShaderVariant === undefined
+                ? candidate.possibleSceneShaderVariants
+                : [candidate.sceneShaderVariant],
+        );
+        if (variants.length > 0 && variants.every((names) => names?.length))
+            common.possibleSceneShaderVariants = [
+                ...new EmissionSet(variants.flatMap((names) => names ?? [])),
+            ].sort();
         else delete common.possibleSceneShaderVariants;
     }
     return common;
@@ -2517,6 +2534,8 @@ export interface ValueFields {
     sceneMeshIndex?: number;
     /** A repeated native creation's profile, never a singleton mesh identity. */
     sceneMeshProfileIndex?: number;
+    /** Every possible creation profile of a finite mesh-handle selection. */
+    possibleSceneMeshProfiles?: readonly number[];
     /**
      * This `createMeshFromData` mesh was handed at least one optional
      * attribute stream whose presence is a run-time answer, so the
@@ -2822,6 +2841,8 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /** Local text whose standalone writes update its generation-known value. */
+    orderedTextDeclaration?: ts.VariableDeclaration;
     /** A retained const initializer's text; reading its lexical home may still throw. */
     lexicalStaticString?: string;
     /**

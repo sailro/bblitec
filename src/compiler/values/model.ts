@@ -1,4 +1,4 @@
-import { cppIdentifierPattern } from "../../cpp-literals.js";
+import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
@@ -105,12 +105,22 @@ export function keepsStaticMember(value: Value): boolean {
     );
 }
 
+/** Whether the emitted expression is the literal spelling of its known text. */
+export function hasLiteralStringCpp(value: Value, cpp = value.cpp): boolean {
+    return (
+        value.staticString !== undefined &&
+        (cpp.startsWith('"') || cpp.startsWith("std::string(")) &&
+        cpp === stringLiteral(value.staticString)
+    );
+}
+
 /** Whether a value's spelling reads storage that already exists. */
 export function readsNativeStorage(value: Value): boolean {
     return (
-        value.nativeLvalue === true ||
-        value.sharedStorageCpp !== undefined ||
-        cppIdentifierPattern.test(value.cpp)
+        (value.nativeLvalue === true ||
+            value.sharedStorageCpp !== undefined ||
+            cppIdentifierPattern.test(value.cpp)) &&
+        !hasLiteralStringCpp(value)
     );
 }
 

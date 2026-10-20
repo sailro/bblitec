@@ -21,6 +21,12 @@ export function shadowCasterMaterialWrite(
         material.sceneShaderVariant ?? material.shaderVariant,
         caster.sceneShaderVariant ?? caster.shaderVariant,
     );
+    if (
+        (material.sceneShaderVariant ?? material.shaderVariant) === undefined ||
+        material.possibleSceneShaderVariants?.length
+    ) {
+        context.sceneManifest.recordSceneShaderMaterialDraw(undefined, caster);
+    }
     return (
         `bbl::set_shadow_caster_material(` +
         `${context.requireEngine(material, at)}, ` +

@@ -253,10 +253,13 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                                    [[maybe_unused]] const Scene& scene,
                                    [[maybe_unused]] const Engine& engine,
-                                   [[maybe_unused]] const MaterialRecord& view,
-                                   std::uint32_t variant, const GpuMesh& mesh) {
-    const MaterialRecord& material = shader_resource_material(engine, view);
-    const auto& uploaded = mesh_shader_textures(mesh);
+                                   MaterialHandle material_handle, std::uint32_t variant,
+                                   const GpuMesh& mesh) {
+    const MaterialRecord& material =
+        shader_resource_material(engine, handle_at(engine.materials, material_handle));
+    const auto& uploaded = shader_draw_textures(state.shared_shader_material_textures,
+                                                mesh.shared_shader_textures, material_handle)
+                               .bindings;
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
     const auto resolve = [&](const std::string& name,
                              std::size_t slot) -> SDL_GPUTextureSamplerBinding {
@@ -462,6 +465,19 @@ void upload_shader_material_textures(GpuState& state, const MaterialRecord& mate
         }
     }
     textures.texture_version = material.shader_texture_version;
+}
+
+SharedShaderMaterialTextures& ensure_shader_material_textures(GpuState& state, const Engine& engine,
+                                                              MaterialHandle material) {
+    if (auto* existing =
+            find_shared_shader_material_textures(state.shared_shader_material_textures, material))
+        return *existing;
+    auto created = std::make_unique<SharedShaderMaterialTextures>(state.device);
+    created->material = material;
+    upload_shader_material_textures(
+        state, shader_resource_material(engine, handle_at(engine.materials, material)), *created);
+    state.shared_shader_material_textures.push_back(std::move(created));
+    return *state.shared_shader_material_textures.back();
 }
 
 void refresh_shader_material_textures(GpuState& state, const Engine& engine) {
@@ -724,16 +740,8 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
     // upload instead walks the compiled stage's sidecar and pulls
     // each surviving name's texture out of the declared order.
     if (material && (material->shader_material || material->node_material)) {
-        gpu_mesh.shared_shader_textures = find_shared_shader_material_textures(
-            state.shared_shader_material_textures, item.material);
-        if (!gpu_mesh.shared_shader_textures) {
-            auto created = std::make_unique<SharedShaderMaterialTextures>(state.device);
-            created->material = item.material;
-            upload_shader_material_textures(state, shader_resource_material(engine, *material),
-                                            *created);
-            state.shared_shader_material_textures.push_back(std::move(created));
-            gpu_mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
-        }
+        gpu_mesh.shared_shader_textures =
+            &ensure_shader_material_textures(state, engine, item.material);
         ++gpu_mesh.shared_shader_textures->users;
     }
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES

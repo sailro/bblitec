@@ -122,12 +122,33 @@ double advance_frame(Engine&, Scene&, TestClock&, double delta) {
 }
 #include "scene-restart.hpp"
 
+// These task lists contain no shader materials.
+struct SharedShaderMaterialTextures {};
+using DawnSharedShaderMaterialTextures = SharedShaderMaterialTextures;
+template <typename SharedTextures, typename TaskLists, typename Ensure>
+void retain_task_shader_textures(const std::vector<std::shared_ptr<Scene>>&,
+                                 const std::vector<std::unique_ptr<SharedTextures>>& cache,
+                                 TaskLists, Ensure) {
+    assert(cache.empty());
+}
+template <typename State>
+SharedShaderMaterialTextures& ensure_shader_material_textures(State&, Engine&, MaterialHandle) {
+    throw std::logic_error("The fixture has no shader materials.");
+}
+template <typename State> void prune_shared_shader_material_textures(State& state) {
+    assert(state.shared_shader_material_textures.empty());
+}
+
 struct DawnRenderTask {
     WGPUBuffer view_projection = nullptr;
     upstream::RenderDrawLists draw_lists;
 };
 struct DawnState {
     std::vector<DawnRenderTask> render_tasks;
+    std::vector<std::unique_ptr<DawnSharedShaderMaterialTextures>> shared_shader_material_textures;
+    void prune_shared_shader_material_textures() {
+        assert(shared_shader_material_textures.empty());
+    }
     WGPUSurface surface = &dawn_surface;
     std::string uncaptured_error;
     const std::string& last_error() const { return uncaptured_error; }
@@ -157,6 +178,8 @@ struct CommonData {
 struct SdlData : CommonData {
     struct Resources {
         struct State {
+            std::vector<std::unique_ptr<SharedShaderMaterialTextures>>
+                shared_shader_material_textures;
             SDL_GPUDevice* device = nullptr;
             SDL_Window* window = nullptr;
         } state;

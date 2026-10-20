@@ -4753,8 +4753,9 @@ template <typename Values> inline Values typed_array_reverse(Values values) {
                                                     double end_value) {
     const auto [begin, end] = relative_slice_bounds(buffer.byte_length(), begin_value, end_value);
     std::vector<std::uint8_t> bytes(buffer.data() + begin, buffer.data() + end);
-    return buffer.shared() ? ArrayBuffer::shared_bytes(std::move(bytes))
-                           : ArrayBuffer(std::move(bytes));
+    if (buffer.shared())
+        return ArrayBuffer::shared_bytes(std::move(bytes));
+    return ArrayBuffer(std::move(bytes));
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.

@@ -58,7 +58,6 @@ import {
     authoredErrorValue,
     compileErrorConstruction,
     errorConstructor,
-    errorValue,
     thrownMessage,
 } from "./error-values.js";
 import { emitStringAppend } from "./expressions.js";
@@ -67,6 +66,7 @@ import {
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
+    snapshotReadCpp,
     staticStringValue,
 } from "./types.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -98,9 +98,12 @@ import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 import { exponentiationCall } from "./math-intrinsics.js";
 import { renderNativeEmission } from "./native-statements.js";
 
+import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
+
 interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "absenceTags"
+    | "thrownValueKinds"
     | "sharedClosures"
     | "classLowerer"
     | "resolveRecordValue"
@@ -192,6 +195,7 @@ interface StatementLoweringContext extends Pick<
     | "emitParameterizedResourceLoop"
     | "isInParameterizedResourceLoop"
     | "enterRuntimeControlFlow"
+    | "recordDataAssignmentMetadata"
     | "leaveRuntimeControlFlow"
     | "isInRuntimeControlFlow"
     | "enterRuntimeIteration"
@@ -570,7 +574,7 @@ export class StatementLowerer {
         emitBody: () => T,
         iteration?: ts.IterationStatement,
     ): T {
-        context.enterRuntimeIteration();
+        context.enterRuntimeIteration(iteration?.statement);
         const target = iteration
             ? writable(this.targetOf(iteration))
             : undefined;
@@ -2339,22 +2343,11 @@ export class StatementLowerer {
                 ) {
                     context.bindings.bindLocalValue(
                         catchDeclaration.name,
-                        suspendedCatch
-                            ? errorValue(
-                                  {
-                                      kind: "data",
-                                      dataType: { kind: "string" },
-                                      cpp: `bbl::js::promise_error_message(${suspendedCatch})`,
-                                  },
-                                  "Error",
-                                  context.cppString,
-                                  {
-                                      kind: "data",
-                                      cpp: `bbl::js::Error(${suspendedCatch})`,
-                                      dataType: { kind: "error" },
-                                  },
-                              )
-                            : caughtErrorValue(context, catchCpp),
+                        caughtErrorValue(
+                            context,
+                            suspendedCatch ? undefined : catchCpp,
+                            suspendedCatch,
+                        ),
                     );
                 }
                 const handlerBody = context.captureEmittedStatements(() => {
@@ -2491,17 +2484,7 @@ export class StatementLowerer {
         }
     }
 
-    /**
-     * A scene's own precondition, thrown.
-     *
-     * The corpus writes these as fixture guards — this graph must build two
-     * systems, this loader must have returned a mesh — and the generated
-     * main already catches and prints, so the native shape is the same
-     * shape: a runtime error carrying the scene's own message. Only a
-     * A runtime string travels too: plain-data functions already carry
-     * `std::string`, and template interpolation preserves the diagnostic
-     * values the source chose to report.
-     */
+    /** Throw the represented value, retaining Error identity and primitive kinds. */
     private emitThrow(
         context: StatementLoweringContext,
         statement: ts.ThrowStatement,
@@ -2529,7 +2512,19 @@ export class StatementLowerer {
                   )
                 : context.compileValue(thrown);
         const error = authoredErrorValue(context, sourceError) ?? sourceError;
-        if (error.dataType?.kind === "error" || isJsonValue(error)) {
+        if (isJsonValue(error)) {
+            if (!context.thrownValueKinds.has("string"))
+                throw new ThrownValueStorageRequired("string");
+            context.reachThrow();
+            context.reachJson();
+            context.emitNativeThrow(
+                `bbl::js::thrown_exception(${error.cpp})`,
+                statement,
+                true,
+            );
+            return;
+        }
+        if (error.dataType?.kind === "error") {
             context.reachThrow();
             context.emitNativeThrow(
                 context.dataLowerer.compileKnownValueForSink(
@@ -2552,9 +2547,11 @@ export class StatementLowerer {
         if (value.staticString === undefined && !isStringValue(value)) {
             context.fail(thrown, "A thrown Error message must be a string.");
         }
+        if (!error.nativeError && !context.thrownValueKinds.has("string"))
+            throw new ThrownValueStorageRequired("string");
         context.reachThrow();
         context.emitNativeThrow(
-            `std::runtime_error(${
+            `${error.nativeError ? "std::runtime_error" : "bbl::js::ThrownString"}(${
                 value.staticString !== undefined
                     ? context.cppString(value.staticString)
                     : value.cpp
@@ -3282,7 +3279,7 @@ export class StatementLowerer {
                 kind: "declaration",
                 type: "const bbl::js::JsonValue",
                 name: object,
-                initializer: owner.cpp,
+                initializer: snapshotReadCpp(owner),
             });
             return {
                 keysCpp: `${object}.own_keys()`,
@@ -3427,7 +3424,9 @@ export class StatementLowerer {
         const next = context.allocateTemporaryCppName("iterator_result");
         context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
-        context.emit(`const auto ${source} = ${iterator.cpp};`);
+        context.emit(
+            `const auto ${source} = bbl::js::snapshot_value(${iterator.cpp});`,
+        );
         context.emit(`bool ${complete} = false;`);
         this.emitCompletionCleanup(
             context,
@@ -4444,6 +4443,9 @@ export class StatementLowerer {
                 ? indexed.indexCpp
                 : context.allocateTemporaryCppName("item");
         const container = target.container.dataType;
+        const span =
+            container?.kind === "span" &&
+            target.container.nativeCollectionCppType === undefined;
         // An array element is read in place while the body can change no
         // array and never reassigns the loop variable; otherwise the loop
         // yields a snapshot the body's writes cannot change.
@@ -4457,10 +4459,7 @@ export class StatementLowerer {
         // A span views a constant table: its items are constant, and a
         // closure capturing one borrows it as such; so does a borrowed
         // array element.
-        if (
-            (container?.kind === "span" || borrowsElement) &&
-            indexed?.kind !== "array-index"
-        )
+        if ((span || borrowsElement) && indexed?.kind !== "array-index")
             context.registerNativeBindingType(
                 item,
                 `const ${context.dataTypes.cppType(container.element)}`,
@@ -4498,7 +4497,6 @@ export class StatementLowerer {
                 indexed?.indexCpp ??
                 context.allocateTemporaryCppName("array_index");
             const range = context.allocateTemporaryCppName("range");
-            const span = container?.kind === "span";
             // The iterated array is retained only where the body can rebind
             // what selected it; otherwise its binding already retains it.
             const iterated =
@@ -4563,7 +4561,7 @@ export class StatementLowerer {
                 kind: "declaration",
                 type: "const auto",
                 name: source,
-                initializer: target.container.cpp,
+                initializer: `bbl::js::snapshot_value(${target.container.cpp})`,
             });
             context.emit(
                 `bbl::js::IteratorScope ${context.allocateTemporaryCppName("iterator_scope")}(${source});`,
@@ -4585,13 +4583,12 @@ export class StatementLowerer {
             // A span is a borrowed descriptor, so hold that descriptor by value.
             // Binding the range-for's hidden reference to a returned span makes
             // GCC 13 incorrectly tie it to temporary arguments of the source call.
-            const span =
-                target.container.dataType?.kind === "span"
-                    ? context.allocateTemporaryCppName("range")
-                    : undefined;
+            const spanRange = span
+                ? context.allocateTemporaryCppName("range")
+                : undefined;
             context.emit({
                 kind: "open",
-                code: `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
+                code: `for (${spanRange ? `auto ${spanRange} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${spanRange ?? target.container.cpp}) {`,
                 iteration: true,
             });
             context.increaseIndent();
@@ -4846,6 +4843,13 @@ export class StatementLowerer {
                         kind: "expression",
                         code: `${target.cpp} = ${cpp};`,
                     });
+                    context.recordDataAssignmentMetadata(
+                        target,
+                        unwrapped.right,
+                        unwrapped.left,
+                        false,
+                        value,
+                    );
                 } else if (
                     target.dataType?.kind === "handle" &&
                     target.dataType.ownedEngine &&
@@ -5424,22 +5428,7 @@ export class StatementLowerer {
         return true;
     }
 
-    /**
-     * `light.position.set(x, y, z)` and `light.direction.set(...)`.
-     *
-     * Both vectors are `ObservableVec3` upstream, so a write does two
-     * things: it moves the field and it marks the light's local matrix
-     * dirty, which the next read rebuilds. The emitted entry point is
-     * that pair, lowered beside its own kind's factory from the pin's
-     * own local-matrix closure — the compiler names the kind because it
-     * already knows it, so a scene reaching no light of a kind links no
-     * setter for it.
-     *
-     * Which vectors a kind carries is `assignments.ts`'s table, beside the
-     * scalar and colour properties it already owns for the same four kinds;
-     * a vector no reached scene writes stays unlowered and fails by name
-     * rather than moving a record field nothing rebuilds from.
-     */
+    /** Route light vector writes through the setter emitted beside their factory. */
     private compileLightVectorSet(
         context: StatementLoweringContext,
         call: ts.CallExpression,
@@ -5703,6 +5692,10 @@ export class StatementLowerer {
             materialOverride = true;
             const meshProfile =
                 mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
+            context.sceneManifest.recordSceneShaderMaterialDraw(
+                meshProfile,
+                material,
+            );
             if (material.scenePbrMaterialIndex !== undefined) {
                 if (meshProfile === undefined) {
                     context.sceneManifest.recordUnknownSceneMeshMaterial(

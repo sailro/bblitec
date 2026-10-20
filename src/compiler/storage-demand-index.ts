@@ -22,8 +22,14 @@ export function sourceTypeRequiresReferenceStorage(
     checker: ts.TypeChecker,
     sources: readonly ts.SourceFile[],
     sourceType: ts.Type,
+    observedIdentities?: ReadonlySet<ts.Type>,
 ): boolean {
     const target = checker.getNonNullableType(sourceType);
+    if (
+        observedIdentities &&
+        sourceTypeHasObservedIdentity(checker, target, observedIdentities)
+    )
+        return true;
     let cache = referenceStorageByChecker.get(checker);
     if (!cache) {
         cache = new WeakMap();
@@ -32,22 +38,49 @@ export function sourceTypeRequiresReferenceStorage(
     const cached = cache.get(target);
     if (cached !== undefined) return cached;
     for (const candidate of storedSourceTypes(checker, sources)) {
-        if (
-            candidate === target ||
-            (candidate.aliasSymbol !== undefined &&
-                candidate.aliasSymbol === target.aliasSymbol) ||
-            (candidate.symbol !== undefined &&
-                candidate.symbol === target.symbol) ||
-            // Coalesced native layouts retain structurally equivalent demands.
-            (checker.isTypeAssignableTo(candidate, target) &&
-                checker.isTypeAssignableTo(target, candidate))
-        ) {
+        if (sameStorageType(checker, candidate, target)) {
             cache.set(target, true);
             return true;
         }
     }
     cache.set(target, false);
     return false;
+}
+
+/** Returned aliases retain one object even without a containing storage lane. */
+export function sourceTypeHasObservedIdentity(
+    checker: ts.TypeChecker,
+    sourceType: ts.Type,
+    observedIdentities: ReadonlySet<ts.Type>,
+): boolean {
+    const target = checker.getNonNullableType(sourceType);
+    for (const observed of observedIdentities)
+        if (
+            sameStorageType(
+                checker,
+                checker.getNonNullableType(observed),
+                target,
+            )
+        )
+            return true;
+    return false;
+}
+
+/** Coalesced native layouts retain structurally equivalent storage demands. */
+function sameStorageType(
+    checker: ts.TypeChecker,
+    candidate: ts.Type,
+    target: ts.Type,
+): boolean {
+    return (
+        candidate === target ||
+        (candidate.aliasSymbol !== undefined &&
+            candidate.aliasSymbol === target.aliasSymbol) ||
+        (candidate.symbol !== undefined &&
+            candidate.symbol === target.symbol) ||
+        (checker.isTypeAssignableTo(candidate, target) &&
+            checker.isTypeAssignableTo(target, candidate))
+    );
 }
 
 function storedSourceTypes(

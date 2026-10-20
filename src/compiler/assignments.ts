@@ -430,22 +430,9 @@ function directPropertyAssignment(
     return lightProperties[owner.lightKind][property];
 }
 
-/**
- * The light vectors a scene may write after creation, beside the scalar and
- * colour properties above and for the same reason: a kind carries the vectors
- * its pinned type declares, and one no reached scene writes stays unlowered
- * and fails explicitly rather than being accepted and ignored.
- *
- * `light.position.set(x, y, z)` is not a record-field write like the entries
- * above — an `ObservableVec3` write also marks the light's local matrix
- * dirty — so each of these lowers to its own kind's emitted entry point
- * rather than to a `DirectPropertyAssignment`. `LightLowerer` emits exactly
- * these, checked against the pinned factory's own `ObservableVec3`
- * properties.
- */
+/** Writable ObservableVec3 properties, with setters emitted beside each factory. */
 const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
-    // No reached scene writes a hemispheric direction.
-    hemispheric: [],
+    hemispheric: ["position", "direction"],
     point: ["position"],
     directional: ["position", "direction"],
     spot: ["position", "direction"],
@@ -491,6 +478,50 @@ export function lightSetter(
         : undefined;
 }
 
+function emitLightVectorComponentAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+    owner: Value,
+): void {
+    if (!ts.isPropertyAccessExpression(left.expression))
+        context.fail(left, "Expected a light vector component.");
+    const vector = left.expression.name.text;
+    const setter = lightSetter(owner, vector, "vector");
+    if (!setter)
+        context.fail(
+            left.expression,
+            `A ${owner.lightKind ?? "generic"} light has no '${vector}' to set.`,
+        );
+    const axis = trsAxisIndex(left.name.text);
+    if (axis === undefined || axis > 2)
+        context.fail(
+            left.name,
+            `Unsupported light vector axis '${left.name.text}'.`,
+        );
+    requireSimpleAssignment(context, expression, `light ${vector} component`);
+    const light = context.bindings.pinValueToTemporary(
+        owner,
+        "light_owner",
+        left,
+    );
+    const engine = context.requireEngine(light, expression);
+    // Resolve the receiver before the RHS, then read untouched lanes after
+    // its effects, as an ObservableVec3 component assignment does.
+    const value = context.allocateTemporaryCppName("light_component");
+    context.emit({
+        kind: "declaration",
+        type: "const float",
+        name: value,
+        initializer: context.compileNumber(expression.right),
+    });
+    context.reachFeature("light:parameters", expression);
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_light_${vector}_component(${engine}, ${light.cpp}, ${axis}u, ${value});`,
+    });
+}
+
 export interface AssignmentContext
     extends
         DeterministicRandomContext,
@@ -520,6 +551,7 @@ export interface AssignmentContext
             | "resolveRecordValue"
             | "compileRecordSetter"
             | "compileValue"
+            | "probeEmission"
             | "compileForDataSink"
             | "bindClassDataField"
             | "bindClassField"
@@ -1708,6 +1740,23 @@ export function emitPropertyAssignment(
             return;
         }
     }
+    const lightVector = left.expression;
+    if (
+        ts.isPropertyAccessExpression(lightVector) &&
+        lightVector.name.text === "direction" &&
+        context.probeEmission(() => {
+            const owner = context.compileValue(lightVector.expression);
+            if (owner.kind !== "light") return undefined;
+            emitLightVectorComponentAssignment(
+                context,
+                expression,
+                left,
+                owner,
+            );
+            return true;
+        })
+    )
+        return;
     // An imported TransformNode root is represented by an AssetHandle rather
     // than a data record. Intercept its nested TRS component before the broad
     // property-owner path tries to materialize `root.rotation` as a record.
@@ -1934,38 +1983,7 @@ export function emitPropertyAssignment(
             );
         }
         if (mesh.kind === "light") {
-            const vector = left.expression.name.text;
-            const setter = lightSetter(mesh, vector, "vector");
-            if (!setter) {
-                context.fail(
-                    left.expression,
-                    `A ${mesh.lightKind ?? "generic"} light has no '${vector}' to set.`,
-                );
-            }
-            requireSimpleAssignment(
-                context,
-                expression,
-                `light ${vector} component`,
-            );
-            const engine = context.requireEngine(mesh, expression);
-            const component = ["x", "y", "z"][axis]!;
-            // A component store on the pin's ObservableVec3 invalidates the
-            // light-local matrix just like `.set(...)`. Preserve the other
-            // two live lanes, then take the same generated setter route so
-            // the field write and matrix refresh cannot drift apart.
-            context.emit({
-                kind: "expression",
-                code:
-                    `bbl::${setter}(${engine}, ${mesh.cpp}, bbl::Vec3{` +
-                    ["x", "y", "z"]
-                        .map((lane) =>
-                            lane === component
-                                ? context.compileNumber(expression.right)
-                                : `${recordAt(`${engine}.lights`, mesh.cpp)}.${vector}.${lane}`,
-                        )
-                        .join(", ") +
-                    `});`,
-            });
+            emitLightVectorComponentAssignment(context, expression, left, mesh);
             return;
         }
         if (mesh.kind === "camera") {
@@ -3568,6 +3586,7 @@ function emitMaterialAssignment(
             target.sceneMeshIndex ?? target.sceneMeshProfileIndex;
         if (
             meshProfile === undefined &&
+            !target.possibleSceneMeshProfiles?.length &&
             (material.possibleSceneShaderVariants?.length ?? 0) > 1
         ) {
             context.fail(
@@ -3603,6 +3622,15 @@ function emitMaterialAssignment(
         }
         if (meshProfile === undefined && material.standardMaterial) {
             context.sceneManifest.recordUnknownStandardMeshMaterial();
+        }
+        if (meshProfile === undefined) {
+            for (const profile of target.possibleSceneMeshProfiles ?? [
+                undefined,
+            ])
+                context.sceneManifest.recordSceneShaderMaterialDraw(
+                    profile,
+                    material,
+                );
         }
         if (
             material.scenePbrMaterialIndex === undefined &&

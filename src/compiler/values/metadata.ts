@@ -105,6 +105,7 @@ const resourceMetadataFields = {
         "possibleSceneShaderVariants",
         "sceneMeshIndex",
         "sceneMeshProfileIndex",
+        "possibleSceneMeshProfiles",
         "runtimeMeshStreams",
         "directMorphCompatible",
         "standardMaterial",

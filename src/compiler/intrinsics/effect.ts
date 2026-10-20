@@ -130,11 +130,19 @@ function compileBindings(
         validateObjectProperties(
             context,
             entry,
-            ["name", "binding", "kind", "uniformByteLength", "textureBinding"],
+            [
+                "name",
+                "binding",
+                "kind",
+                "uniformByteLength",
+                "textureBinding",
+                "textureSampleType",
+                "viewDimension",
+                "samplerType",
+            ],
             "Reached effect bindings declare name, binding, kind, " +
-                "uniformByteLength and textureBinding; visibility, " +
-                "textureSampleType, viewDimension and samplerType are not " +
-                "lowered.",
+                "uniformByteLength, textureBinding, textureSampleType and " +
+                "viewDimension and samplerType; visibility is not lowered.",
         );
         const bindingExpression = context.objectProperty(entry, "binding");
         const kindExpression = context.objectProperty(entry, "kind");
@@ -195,8 +203,38 @@ function compileBindings(
                     : 0,
             texture: -1,
         };
+        if (kind === "texture") {
+            const sampleType = context.objectProperty(
+                entry,
+                "textureSampleType",
+            );
+            if (sampleType) {
+                const type = context.compileStaticString(sampleType);
+                if (type !== "float" && type !== "depth") {
+                    context.fail(
+                        sampleType,
+                        "Effect textures support float or depth samples.",
+                    );
+                }
+                manifest.textureSampleType = type;
+            }
+            const dimension = context.objectProperty(entry, "viewDimension");
+            if (dimension && context.compileStaticString(dimension) !== "2d") {
+                context.fail(dimension, "Effect textures require a 2d view.");
+            }
+        }
         bindings.push(manifest);
         if (kind === "sampler") {
+            const samplerType = context.objectProperty(entry, "samplerType");
+            if (
+                samplerType &&
+                context.compileStaticString(samplerType) !== "filtering"
+            ) {
+                context.fail(
+                    samplerType,
+                    "Effect samplers require the filtering binding type.",
+                );
+            }
             samplers.push({
                 entry,
                 reference: context.objectProperty(entry, "textureBinding"),
@@ -235,6 +273,12 @@ function compileBindings(
                 `Effect sampler binding ${manifest.binding} names a texture ` +
                     "binding the descriptor does not declare, and there is " +
                     "no texture slot to fall back to.",
+            );
+        }
+        if (match.textureSampleType === "depth") {
+            context.fail(
+                reference ?? entry,
+                "Depth effect textures support textureLoad; sampler bindings to them are not lowered.",
             );
         }
         // The ORDINAL, not the binding number: a PAL holds its uploaded
@@ -427,18 +471,20 @@ export function compileEffectIntrinsic(
                             "An effect texture binding is a name or a binding number.",
                         );
             const texture = context.compileValue(argumentAt(call, 2));
-            if (texture.kind === "render-texture") {
-                if (texture.isDepthTexture)
-                    context.fail(
-                        argumentAt(call, 2),
-                        "Effect textures sample a render target's colour; depth textures are not lowered.",
-                    );
-            } else {
+            if (texture.kind !== "render-texture") {
                 context.expectKind(texture, "texture", argumentAt(call, 2));
-                if (texture.textureFile) {
+                if (
+                    texture.textureStorage !== "solid" &&
+                    texture.textureStorage !== "pixels" &&
+                    texture.textureStorage !== "stored" &&
+                    !(
+                        texture.dataType?.kind === "handle" &&
+                        texture.dataType.handle === "texture"
+                    )
+                ) {
                     context.fail(
                         argumentAt(call, 2),
-                        "Reached effect textures come from createSolidTexture2D or a render target.",
+                        "Reached effect textures come from createSolidTexture2D, createTexture2DFromPixels or a render target.",
                     );
                 }
             }

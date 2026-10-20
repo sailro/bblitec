@@ -314,6 +314,8 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
                                      "variants own every PBR draw.");
     }
     const upstream::ShaderVariantInfo& shader_info = upstream::shader_variant_info(shader_variant);
+    if (!shader_info.draw_reachable)
+        dawn_error("Shader material draw has no composed program.");
 
     auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
@@ -667,6 +669,15 @@ class DawnSceneRun {
                 render_task.draw_lists = record_task_draw_lists(task_plan, engine, task);
             }
         }
+        retain_task_shader_textures(
+            data_.active_registered_scenes, state.shared_shader_material_textures,
+            [&](TaskHandle task) -> const upstream::RenderDrawLists& {
+                return handle_at(state.render_tasks, task).draw_lists;
+            },
+            [&](MaterialHandle material) -> DawnSharedShaderMaterialTextures& {
+                return ensure_shader_material_textures(state, engine, material);
+            });
+        state.prune_shared_shader_material_textures();
     }
 
     void capture_render_state() {
@@ -1358,7 +1369,7 @@ public:
                 });
 #endif
             // The blit pipeline each copy task draws its target with, keyed by
-            // the surface format and the target's sample count.
+            // the target's format and sample count.
             std::vector<std::function<void()>> blit_jobs;
             for (const auto& layer_scene : active_registered_scenes) {
                 for (const TaskHandle handle : layer_scene->frame_passes()) {
@@ -1367,10 +1378,15 @@ public:
                         task.copy.target.value == invalid_handle ||
                         frame_options.skip_copy_task(task.copy))
                         continue;
-                    const std::uint32_t samples = target_sample_count(
-                        state, handle_at(engine.render_targets, task.copy.target));
-                    blit_jobs.emplace_back([&state, samples] {
-                        static_cast<void>(blit_pipeline_for(state, state.surface_format, samples));
+                    const RenderTargetRecord& target =
+                        handle_at(engine.render_targets, task.copy.target);
+                    const std::uint32_t samples = target_sample_count(state, target);
+                    const WGPUTextureFormat format =
+                        target.swapchain
+                            ? state.surface_format
+                            : handle_at(state.render_targets, task.copy.target).color_format;
+                    blit_jobs.emplace_back([&state, format, samples] {
+                        static_cast<void>(blit_pipeline_for(state, format, samples));
                     });
                 }
             }
@@ -3748,7 +3764,7 @@ public:
                                     state, engine, task.effect.effect, target.color_format,
                                     target_sample_count(state, target_record));
                             }
-                            upload_dawn_effect_pass(state.queue, engine, pass, task.effect.effect);
+                            upload_dawn_effect_pass(state, engine, pass, task.effect.effect);
                             bind_dawn_effect_render_textures(
                                 state.device, engine, pass, task.effect.effect,
                                 [&](const RenderTextureRef& reference) {
@@ -3774,6 +3790,10 @@ public:
                             record_dawn_effect_pass(effect_pass, pass);
                             wgpuRenderPassEncoderEnd(effect_pass);
                             effect_pass.reset();
+                            if (target_record.swapchain) {
+                                capture_source = surface_texture.texture;
+                                frame_graph_presented = true;
+                            }
                             continue;
                         }
 #endif
@@ -3953,7 +3973,9 @@ public:
                         DawnRenderPass blit_pass{
                             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
                         WGPURenderPipeline blit_pipeline = blit_pipeline_for(
-                            state, state.surface_format, target_sample_count(state, target_record));
+                            state,
+                            target_record.swapchain ? state.surface_format : target.color_format,
+                            target_sample_count(state, target_record));
                         wgpuRenderPassEncoderSetPipeline(blit_pass, blit_pipeline);
                         if (surface_pane) {
                             wgpuRenderPassEncoderSetViewport(

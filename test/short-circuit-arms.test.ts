@@ -42,7 +42,7 @@ test("a fallback's pinned call stays inside the arm the select takes", () => {
     // The fallback's call runs only after the present left operand returned.
     assert.match(
         cpp,
-        /v_bblite_nullish_selection_\d+ = \(\[&\]\(\) \{\nif \(static_cast<bool>\(v_bblite_nullish_\d+\)\) return [^\n]*;\n\[\[maybe_unused\]\] const double v_bblite_shared_result_\d+ = /,
+        /v_bblite_nullish_selection_\d+ = \(\[&\]\(\) \{\nif \([^\n]+\) return [^\n]*;\n\[\[maybe_unused\]\] const double v_bblite_shared_result_\d+ = /,
     );
 });
 

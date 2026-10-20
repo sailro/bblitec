@@ -456,10 +456,13 @@ public:
                     pass = create_dawn_effect_pass(state, engine, task.effect.effect, output.format,
                                                    target_samples(state, record));
                 }
-                upload_dawn_effect_pass(state.queue, engine, pass, task.effect.effect);
+                upload_dawn_effect_pass(state, engine, pass, task.effect.effect);
                 bind_dawn_effect_render_textures(
                     state.device, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> WGPUTextureView {
+                        if (source.depth_only)
+                            throw std::runtime_error(
+                                "Standalone frame graphs do not allocate sampled depth targets.");
                         if (resolve_render_target(engine, source.target, user).swapchain)
                             throw std::runtime_error(
                                 "An effect cannot sample the swapchain target.");

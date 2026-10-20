@@ -69,6 +69,7 @@ import {
 import {
     compileMeshIntrinsic,
     nativeMeshDataIntrinsics,
+    runtimeOnlyMeshIntrinsics,
     type MeshIntrinsicContext,
 } from "./mesh.js";
 import {
@@ -158,6 +159,7 @@ interface IntrinsicContext
  */
 export const runtimeOnlyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...runtimeOnlyClusteredLightIntrinsics,
+    ...runtimeOnlyMeshIntrinsics,
     ...runtimeOnlyPickingIntrinsics,
 ]);
 
@@ -218,12 +220,6 @@ export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     "unlockAudioEngineAsync",
     "updateAnimationManager",
     "invalidateRenderBundles",
-    "updateMeshPositions",
-    "updateMeshUvs",
-    "updateMeshNormals",
-    "updateMeshColors",
-    "updateMeshTangents",
-    "updateMeshUv2",
 ]);
 
 type IntrinsicCompiler = (

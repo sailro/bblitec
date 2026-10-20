@@ -112,6 +112,15 @@ public:
     void synchronize() {
         capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
+        const auto contexts = engine.effect_renderer_contexts();
+        auto renderer = contexts.begin();
+        for (auto& pass : passes) {
+            if (renderer == contexts.end())
+                throw std::out_of_range("Rendering context index.");
+            upload_effect_pixels(device, engine, pass,
+                                 handle_at(engine.effect_renderers, *renderer).effect);
+            ++renderer;
+        }
 
         // Offscreen textures exist only where a lane needs one: the
         // sampleable resolve target for a capture run's readback, the

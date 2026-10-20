@@ -101,6 +101,7 @@ export interface LoweringServices {
     readonly checker: ts.TypeChecker;
     /** Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
     readonly absenceTags: ReadonlySet<ts.Declaration>;
+    readonly thrownValueKinds: ReadonlySet<"string">;
     readonly options: ResolvedCompileOptions;
     readonly symbols: CompilerSymbols;
     readonly evaluator: StaticEvaluator;
@@ -173,6 +174,7 @@ export interface LoweringServices {
         source: ts.Expression,
         destination?: ts.Expression,
         constructedArray?: boolean,
+        sourceValue?: Value,
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
@@ -353,7 +355,7 @@ export interface LoweringServices {
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeControlFlow(): boolean;
-    enterRuntimeIteration(): void;
+    enterRuntimeIteration(body?: ts.Node): void;
     leaveRuntimeIteration(): void;
     isInRuntimeIteration(): boolean;
     isInNativeFunctionBody(): boolean;

@@ -1,7 +1,12 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
-import { isPresentValue, presenceCpp, type Value } from "./types.js";
+import {
+    isPresentValue,
+    presenceCpp,
+    snapshotReadCpp,
+    type Value,
+} from "./types.js";
 import { isNullable } from "./type-facts.js";
 import { argumentAt, expressionMayRunCode } from "./syntax.js";
 
@@ -25,11 +30,14 @@ function snapshot(
 ): string {
     const context = lowerer.context;
     const cpp = context.allocateTemporaryCppName(name);
+    const initializer = lowerer.compileKnownValueForSink(value, type, site);
+    const owned = snapshotReadCpp({ ...value, cpp: initializer });
+    if (owned !== initializer) context.reachJsData();
     context.emit({
         kind: "declaration",
         type: `const ${context.dataTypes.cppType(type)}`,
         name: cpp,
-        initializer: lowerer.compileKnownValueForSink(value, type, site),
+        initializer: owned,
     });
     return cpp;
 }

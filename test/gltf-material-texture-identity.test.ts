@@ -92,7 +92,6 @@ test("packaging refuses metadata collisions and unrepresented extension producer
     }
     for (const extension of [
         "KHR_texture_transform",
-        "KHR_texture_basisu",
         "KHR_materials_pbrSpecularGlossiness",
     ]) {
         await assert.rejects(

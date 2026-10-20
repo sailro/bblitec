@@ -49,12 +49,6 @@ public:
             std::unique_lock lock(producer_mutex);
             require(producer_changed.wait_until(lock, deadline, [] { return slow_started.load(); }),
                     "Second RAF was never dispatched");
-            SDL_Event event{};
-            event.type = SDL_EVENT_MOUSE_MOTION;
-            event.motion.which = replay_ui_mouse_id;
-            event.motion.x = 20;
-            event.motion.y = 20;
-            require(SDL_PushEvent(&event), "Fixture mouse event failed");
         } else {
             std::this_thread::yield();
         }
@@ -91,6 +85,13 @@ void request_frame(bbl::pal::WorkerRealm& realm,
         if (frame == 2) {
             request_frame(realm, run);
             std::unique_lock lock(producer_mutex);
+            // Queue input before the next pulse can observe this slow RAF.
+            SDL_Event event{};
+            event.type = SDL_EVENT_MOUSE_MOTION;
+            event.motion.which = bbl::pal::replay_ui_mouse_id;
+            event.motion.x = 20;
+            event.motion.y = 20;
+            require(SDL_PushEvent(&event), "Fixture mouse event failed");
             slow_started = true;
             producer_changed.notify_all();
             require(producer_changed.wait_until(lock, deadline, [] { return release_slow; }),

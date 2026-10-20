@@ -39,7 +39,7 @@ test("storage creation and update accept typed arrays and refuse plain arrays", 
     );
     assert.throws(
         () => compileSource(source("new Float32Array(4)", "[1, 2]")),
-        /updateStorageBuffer requires a typed-array view/,
+        /updateStorageBuffer requires an ArrayBufferView/,
     );
 });
 

@@ -287,10 +287,7 @@ function requireCopiedOwnUndefinedFields(
         // In this source slot, an empty payload already means a missing key.
         if (
             storedSource &&
-            original?.type.kind === "optional" &&
-            ["number", "string", "boolean", "enum"].includes(
-                original.type.inner.kind,
-            ) &&
+            original &&
             !original.accessorReceiver &&
             lowerer.context.dataTypes.ownPropertyPresence(
                 storedSource.name,

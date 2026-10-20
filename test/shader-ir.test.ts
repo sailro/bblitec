@@ -68,13 +68,13 @@ test("shader reflection refuses an unsupported struct member type", () => {
                 vertexSource: `
                     struct VertexOutput {
                         @builtin(position) position: vec4<f32>,
-                        @location(0) code: u32,
+                        @location(0) code: bool,
                     };
                     const SCALE: f32 = 1.0;
                     @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
                         var out: VertexOutput;
                         out.position = vec4<f32>(input.position * SCALE, 1.0);
-                        out.code = 1u;
+                        out.code = true;
                         return out;
                     }
                 `,
@@ -84,7 +84,7 @@ test("shader reflection refuses an unsupported struct member type", () => {
                 uniforms: [],
                 ...renderState,
             }),
-        /Unsupported WGSL shader type 'u32' in struct 'VertexOutput'/,
+        /Unsupported WGSL shader type 'bool' in struct 'VertexOutput'/,
     );
 });
 

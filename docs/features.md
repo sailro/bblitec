@@ -12,6 +12,9 @@ marked deferred. Unregistered APIs still refuse.
 
 ## Language
 
+Throws retain Error identity and string values through catches, rethrows and promise reactions.
+Other thrown values are unsupported.
+
 | Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                               |
@@ -27,6 +30,7 @@ marked deferred. Unregistered APIs still refuse.
 Rules:
 
 - Operands that touch the same state evaluate left to right; the compiler pins them into temporaries.
+- RGB and vector tuple inputs accept conditional expressions; only the selected arm evaluates.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
@@ -35,14 +39,20 @@ Rules:
   or locale refuses; written constants require the
   initialization snapshot proof below.
 - Scalar facts survive readonly return fields; string, number and boolean facts survive locals with no reachable writes.
+  Local text retains known values across direct ordered assignments outside runtime control flow; readonly closures
+  created after the last assignment can capture the final value. Loop writes and earlier captures remain runtime values.
   Nullable scalar helpers retain known branch results and their evaluated effects.
   A named record's number field folds while no write in the program can replace it. Forwarded option
   records project complete current fields from their native owner. Single-expression helpers returning
   fresh primitive records retain call-time field facts when the expression writes no storage. Primitive module constants
   can snapshot an earlier fresh scalar record in the same module across only pure initializers and inert declarations.
-- Fresh literal option records retain captured scalar facts across `await` when analysis rules out writes and untracked aliases.
-  Shared native factories whose normal exits construct records preserve known presence.
-- Static composition can spread unchanged literal array fields of stored records.
+- Fresh literal option records, including nested literals, retain captured scalar facts across `await` when analysis rules
+  out writes, parent replacement and untracked aliases.
+  Shared native factories whose normal exits construct records and unreassigned constructed-object locals preserve known presence.
+- Static composition can spread unchanged literal array fields of stored records and generation-selected fresh array branches.
+  Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
+- `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
+- Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
@@ -69,11 +79,16 @@ Rules:
 | Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64                                                             | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
 | Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
+- Numeric typed-array and numeric-view indexed `??` reads preserve missing-slot presence and lazy fallbacks.
+- Typed-array iteration retains its buffer owner and yields numbers read when each element is visited.
+- Array `slice` on parsed documents and native array views copies outer slots and preserves nested identities.
+
 ## Assets and I/O
 
 - Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets,
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
-  registry scenes use the pinned `lab/public`. Dynamic URLs and percent-encoded bodies refuse.
+  registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
+  unknown keys and percent-encoded bodies refuse.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. Request objects, teeing and Headers iteration refuse.
 - Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
@@ -141,23 +156,30 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
 texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
+`KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
+the pinned extension's texture identities. Separate-image ORM composition refuses; source albedo reads with
+material extensions or `KHR_texture_transform` also refuse.
+
 ## Meshes and hierarchy
 
 - Data mesh creation and replacement accept numeric buffer views; retained CPU streams preserve their aliases.
-
+- Position, normal, colour, tangent and UV attribute uploads accept runtime mesh loops; they update GPU buffers only.
 - Reached builders, data factories, lines, CSG and thin instances with admitted options.
 - `updateMeshGeometry`/`updateMeshGeometryCapacity`: owned, unshared, packed Float32/Uint32 geometry; imported geometry
   updates refuse. Device recovery re-uploads CPU arrays and drops GPU-only writes.
 - Thin-instance pools with compute tasks or geometry-output tasks refuse. Device recovery fails explicitly when thin-instance GPU buffers remain owned; recovery registration is admitted.
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
-- Transform-node `worldMatrix` retains the pin's local/world buffer identity and lazy subtree invalidation.
+- Transform-node `worldMatrix` retains the pin's local/world buffer identity and lazy subtree invalidation,
+  including reads through stored `SceneNode` handles.
 - A mesh removed from its last scene or passed to `disposeMeshGpu` retires
   ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses. `disposeMeshGpu` of a mesh a scene or
   live render task still lists refuses.
 
 ## Materials
 
+- Light position/direction component assignments and `.set(...)` preserve the selected light.
+  `_bumpLightVersion` is a callable property and invalidates shadow refresh gates.
 - Clustered point/spot lights and containers can be stored in application records and arrays. Light scalar fields and
   retained position/diffuse/direction tuples are mutable; `markClusteredLightContainerDirty` publishes edits.
   Populate lights and scene meshes before attaching the container; capacity and point/spot layout stay fixed.
@@ -173,17 +195,23 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
-  Nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned empty defaults.
+  Generation-selected nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned
+  empty defaults, including absent retained fields and getters.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.
   Reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
   return no value; vertex entry points may return `@builtin(position) vec4<f32>` directly.
+  Shader interface structs admit signed/unsigned 32-bit scalar and vector fields, including flat integer varyings.
   Instance inputs follow mesh buffers and `useThinInstanceColors`. Incompatible layouts refuse at generation;
-  unknown material selections also validate the compiled lanes before drawing.
-  Alpha-to-coverage only on shader materials. Storage uploads preserve typed-array subview byte ranges.
+  unknown material selections require a recorded shader/mesh association and validate the compiled lanes before drawing.
+  Unused scene-local shader materials retain their IDs and resource slots without compiling stages; task overrides
+  participate in mesh-layout discovery and retain their own texture bindings, including runtime replacements.
+  `needAlphaBlending` reads the shader factory's flag; other material families yield `undefined`.
+  Alpha-to-coverage only on shader materials. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
   `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
-  unconditional setup before scene registration.
+  unconditional setup before scene registration. PCF/CSM creates cached shader no-color views and follows caster
+  override chains; shader ESM views are unsupported.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.
@@ -257,6 +285,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Shadows and navigation
 
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
+- Shadow generators and caster lists can be prepared without scene scheduling; `registerSceneWithShadowSupport`
+  activates shadow passes. Registered empty caster lists clear the shadow map.
 - `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
   into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
@@ -279,8 +309,11 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
 - Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
-- `setEffectTexture` takes solid or render-target colour textures by binding name or number; render targets bind in
-  frame-graph effect tasks only.
+  Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
+  scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
+- `setEffectTexture` takes solid, pixel or render-target textures by binding name or number, including cached pixel
+  textures and live changes between these kinds. Pixel bindings preserve sampler/sRGB settings, replacement identities
+  and live region writes. Render targets bind in frame-graph effect tasks only.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text

@@ -632,15 +632,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             part.imports.set(identifier.text, { kind: "pinned", name: pinned });
             return;
         }
-        const specifier = symbol.declarations?.find(ts.isImportSpecifier);
         const imported = aliasTarget(this.context.checker, symbol);
         const declaration =
             imported.valueDeclaration ?? imported.declarations?.[0];
         const statement = declaration && moduleScopeStatement(declaration);
-        if (!specifier || !declaration || !statement) {
+        if (!declaration || !statement) {
             this.context.fail(
                 identifier,
-                `${this.label} imports '${identifier.text}' in a form a generation closure does not carry (a named import of a module-scope const or function).`,
+                `${this.label} imports '${identifier.text}' in a form a generation closure does not carry (a module-scope const or named function).`,
             );
         }
         if (declarationOrigin(declaration) !== "program") {
@@ -650,14 +649,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             );
         }
         const sibling = statement.getSourceFile();
-        const name = declaredNames(statement).find(
+        const name = statementDeclaredNames(statement).find(
             (candidate) =>
-                candidate === (specifier.propertyName ?? specifier.name).text,
+                declaredSymbol(this.context.checker, candidate) === imported,
         );
         if (name === undefined) {
             this.context.fail(
                 identifier,
-                `${this.label} imports '${identifier.text}' through a re-export, which a generation closure does not follow.`,
+                `${this.label} imports '${identifier.text}' without a named module-scope binding.`,
             );
         }
         this.part(sibling);
@@ -665,11 +664,11 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         part.imports.set(identifier.text, {
             kind: "sibling",
             file: sibling,
-            name,
+            name: name.text,
         });
     }
 
-    /** A module-scope statement's own text, without its `export` keyword. */
+    /** A module-scope statement's own text, without its export modifiers. */
     private statementText(statement: ts.Statement): string {
         const file = statement.getSourceFile();
         const modifiers = ts.canHaveModifiers(statement)
@@ -677,19 +676,21 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             : undefined;
         if (
             modifiers?.some(
-                (modifier) =>
-                    modifier.kind === ts.SyntaxKind.DefaultKeyword ||
-                    modifier.kind === ts.SyntaxKind.DeclareKeyword,
+                (modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword,
             )
         ) {
             return this.context.fail(
                 statement,
-                `${this.label} reaches a default or ambient declaration, which a generation closure does not carry.`,
+                `${this.label} reaches an ambient declaration, which a generation closure does not carry.`,
             );
         }
-        const exported = modifiers?.find(
-            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-        );
+        const exported = modifiers
+            ?.filter(
+                (modifier) =>
+                    modifier.kind === ts.SyntaxKind.ExportKeyword ||
+                    modifier.kind === ts.SyntaxKind.DefaultKeyword,
+            )
+            .at(-1);
         return file.text.slice(
             exported ? exported.end : statement.getStart(file),
             statement.end,

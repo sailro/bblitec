@@ -44,7 +44,7 @@ import {
     type DataType,
     type DataStructField,
 } from "./data-types.js";
-import { errorValue } from "./error-values.js";
+import { caughtErrorValue } from "./error-values.js";
 import {
     isPromiseResultUsed,
     rejectionOnlyPromiseCpp,
@@ -74,6 +74,9 @@ interface AsyncContext extends Pick<
     | "registerNativeBindingType"
     | "registerNativeTemporary"
     | "registerNativeConstBinding"
+    | "thrownValueKinds"
+    | "reachJsData"
+    | "reachJson"
     | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
@@ -1671,22 +1674,7 @@ export class AsyncLowerer {
                     const binding = context.registerNativeBinding(name);
                     inputs.push(
                         rejection
-                            ? errorValue(
-                                  {
-                                      kind: "data",
-                                      dataType: { kind: "string" },
-                                      cpp: `bbl::js::promise_error_message(${name})`,
-                                      nativeCaptures: [binding],
-                                  },
-                                  "Error",
-                                  (text) => context.cppString(text),
-                                  {
-                                      kind: "data",
-                                      cpp: `bbl::js::Error(${name})`,
-                                      dataType: { kind: "error" },
-                                      nativeCaptures: [binding],
-                                  },
-                              )
+                            ? caughtErrorValue(context, undefined, name)
                             : this.resultAt(
                                   promise.promiseResult!,
                                   name,

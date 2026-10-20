@@ -381,14 +381,13 @@ export function ownObjectEntries(
     refuseErrorReflection(context, owner, node);
     const namespace = context.moduleNamespaces.entries(owner, node);
     if (namespace) return namespace;
+    if (owner.kind === "data" && owner.dataType && !owner.recordOwnKeys)
+        context.dataTypes.requireOrderedRecordKeys(owner.dataType);
     const entries = fixedOwnEntries(context, owner, node);
     if (entries) return entries;
-    if (
-        owner.kind === "data" &&
-        owner.dataType?.kind === "enummap" &&
-        owner.recordOwnKeys
-    ) {
+    if (owner.kind === "data" && owner.dataType?.kind === "enummap") {
         const type = owner.dataType;
+        if (!owner.recordOwnKeys) return undefined;
         return owner.recordOwnKeys.map((key) => {
             const tag = context.dataTypes.enumMemberCpp(
                 { kind: "enum", name: type.enumName },

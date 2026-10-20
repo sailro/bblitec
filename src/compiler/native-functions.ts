@@ -41,6 +41,7 @@ import {
 import { readsNativeStorage, type Value } from "./types.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
+import { programObservations } from "./program-observations.js";
 import {
     bindingIsOnlyCalledDirectly,
     generationKnownStringArgument,
@@ -66,6 +67,7 @@ export interface NativeFunctionContext extends Pick<
     | "dataTypes"
     | "dataLowerer"
     | "sourceFiles"
+    | "program"
     | "knownValueWithoutEvaluation"
     | "browserErasure"
     | "classOf"
@@ -957,7 +959,17 @@ export class NativeFunctionLowerer {
             // Typed arrays and numeric views, or arrays of them, require
             // their concrete live views, not copied double spans. The
             // shared/inlined call binds that actual owner.
-            if (view && (isTypedArrayType(view) || view.kind === "numberindex"))
+            if (
+                view &&
+                (isTypedArrayType(view) ||
+                    view.kind === "numberindex" ||
+                    (view.kind === "union" &&
+                        view.members.some(
+                            (member) =>
+                                isTypedArrayType(member) ||
+                                member.kind === "numberindex",
+                        )))
+            )
                 return false;
         }
         if (
@@ -983,6 +995,15 @@ export class NativeFunctionLowerer {
             return false;
         if (target.kind === "struct") {
             const known = this.context.knownValueWithoutEvaluation(argument);
+            // A class constructed before storage was demanded still owns its
+            // per-field bindings. Specialization keeps that instance intact;
+            // a native parameter would require minting a different object.
+            if (
+                known?.kind === "record" &&
+                known.dataType?.kind !== "struct" &&
+                this.context.dataTypes.isClassStruct(target.name)
+            )
+                return false;
             if (
                 known &&
                 (nativeStructuralViewType(known) ||
@@ -1579,8 +1600,8 @@ export class NativeFunctionLowerer {
      * marked stored unconditionally only on the method arm — agreeing with
      * the class inline path, and only after every rejecting check so a
      * declining probe leaves no mark on the type registry — while the free
-     * arm marks before its checks, but only when a source container
-     * provably stores the type.
+     * arm marks before its checks when source storage or identity uses
+     * require the type to retain one object.
      */
     private mapDataSignature(
         declaration: SupportedFunction,
@@ -2527,6 +2548,7 @@ export class NativeFunctionLowerer {
             this.context.checker,
             this.context.sourceFiles(),
             sourceType,
+            programObservations(this.context.program).identities,
         );
         this.referenceStorageCache.set(structName, stored);
         return stored;
