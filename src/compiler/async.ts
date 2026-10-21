@@ -33,8 +33,8 @@ import {
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
-    declaredInDefaultLibrary,
     declaredSymbol,
+    libraryName,
 } from "./symbols.js";
 import {
     optionalPresentCpp,
@@ -1929,8 +1929,8 @@ export class AsyncLowerer {
 
     private isPromiseType(expression: ts.Expression): boolean {
         return (
-            this.context.checker.getTypeAtLocation(expression).getSymbol()
-                ?.name === "Promise"
+            libraryName(this.context.checker.getTypeAtLocation(expression)) ===
+            "Promise"
         );
     }
     private isPromiseMethod(
@@ -2691,11 +2691,7 @@ export class AsyncLowerer {
                 ? resolved.types
                 : [resolved];
             if (
-                parts.some(
-                    (part) =>
-                        part.symbol?.name === "Promise" &&
-                        declaredInDefaultLibrary(part.symbol),
-                ) &&
+                parts.some((part) => libraryName(part) === "Promise") &&
                 then.declarations?.every(declarationInDefaultLibrary)
             )
                 return false;

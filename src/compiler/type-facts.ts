@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { declaredSymbol } from "./symbols.js";
+import { declaredSymbol, libraryName } from "./symbols.js";
 import {
     unwrapExpression,
     wrappedParent,
@@ -238,7 +238,7 @@ export function arrayShape(
     return (
         element && {
             element,
-            mutable: type.getSymbol()?.name === "Array",
+            mutable: libraryName(type) === "Array",
             tuple: false,
         }
     );

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
-import { declaredInDefaultLibrary, declarationOrigin } from "./symbols.js";
+import { declarationOrigin, libraryName } from "./symbols.js";
 import { declaredContextualType, isTypeReference } from "./type-facts.js";
 import {
     outermostWrapper,
@@ -41,8 +41,7 @@ export function requireObservedPromise(
         type = concrete(type);
         return type.isUnionOrIntersection()
             ? type.types.some(promise)
-            : type.symbol?.name === "Promise" &&
-                  declaredInDefaultLibrary(type.symbol);
+            : libraryName(type) === "Promise";
     };
     const node = unwrapExpression(expression);
     const consumers = programObservations(context.program).identityConsumers;

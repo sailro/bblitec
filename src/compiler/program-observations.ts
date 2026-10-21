@@ -7,6 +7,7 @@ import {
     declaredSymbol,
     libraryGlobal,
     nullishComparison,
+    libraryName,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -525,8 +526,7 @@ function observe(program: ts.Program): ProgramObservations {
         else if (
             method === "register" &&
             first &&
-            typeOf(callee.expression).getSymbol()?.name ===
-                "FinalizationRegistry"
+            libraryName(typeOf(callee.expression)) === "FinalizationRegistry"
         )
             identity(first);
     };

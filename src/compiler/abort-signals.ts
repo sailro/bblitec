@@ -8,7 +8,7 @@ import {
 import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { libraryName } from "./symbols.js";
 
 /**
  * AbortController, AbortSignal and DOMException as realm-owned native
@@ -236,11 +236,7 @@ export function compileAbortListenerCall(
     )
         return undefined;
     const receiverType = context.checker.getTypeAtLocation(callee.expression);
-    if (
-        receiverType.getSymbol()?.name !== "AbortSignal" ||
-        !declaredInDomLibrary(receiverType.getSymbol())
-    )
-        return undefined;
+    if (libraryName(receiverType) !== "AbortSignal") return undefined;
     const owner = context.dataLowerer.narrowOptional(
         context.compileValue(callee.expression),
         callee.expression,

@@ -259,6 +259,20 @@ export function declaredInDefaultLibrary(
     return declaredIn(symbol, "default-lib", "dom");
 }
 
+/**
+ * The name of a library declaration (`Promise`, `File`, `GPUDevice`): a
+ * type's or symbol's name when the default, DOM or WebGPU library declares
+ * it; undefined for a scene declaration of the same name.
+ */
+export function libraryName(
+    of: ts.Type | ts.Symbol | undefined,
+): string | undefined {
+    const symbol = of && "getSymbol" in of ? of.getSymbol() : of;
+    return symbol && declaredIn(symbol, "default-lib", "dom", "webgpu")
+        ? symbol.name
+        : undefined;
+}
+
 /** Whether one declaration lives in a library file — see {@link declaredInDefaultLibrary}. */
 export function declarationInDefaultLibrary(declaration: ts.Node): boolean {
     const origin = declarationOrigin(declaration);

@@ -44,6 +44,7 @@ import {
     declaredIn,
     declaredInDomLibrary,
     ecmascriptGlobalTypeof,
+    libraryName,
 } from "./symbols.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -1179,11 +1180,7 @@ export class BrowserErasure {
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(unwrapped),
         );
-        if (
-            type.symbol?.name === "Storage" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return true;
+        if (libraryName(type) === "Storage") return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)

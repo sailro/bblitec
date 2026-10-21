@@ -1,9 +1,9 @@
 import ts from "typescript";
 import {
-    declaredInDefaultLibrary,
     isRetypableDeclaration,
     resolvedSymbol,
     staticPropertyKey,
+    libraryName,
 } from "./symbols.js";
 import {
     contextualProperty,
@@ -84,11 +84,7 @@ export function numericSlotStorage(
 
 /** Whether `type` is the library's `ArrayLike<number>`. */
 function isNumberArrayLike(checker: ts.TypeChecker, type: ts.Type): boolean {
-    if (
-        type.symbol?.name !== "ArrayLike" ||
-        !declaredInDefaultLibrary(type.symbol) ||
-        !isTypeReference(type)
-    )
+    if (libraryName(type) !== "ArrayLike" || !isTypeReference(type))
         return false;
     const [element] = checker.getTypeArguments(type);
     return element !== undefined && (element.flags & ts.TypeFlags.Number) !== 0;

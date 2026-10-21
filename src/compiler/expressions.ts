@@ -67,6 +67,7 @@ import {
     resolvedSymbol,
     nullishComparison,
     typeMayHoldNullish,
+    libraryName,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
@@ -7337,7 +7338,7 @@ export class ExpressionLowerer {
         const regexpOwner =
             boundRegexp?.dataType?.kind === "regexp"
                 ? boundRegexp
-                : regexpType.symbol?.name === "RegExp" ||
+                : libraryName(regexpType) === "RegExp" ||
                     regexpExpression.kind ===
                         ts.SyntaxKind.RegularExpressionLiteral
                   ? this.context.dataLowerer.narrowOptional(

@@ -1,6 +1,10 @@
 import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
-import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
+import {
+    declaredSymbol,
+    resolvedSymbol,
+    libraryName,
+} from "../compiler/symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { cppCondition } from "../cpp-expressions.js";
 import { moduleScopeVariable } from "../pinned-program.js";
@@ -186,7 +190,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             const [key, value] = this.checker
                 .getTypeArguments(type as ts.TypeReference)
                 .map((argument) => this.representation(argument, at));
-            return symbol!.getName() === "WeakMap" && key?.kind === "object"
+            return libraryName(symbol) === "WeakMap" && key?.kind === "object"
                 ? { kind: "weakmap", value: value! }
                 : { kind: "map", key: key!, value: value! };
         }

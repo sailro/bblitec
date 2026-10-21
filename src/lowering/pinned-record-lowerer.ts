@@ -62,6 +62,7 @@ import {
     libraryGlobal,
     declaredSymbol,
     resolvedSymbol,
+    libraryName,
 } from "../compiler/symbols.js";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
@@ -711,9 +712,7 @@ export class PinnedRecordModel {
             );
             // `Iterable<T>`'s return and next types default to `any`; only
             // its element type is the pin's.
-            const elementOnly =
-                type.symbol?.name === "Iterable" &&
-                declaredInDefaultLibrary(type.symbol);
+            const elementOnly = libraryName(type) === "Iterable";
             return (
                 elementOnly ? typeArguments.slice(0, 1) : typeArguments
             ).some((argument) => this.erased(argument, depth + 1));
@@ -4903,8 +4902,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (type.flags & ts.TypeFlags.Unknown) return true;
             const value = type.aliasTypeArguments?.[1];
             return (
-                type.aliasSymbol?.name === "Record" &&
-                declaredInDefaultLibrary(type.aliasSymbol) &&
+                libraryName(type.aliasSymbol) === "Record" &&
                 value !== undefined &&
                 (value.flags & ts.TypeFlags.Unknown) !== 0
             );

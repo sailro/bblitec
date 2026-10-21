@@ -23,6 +23,7 @@ import {
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { libraryName } from "./symbols.js";
 
 interface SharedClosureBindings {
     captured: ReadonlySet<ts.Symbol>;
@@ -234,8 +235,9 @@ export class SharedClosureAnalysis {
         if (
             ts.isPropertyAccessExpression(callee) &&
             ["then", "catch", "finally"].includes(callee.name.text) &&
-            this.context.checker.getTypeAtLocation(callee.expression).symbol
-                ?.name === "Promise"
+            libraryName(
+                this.context.checker.getTypeAtLocation(callee.expression),
+            ) === "Promise"
         )
             return index === 0 || (callee.name.text === "then" && index === 1);
         return (

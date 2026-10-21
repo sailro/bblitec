@@ -1219,8 +1219,7 @@ export function emitPropertyAssignment(
     const left = expression.left;
     const regexpType = context.checker.getTypeAtLocation(left.expression);
     const regexpOwner =
-        regexpType.symbol?.name === "RegExp" &&
-        declaredInDefaultLibrary(regexpType.symbol)
+        libraryName(regexpType) === "RegExp"
             ? context.compileValue(left.expression)
             : undefined;
     if (regexpOwner?.dataType?.kind === "regexp") {
@@ -2376,7 +2375,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
-import { declaredInDefaultLibrary, isGlobalUndefined } from "./symbols.js";
+import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,

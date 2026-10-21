@@ -9,6 +9,7 @@ import {
     libraryGlobal,
     resolvedSymbol,
     staticAccessKey,
+    libraryName,
 } from "./symbols.js";
 import {
     choosesOperand,
@@ -248,10 +249,7 @@ export function hasOnlyReportingEffects(
                         checker.getTypeAtLocation(expression),
                     );
                     const symbol = type.getSymbol();
-                    if (
-                        symbol?.getName() === "HTMLCanvasElement" &&
-                        declaredInDomLibrary(symbol)
-                    )
+                    if (libraryName(symbol) === "HTMLCanvasElement")
                         return "canvas";
                 }
                 if (

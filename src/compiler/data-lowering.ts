@@ -54,6 +54,7 @@ import {
     symbolPropertyKey,
     staticAccessKey,
     nullishLiteral,
+    libraryName,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -8909,8 +8910,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             .getCallSignatures()[0];
         if (
             !signature ||
-            this.context.checker.getReturnTypeOfSignature(signature).getSymbol()
-                ?.name !== "Promise"
+            libraryName(
+                this.context.checker.getReturnTypeOfSignature(signature),
+            ) !== "Promise"
         )
             return undefined;
         const type = this.dataTypeAt(callback);
@@ -14511,7 +14513,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return false;
         }
-        if (type.aliasSymbol?.name === "Record") {
+        if (libraryName(type.aliasSymbol) === "Record") {
             const [key] = type.aliasTypeArguments ?? [];
             return key !== undefined && (key.flags & ts.TypeFlags.String) !== 0;
         }

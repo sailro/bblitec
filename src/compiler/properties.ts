@@ -28,7 +28,7 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { declaredInDomLibrary, libraryName } from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -2284,8 +2284,8 @@ export class PropertyAccessLowerer {
         const type = this.context.checker.getTypeAtLocation(ownerExpression);
         return (type.isUnion() ? type.types : [type]).some(
             (member) =>
-                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
-                member.getSymbol()?.getName() === "OffscreenCanvas",
+                libraryName(member) === "HTMLCanvasElement" ||
+                libraryName(member) === "OffscreenCanvas",
         );
     }
 

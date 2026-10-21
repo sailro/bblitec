@@ -93,10 +93,10 @@ import {
     aliasTarget,
     CompilerSymbols,
     declaredSymbol,
-    declaredInDefaultLibrary,
     isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
+    libraryName,
 } from "./symbols.js";
 import {
     isDeclaredInside,
@@ -3535,12 +3535,7 @@ export class UserFunctionLowerer {
                     // Iterable is a protocol; the reached collection supplies
                     // its storage. Retaining the expression as a static argument
                     // would leave separately emitted bodies naming caller locals.
-                    if (
-                        !mapped &&
-                        supplied &&
-                        type.symbol?.name === "Iterable" &&
-                        declaredInDefaultLibrary(type.symbol)
-                    )
+                    if (!mapped && supplied && libraryName(type) === "Iterable")
                         mapped = supplied;
                     // A concrete typed view remains a live object when passed
                     // through ArrayLike<number>; widening into a double span

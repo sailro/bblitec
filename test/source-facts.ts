@@ -19,6 +19,8 @@ interface SourceFacts {
     propertyNameRules: number;
     /** `x.properties.find(...)`: a literal's member looked up by hand. */
     memberScans: number;
+    /** `type.symbol?.name === "Promise"`: a library type identified by its name. */
+    symbolNameTests: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -31,6 +33,27 @@ const literalTests = new Set([
     "isNumericLiteral",
     "isNoSubstitutionTemplateLiteral",
 ]);
+
+/** `x.symbol.name`, `x.getSymbol()?.getName()`: the name of a symbol read off a type or symbol. */
+function symbolNameRead(side: ts.Expression, file: ts.SourceFile): boolean {
+    let read: ts.Expression = side;
+    if (
+        ts.isCallExpression(read) &&
+        ts.isPropertyAccessExpression(read.expression) &&
+        read.expression.name.text === "getName"
+    )
+        read = read.expression;
+    else if (
+        !ts.isPropertyAccessExpression(read) ||
+        !["name", "escapedName"].includes(read.name.text)
+    )
+        return false;
+    const owner = (read as ts.PropertyAccessExpression).expression
+        .getText(file)
+        .replaceAll("?", "")
+        .replaceAll("!", "");
+    return /symbol(\(\))?$/i.test(owner);
+}
 
 /** The `||` operands of a chain, through parentheses. */
 function disjuncts(node: ts.Expression): ts.Expression[] {
@@ -104,6 +127,7 @@ export function sourceFacts(path: string): SourceFacts {
         keyRuleTests: 0,
         propertyNameRules: 0,
         memberScans: 0,
+        symbolNameTests: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -183,6 +207,20 @@ export function sourceFacts(path: string): SourceFacts {
             chosen.name.text === "propertyName"
         )
             facts.propertyNameRules++;
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            [node.left, node.right].some(
+                (side, index, sides) =>
+                    symbolNameRead(side, file) &&
+                    ts.isStringLiteral(sides[1 - index]!) &&
+                    /^[A-Z]/.test((sides[1 - index] as ts.StringLiteral).text),
+            )
+        )
+            facts.symbolNameTests++;
         if (
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&

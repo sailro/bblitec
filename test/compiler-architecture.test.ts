@@ -674,6 +674,16 @@ test("array element types are read through type-facts.ts", () => {
     );
 });
 
+test("library types are identified through symbols.ts", () => {
+    // libraryName: a type's or symbol's name only when the default, DOM or
+    // WebGPU library declares it, so a scene's own `File` or `Promise` is
+    // never taken for the library one.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).symbolNameTests > 0),
+        [],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

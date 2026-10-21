@@ -112,6 +112,7 @@ import {
     resolvedSymbol,
     symbolFieldName,
     staticPropertyKey,
+    libraryName,
 } from "./symbols.js";
 import {
     absentValueKind,
@@ -747,15 +748,15 @@ export function platformHandleKind(
     | "video"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
-        if (type.symbol.name === "GPUDevice") return "gpu-device";
-        if (type.symbol.name === "GPUTexture") return "gpu-texture";
+        if (libraryName(type) === "GPUDevice") return "gpu-device";
+        if (libraryName(type) === "GPUTexture") return "gpu-texture";
     }
     if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
-    if (type.symbol.name === "Gamepad") return "gamepad";
-    if (type.symbol.name === "GamepadButton") return "gamepad-button";
-    if (type.symbol.name === "CustomEvent") return "custom-event";
+    if (libraryName(type) === "Gamepad") return "gamepad";
+    if (libraryName(type) === "GamepadButton") return "gamepad-button";
+    if (libraryName(type) === "CustomEvent") return "custom-event";
     // Only a generation-executed producer makes one (executed-video-function.ts).
-    if (type.symbol.name === "HTMLVideoElement") return "video";
+    if (libraryName(type) === "HTMLVideoElement") return "video";
     if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
@@ -776,10 +777,10 @@ export function borrowedPlatformEventKind(
         ].includes(symbol.name)
     )
         return "event";
-    if (symbol.name === "MouseEvent") return "mouse";
-    if (symbol.name === "KeyboardEvent") return "keyboard";
-    if (symbol.name === "ErrorEvent") return "error";
-    if (symbol.name === "PromiseRejectionEvent") return "rejection";
+    if (libraryName(symbol) === "MouseEvent") return "mouse";
+    if (libraryName(symbol) === "KeyboardEvent") return "keyboard";
+    if (libraryName(symbol) === "ErrorEvent") return "error";
+    if (libraryName(symbol) === "PromiseRejectionEvent") return "rejection";
     return undefined;
 }
 
@@ -793,8 +794,7 @@ function isDomEventType(
     if (seen.has(candidate)) return false;
     seen.add(candidate);
     return (
-        (candidate.symbol?.name === "Event" &&
-            declaredInDomLibrary(candidate.symbol) &&
+        (libraryName(candidate) === "Event" &&
             checker.isTypeAssignableTo(type, candidate)) ||
         (candidate.isIntersection() &&
             candidate.types.some((member) =>
@@ -812,14 +812,14 @@ function isDomEventType(
 export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
-        (symbol.name === "Element" ||
+        (libraryName(symbol) === "Element" ||
             /^(?:HTML|SVG)[A-Za-z0-9]*Element$/.test(symbol.name))
     );
 }
 
 /** Text nodes share retained node handles, but are never element interfaces. */
 export function isDomTextType(symbol: ts.Symbol): boolean {
-    return symbol.name === "Text" && declaredInDomLibrary(symbol);
+    return libraryName(symbol) === "Text";
 }
 
 /**
@@ -1396,10 +1396,7 @@ export class DataTypeRegistry {
             );
         if (type.kind !== "struct") return;
         let source = this.nativeRecordSources.get(type.name)?.type;
-        while (
-            source?.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(source.aliasSymbol)
-        )
+        while (source && libraryName(source.aliasSymbol) === "Readonly")
             source = source.aliasTypeArguments?.[0];
         if (source && this.isNamedRecordAlias(source))
             throw new EnumRecordStorageRequired(
@@ -3738,8 +3735,7 @@ export class DataTypeRegistry {
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
         const readonlyTarget =
-            type.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(type.aliasSymbol)
+            libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
         if (
@@ -4132,8 +4128,7 @@ export class DataTypeRegistry {
             type.symbol &&
             ((ERROR_CONSTRUCTORS.has(type.symbol.name) &&
                 declaredInDefaultLibrary(type.symbol)) ||
-                (type.symbol.name === "DOMException" &&
-                    declaredInDomLibrary(type.symbol)))
+                libraryName(type) === "DOMException")
         )
             return { kind: "error" };
         const libraryObject = LIBRARY_OBJECT_KINDS.find(
@@ -4146,10 +4141,7 @@ export class DataTypeRegistry {
         if (libraryObject) return { kind: libraryObject[2] };
         // A tagged template's frozen strings array; its `raw` array is
         // found from its identity (`bbl::js::template_raw`).
-        if (
-            type.symbol?.name === "TemplateStringsArray" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
+        if (libraryName(type) === "TemplateStringsArray")
             return { kind: "vector", element: { kind: "string" } };
         const uninhabited =
             declaredInDomLibrary(type.symbol) &&
@@ -4164,10 +4156,10 @@ export class DataTypeRegistry {
             return byteStream ? { kind: byteStream } : undefined;
         }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
-            if (type.symbol?.name === "GPUAdapterInfo")
+            if (libraryName(type) === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };
-            if (type.symbol?.name === "GPU") return { kind: "gpu" };
-            if (type.symbol?.name === "GPUAdapter")
+            if (libraryName(type) === "GPU") return { kind: "gpu" };
+            if (libraryName(type) === "GPUAdapter")
                 return { kind: "gpu-adapter" };
         }
         // Every name below is the library's own type only when the library
@@ -4176,18 +4168,15 @@ export class DataTypeRegistry {
         // A SharedArrayBuffer is the same storage branded shared.
         if (
             library &&
-            (type.symbol.name === "ArrayBuffer" ||
-                type.symbol.name === "SharedArrayBuffer")
+            (libraryName(type) === "ArrayBuffer" ||
+                libraryName(type) === "SharedArrayBuffer")
         ) {
             return { kind: "arraybuffer" };
         }
-        if (library && type.symbol.name === "DataView") {
+        if (library && libraryName(type) === "DataView") {
             return { kind: "dataview" };
         }
-        if (
-            type.symbol?.name === "ArrayBufferView" &&
-            declaredInDefaultLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "ArrayBufferView") {
             return { kind: "bufferview" };
         }
         const platformHandle = platformHandleKind(type);
@@ -4208,8 +4197,8 @@ export class DataTypeRegistry {
         }
         if (
             library &&
-            (type.symbol.name === "RegExpExecArray" ||
-                type.symbol.name === "RegExpMatchArray")
+            (libraryName(type) === "RegExpExecArray" ||
+                libraryName(type) === "RegExpMatchArray")
         ) {
             return {
                 kind: "vector",
@@ -4243,22 +4232,13 @@ export class DataTypeRegistry {
         ) {
             return { kind: "handle", handle: "ui-element" };
         }
-        if (
-            type.symbol?.name === "OffscreenCanvas" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "OffscreenCanvas") {
             return { kind: "handle", handle: "offscreen-canvas" };
         }
-        if (
-            type.symbol?.name === "MutationObserver" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "MutationObserver") {
             return { kind: "handle", handle: "worker-mutation-observer" };
         }
-        if (
-            type.symbol?.name === "MediaQueryList" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "MediaQueryList") {
             return { kind: "handle", handle: "worker-media-query" };
         }
         if (
@@ -4308,7 +4288,7 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (library && type.symbol.name === "Promise") {
+            if (library && libraryName(type) === "Promise") {
                 const [argument] = this.checker.getTypeArguments(reference);
                 if (!argument) return undefined;
                 const resolvedType = this.resolveTypeParameter(argument);
@@ -5298,10 +5278,7 @@ export class DataTypeRegistry {
         if (kind !== "error") return undefined;
         const error = this.checker
             .getSymbolsInScope(node, ts.SymbolFlags.Interface)
-            .find(
-                (symbol) =>
-                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
-            );
+            .find((symbol) => libraryName(symbol) === "Error");
         return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
@@ -5326,10 +5303,7 @@ export class DataTypeRegistry {
             return undefined;
         const error = this.checker
             .getSymbolsInScope(name, ts.SymbolFlags.Interface)
-            .find(
-                (symbol) =>
-                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
-            );
+            .find((symbol) => libraryName(symbol) === "Error");
         return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
@@ -5403,7 +5377,7 @@ export class DataTypeRegistry {
                     this.checker.isTupleType(member) ||
                     this.checker.isArrayType(member) ||
                     (declaredInDefaultLibrary(member.symbol) &&
-                        member.symbol?.name === "ReadonlyArray"),
+                        libraryName(member) === "ReadonlyArray"),
             )
         ) {
             if (this.arrayUnionsInProgress.has(type)) return undefined;
@@ -5504,9 +5478,7 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const promises = type.types.filter(
             (member): member is ts.TypeReference =>
-                member.symbol?.name === "Promise" &&
-                declaredInDefaultLibrary(member.symbol) &&
-                isTypeReference(member),
+                libraryName(member) === "Promise" && isTypeReference(member),
         );
         const promise = promises[0];
         if (!promise || promises.length > 1) return undefined;
@@ -8282,15 +8254,12 @@ export class DataTypeRegistry {
         // record is the record it wraps, one object and one representation.
         // One asserted from an open dictionary stays that dictionary's view.
         const readonlyTarget =
-            type.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(type.aliasSymbol)
+            libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
         if (readonlyTarget && !this.recordViews.has(this.structIdentity(type)))
             return this.fromRecordType(readonlyTarget, node);
-        const directRecordAlias =
-            type.aliasSymbol?.name === "Record" &&
-            declaredInDefaultLibrary(type.aliasSymbol);
+        const directRecordAlias = libraryName(type.aliasSymbol) === "Record";
         const namedRecordAlias = this.isNamedRecordAlias(type);
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;

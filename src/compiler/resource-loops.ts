@@ -23,6 +23,7 @@ import {
     resolvedSymbol,
     type CompilerSymbols,
     parameterInput,
+    libraryName,
 } from "./symbols.js";
 import {
     aliasedMutationScan,
@@ -150,8 +151,7 @@ function nativePlatformRead(
     // The clock: `performance`, however a global object names it, and its
     // `now`/`timeOrigin` are native reads that keep no DOM fact.
     const performance = (type: ts.Type): boolean =>
-        type.getSymbol()?.name === "Performance" &&
-        declaredInDomLibrary(type.getSymbol());
+        libraryName(type) === "Performance";
     if (
         performance(
             context.checker.getNonNullableType(

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { declaredInDefaultLibrary } from "./symbols.js";
+import { libraryName } from "./symbols.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { isCustomDomEventName, pinDetached } from "./dom-listeners.js";
 
@@ -81,10 +81,10 @@ export function customEventDispatchTarget(
             .getSymbol();
         if (
             symbol &&
-            declaredInDefaultLibrary(symbol) &&
-            (symbol.name === "Document" || symbol.name === "Window")
+            (libraryName(symbol) === "Document" ||
+                libraryName(symbol) === "Window")
         )
-            target = symbol.name === "Document" ? "document" : "window";
+            target = libraryName(symbol) === "Document" ? "document" : "window";
     }
     if (target !== "document" && target !== "window") return undefined;
     return target;

@@ -12,6 +12,7 @@ import {
     resolvedSymbol,
     nullishLiteral,
     parameterInput,
+    libraryName,
 } from "./symbols.js";
 import {
     isObjectIdentityFunction,
@@ -205,7 +206,7 @@ function isLibraryMap(checker: ts.TypeChecker, node: ts.Node): boolean {
     const symbol = checker.getNonNullableType(
         checker.getTypeAtLocation(node),
     ).symbol;
-    return symbol?.name === "Map" && declaredInDefaultLibrary(symbol);
+    return libraryName(symbol) === "Map";
 }
 
 /**

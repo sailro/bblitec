@@ -13,7 +13,7 @@ import { cppIdentifier, snakeCase } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { isPinnedType } from "./data-types.js";
-import { resolvedSymbol } from "./symbols.js";
+import { resolvedSymbol, libraryName } from "./symbols.js";
 import { valueKindOf, holdsOnly } from "./type-facts.js";
 
 interface SplatStreamSurfaceContext extends Pick<
@@ -93,7 +93,7 @@ function statsValue(
                 inner: { kind: "number" },
             });
         // The record stores `Error | null` as an empty js::Error for null.
-        if (present[0]!.getSymbol()?.name === "Error")
+        if (libraryName(present[0]!) === "Error")
             return context.dataLowerer.leafValue(
                 `bbl::splat_stream::stats_error(${read})`,
                 { kind: "optional", inner: { kind: "error" } },
@@ -144,7 +144,7 @@ export function readSplatStreamProperty(
         };
     if (isNumber(member.type))
         return { kind: "number", cpp: `(${owner.cpp})->${member.field}` };
-    const promised = member.type.getSymbol()?.name === "Promise";
+    const promised = libraryName(member.type) === "Promise";
     if (promised)
         return {
             kind: "promise",

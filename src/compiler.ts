@@ -237,6 +237,7 @@ import {
     type DeclarationOrigin,
     typeMayHoldKey,
     parameterInput,
+    libraryName,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -7843,7 +7844,7 @@ class Compiler implements LoweringServices {
         );
         return (
             members.length > 0 &&
-            members.every((member) => member.getSymbol()?.name === "Promise")
+            members.every((member) => libraryName(member) === "Promise")
         );
     }
 
