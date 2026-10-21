@@ -24,11 +24,7 @@ import {
     tupleComponents,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import {
-    isAbsentValue,
-    presenceFlagCpp,
-    sameCompiledValue,
-} from "./types.js";
+import { isAbsentValue, presenceFlagCpp, sameCompiledValue } from "./types.js";
 import {
     borrowsReferenceParameter,
     type UserFunctionContext,
@@ -1021,8 +1017,10 @@ export class ClassLowerer {
         // one shared object rather than a bag of locals: it allocates its
         // `Ref<XData>` here, and every field the layout keeps names a slot
         // inside it instead of a local of its own.
-        const structName =
-            this.context.dataTypes.existingClassStruct(instanceType);
+        const structName = this.context.dataTypes.constructedClassStruct(
+            instanceType,
+            expression,
+        );
         if (structName) {
             const layout = this.runtimeLayout(declaration, structName);
             const cpp = this.context.allocateTemporaryCppName(
@@ -1582,7 +1580,9 @@ export class ClassLowerer {
             if (value.classStoredField) continue;
             hoisted.set(name, value);
         }
-        const properties = classChainInstanceProperties(this.table(declaration));
+        const properties = classChainInstanceProperties(
+            this.table(declaration),
+        );
         const declared = new EmissionSet(
             properties.map((member) => member.name.text),
         );
@@ -1819,9 +1819,24 @@ export class ClassLowerer {
             );
             const presence =
                 !stored &&
-                this.context.dataTypes.classFieldPresenceSlot(structName, source);
+                this.context.dataTypes.classFieldPresenceSlot(
+                    structName,
+                    source,
+                );
             const hoistedValue = hoisted?.get(source);
-            const absent = hoistedValue !== undefined && isAbsentValue(hoistedValue);
+            // A field no construction has bound yet holds an instance of a
+            // local class: that class is stored, so the field can be a slot.
+            if (!stored && hoistedValue === undefined) {
+                const fieldClass = this.context.checker
+                    .getNonNullableType(
+                        this.context.checker.getTypeAtLocation(member),
+                    )
+                    .symbol?.declarations?.find(ts.isClassLike);
+                if (fieldClass && !fieldClass.getSourceFile().isDeclarationFile)
+                    this.context.dataTypes.requireClassStruct(fieldClass);
+            }
+            const absent =
+                hoistedValue !== undefined && isAbsentValue(hoistedValue);
             if (presence && absent)
                 this.absentPresenceReads.add(`${structName}:${source}`);
             const bound = stored

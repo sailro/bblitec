@@ -227,6 +227,23 @@ int main() {
     );
 });
 
+test("a render task's own enabled gate lowers beside executionEnabled", () => {
+    const source = `import {createEngine,createSceneContext,createFreeCamera,addTask,registerScene,
+        createRenderTask,createRenderTargetTexture} from "@babylonjs/lite";
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene=createSceneContext(engine);
+        scene.camera=createFreeCamera([0,0,-5],[0,0,0]);
+        const target=createRenderTargetTexture(engine,{lbl:"t",format:"rgba8unorm",dFormat:"depth24plus",samples:1,size:{width:8,height:8}});
+        const task=createRenderTask({name:"overlay",rt:target.rt,autoMirror:false},engine,scene);
+        addTask(scene,task);
+        task.enabled = false;
+        (task as unknown as {enabled:boolean}).enabled = Math.random() < 2;
+        await registerScene(scene);`;
+    const result = compileSource(source);
+    assert.equal(result.cpp.match(/\.render_enabled = /g)?.length, 2);
+    assert.doesNotMatch(result.cpp, /execution_enabled = /);
+});
+
 test("refreshed task overrides lower where refresh and an override are both reached", () => {
     const source = `import {createEngine,createSceneContext,createFreeCamera,createSphere,addToScene,registerScene,
         createRenderTask,enableRenderTaskMeshRefresh,addTask,addMeshToTask,removeMeshFromTask,

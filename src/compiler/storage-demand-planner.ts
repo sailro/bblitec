@@ -14,6 +14,7 @@ import {
 import { CompileError } from "./compile-error.js";
 import { AbsenceTagStorageRequired } from "./absence-tag-storage.js";
 import { ClassFieldPresenceRequired } from "./class-field-presence-storage.js";
+import { ClassStructRequired } from "./class-struct-storage.js";
 import { EngineOwnerStorageRequired } from "./engine-owner-storage.js";
 import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
 import { CompletionStorageRequired } from "./completion-storage.js";
@@ -37,6 +38,7 @@ type StorageDemand =
     | GenericFunctionStorageRequired
     | AbsenceTagStorageRequired
     | ClassFieldPresenceRequired
+    | ClassStructRequired
     | EngineOwnerStorageRequired
     | AssertedHandleFieldStorageRequired
     | CompletionStorageRequired
@@ -59,6 +61,8 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         return { kind: "absence-tag", declaration: error.declaration };
     if (error instanceof ClassFieldPresenceRequired)
         return { kind: "class-field-presence", declaration: error.declaration };
+    if (error instanceof ClassStructRequired)
+        return { kind: "class-struct", declaration: error.declaration };
     if (error instanceof EngineOwnerStorageRequired)
         return { kind: "engine-owner", declaration: error.declaration };
     if (error instanceof AssertedHandleFieldStorageRequired)
@@ -97,6 +101,7 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof GenericFunctionStorageRequired ||
         error instanceof AbsenceTagStorageRequired ||
         error instanceof ClassFieldPresenceRequired ||
+        error instanceof ClassStructRequired ||
         error instanceof EngineOwnerStorageRequired ||
         error instanceof AssertedHandleFieldStorageRequired ||
         error instanceof CompletionStorageRequired ||

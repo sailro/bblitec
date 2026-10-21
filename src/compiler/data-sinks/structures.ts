@@ -15,6 +15,8 @@ import {
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
+import { CompileError } from "../compile-error.js";
+import { propertyNeverObserved } from "../unread-properties.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
@@ -386,6 +388,9 @@ function valueStruct(
         lowerer.context.dataTypes.isClassStruct(dataType.name) &&
         value.kind === "record"
     ) {
+        const declaration = lowerer.context.classOf(value);
+        if (declaration)
+            lowerer.context.dataTypes.requireClassStruct(declaration);
         lowerer.context.fail(
             node,
             `An instance of '${dataType.name}' constructed before ` +
@@ -522,15 +527,35 @@ function valueStruct(
                             field,
                             method,
                         );
-                        const callback =
-                            lowerer.context.compileStoredDataFunction(
-                                method,
-                                field.type,
-                                value,
-                                ts.isMethodDeclaration(method) &&
-                                    ts.isClassLike(method.parent),
-                                homeReceiver(self, method),
+                        const functionType = field.type;
+                        let callback: string;
+                        try {
+                            callback = lowerer.context.probeEmission(
+                                () =>
+                                    lowerer.context.compileStoredDataFunction(
+                                        method,
+                                        functionType,
+                                        value,
+                                        ts.isMethodDeclaration(method) &&
+                                            ts.isClassLike(method.parent),
+                                        homeReceiver(self, method),
+                                    ),
+                                () => true,
                             );
+                        } catch (error) {
+                            // A method nothing can read is stored empty
+                            // when its body refuses: no call can reach it.
+                            if (
+                                !(error instanceof CompileError) ||
+                                !propertyNeverObserved(
+                                    lowerer.context.program,
+                                    lowerer.context.checker,
+                                    field.sourceName,
+                                )
+                            )
+                                throw error;
+                            callback = `${lowerer.context.dataTypes.cppType(field.type)}{}`;
+                        }
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
                             callback,

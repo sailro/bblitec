@@ -2604,6 +2604,28 @@ function emitTargetPropertyAssignment(
         });
         return true;
     }
+    // `RenderTask.enabled`: the app's own execute gate beside the Task one;
+    // absent reads as on.
+    if (
+        target.kind === "task" &&
+        property === "enabled" &&
+        (target.renderTask ||
+            isPinnedType(
+                context.checker.getNonNullableType(
+                    context.checker.getTypeAtLocation(
+                        context.unwrap(targetExpression),
+                    ),
+                ),
+                ["RenderTask"],
+            ))
+    ) {
+        requireSimpleAssignment(context, expression, "RenderTask.enabled");
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.render_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional().value_or(true);`,
+        });
+        return true;
+    }
     if (
         target.kind === "compute-task" &&
         ["dispose", "name", "executionEnabled"].includes(property)

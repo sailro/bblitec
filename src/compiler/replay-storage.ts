@@ -36,6 +36,7 @@ export type StorageRequest =
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
     | { kind: "class-field-presence"; declaration: InstanceProperty }
+    | { kind: "class-struct"; declaration: ts.ClassLikeDeclaration }
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
     | {
           kind: "asserted-handle-field";
@@ -78,6 +79,8 @@ export class ReplayStorage {
     readonly absenceTags = new Set<ts.Declaration>();
     /** @unjournaled Demands outlive the attempts that met them. Shared class fields that store whether they are present. */
     readonly classFieldPresence = new Set<ts.Declaration>();
+    /** @unjournaled Demands outlive the attempts that met them. Classes native from their first construction. */
+    readonly classStructs = new Set<ts.Declaration>();
     /** @unjournaled Resource storages whose reached uses require their actual engine. */
     readonly engineOwners = new Set<ts.Declaration>();
     /** @unjournaled Reached assertions settle erased resource field layouts before emission. */
@@ -140,6 +143,8 @@ export class ReplayStorage {
                 return addNew(this.absenceTags, request.declaration);
             case "class-field-presence":
                 return addNew(this.classFieldPresence, request.declaration);
+            case "class-struct":
+                return addNew(this.classStructs, request.declaration);
             case "engine-owner":
                 return addNew(this.engineOwners, request.declaration);
             case "asserted-handle-field": {

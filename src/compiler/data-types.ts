@@ -95,6 +95,7 @@ import {
 import ts from "typescript";
 import { requireDeclarationAbsenceTag } from "./absence-tag-storage.js";
 import { classFieldPresenceSource } from "./class-field-presence-storage.js";
+import { ClassStructRequired } from "./class-struct-storage.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
 import {
@@ -4234,6 +4235,9 @@ export class DataTypeRegistry {
         // case), but their PCM storage stays behind the audio PAL.
         const audioHandle = domAudioHandleKind(type);
         if (audioHandle) return { kind: "handle", handle: audioHandle };
+        // A frame-graph task stored by its base interface is its handle.
+        if (isPinnedType(type, ["Task"]))
+            return { kind: "handle", handle: "task" };
         if (
             isPinnedType(type, [
                 "CsgSolid",
@@ -7676,8 +7680,12 @@ export class DataTypeRegistry {
         // Demand mints the representation; it does not scope it. Once one
         // position stores a class, every mention of it is that same shared
         // object -- otherwise a field typed `Part | null` beside an array of
-        // `Part` would be a different thing from the array's elements.
-        if (!this.classDemanded) {
+        // `Part` would be a different thing from the array's elements. A
+        // class a replay demanded is that object wherever it is mentioned.
+        if (
+            !this.classDemanded &&
+            !this.storage.classStructs.has(declaration)
+        ) {
             return undefined;
         }
         this.rejectUnsupportedRuntimeClass(declaration, node);
@@ -8025,6 +8033,32 @@ export class DataTypeRegistry {
      */
     public existingClassStruct(type: ts.Type): string | undefined {
         return this.classStructNames.get(this.structIdentity(type));
+    }
+
+    /**
+     * The struct an instance about to be constructed lives in: an existing
+     * one, or one a replay demanded (`ClassStructRequired`), minted here
+     * before the class's first construction.
+     */
+    public constructedClassStruct(
+        type: ts.Type,
+        node: ts.Node,
+    ): string | undefined {
+        const existing = this.existingClassStruct(type);
+        if (existing) return existing;
+        const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+        if (!declaration || !this.storage.classStructs.has(declaration))
+            return undefined;
+        const minted = this.withClassDemand(true, () =>
+            this.fromTsType(type, node),
+        );
+        return minted?.kind === "struct" ? minted.name : undefined;
+    }
+
+    /** Demands a class be native from its first construction, unless it already is. */
+    public requireClassStruct(declaration: ts.ClassLikeDeclaration): void {
+        if (!this.storage.classStructs.has(declaration))
+            throw new ClassStructRequired(declaration);
     }
 
     /** Whether a struct name stands for a local class rather than a record. */

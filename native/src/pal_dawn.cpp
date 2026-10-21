@@ -2028,7 +2028,7 @@ public:
 #endif
                 for (const TaskHandle handle : graph_scene.frame_passes()) {
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-                    if (task.execution_enabled == false)
+                    if (!frame_task_executes(task))
                         continue;
                     if (task.kind == FrameTaskKind::geometry) {
                         // Without a camera the task does not execute.
@@ -2946,7 +2946,7 @@ public:
                     GpuTaskTimingSequence timing_sequence(engine, &graph_scene);
                     for (const TaskHandle handle : graph_scene.frame_passes()) {
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-                        if (task.execution_enabled == false)
+                        if (!frame_task_executes(task))
                             continue;
                         const pal::ScopedTargetUser task_target_user(target_user,
                                                                      pal::task_target_user(task));

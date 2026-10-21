@@ -34,6 +34,8 @@ Rules:
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
   An array keeps the tag per element, and a map built from `[key, record]` pairs reads the record lane checked.
 - A stored class field that some constructions bind to one value and others leave absent keeps a presence slot.
+- A class instance built before anything stored one replays with its class native from that construction; a field
+  holding a stored class is a slot. A stored record method nothing can read is stored empty when its body refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
   module `const`s run at generation, and an inlined call's argument for a parameter its body never rebinds.
@@ -312,6 +314,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- `RenderTask.enabled` is the task's own execute gate beside `executionEnabled`; a base `Task` is storable data; a task
+  option's optional target held as data is absent when unset.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which

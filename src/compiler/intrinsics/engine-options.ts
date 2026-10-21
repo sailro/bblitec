@@ -23,6 +23,7 @@ import type {
     GeometryTextureTypeName,
     Value,
 } from "../types.js";
+import { optionalPresentCpp, optionalValueCpp } from "../types.js";
 import {
     compileOptionalStaticBoolean,
     compilePositiveInteger,
@@ -618,6 +619,15 @@ export function optionalRenderTarget(
     const value = context.compileValue(expression);
     if (nullable && value.kind === "json-null")
         return { cpp: "bbl::RenderTargetHandle{}" };
+    // A target held as optional data: absent is no target.
+    const inner =
+        value.kind === "data" && value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : undefined;
+    if (inner?.kind === "handle" && inner.handle === "render-target")
+        return {
+            cpp: `([&]() { const auto& target = ${value.cpp}; return ${optionalPresentCpp("target")} ? ${optionalValueCpp("target")} : bbl::RenderTargetHandle{}; }())`,
+        };
     context.expectKind(value, "render-target", expression);
     return { cpp: value.cpp, value };
 }
