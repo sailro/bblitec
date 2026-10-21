@@ -7,6 +7,8 @@ import {
     propertyKey,
     unwrapExpression,
     specifierSourceName,
+    expressionHasEffects,
+    equalityOperator,
 } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
@@ -558,14 +560,85 @@ export function isGlobalUndefined(
     );
 }
 
-/** Whether an expression is a literal `null` or the global `undefined`. */
+/**
+ * The nullish value an expression's syntax fixes: `"null"` for `null`,
+ * `"undefined"` for the global `undefined` or any `void` (whatever it runs,
+ * it yields undefined). A local binding named `undefined` is no global.
+ */
+export function nullishLiteral(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): "null" | "undefined" | undefined {
+    const node = unwrapExpression(expression);
+    if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
+    return isGlobalUndefined(checker, node) || ts.isVoidExpression(node)
+        ? "undefined"
+        : undefined;
+}
+
+/**
+ * An equality testing one operand against a nullish literal: `x === null`,
+ * `undefined != x`, `x == void 0`. A loose test matches both null and
+ * undefined. Undefined when no operand is a {@link nullishLiteral}.
+ */
+export interface NullishComparison {
+    readonly tested: ts.Expression;
+    readonly literal: "null" | "undefined";
+    readonly loose: boolean;
+    readonly negated: boolean;
+}
+
+/** Whether an expression's type admits the nullish value `literal`. */
+export function typeMayHoldNullish(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    literal: "null" | "undefined",
+): boolean {
+    const type = checker.getTypeAtLocation(expression);
+    const flag =
+        literal === "null" ? ts.TypeFlags.Null : ts.TypeFlags.Undefined;
+    return (type.isUnion() ? type.types : [type]).some(
+        (member) =>
+            (member.flags &
+                (flag |
+                    ts.TypeFlags.Any |
+                    ts.TypeFlags.Unknown |
+                    (literal === "undefined" ? ts.TypeFlags.Void : 0))) !==
+            0,
+    );
+}
+
+export function nullishComparison(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): NullishComparison | undefined {
+    const node = unwrapExpression(expression);
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const operator = equalityOperator(node.operatorToken.kind);
+    if (!operator) return undefined;
+    const right = nullishLiteral(checker, node.right);
+    const left = right ? undefined : nullishLiteral(checker, node.left);
+    const literal = right ?? left;
+    return literal
+        ? {
+              tested: right ? node.left : node.right,
+              literal,
+              ...operator,
+          }
+        : undefined;
+}
+
+/**
+ * Whether an expression is a nullish literal a reader may fold away: a
+ * {@link nullishLiteral} that runs nothing (`void 0`, not `void f()`).
+ */
 export function isNullishLiteral(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
     return (
-        unwrapExpression(expression).kind === ts.SyntaxKind.NullKeyword ||
-        isGlobalUndefined(checker, expression)
+        nullishLiteral(checker, expression) !== undefined &&
+        !expressionHasEffects(expression)
     );
 }
 
@@ -653,6 +726,12 @@ export class CompilerSymbols {
     }
 
     /** See {@link isNullishLiteral}. */
+    public nullishLiteral(
+        expression: ts.Expression,
+    ): "null" | "undefined" | undefined {
+        return nullishLiteral(this.checker, expression);
+    }
+
     public isNullishLiteral(expression: ts.Expression): boolean {
         return isNullishLiteral(this.checker, expression);
     }

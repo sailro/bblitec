@@ -2,7 +2,12 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
+import {
+    declarationOrigin,
+    declaredSymbol,
+    libraryGlobal,
+    nullishComparison,
+} from "./symbols.js";
 import {
     isAssignmentExpression,
     unwrapExpression,
@@ -12,6 +17,7 @@ import {
     writeSiteOf,
     accessKey,
     patternSlots,
+    equalityOperator,
 } from "./syntax.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
@@ -326,14 +332,6 @@ function observe(program: ts.Program): ProgramObservations {
             });
         }
     };
-    const nullish = (node: ts.Expression): boolean => {
-        const unwrapped = unwrapExpression(node);
-        return (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined") ||
-            ts.isVoidExpression(unwrapped)
-        );
-    };
     // A new array, or an assignment of one (`bucket = []`), is that array.
     const newArrayValue = (node: ts.Expression): boolean => {
         const unwrapped = unwrapExpression(node);
@@ -428,25 +426,14 @@ function observe(program: ts.Program): ProgramObservations {
                     wholesaleReads.push(object),
                 );
         } else if (ts.isBinaryExpression(node)) {
-            const operator = node.operatorToken.kind;
-            if (
-                (operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.EqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsToken) &&
-                !nullish(node.left) &&
-                !nullish(node.right)
-            ) {
-                if (
-                    operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
-                )
-                    identityComparison(node.left, node.right);
+            const equality = equalityOperator(node.operatorToken.kind);
+            if (equality && !nullishComparison(checker, node)) {
+                if (!equality.loose) identityComparison(node.left, node.right);
                 else {
                     identity(node.left);
                     identity(node.right);
                 }
-            } else if (operator === ts.SyntaxKind.InKeyword)
+            } else if (node.operatorToken.kind === ts.SyntaxKind.InKeyword)
                 enumerated(node.right);
         } else if (ts.isTypeOfExpression(node)) {
             observesObject(node.expression, node);

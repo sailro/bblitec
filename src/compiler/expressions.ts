@@ -65,6 +65,8 @@ import {
     isAbsentTypeofIdentifier,
     resolvedDomApi,
     resolvedSymbol,
+    nullishComparison,
+    typeMayHoldNullish,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
@@ -5967,32 +5969,24 @@ export class ExpressionLowerer {
             const value = this.compileValue(expression);
             const guard = this.context.unwrap(unwrapped.condition);
             const selected = this.context.unwrap(expression);
+            const comparison = nullishComparison(this.context.checker, guard);
+            // The arm where the test failed holds a present value, unless a
+            // strict test leaves the other nullish value possible.
             if (
                 value.dataType?.kind !== "optional" ||
                 !ts.isIdentifier(selected) ||
-                !ts.isBinaryExpression(guard)
+                !comparison ||
+                truth !== comparison.negated ||
+                (!comparison.loose &&
+                    typeMayHoldNullish(
+                        this.context.checker,
+                        comparison.tested,
+                        comparison.literal === "null" ? "undefined" : "null",
+                    ))
             )
                 return value;
-            const equal =
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
-            const unequal =
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsToken;
-            if ((!equal && !unequal) || truth === equal) return value;
-            const absent = (node: ts.Expression): boolean =>
-                this.context.symbols.isNullishLiteral(
-                    this.context.unwrap(node),
-                );
-            const tested = absent(guard.left)
-                ? this.context.unwrap(guard.right)
-                : absent(guard.right)
-                  ? this.context.unwrap(guard.left)
-                  : undefined;
-            return tested &&
+            const tested = this.context.unwrap(comparison.tested);
+            return ts.isIdentifier(tested) &&
                 ts.isIdentifier(tested) &&
                 declaredSymbol(this.context.checker, tested) ===
                     declaredSymbol(this.context.checker, selected)

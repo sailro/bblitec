@@ -11,8 +11,8 @@ import {
 import {
     declarationInDefaultLibrary,
     declaredSymbol,
-    isNullishLiteral,
     libraryGlobal,
+    nullishComparison,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -29,6 +29,7 @@ import {
     arrayLiteralSlots,
     patternSlots,
     type PatternRead,
+    equalityOperator,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -861,14 +862,9 @@ class EffectWalker {
         }
         if (ts.isBinaryExpression(parent)) {
             const operator = parent.operatorToken.kind;
-            if (
-                operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                operator === ts.SyntaxKind.EqualsEqualsToken ||
-                operator === ts.SyntaxKind.ExclamationEqualsToken
-            ) {
-                const other = parent.left === top ? parent.right : parent.left;
-                if (!isNullishLiteral(this.checker, other))
+            if (equalityOperator(operator)) {
+                // Comparing with null or undefined observes no identity.
+                if (!nullishComparison(this.checker, parent))
                     this.emit("identity", parent, values, scope);
                 return;
             }

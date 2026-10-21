@@ -53,6 +53,7 @@ import {
     resolvedSymbol,
     symbolPropertyKey,
     staticAccessKey,
+    nullishLiteral,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -222,7 +223,6 @@ import {
     rootExpression,
     rootIdentifier,
     argumentAt,
-    identifierText,
     literalMember,
     outermostWrapper,
     propertyKey,
@@ -235,6 +235,7 @@ import {
     patternSlots,
     bindingElementKey,
     isProtoSetter,
+    equalityOperator,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -13636,8 +13637,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             target.dataType.kind === "optional" &&
             (ts.isObjectLiteralExpression(right) ||
                 ts.isArrayLiteralExpression(right) ||
-                right.kind === ts.SyntaxKind.NullKeyword ||
-                identifierText(right) === "undefined");
+                this.context.symbols.isNullishLiteral(right));
         // A record a function builds and returns at every return is a new
         // object no alias names, so its copy is the object itself.
         const freshRecord =
@@ -17641,8 +17641,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.Expression,
     ): "null" | "undefined" | undefined {
         const node = this.context.unwrap(expression);
-        if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
-        if (isGlobalUndefined(this.context.checker, node)) return "undefined";
+        const literal = nullishLiteral(this.context.checker, node);
+        if (literal) return literal;
         if (ts.isIdentifier(node)) {
             const bound = this.context.bindings.lookupOptional(node);
             if (bound?.kind === "json-null")
@@ -17918,18 +17918,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): PairedAbsence | undefined {
         const isAnd = operator === ts.SyntaxKind.AmpersandAmpersandToken;
         if (!isAnd && operator !== ts.SyntaxKind.BarBarToken) return undefined;
-        const comparison = isAnd
-            ? ts.SyntaxKind.ExclamationEqualsEqualsToken
-            : ts.SyntaxKind.EqualsEqualsEqualsToken;
+        // `x !== null && x !== undefined`, `x === null || x === undefined`.
         const tested = (
             node: ts.Expression,
         ):
             | { reference: ts.Expression; literal: "null" | "undefined" }
             | undefined => {
             const binary = this.context.unwrap(node);
+            const equality =
+                ts.isBinaryExpression(binary) &&
+                equalityOperator(binary.operatorToken.kind);
             if (
                 !ts.isBinaryExpression(binary) ||
-                binary.operatorToken.kind !== comparison
+                !equality ||
+                equality.loose ||
+                equality.negated !== isAnd
             )
                 return undefined;
             const right = this.absentLiteral(binary.right);
@@ -18061,23 +18064,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
     ): string | undefined {
         requireObservedPromise(this.context, expression);
-        const negated =
-            expression.operatorToken.kind ===
-                ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-            expression.operatorToken.kind ===
-                ts.SyntaxKind.ExclamationEqualsToken;
-        const loose =
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
-            expression.operatorToken.kind ===
-                ts.SyntaxKind.ExclamationEqualsToken;
-        if (
-            expression.operatorToken.kind !==
-                ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            !negated &&
-            !loose
-        ) {
-            return undefined;
-        }
+        const equality = equalityOperator(expression.operatorToken.kind);
+        if (!equality) return undefined;
+        const { negated, loose } = equality;
         const left = this.context.unwrapValue(expression.left);
         const right = this.context.unwrapValue(expression.right);
         if (!loose && this.context.options.workers) {

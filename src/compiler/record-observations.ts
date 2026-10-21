@@ -14,6 +14,7 @@ import {
     declarationOrigin,
     declaredSymbol,
     resolvedSymbol,
+    nullishLiteral,
 } from "./symbols.js";
 import {
     expressionMayRunCode,
@@ -26,6 +27,7 @@ import {
     writeSites,
     writeSiteOf,
     referenceSite,
+    equalityOperator,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -495,7 +497,7 @@ function identityUses(
                     ? emptyTokenRoot(checker, other)
                     : undefined;
                 if (partner) tokens.push(partner);
-                else if (!nullishOperand(other))
+                else if (nullishLiteral(checker, other) === undefined)
                     reason = "the program compares it by identity";
             } else if (
                 (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
@@ -567,22 +569,9 @@ function storedIdentity(
 
 /** An equality, which compares object operands by identity. */
 function isIdentityComparison(node: ts.Node): node is ts.BinaryExpression {
-    if (!ts.isBinaryExpression(node)) return false;
-    const operator = node.operatorToken.kind;
     return (
-        operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-        operator === ts.SyntaxKind.EqualsEqualsToken ||
-        operator === ts.SyntaxKind.ExclamationEqualsToken
-    );
-}
-
-function nullishOperand(node: ts.Expression): boolean {
-    const unwrapped = unwrapExpression(node);
-    return (
-        unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined") ||
-        ts.isVoidExpression(unwrapped)
+        ts.isBinaryExpression(node) &&
+        equalityOperator(node.operatorToken.kind) !== undefined
     );
 }
 

@@ -439,6 +439,27 @@ export function stringLiteralText(
     return ts.isStringLiteralLike(expression) ? expression.text : undefined;
 }
 
+/**
+ * An equality operator's shape: `===` and `!==` compare strictly, `==` and
+ * `!=` loosely; the `!` forms negate. Undefined for any other operator.
+ */
+export function equalityOperator(
+    kind: ts.SyntaxKind,
+): { readonly loose: boolean; readonly negated: boolean } | undefined {
+    switch (kind) {
+        case ts.SyntaxKind.EqualsEqualsEqualsToken:
+            return { loose: false, negated: false };
+        case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+            return { loose: false, negated: true };
+        case ts.SyntaxKind.EqualsEqualsToken:
+            return { loose: true, negated: false };
+        case ts.SyntaxKind.ExclamationEqualsToken:
+            return { loose: true, negated: true };
+        default:
+            return undefined;
+    }
+}
+
 /** Whether a binary operator token is `=` or one of its compound forms. */
 export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
     return (

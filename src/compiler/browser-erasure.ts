@@ -27,6 +27,7 @@ import {
     stringLiteralText,
     valueOperands,
     plainDataMembers,
+    equalityOperator,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -2050,12 +2051,8 @@ export class BrowserErasure {
                     value: numeric(left.value, right.value),
                 };
             }
-            if (
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsToken
-            ) {
+            const equality = equalityOperator(unwrapped.operatorToken.kind);
+            if (equality?.loose) {
                 const right = this.browserValueOf(unwrapped.right);
                 if (
                     !left ||
@@ -2068,11 +2065,7 @@ export class BrowserErasure {
                     isNullishBrowserValue(left) && isNullishBrowserValue(right);
                 return {
                     kind: "boolean",
-                    value:
-                        unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsEqualsToken
-                            ? equal
-                            : !equal,
+                    value: equality.negated ? !equal : equal,
                 };
             }
             // A browser-derived value compared against a literal is how the
@@ -2080,22 +2073,13 @@ export class BrowserErasure {
             // is `null !== "off"` once the query string is known empty. Only
             // the strict forms fold here: loose equality coerces, and only its
             // nullish case folds, above.
-            if (
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken
-            ) {
+            if (equality && !equality.loose) {
                 const right = this.browserValueOf(unwrapped.right);
                 const equal = strictlyEqualBrowserValues(left, right);
                 if (equal === undefined) return undefined;
                 return {
                     kind: "boolean",
-                    value:
-                        unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsEqualsEqualsToken
-                            ? equal
-                            : !equal,
+                    value: equality.negated ? !equal : equal,
                 };
             }
             // `seekTimeParam > 0` -- how the corpus separates a query that

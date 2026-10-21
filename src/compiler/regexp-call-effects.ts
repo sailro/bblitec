@@ -13,6 +13,7 @@ import {
     regularExpressionParts,
     unwrapExpression,
     referenceSite,
+    equalityOperator,
 } from "./syntax.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
@@ -224,12 +225,7 @@ function onlyObserved(
     }
     if (
         ts.isBinaryExpression(parent) &&
-        [
-            ts.SyntaxKind.EqualsEqualsToken,
-            ts.SyntaxKind.ExclamationEqualsToken,
-            ts.SyntaxKind.EqualsEqualsEqualsToken,
-            ts.SyntaxKind.ExclamationEqualsEqualsToken,
-        ].includes(parent.operatorToken.kind)
+        equalityOperator(parent.operatorToken.kind) !== undefined
     )
         return true;
     if (

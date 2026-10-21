@@ -26,7 +26,11 @@ import {
     ERROR_CONSTRUCTORS,
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { isAssignmentExpression, unwrapExpression } from "./syntax.js";
+import {
+    isAssignmentExpression,
+    unwrapExpression,
+    equalityOperator,
+} from "./syntax.js";
 import { recordAt } from "./record-access.js";
 import { declaredIn, resolvedSymbol } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -247,11 +251,7 @@ export class ConditionLowerer {
         if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
         const unwrapped = this.context.unwrapValue(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            this.context.symbols.isGlobalUndefined(unwrapped)
-        )
-            return "false";
+        if (this.context.symbols.isNullishLiteral(unwrapped)) return "false";
         // A BigInt is truthy unless it is zero.
         if (isBigIntTyped(this.context.checker, unwrapped)) {
             const condition = this.context.dataLowerer.truthinessCondition(
@@ -404,10 +404,7 @@ export class ConditionLowerer {
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken)
+            equalityOperator(unwrapped.operatorToken.kind)?.loose === false
         ) {
             const isPointerLockElement = (operand: ts.Expression): boolean => {
                 const value = this.context.unwrap(operand);
@@ -721,10 +718,7 @@ export class ConditionLowerer {
             }
             // `base !== pkg` where `const base = extra ?? pkg` and `extra` is
             // known absent: both name one object, whatever storage holds it.
-            if (
-                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
-            ) {
+            if (equalityOperator(comparison.kind)?.loose === false) {
                 const left = this.identityRoot(unwrapped.left);
                 if (left && left === this.identityRoot(unwrapped.right))
                     return comparison.kind ===
@@ -758,9 +752,7 @@ export class ConditionLowerer {
             if (textKind(rightValue))
                 rightValue = retainTextValue(this.context, rightValue);
             const operator = comparison.cpp;
-            const equality =
-                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+            const equality = equalityOperator(comparison.kind)?.loose === false;
             if (
                 equality &&
                 (leftValue.dataType?.kind === "error" ||

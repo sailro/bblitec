@@ -36,6 +36,7 @@ import {
     identifierText,
     unwrapExpression as unwrapWalkExpression,
     isExpressionWrapper,
+    equalityOperator,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -2812,12 +2813,8 @@ export class HandleCollections {
         expression: ts.BinaryExpression,
     ): string | undefined {
         const operator = expression.operatorToken.kind;
-        if (
-            operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-        ) {
-            return undefined;
-        }
+        const equality = equalityOperator(operator);
+        if (!equality || equality.loose) return undefined;
         const leftKind = this.handleOperandKind(expression.left);
         const rightKind = this.handleOperandKind(expression.right);
         if (!leftKind || leftKind !== rightKind) {
@@ -3908,10 +3905,11 @@ function isNotNullProbe(
     parameter: ts.Identifier,
 ): boolean {
     const current = unwrapWalkExpression(expression);
+    if (!ts.isBinaryExpression(current)) return false;
+    const equality = equalityOperator(current.operatorToken.kind);
     return (
-        ts.isBinaryExpression(current) &&
-        current.operatorToken.kind ===
-            ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        equality?.loose === false &&
+        equality.negated &&
         isIdentifierRead(current.left, parameter) &&
         unwrapWalkExpression(current.right).kind === ts.SyntaxKind.NullKeyword
     );

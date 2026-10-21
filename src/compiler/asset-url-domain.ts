@@ -9,8 +9,8 @@ import { forEachReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     declaredInDefaultLibrary,
-    isNullishLiteral,
     resolvedSymbol,
+    nullishLiteral,
 } from "./symbols.js";
 import {
     isObjectIdentityFunction,
@@ -793,8 +793,7 @@ class AssetUrlDomain {
         if (
             (this.nullish ||
                 (projection.length > 0 && !this.optionalProjection)) &&
-            (isNullishLiteral(this.context.checker, node) ||
-                ts.isVoidExpression(node))
+            nullishLiteral(this.context.checker, node) !== undefined
         )
             // A member read from null/undefined throws before selecting a URL.
             return nothing;

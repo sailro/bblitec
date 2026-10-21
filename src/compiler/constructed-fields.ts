@@ -10,6 +10,7 @@ import {
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
+import { nullishLiteral } from "./symbols.js";
 
 interface ConstructedFieldContext {
     readonly checker: ts.TypeChecker;
@@ -83,13 +84,7 @@ function setsPresentField(
 ): boolean {
     if (!returned) return true;
     const value = unwrapExpression(returned);
-    if (
-        value.kind === ts.SyntaxKind.NullKeyword ||
-        ts.isVoidExpression(value) ||
-        (ts.isIdentifier(value) && value.text === "undefined")
-    ) {
-        return true;
-    }
+    if (nullishLiteral(context.checker, value) !== undefined) return true;
     if (
         !ts.isObjectLiteralExpression(value) ||
         value.properties.some(

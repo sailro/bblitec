@@ -4,6 +4,7 @@ import {
     declaredInDefaultLibrary,
     libraryGlobal,
     resolvedSymbol,
+    isNullishLiteral,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -112,11 +113,7 @@ function fresh(
         ts.isNewExpression(expression)
     )
         return true;
-    if (
-        expression.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(expression) && expression.text === "undefined")
-    )
-        return true;
+    if (isNullishLiteral(checker, expression)) return true;
     if (isOperandSelection(expression))
         return valueOperands(expression).every((operand) =>
             fresh(checker, operand, active),

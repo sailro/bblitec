@@ -516,6 +516,51 @@ test("object literal members are read through syntax.ts", () => {
     );
 });
 
+test("equality operators and nullish comparisons have one owner", () => {
+    // equalityOperator (syntax.ts) reads `===`/`!==`/`==`/`!=`;
+    // nullishLiteral / nullishComparison (symbols.ts) what a test compares
+    // against. The pending files lower equality to C++ or match pinned
+    // shapes; each leaves with the L4 equality or L5 text-matching unit.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return (
+                    members.has("ExclamationEqualsEqualsToken") ||
+                    members.has("ExclamationEqualsToken")
+                );
+            })
+            .sort(),
+        [
+            "src/compiler/comparisons.ts",
+            "src/compiler/compressed-json.ts",
+            "src/compiler/intrinsics/material.ts",
+            "src/compiler/particle-buffer.ts",
+            "src/compiler/syntax.ts",
+            "src/lowering/babylon-camera.ts",
+            "src/lowering/babylon-material.ts",
+            "src/lowering/babylon-mesh-construction.ts",
+            "src/lowering/babylon-scene-data.ts",
+            "src/lowering/babylon-textures.ts",
+            "src/lowering/character-kernel-lowerer.ts",
+            "src/lowering/compute-binding-decl-lowerer.ts",
+            "src/lowering/gltf/loader.ts",
+            "src/lowering/gltf/material-object-lowerer.ts",
+            "src/lowering/gltf/material-textures.ts",
+            "src/lowering/gltf/sampler-resolver.ts",
+            "src/lowering/gltf/texture-cache.ts",
+            "src/lowering/mesh-geometry-updates.ts",
+            "src/lowering/pinned-csm.ts",
+            "src/lowering/pinned-numeric-expression.ts",
+            "src/lowering/pinned-numeric-lowerer.ts",
+            "src/lowering/pinned-operators.ts",
+            "src/lowering/pinned-partial-evaluator.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+            "src/lowering/pinned-ubo-writer-lowerer.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

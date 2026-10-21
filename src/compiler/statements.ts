@@ -55,6 +55,7 @@ import {
     writeSites,
     bindingNameIdentifiers,
     patternSlots,
+    equalityOperator,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -1763,10 +1764,7 @@ export class StatementLowerer {
         };
         const pureIdentity =
             ts.isBinaryExpression(guard) &&
-            (guard.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            equalityOperator(guard.operatorToken.kind)?.loose === false &&
             identityRead(guard.left) &&
             identityRead(guard.right);
         if (
