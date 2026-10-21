@@ -15,6 +15,7 @@ import {
     outermostWrapper,
     rootIdentifier,
     writeSites,
+    parameterForArgument,
 } from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
@@ -283,11 +284,10 @@ export class SharedClosureAnalysis {
         if (targets === "library") return false;
         if (targets === "unnamed") return true;
         return targets.some((target) => {
-            const last = target.parameters[target.parameters.length - 1];
-            const parameter =
-                last?.dotDotDotToken && index >= target.parameters.length - 1
-                    ? last
-                    : target.parameters[index];
+            // A spread before it may hand the callback to any parameter.
+            const bound = parameterForArgument(call, target, index);
+            if (bound === "unknown") return true;
+            const parameter = bound?.parameter;
             if (!parameter || !ts.isIdentifier(parameter.name)) return false;
             const symbol = this.context.symbols.valueSymbol(parameter.name);
             const info = this.sharedClosureSymbolsFor(

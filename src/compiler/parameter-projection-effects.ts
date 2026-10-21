@@ -25,6 +25,7 @@ import {
     arrayLiteralSlots,
     patternSlots,
     plainDataMembers,
+    parameterForArgument,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -288,17 +289,26 @@ function callProjection(
     return (
         bodies !== undefined &&
         bodies.length > 0 &&
-        bodies.every((body) =>
-            parameterProjection(
-                engine ? engine.checkerFor(body) : checker,
-                body,
-                index,
-                path,
-                active,
-                false,
-                identityPaths,
-            ),
-        )
+        bodies.every((body) => {
+            // An argument a spread shifts, or a rest collects, binds no
+            // one parameter to prove.
+            if (!isSupportedFunction(body)) return false;
+            const bound = parameterForArgument(call, body, index);
+            return (
+                bound !== undefined &&
+                bound !== "unknown" &&
+                !bound.rest &&
+                parameterProjection(
+                    engine ? engine.checkerFor(body) : checker,
+                    body,
+                    index,
+                    path,
+                    active,
+                    false,
+                    identityPaths,
+                )
+            );
+        })
     );
 }
 

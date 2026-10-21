@@ -28,6 +28,7 @@ import {
     writeSiteOf,
     referenceSite,
     equalityOperator,
+    positionalParameter,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -623,12 +624,10 @@ function programParameter(
         !declaration ||
         !ts.isFunctionLike(declaration) ||
         !("body" in declaration) ||
-        !declaration.body ||
-        call.arguments?.slice(0, position).some(ts.isSpreadElement)
+        !declaration.body
     )
         return undefined;
-    const parameter = declaration.parameters[position];
-    return parameter && !parameter.dotDotDotToken ? parameter : undefined;
+    return positionalParameter(call, declaration, position);
 }
 
 /**

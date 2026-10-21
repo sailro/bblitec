@@ -26,6 +26,7 @@ import {
     expressionHasEffects,
     valueOperands,
     outermostWrapper,
+    positionalParameter,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -103,6 +104,7 @@ interface AsyncContext extends Pick<
  * on, including ones lowered before the promise was reached, so the program
  * replays with `pendingActivations`.
  */
+
 export class PendingActivationsRequired extends Error {
     constructor() {
         super("A constructed promise requires pending-activation unwinding.");
@@ -559,7 +561,7 @@ export class AsyncLowerer {
                 context.compileValue(argument),
                 "async_argument",
                 argument,
-                declaration.parameters[index],
+                positionalParameter(node, declaration, index),
             ),
         );
         return this.activate(
@@ -589,7 +591,9 @@ export class AsyncLowerer {
                 value,
                 "async_argument",
                 node,
-                declaration.parameters[index],
+                ts.isCallExpression(node) || ts.isNewExpression(node)
+                    ? positionalParameter(node, declaration, index)
+                    : declaration.parameters[index],
             ),
         );
         return this.activate(declaration, declaration, values, node);

@@ -237,6 +237,7 @@ import {
     staticPropertyKey,
     type DeclarationOrigin,
     typeMayHoldKey,
+    parameterInput,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -5071,11 +5072,21 @@ class Compiler implements LoweringServices {
                 this.symbols.valueSymbol(name) ===
                     this.symbols.valueSymbol(formatterTarget),
         );
-        const argument =
+        const input =
             parameterIndex >= 0
-                ? (resolved.arguments[parameterIndex] ??
-                  declaration.parameters[parameterIndex]!.initializer)
+                ? parameterInput(
+                      this.checker,
+                      resolved,
+                      declaration,
+                      parameterIndex,
+                  )
                 : undefined;
+        const argument =
+            input?.kind === "argument"
+                ? input.argument
+                : input?.kind === "default"
+                  ? input.initializer
+                  : undefined;
         if (!argument) {
             return {
                 source: this.compileStaticString(expression),

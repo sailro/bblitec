@@ -19,6 +19,7 @@ import {
     unwrapExpression,
     writeSites,
     writeSiteOf,
+    positionalParameter,
 } from "./syntax.js";
 
 type ReportingValue =
@@ -741,7 +742,7 @@ export function writesUnobservedCanvasMetadata(
         !declaration.body
     )
         return false;
-    const parameter = declaration.parameters[argumentIndex];
+    const parameter = positionalParameter(call, declaration, argumentIndex);
     if (!parameter || !ts.isIdentifier(parameter.name)) return false;
     const symbol = resolvedSymbol(checker, parameter.name);
     if (

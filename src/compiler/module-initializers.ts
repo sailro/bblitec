@@ -25,7 +25,12 @@ import {
     classMemberTable,
 } from "./class-members.js";
 import { EvaluationOrder } from "./evaluation-order.js";
-import { mutatingCallTarget, unwrapExpression, writeSites } from "./syntax.js";
+import {
+    mutatingCallTarget,
+    unwrapExpression,
+    writeSites,
+    positionalParameter,
+} from "./syntax.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
 export function moduleContainerSymbol(
@@ -261,6 +266,7 @@ function isMutatedContainer(
 }
 
 function pinnedCallArgumentIsReadOnly(
+    call: ts.CallExpression,
     declaration: ts.Declaration | undefined,
     index: number,
 ): boolean {
@@ -273,11 +279,10 @@ function pinnedCallArgumentIsReadOnly(
         bodies !== undefined &&
         bodies.length > 0 &&
         bodies.every((body) => {
-            const parameter = body.parameters[index];
+            const parameter = positionalParameter(call, body, index);
             return (
                 isSupportedFunction(body) &&
                 parameter !== undefined &&
-                !parameter.dotDotDotToken &&
                 ts.isIdentifier(parameter.name) &&
                 parameterIsReadOnly(
                     engine.checkerFor(body),
@@ -339,7 +344,7 @@ function collectMutatedContainerSymbols(
                         checker.getTypeAtLocation(argument),
                     ) ||
                     libraryArgumentIsReadOnly(checker, node, index) ||
-                    pinnedCallArgumentIsReadOnly(called, index) ||
+                    pinnedCallArgumentIsReadOnly(node, called, index) ||
                     callArgumentIsReadOnly(checker, node, index)
                 )
                     return;

@@ -594,12 +594,92 @@ export function isAssignmentExpression(
 export function requiredParameterCount(
     parameters: readonly ts.ParameterDeclaration[],
 ): number {
-    return parameters.filter(
-        (parameter) =>
+    // Positional: `(a = 1, b)` needs two arguments for `b` to receive one.
+    let count = 0;
+    parameters.forEach((parameter, index) => {
+        if (
             !parameter.initializer &&
             !parameter.questionToken &&
-            !parameter.dotDotDotToken,
-    ).length;
+            !parameter.dotDotDotToken
+        )
+            count = index + 1;
+    });
+    return count;
+}
+
+/** What one parameter of a called declaration receives from a call. */
+export type ParameterInput =
+    /** The argument at its position. */
+    | { readonly kind: "argument"; readonly argument: ts.Expression }
+    /** A rest parameter: the arguments from its position on. */
+    | { readonly kind: "rest"; readonly arguments: readonly ts.Expression[] }
+    /** No argument: its default, or undefined. */
+    | { readonly kind: "default"; readonly initializer?: ts.Expression }
+    /** A spread at or before its position leaves it to the run time. */
+    | { readonly kind: "unknown" };
+
+/**
+ * What `declaration`'s parameter `parameterIndex` receives from `call`,
+ * with spreads, rest parameters and defaults as JavaScript binds them.
+ */
+export function argumentForParameter(
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    parameterIndex: number,
+): ParameterInput {
+    const parameter = declaration.parameters[parameterIndex];
+    const args = call.arguments ?? [];
+    if (args.slice(0, parameterIndex).some(ts.isSpreadElement))
+        return { kind: "unknown" };
+    if (parameter?.dotDotDotToken)
+        return { kind: "rest", arguments: args.slice(parameterIndex) };
+    const argument = args[parameterIndex];
+    if (argument === undefined)
+        return parameter?.initializer
+            ? { kind: "default", initializer: parameter.initializer }
+            : { kind: "default" };
+    return ts.isSpreadElement(argument)
+        ? { kind: "unknown" }
+        : { kind: "argument", argument };
+}
+
+/**
+ * The one parameter `call`'s argument `argumentIndex` binds: undefined when
+ * a spread hides it, a rest parameter collects it, or no parameter takes it.
+ */
+export function positionalParameter(
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    argumentIndex: number,
+): ts.ParameterDeclaration | undefined {
+    const bound = parameterForArgument(call, declaration, argumentIndex);
+    return bound !== undefined && bound !== "unknown" && !bound.rest
+        ? bound.parameter
+        : undefined;
+}
+
+/**
+ * The parameter of `declaration` that `call`'s argument `argumentIndex`
+ * binds: its positional one, the rest parameter it is collected into, or
+ * `"unknown"` when a spread at or before it shifts the positions.
+ * Undefined for an argument no parameter takes.
+ */
+export function parameterForArgument(
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    argumentIndex: number,
+):
+    | { readonly parameter: ts.ParameterDeclaration; readonly rest: boolean }
+    | "unknown"
+    | undefined {
+    const args = call.arguments ?? [];
+    if (args.slice(0, argumentIndex + 1).some(ts.isSpreadElement))
+        return "unknown";
+    const rest = restParameterIndex(declaration);
+    if (rest !== undefined && argumentIndex >= rest)
+        return { parameter: declaration.parameters[rest]!, rest: true };
+    const parameter = declaration.parameters[argumentIndex];
+    return parameter && { parameter, rest: false };
 }
 
 /** The index of a declaration's rest parameter, when it declares one. */

@@ -10,7 +10,11 @@ import {
     isTypeReference,
     presentMembers,
 } from "./type-facts.js";
-import { outermostWrapper, unwrapExpression } from "./syntax.js";
+import {
+    outermostWrapper,
+    unwrapExpression,
+    positionalParameter,
+} from "./syntax.js";
 import type { DataType, TypedArrayKind } from "./data-types/model.js";
 import { isTypedArrayType } from "./data-types/typed-arrays.js";
 
@@ -194,8 +198,9 @@ function storageDeclaration(
     ) {
         const index = parent.arguments?.indexOf(node as ts.Expression) ?? -1;
         const callee = checker.getResolvedSignature(parent)?.declaration;
+        // A spread or a rest leaves no one parameter slot.
         return index >= 0 && callee && !ts.isJSDocSignature(callee)
-            ? callee.parameters[index]
+            ? positionalParameter(parent, callee, index)
             : undefined;
     }
     if (

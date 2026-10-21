@@ -9,6 +9,8 @@ import {
     specifierSourceName,
     expressionHasEffects,
     equalityOperator,
+    argumentForParameter,
+    type ParameterInput,
 } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
@@ -574,6 +576,26 @@ export function nullishLiteral(
     return isGlobalUndefined(checker, node) || ts.isVoidExpression(node)
         ? "undefined"
         : undefined;
+}
+
+/**
+ * {@link argumentForParameter}, with an argument the checker knows is
+ * `undefined` (`f(undefined)`, `f(void 0)`) taking the parameter's default
+ * as JavaScript does.
+ */
+export function parameterInput(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    parameterIndex: number,
+): ParameterInput {
+    const input = argumentForParameter(call, declaration, parameterIndex);
+    const initializer = declaration.parameters[parameterIndex]?.initializer;
+    return input.kind === "argument" &&
+        initializer &&
+        nullishLiteral(checker, input.argument) === "undefined"
+        ? { kind: "default", initializer }
+        : input;
 }
 
 /**

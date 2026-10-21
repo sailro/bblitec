@@ -22,6 +22,7 @@ import {
     libraryGlobal,
     resolvedSymbol,
     type CompilerSymbols,
+    parameterInput,
 } from "./symbols.js";
 import {
     aliasedMutationScan,
@@ -1316,7 +1317,14 @@ export function parameterizedResourceLoop(
         active.add(fn);
         const previous = new EmissionMap(bindings);
         fn.parameters.forEach((parameter, index) => {
-            const argument = call.arguments[index] ?? parameter.initializer;
+            const input = parameterInput(context.checker, call, fn, index);
+            // A spread or a rest leaves the parameter's value unknown.
+            if (input.kind === "unknown" || input.kind === "rest") {
+                safe = false;
+                return;
+            }
+            const argument =
+                input.kind === "argument" ? input.argument : input.initializer;
             if (ts.isIdentifier(parameter.name) && argument) {
                 bindings.set(
                     context.symbols.valueSymbol(parameter.name)!,

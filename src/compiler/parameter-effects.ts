@@ -30,6 +30,7 @@ import {
     patternSlots,
     type PatternRead,
     equalityOperator,
+    parameterForArgument,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -313,15 +314,14 @@ function isRestBinding(binding: ts.Identifier): boolean {
  * destructured parameter.
  */
 function argumentBinding(
+    call: ts.CallExpression | ts.NewExpression,
     fn: EffectFunction,
     index: number,
 ): ts.Identifier | undefined {
-    const rest = fn.parameters.findIndex(
-        (parameter) => parameter.dotDotDotToken !== undefined,
-    );
-    const parameter = fn.parameters[rest >= 0 && index >= rest ? rest : index];
-    return parameter && ts.isIdentifier(parameter.name)
-        ? parameter.name
+    // A spread at or before it leaves its parameter to the run time.
+    const bound = parameterForArgument(call, fn, index);
+    return bound !== "unknown" && bound && ts.isIdentifier(bound.parameter.name)
+        ? bound.parameter.name
         : undefined;
 }
 
@@ -1066,7 +1066,7 @@ function mayReturnArgument(
         return libraryMayHold(checker, call, index, target.name);
     if (target.kind === "unknown") return true;
     return target.bodies.some((body) => {
-        const binding = argumentBinding(body, index);
+        const binding = argumentBinding(call, body, index);
         if (!binding || summarizing.has(body)) return true;
         const effects = parameterEffects(target.checker, body, binding);
         return (
@@ -1320,6 +1320,7 @@ class PredicateMemo<T> {
 
 /** Each body's answer for the binding a call's argument at `index` lands in. */
 function everyArgumentBody(
+    call: ts.CallExpression | ts.NewExpression,
     target: Extract<CallTarget, { kind: "bodies" }>,
     index: number,
     answer: (
@@ -1329,7 +1330,7 @@ function everyArgumentBody(
     ) => boolean,
 ): boolean {
     return target.bodies.every((body) => {
-        const binding = argumentBinding(body, index);
+        const binding = argumentBinding(call, body, index);
         return binding !== undefined && answer(target.checker, body, binding);
     });
 }
@@ -1378,7 +1379,7 @@ function argumentWritesNothing(
     if (target.kind === "bodies" && !target.engine)
         return (
             !use.spread &&
-            everyArgumentBody(target, use.index, parameterIsReadOnly)
+            everyArgumentBody(use.call, target, use.index, parameterIsReadOnly)
         );
     if (ts.isNewExpression(use.call)) return true;
     return (
@@ -1512,6 +1513,7 @@ function argumentVisiblyWritten(
         target.kind === "bodies" &&
         !use.spread &&
         !everyArgumentBody(
+            use.call,
             target,
             use.index,
             (bodyChecker, body, binding) =>
@@ -1617,6 +1619,7 @@ function heldObjectWritten(
                         target.kind === "bodies" &&
                         !use.spread &&
                         !everyArgumentBody(
+                            use.call,
                             target,
                             use.index,
                             (bodyChecker, body, inner) =>
@@ -1671,6 +1674,7 @@ export function engineCallMutatesArgument(
         target.kind === "bodies" &&
         target.engine &&
         !everyArgumentBody(
+            call,
             target,
             index,
             (bodyChecker, body, binding) =>
@@ -1768,7 +1772,7 @@ function argumentFixedLengthWrites(
     if (target.kind !== "bodies" || target.engine) return undefined;
     let lanes = 0;
     for (const body of target.bodies) {
-        const binding = argumentBinding(body, use.index);
+        const binding = argumentBinding(use.call, body, use.index);
         const nested =
             binding &&
             fixedLengthParameterWrites(target.checker, body, binding);
@@ -1859,7 +1863,7 @@ function argumentUseOnlyRead(
         );
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(target, use.index, onlyRead)
+        everyArgumentBody(use.call, target, use.index, onlyRead)
     );
 }
 
@@ -1887,7 +1891,7 @@ export function callArgumentIsReadOnly(
     return (
         target.kind === "bodies" &&
         !target.engine &&
-        everyArgumentBody(target, index, parameterIsReadOnly)
+        everyArgumentBody(call, target, index, parameterIsReadOnly)
     );
 }
 
@@ -1916,7 +1920,8 @@ export function callOnlyReadsArgument(
 ): boolean {
     const target = callTarget(checker, call);
     return (
-        target.kind === "bodies" && everyArgumentBody(target, index, onlyRead)
+        target.kind === "bodies" &&
+        everyArgumentBody(call, target, index, onlyRead)
     );
 }
 
@@ -1932,6 +1937,7 @@ export function engineArgumentWritten(
 ): boolean {
     const target = callTarget(checker, call);
     return !(
-        target.kind === "bodies" && everyArgumentBody(target, index, onlyRead)
+        target.kind === "bodies" &&
+        everyArgumentBody(call, target, index, onlyRead)
     );
 }

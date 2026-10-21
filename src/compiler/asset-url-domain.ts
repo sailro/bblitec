@@ -11,6 +11,7 @@ import {
     declaredInDefaultLibrary,
     resolvedSymbol,
     nullishLiteral,
+    parameterInput,
 } from "./symbols.js";
 import {
     isObjectIdentityFunction,
@@ -436,8 +437,9 @@ function sourceGraph(
         sites.push(call);
         calls.set(declaration, sites);
         declaration.parameters.forEach((parameter, index) => {
-            if (ts.isIdentifier(parameter.name) && call.arguments[index])
-                alias(parameter.name, call.arguments[index]);
+            const input = parameterInput(checker, call, declaration, index);
+            if (ts.isIdentifier(parameter.name) && input.kind === "argument")
+                alias(parameter.name, input.argument);
         });
     };
     for (const source of sourceFiles) {
@@ -964,8 +966,19 @@ class AssetUrlDomain {
             if (neverRuns(this.graph, owner)) return nothing;
             return this.union(
                 (this.graph.calls.get(owner) ?? []).map((call) => {
+                    const input = parameterInput(
+                        this.context.checker,
+                        call,
+                        owner,
+                        index,
+                    );
+                    // A spread or a rest leaves the argument unknown.
+                    if (input.kind === "unknown" || input.kind === "rest")
+                        return undefined;
                     const argument =
-                        call.arguments[index] ?? declaration.initializer;
+                        input.kind === "argument"
+                            ? input.argument
+                            : input.initializer;
                     if (argument)
                         return this.read(argument, projection, environment);
                     // An omitted argument is undefined.
@@ -1134,7 +1147,18 @@ class AssetUrlDomain {
                     this.context.checker,
                     parameter.name,
                 );
-                const argument = call.arguments[index] ?? parameter.initializer;
+                const input = parameterInput(
+                    this.context.checker,
+                    call,
+                    declaration,
+                    index,
+                );
+                if (input.kind === "unknown" || input.kind === "rest")
+                    return undefined;
+                const argument =
+                    input.kind === "argument"
+                        ? input.argument
+                        : input.initializer;
                 if (symbol && argument)
                     nested.set(symbol, {
                         expression: argument,

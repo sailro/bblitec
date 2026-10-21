@@ -82,6 +82,7 @@ import {
     rootIdentifier,
     unwrapExpression,
     plainDataMembers,
+    parameterForArgument,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -2121,8 +2122,26 @@ export class DeclarationLowerer {
                                 )?.declaration;
                             if (isSupportedFunction(called) && called.body) {
                                 node.arguments.forEach((argument, index) => {
+                                    const bound = parameterForArgument(
+                                        node,
+                                        called,
+                                        index,
+                                    );
+                                    // A spread or a rest hides which
+                                    // parameter takes the owner: every
+                                    // callback may be reassigned there.
+                                    if (
+                                        (bound === "unknown" || bound?.rest) &&
+                                        scan.containsAlias(argument)
+                                    ) {
+                                        for (const key of callbacks.keys())
+                                            assigned.add(key);
+                                        return;
+                                    }
                                     const parameter =
-                                        called.parameters[index]?.name;
+                                        bound !== "unknown" && !bound?.rest
+                                            ? bound?.parameter.name
+                                            : undefined;
                                     if (
                                         scan.namesAlias(
                                             this.context.unwrap(argument),
@@ -4693,7 +4712,22 @@ export class DeclarationLowerer {
                             index,
                             argument,
                         ] of node.arguments.entries()) {
-                            const parameter = called.parameters[index]?.name;
+                            const bound = parameterForArgument(
+                                node,
+                                called,
+                                index,
+                            );
+                            // A spread or a rest hides which parameter
+                            // takes the literal: it may be written there.
+                            if (
+                                (bound === "unknown" || bound?.rest) &&
+                                scan.containsAlias(argument)
+                            )
+                                return true;
+                            const parameter =
+                                bound !== "unknown" && !bound?.rest
+                                    ? bound?.parameter.name
+                                    : undefined;
                             if (
                                 scan.containsAlias(argument) &&
                                 parameter !== undefined &&

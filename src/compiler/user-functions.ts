@@ -110,6 +110,7 @@ import {
     accessKey,
     bindingNameIdentifiers,
     plainDataMembers,
+    positionalParameter,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -6815,12 +6816,8 @@ export class UserFunctionLowerer {
         const index = consumer.arguments.indexOf(argument);
         const declaration =
             context.checker.getResolvedSignature(consumer)?.declaration;
-        if (
-            index < 0 ||
-            !isSupportedFunction(declaration) ||
-            consumer.arguments.slice(0, index + 1).some(ts.isSpreadElement) ||
-            declaration.parameters[index]?.dotDotDotToken
-        )
+        if (index < 0 || !isSupportedFunction(declaration)) return undefined;
+        if (positionalParameter(consumer, declaration, index) === undefined)
             return undefined;
         const fields = new Set(
             Object.entries(value.recordProperties ?? {})
