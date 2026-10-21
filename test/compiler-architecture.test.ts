@@ -700,6 +700,22 @@ test("pinned imports and type-only imports have one reader", () => {
     );
 });
 
+test("enum constants are read through symbols.ts", () => {
+    // enumMemberConstant reads a member access, computedEnumMember finds the
+    // member that needs a run-time enum object; enum-objects.ts lays out an
+    // enum object's members and the pinned record model reads const enums.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).members.has("getConstantValue"))
+            .sort(),
+        [
+            "src/compiler/enum-objects.ts",
+            "src/compiler/symbols.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

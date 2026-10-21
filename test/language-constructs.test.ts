@@ -14913,3 +14913,11 @@ check(
     if (total !== 7 || typeof ids[0] !== "number") throw new Error("branded " + total);
     `,
 );
+check(
+    "an enum's reverse mapping reads the last member with a value",
+    `
+    enum D { A = 0, B = 0, C = 1 }
+    let k = 0;
+    if (D[0] !== "B" || D[k] !== "B" || D[1] !== "C") throw new Error("reverse " + D[0]);
+    `,
+);

@@ -81,7 +81,7 @@ import {
     compileBigIntUpdate,
     emitBigIntCompoundAssignment,
 } from "./bigint-values.js";
-import { isNullishLiteral } from "./symbols.js";
+import { isNullishLiteral, computedEnumMember } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
 import {
     emitReachableStatements,
@@ -1230,10 +1230,7 @@ export class StatementLowerer {
             // Member reads fold to their constants and computed-key reads
             // look the members up; a member the checker cannot fold would
             // need the enum object built here.
-            const computed = statement.members.find(
-                (member) =>
-                    context.checker.getConstantValue(member) === undefined,
-            );
+            const computed = computedEnumMember(context.checker, statement);
             if (computed)
                 context.fail(
                     computed,

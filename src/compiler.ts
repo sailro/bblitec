@@ -238,6 +238,7 @@ import {
     typeMayHoldKey,
     parameterInput,
     libraryName,
+    computedEnumMember,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -1744,14 +1745,13 @@ class Compiler implements LoweringServices {
                     // Constant members already lower at their use sites. A
                     // runtime initializer must not disappear with its declaration.
                     if (
+                        computedEnumMember(this.checker, statement) ||
                         !statement.members.every(
                             (member) =>
-                                this.checker.getConstantValue(member) !==
-                                    undefined &&
-                                (!member.initializer ||
-                                    this.evaluationOrder.isPureExpression(
-                                        member.initializer,
-                                    )),
+                                !member.initializer ||
+                                this.evaluationOrder.isPureExpression(
+                                    member.initializer,
+                                ),
                         )
                     )
                         this.fail(

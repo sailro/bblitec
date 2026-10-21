@@ -403,6 +403,19 @@ export function accessedPropertySymbol(
 }
 
 /**
+ * The first member of an enum the checker cannot fold to a constant: its
+ * enum object would have to be built when the declaration runs.
+ */
+export function computedEnumMember(
+    checker: ts.TypeChecker,
+    declaration: ts.EnumDeclaration,
+): ts.EnumMember | undefined {
+    return declaration.members.find(
+        (member) => checker.getConstantValue(member) === undefined,
+    );
+}
+
+/**
  * The constant an enum member access (`Shape.Ball`, `Shape["Ball"]`)
  * names. The checker answers `getConstantValue` on the access itself only
  * for a `const enum`; the member's declaration answers for every enum.

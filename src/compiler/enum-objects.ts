@@ -70,13 +70,17 @@ export function compileEnumElementAccess(
     );
     const key = context.compileValue(access.argumentExpression);
     if (holdsOnly(keyType, ["number"])) {
-        const arms = members.flatMap(({ name, value }) =>
-            typeof value === "number"
-                ? [
-                      `if (key == ${doubleLiteral(value)}) return ${stringLiteral(name)};`,
-                  ]
-                : [],
-        );
+        // Each member assigns its name to its value's key in order, so the
+        // last member with a value is the one its key reads back.
+        const arms = [...members]
+            .reverse()
+            .flatMap(({ name, value }) =>
+                typeof value === "number"
+                    ? [
+                          `if (key == ${doubleLiteral(value)}) return ${stringLiteral(name)};`,
+                      ]
+                    : [],
+            );
         return lookup(
             context,
             access,

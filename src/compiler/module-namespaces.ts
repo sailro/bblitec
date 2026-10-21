@@ -2,7 +2,12 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
-import { aliasTarget, declaredIn, declaredSymbol } from "./symbols.js";
+import {
+    aliasTarget,
+    declaredIn,
+    declaredSymbol,
+    computedEnumMember,
+} from "./symbols.js";
 import { unwrapExpression, containsSuspension } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { EmissionMap } from "./emission-transaction.js";
@@ -141,11 +146,7 @@ export class ModuleNamespaces {
                         );
                     if (
                         ts.isEnumDeclaration(statement) &&
-                        statement.members.some(
-                            (member) =>
-                                context.checker.getConstantValue(member) ===
-                                undefined,
-                        )
+                        computedEnumMember(context.checker, statement)
                     )
                         context.fail(
                             statement,
@@ -445,11 +446,7 @@ export class ModuleNamespaces {
                     );
                 if (
                     ts.isEnumDeclaration(statement) &&
-                    statement.members.some(
-                        (member) =>
-                            this.context.checker.getConstantValue(member) ===
-                            undefined,
-                    )
+                    computedEnumMember(this.context.checker, statement)
                 )
                     this.context.fail(
                         statement,
