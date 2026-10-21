@@ -141,6 +141,7 @@ import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
+import { presentMembers } from "./type-facts.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -5208,10 +5209,7 @@ export class UiProjection {
         const handlerType = this.context.checker.getTypeAtLocation(
             assignment.right,
         );
-        const nullish =
-            (handlerType.flags &
-                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-            0;
+        const nullish = presentMembers(handlerType).length === 0;
         if (!nullish && handlerType.getCallSignatures().length === 0)
             this.context.fail(
                 assignment.right,

@@ -3,7 +3,7 @@ import { CompileError } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { isStorageDemand } from "./storage-demand-planner.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import { writeSites, isValueReference, isSuspensionPoint } from "./syntax.js";
@@ -265,15 +265,10 @@ function splitCall(
         return name;
     });
     const resultTsType = context.checker.getTypeAtLocation(call);
-    const resultType =
-        (resultTsType.flags & ts.TypeFlags.Void) !== 0
-            ? undefined
-            : context.dataTypes.fromTsType(resultTsType, call);
-    if (
-        resultType === undefined &&
-        (resultTsType.flags & ts.TypeFlags.Void) === 0
-    )
-        return undefined;
+    const resultType = isVoid(resultTsType)
+        ? undefined
+        : context.dataTypes.fromTsType(resultTsType, call);
+    if (resultType === undefined && !isVoid(resultTsType)) return undefined;
     const result = resultType && {
         name: context.allocateTemporaryCppName("case_result"),
         type: resultType,

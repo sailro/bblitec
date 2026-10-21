@@ -58,9 +58,14 @@ import {
 } from "./promises.js";
 import { convertsToSceneNode, isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
-import { isNullable, isTypeReference } from "./type-facts.js";
+import {
+    isNullable,
+    isTypeReference,
+    undefinedOnly,
+    presentMembers,
+    isVoid,
+} from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { propertyNeverObserved } from "./unread-properties.js";
 import { CompileError } from "./compile-error.js";
@@ -229,15 +234,15 @@ export class AsyncLowerer {
                     node,
                     "This await needs an asynchronous realm activation.",
                 );
+            const awaitedType = context.checker.getAwaitedType(
+                context.checker.getTypeAtLocation(node.expression),
+            );
             const erasedVoid =
                 context.browserErasure.isBrowserOnlyExpression(
                     node.expression,
                 ) &&
-                ((context.checker.getAwaitedType(
-                    context.checker.getTypeAtLocation(node.expression),
-                )?.flags ?? 0) &
-                    ts.TypeFlags.Void) !==
-                    0;
+                awaitedType !== undefined &&
+                isVoid(awaitedType);
             const awaited = this.asPromise(
                 erasedVoid
                     ? { kind: "void", cpp: "" }
@@ -353,14 +358,9 @@ export class AsyncLowerer {
             const absent = (index: number): boolean => {
                 const argument = node.arguments[index];
                 if (!argument || expressionHasEffects(argument)) return false;
-                const type = context.checker.getTypeAtLocation(argument);
                 return (
-                    !type.isUnion() &&
-                    (type.flags &
-                        (ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Void)) !==
-                        0
+                    presentMembers(context.checker.getTypeAtLocation(argument))
+                        .length === 0
                 );
             };
             const absentFulfillment =
@@ -874,11 +874,7 @@ export class AsyncLowerer {
         const checker = this.context.checker;
         const awaited = checker.getAwaitedType(checker.getTypeAtLocation(node));
         if (!awaited) return undefined;
-        if (
-            (awaited.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-            0
-        )
-            return { kind: "promise" };
+        if (undefinedOnly(awaited)) return { kind: "promise" };
         const result = this.context.dataTypes.fromTsType(awaited, node);
         return result ? { kind: "promise", result } : undefined;
     }
@@ -1258,11 +1254,8 @@ export class AsyncLowerer {
         const awaited = source && context.checker.getAwaitedType(source);
         if (
             awaited &&
-            (awaited.flags &
-                (ts.TypeFlags.Void |
-                    ts.TypeFlags.Undefined |
-                    ts.TypeFlags.Never)) !==
-                0
+            (undefinedOnly(awaited) ||
+                (awaited.flags & ts.TypeFlags.Never) !== 0)
         )
             return { kind: "promise" };
         const result =
@@ -1584,9 +1577,7 @@ export class AsyncLowerer {
             !evaluated &&
             !inline &&
             returnType !== undefined &&
-            (returnType.flags &
-                (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0 &&
+            undefinedOnly(returnType) &&
             context.browserErasure.isBrowserOnlyHandler(callback, rejection);
         const neverReturns =
             (rejection || settlement !== undefined) &&
@@ -1811,7 +1802,7 @@ export class AsyncLowerer {
         const context = this.context;
         const awaited = context.checker.getAwaitedType(source);
         if (!awaited) return undefined;
-        if (hasNoValueCompletion(awaited)) return { kind: "promise" };
+        if (undefinedOnly(awaited)) return { kind: "promise" };
         const result = context.dataTypes.fromPromiseResultType(awaited, node);
         return result
             ? {
@@ -2086,10 +2077,7 @@ export class AsyncLowerer {
     }
     private normalizeUndefined(value: Value, type: ts.Type): Value {
         const result = this.context.checker.getAwaitedType(type) ?? type;
-        if (
-            value.kind === "browser" &&
-            (result.flags & ts.TypeFlags.Void) !== 0
-        )
+        if (value.kind === "browser" && isVoid(result))
             return { kind: "void", cpp: "" };
         return value.kind === "json-null" &&
             (value.cpp === "std::nullopt" ||
@@ -2142,11 +2130,8 @@ export class AsyncLowerer {
                     context.checker.getNonNullableType(type),
                 );
             return awaited &&
-                (awaited.flags &
-                    (ts.TypeFlags.Any |
-                        ts.TypeFlags.Unknown |
-                        ts.TypeFlags.Void |
-                        ts.TypeFlags.Undefined)) ===
+                !undefinedOnly(awaited) &&
+                (awaited.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
                     0
                 ? context.dataTypes.fromPromiseResultType(awaited, node)
                 : undefined;

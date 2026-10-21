@@ -21,6 +21,7 @@ import {
     writeSiteOf,
     positionalParameter,
 } from "./syntax.js";
+import { undefinedOnly, presentMembers, isVoid } from "./type-facts.js";
 
 type ReportingValue =
     | "primitive"
@@ -66,11 +67,8 @@ export function hasOnlyReportingEffects(
         !checker
             .getTypeAtLocation(fn)
             .getCallSignatures()
-            .every(
-                (signature) =>
-                    (checker.getReturnTypeOfSignature(signature).flags &
-                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                    0,
+            .every((signature) =>
+                undefinedOnly(checker.getReturnTypeOfSignature(signature)),
             )
     )
         return false;
@@ -185,11 +183,8 @@ export function hasOnlyReportingEffects(
                     .getCallSignatures();
                 if (
                     signatures.length &&
-                    signatures.every(
-                        (signature) =>
-                            (checker.getReturnTypeOfSignature(signature).flags &
-                                ts.TypeFlags.Void) !==
-                            0,
+                    signatures.every((signature) =>
+                        isVoid(checker.getReturnTypeOfSignature(signature)),
                     )
                 )
                     return "reporter";
@@ -494,11 +489,8 @@ function hasOnlyInstrumentationEffects(
     const isBrowserType = (expression: ts.Expression): boolean => {
         const direct = checker.getTypeAtLocation(expression);
         const type = checker.getAwaitedType(direct) ?? direct;
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                    0 || declaredInDomLibrary(member.getSymbol()),
+        return presentMembers(type).every((member) =>
+            declaredInDomLibrary(member.getSymbol()),
         );
     };
     const isFetch = (expression: ts.Expression): boolean =>

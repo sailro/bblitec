@@ -162,6 +162,28 @@ interface Nullability {
     readonly void: boolean;
 }
 
+/**
+ * Whether a type is `void` itself: a result its caller is not meant to read,
+ * which has no storage (`undefined` has; a `void | T` union is not `void`).
+ */
+export function isVoid(type: ts.Type): boolean {
+    return (type.flags & ts.TypeFlags.Void) !== 0;
+}
+
+/**
+ * Whether every member of a type is `undefined` or `void`: a value of it is
+ * `undefined`, and a call returning it completes without a value.
+ */
+export function undefinedOnly(type: ts.Type): boolean {
+    return (type.isUnion() ? type.types : [type]).every((member) => {
+        const flags = absentFlags(member);
+        return (
+            (flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 &&
+            (flags & ts.TypeFlags.Null) === 0
+        );
+    });
+}
+
 /** See {@link Nullability}; members are those of {@link presentMembers}. */
 export function nullability(type: ts.Type): Nullability {
     const flags = (type.isUnion() ? type.types : [type]).reduce(

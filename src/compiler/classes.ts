@@ -45,7 +45,7 @@ import {
     isGeneratorFunction,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
-import { nullability } from "./type-facts.js";
+import { nullability, isVoid } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -2223,7 +2223,7 @@ export class ClassLowerer {
         if (groups.size < 2) return undefined;
         const type = yielded;
         const resultType =
-            !type || (type.flags & ts.TypeFlags.Void) !== 0
+            !type || isVoid(type)
                 ? undefined
                 : (this.context.dataTypes.fromTsType(type, node) ??
                   this.context.fail(
@@ -2410,9 +2410,7 @@ export class ClassLowerer {
                 ? (this.context.checker.getAwaitedType(checkerReturn) ??
                   checkerReturn)
                 : checkerReturn;
-        const returnsVoid =
-            !effectiveReturn ||
-            (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        const returnsVoid = !effectiveReturn || isVoid(effectiveReturn);
         // A function argument is bound at generation, so the shared body is
         // specialized per callback like any other captured argument.
         const sharedBody =

@@ -5,7 +5,6 @@ import {
     declaredSymbol,
     libraryGlobal,
 } from "./symbols.js";
-import { hasNoValueCompletion } from "./native-return-type.js";
 import {
     unwrapExpression,
     isAsyncFunction,
@@ -13,6 +12,7 @@ import {
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import { undefinedOnly } from "./type-facts.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -35,7 +35,7 @@ function undefinedLibraryCall(
         (ts.isFunctionDeclaration(declaration) ||
             ts.isMethodSignature(declaration)) &&
         declarationInDefaultLibrary(declaration) &&
-        hasNoValueCompletion(checker.getReturnTypeOfSignature(signature))
+        undefinedOnly(checker.getReturnTypeOfSignature(signature))
     );
 }
 

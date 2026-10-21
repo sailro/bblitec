@@ -51,6 +51,7 @@ import {
     nullability,
     presentLiteralKeys,
     typeCanCarryReference,
+    isVoid,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -2272,7 +2273,7 @@ export class DeclarationLowerer {
         const signature = signatures[0]!;
         const returnType =
             this.context.checker.getReturnTypeOfSignature(signature);
-        if ((returnType.flags & ts.TypeFlags.Void) === 0) return undefined;
+        if (!isVoid(returnType)) return undefined;
         const parameterTypes: DataType[] = [];
         const parameterNames: string[] = [];
         for (const [index, parameter] of signature.getParameters().entries()) {

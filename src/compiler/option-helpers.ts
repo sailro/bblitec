@@ -37,6 +37,7 @@ import {
     foldNumericBinary,
     foldNumericUnary,
 } from "../lowering/pinned-operators.js";
+import { presentMembers, undefinedOnly } from "./type-facts.js";
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
@@ -208,7 +209,7 @@ export function compileBooleanOptions<N extends string>(
     const result: Partial<Record<N, string>> = {};
     if (!expression) return result;
     const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0) {
+    if (presentMembers(type).length === 0) {
         context.emitDiscardedValue(context.compileValue(expression));
         return result;
     }
@@ -382,9 +383,9 @@ export function compileBooleanOptions<N extends string>(
             else {
                 const value = context.compileValue(initializer);
                 if (
-                    (context.checker.getTypeAtLocation(initializer).flags &
-                        ts.TypeFlags.Undefined) !==
-                    0
+                    undefinedOnly(
+                        context.checker.getTypeAtLocation(initializer),
+                    )
                 ) {
                     context.emitDiscardedValue(value);
                     store(name, String(spelling.undefinedDefaults[name]));

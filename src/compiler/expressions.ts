@@ -193,7 +193,7 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import { absenceKind, isNullable, nullability } from "./type-facts.js";
+import { absenceKind, isNullable, nullability, isVoid } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
@@ -5609,19 +5609,8 @@ export class ExpressionLowerer {
         }
         const value = owner.tupleElements?.[staticIndex];
         if (!value) {
-            const resultType =
-                this.context.checker.getTypeAtLocation(unwrapped);
-            const resultMembers =
-                (resultType.flags & ts.TypeFlags.Union) !== 0
-                    ? (resultType as ts.UnionType).types
-                    : [resultType];
             if (
-                resultMembers.some(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                        0,
-                ) ||
+                isNullable(this.context.checker.getTypeAtLocation(unwrapped)) ||
                 (ts.isBinaryExpression(unwrapped.parent) &&
                     unwrapped.parent.left === unwrapped &&
                     unwrapped.parent.operatorToken.kind ===
@@ -7544,10 +7533,8 @@ export class ExpressionLowerer {
                         `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
                         type,
                     );
-                if (
-                    this.context.checker.getTypeAtLocation(call).flags &
-                    (ts.TypeFlags.Void | ts.TypeFlags.Never)
-                )
+                const result = this.context.checker.getTypeAtLocation(call);
+                if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
                     return {
                         kind: "void",
                         cpp: `bbl::js::throw_nullish_access(${message})`,

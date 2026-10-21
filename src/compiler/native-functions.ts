@@ -59,6 +59,7 @@ import {
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
+import { isVoid } from "./type-facts.js";
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
@@ -1608,7 +1609,7 @@ export class NativeFunctionLowerer {
             this.context.checker.getReturnTypeOfSignature(checkerSignature);
         let returnType: DataType | undefined;
         let arrayStorage: ReturnType<typeof arrayReturnStorage>;
-        if ((returnTsType.flags & ts.TypeFlags.Void) === 0) {
+        if (!isVoid(returnTsType)) {
             let mapped = this.context.dataTypes.fromTsType(
                 returnTsType,
                 declaration,

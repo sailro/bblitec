@@ -120,11 +120,10 @@ import {
     presentMembers,
     isTypeReference,
     type AbsentValueKind,
+    undefinedOnly,
+    isVoid,
 } from "./type-facts.js";
-import {
-    hasNoValueCompletion,
-    nativeReturnTsType,
-} from "./native-return-type.js";
+import { nativeReturnTsType } from "./native-return-type.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
@@ -3912,16 +3911,13 @@ export class DataTypeRegistry {
      * document holds, which have no typed storage of their own.
      */
     private holdsOnlyDynamicValues(type: ts.Type): boolean {
-        return (type.isUnion() ? type.types : [type]).every(
+        return presentMembers(type).every(
             (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                    0 ||
-                ((member.flags & ts.TypeFlags.Object) !== 0 &&
-                    ((member as ts.ObjectType).objectFlags &
-                        ts.ObjectFlags.ObjectLiteral) !==
-                        0 &&
-                    this.isNonNullConstraint(member)),
+                (member.flags & ts.TypeFlags.Object) !== 0 &&
+                ((member as ts.ObjectType).objectFlags &
+                    ts.ObjectFlags.ObjectLiteral) !==
+                    0 &&
+                this.isNonNullConstraint(member),
         );
     }
 
@@ -4316,11 +4312,8 @@ export class DataTypeRegistry {
                 const resolvedType = this.resolveTypeParameter(argument);
                 if (this.asynchronous) {
                     if (
-                        (resolvedType.flags &
-                            (ts.TypeFlags.Void |
-                                ts.TypeFlags.Undefined |
-                                ts.TypeFlags.Never)) !==
-                        0
+                        undefinedOnly(resolvedType) ||
+                        (resolvedType.flags & ts.TypeFlags.Never) !== 0
                     )
                         return { kind: "promise" };
                     const result = this.fromPromiseResultType(
@@ -4338,7 +4331,7 @@ export class DataTypeRegistry {
                 // A promise retained in a data container therefore stores its
                 // resolved value, preserving cache/get/set behavior without adding a
                 // second scheduler or a host Promise object.
-                return (resolvedType.flags & ts.TypeFlags.Void) !== 0
+                return isVoid(resolvedType)
                     ? { kind: "boolean" }
                     : this.fromTsType(resolvedType, node);
             }
@@ -4662,9 +4655,7 @@ export class DataTypeRegistry {
                 ? { awaitedUndefinedCompletion: true as const }
                 : {}),
             ...(synchronous ||
-            (hasNoValueCompletion(
-                this.checker.getReturnTypeOfSignature(signature),
-            ) &&
+            (undefinedOnly(this.checker.getReturnTypeOfSignature(signature)) &&
                 hasNonThenableCompletion(this.checker, declaration)) ||
             demanded
                 ? { nonThenableCompletion: true as const }
@@ -4788,11 +4779,11 @@ export class DataTypeRegistry {
                                     ts.TypeFlags.Never) !==
                                     0 &&
                                     declaredSignature &&
-                                    (this.checker.getReturnTypeOfSignature(
-                                        declaredSignature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                        0
+                                    isVoid(
+                                        this.checker.getReturnTypeOfSignature(
+                                            declaredSignature,
+                                        ),
+                                    )
                                     ? undefined
                                     : actualSignature,
                             )
@@ -4848,7 +4839,7 @@ export class DataTypeRegistry {
             this.checker.getReturnTypeOfSignature(resultOverride ?? signature),
         );
         const resultType =
-            this.asynchronous && !hasNoValueCompletion(signatureResult)
+            this.asynchronous && !undefinedOnly(signatureResult)
                 ? signatureResult
                 : nativeReturnTsType(
                       this.checker,
@@ -6737,15 +6728,7 @@ export class DataTypeRegistry {
      */
     public undefinedOnlyStorage(type: ts.Type): DataType | undefined {
         const resolved = this.resolveTypeParameter(type);
-        const members = resolved.isUnion() ? resolved.types : [resolved];
-        return members.every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0,
-        )
-            ? { kind: "undefined" }
-            : undefined;
+        return undefinedOnly(resolved) ? { kind: "undefined" } : undefined;
     }
 
     /** Required undefined fields own a key independently of their payload. */
@@ -6762,14 +6745,7 @@ export class DataTypeRegistry {
         // another shape; the joined layout can then hold its null value.
         if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
             return { kind: "null" };
-        if (
-            !members.every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                    0,
-            )
-        ) {
+        if (!undefinedOnly(resolved)) {
             const mapped = this.fromTsType(type, node);
             return mapped && property?.declarations?.length === 1
                 ? this.absenceTaggedStorage(property.declarations[0], mapped)
@@ -7393,12 +7369,7 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): void {
         const resolved = this.resolveTypeParameter(source);
-        if (
-            !field.optionalProperty ||
-            (!nullability(resolved).undefined &&
-                (resolved.flags & ts.TypeFlags.Void) === 0)
-        )
-            return;
+        if (!field.optionalProperty || !nullability(resolved).undefined) return;
         let payload = field.type;
         while (payload.kind === "optional" || payload.kind === "tagged")
             payload = payload.inner;

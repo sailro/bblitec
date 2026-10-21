@@ -15,6 +15,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
 import { isWindowReceiver } from "./window-members.js";
 import { requiredParameterCount } from "./syntax.js";
+import { undefinedOnly, nullability } from "./type-facts.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -307,19 +308,8 @@ export class DeferredCapabilities {
                 );
             const resultType =
                 context.checker.getReturnTypeOfSignature(signature);
-            const resultMembers = resultType.isUnion()
-                ? resultType.types
-                : [resultType];
             const voidResult =
-                resultMembers.some(
-                    (member) => (member.flags & ts.TypeFlags.Void) !== 0,
-                ) &&
-                resultMembers.every(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                        0,
-                );
+                nullability(resultType).void && undefinedOnly(resultType);
             const type = voidResult
                 ? undefined
                 : context.dataTypes.fromTsType(resultType, call);

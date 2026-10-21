@@ -56,6 +56,7 @@ import {
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
 import { nativeHostUiElements } from "../native-host-ui.js";
+import { isNullable, presentMembers, isVoid } from "./type-facts.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -797,13 +798,12 @@ export class BrowserErasure {
                             .getCallSignatures();
                         return (
                             signatures.length > 0 &&
-                            signatures.every(
-                                (signature) =>
-                                    (this.context.checker.getReturnTypeOfSignature(
+                            signatures.every((signature) =>
+                                isVoid(
+                                    this.context.checker.getReturnTypeOfSignature(
                                         signature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                    0,
+                                    ),
+                                ),
                             )
                         );
                     })
@@ -822,7 +822,7 @@ export class BrowserErasure {
                     value.kind !== "search-params")
             );
         });
-        const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
+        const returnsVoid = isVoid(observableResult);
         if (
             !hasBrowserInput ||
             (!returnsVoid &&
@@ -863,19 +863,8 @@ export class BrowserErasure {
         if (!result || (result.flags & ts.TypeFlags.Union) === 0) {
             return false;
         }
-        const resultMembers = (result as ts.UnionType).types;
-        const nullable = resultMembers.some(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                0,
-        );
-        const concrete = resultMembers.filter(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                0,
-        );
+        const nullable = isNullable(result);
+        const concrete = presentMembers(result);
         if (
             !nullable ||
             concrete.length !== 1 ||
@@ -936,10 +925,7 @@ export class BrowserErasure {
                 this.context.checker.getSignatureFromDeclaration(member);
             return (
                 signature !== undefined &&
-                (this.context.checker.getReturnTypeOfSignature(signature)
-                    .flags &
-                    ts.TypeFlags.Void) !==
-                    0
+                isVoid(this.context.checker.getReturnTypeOfSignature(signature))
             );
         });
         return (

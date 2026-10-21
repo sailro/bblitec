@@ -14892,3 +14892,14 @@ test("a void result read without a proven undefined completion refuses", () => {
             /requires a proven undefined completion/,
         );
 });
+check(
+    "an undefined-typed method result compares as undefined",
+    `
+    class C {
+        n = 0;
+        add(): undefined { this.n += 10; return undefined; }
+    }
+    const c = new C();
+    if (c.add() !== undefined || c.n !== 10) throw new Error("undefined result " + c.n);
+    `,
+);

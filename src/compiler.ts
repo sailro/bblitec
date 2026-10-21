@@ -5,7 +5,6 @@ import {
     isNonThenableDataType,
     readsErasedVoid,
 } from "./compiler/undefined-values.js";
-import { hasNoValueCompletion } from "./compiler/native-return-type.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
@@ -243,6 +242,7 @@ import {
     isNullable,
     presentMembers,
     typeCanCarryReference,
+    undefinedOnly,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -1862,8 +1862,7 @@ class Compiler implements LoweringServices {
                 ?.valueDeclaration === main &&
             signature?.declaration === main &&
             returned !== undefined &&
-            (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0
+            undefinedOnly(returned)
         );
     }
 
@@ -9601,7 +9600,7 @@ class Compiler implements LoweringServices {
                         result.dataType?.kind === "undefined");
                 const undefinedCompletion =
                     synchronous &&
-                    hasNoValueCompletion(sourceReturn) &&
+                    undefinedOnly(sourceReturn) &&
                     undefinedValue(value);
                 if (type.undefinedCompletion && !undefinedCompletion)
                     this.fail(
@@ -9612,7 +9611,7 @@ class Compiler implements LoweringServices {
                     type.awaitedUndefinedCompletion &&
                     !(
                         awaitedReturn &&
-                        hasNoValueCompletion(awaitedReturn) &&
+                        undefinedOnly(awaitedReturn) &&
                         (undefinedCompletion ||
                             (value.kind === "promise" &&
                                 undefinedValue(value.promiseResult)))

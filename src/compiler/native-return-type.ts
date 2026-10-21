@@ -1,18 +1,10 @@
 import ts from "typescript";
 import { libraryGlobal } from "./symbols.js";
-import { nullability } from "./type-facts.js";
+import { nullability, undefinedOnly } from "./type-facts.js";
 
 interface NativeReturnTypeOptions {
     /** Preserve the Promise object when the runtime owns asynchronous values. */
     unwrapPromise?: boolean;
-}
-
-/** Void and undefined have the same completion ABI, including their union. */
-export function hasNoValueCompletion(type: ts.Type): boolean {
-    return (type.isUnion() ? type.types : [type]).every(
-        (member) =>
-            (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0,
-    );
 }
 
 /** The value a source function returns in the synchronous native model. */
@@ -55,7 +47,7 @@ export function nativeReturnTsType(
             if (absent.undefined && !absent.void) type = result;
         }
     }
-    if (hasNoValueCompletion(type)) return undefined;
+    if (undefinedOnly(type)) return undefined;
     if (options.unwrapPromise === false) return type;
     const promiseChecker = checker as ts.TypeChecker & {
         getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
@@ -71,7 +63,7 @@ export function nativeReturnTsType(
         resolved = promised;
     }
     resolved = settledUnion(promiseChecker, resolved);
-    return hasNoValueCompletion(resolved) ? undefined : resolved;
+    return undefinedOnly(resolved) ? undefined : resolved;
 }
 
 /**

@@ -72,6 +72,8 @@ import {
     nullability,
     presentValuesTruthy,
     slotHoldsOnlyNull,
+    presentMembers,
+    isVoid,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -10185,15 +10187,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const cppType = this.context.dataTypes.cppType(dataType);
         if (arguments_.length === 1) {
             const argument = arguments_[0]!;
-            const checked = this.context.checker.getTypeAtLocation(argument);
-            const members = checked.isUnion() ? checked.types : [checked];
             if (
-                members.every(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                        0,
-                )
+                presentMembers(this.context.checker.getTypeAtLocation(argument))
+                    .length === 0
             ) {
                 const value = this.context.compileValue(argument);
                 if (
@@ -16919,19 +16915,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             source.dataType?.kind === "vector" ? source.dataType : undefined;
         let item: Value;
         let absent: string;
-        const alternatives = sourceType?.isUnion()
-            ? sourceType.types
-            : sourceType
-              ? [sourceType]
-              : [];
-        const hasNull = alternatives.some(
-            (part) => (part.flags & ts.TypeFlags.Null) !== 0,
-        );
-        const hasUndefined = alternatives.some(
-            (part) =>
-                (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !==
-                0,
-        );
+        const sourceAbsence = sourceType && nullability(sourceType);
+        const hasNull = sourceAbsence?.null === true;
+        const hasUndefined = sourceAbsence?.undefined === true;
         if (vector) {
             const resultType: DataType =
                 vector.element.kind === "optional"
@@ -18097,14 +18083,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (ts.isIdentifier(candidate) &&
                 this.context.bindings.lookupOptional(candidate)?.kind ===
                     "json-null");
-        const completionFlags =
-            this.context.checker.getTypeAtLocation(left).flags |
-            this.context.checker.getTypeAtLocation(right).flags;
+        const typeOf = (side: ts.Expression): ts.Type =>
+            this.context.checker.getTypeAtLocation(side);
+        // A void operand compares as `undefined` once its completion is
+        // proven.
         if (
-            (completionFlags & ts.TypeFlags.Void) !== 0 ||
+            isVoid(typeOf(left)) ||
+            isVoid(typeOf(right)) ||
             (!isNullish(left) &&
                 !isNullish(right) &&
-                (completionFlags & ts.TypeFlags.Undefined) !== 0)
+                ((typeOf(left).flags | typeOf(right).flags) &
+                    ts.TypeFlags.Undefined) !==
+                    0)
         ) {
             const undefinedResult = this.context.probeEmission(() => {
                 const operand = (node: ts.Expression): Value => {
