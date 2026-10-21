@@ -6,7 +6,11 @@ interface AnalysisWalkPolicy {
     functions?: "skip";
     loops?: "skip";
     types?: "skip";
-    /** Visit an identifier only where it reads or writes a binding ({@link isValueReference}). */
+    /**
+     * Visit an identifier only where it reads or writes a binding
+     * ({@link isValueReference}). A root name is the walk's subject and
+     * stands for its binding wherever it sits (`const later = ...`).
+     */
     names?: "references";
     skip?: (node: ts.Node) => boolean;
 }
@@ -52,6 +56,7 @@ export function findAnalysisNodeWithState<State>(
             (policy.loops === "skip" && ts.isIterationStatement(node, false)) ||
             (policy.types === "skip" && ts.isTypeNode(node)) ||
             (policy.names === "references" &&
+                node !== root &&
                 ts.isIdentifier(node) &&
                 !isValueReference(node)) ||
             policy.skip?.(node)

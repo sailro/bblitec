@@ -77,6 +77,14 @@ test("value scans skip type annotations and member names, and stop at the first 
         ),
         false,
     );
+    // A declared name handed in as the root is the walk's subject.
+    const declared = parse("const later = 1;").statements[0]!;
+    assert.ok(ts.isVariableStatement(declared));
+    const name = declared.declarationList.declarations[0]!.name;
+    assert.equal(
+        someAnalysisNode(name, identifier("later"), { names: "references" }),
+        true,
+    );
     let calls = 0;
     const first = findAnalysisNode(source, (node) => {
         if (!ts.isCallExpression(node)) return false;
