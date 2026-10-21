@@ -8954,9 +8954,8 @@ class Compiler implements LoweringServices {
      * through, including the pin's `wgsl` tag -- which records every await
      * it passes into `unwrappedAwaitExpressions` through `onAwait`.
      */
-    public unwrap(expression: ts.Expression): ts.Expression {
-        return this.evaluator.unwrap(expression);
-    }
+    public readonly unwrap = (expression: ts.Expression): ts.Expression =>
+        this.evaluator.unwrap(expression);
 
     /** Captured mutable parameters own their binding, not the caller's slot. */
     public mutableCapturedParameter(

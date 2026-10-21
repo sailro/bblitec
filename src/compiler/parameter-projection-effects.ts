@@ -13,10 +13,12 @@ import {
 import {
     assignmentTargets,
     isAssignmentExpression,
+    isOperandSelection,
     isUpdateExpression,
     objectProperty,
     propertyNameText,
     unwrapExpression,
+    valueOperands,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -487,17 +489,7 @@ function parameterProjection(
                     : "*",
             );
         }
-        if (ts.isConditionalExpression(node))
-            return [...flow(node.whenTrue), ...flow(node.whenFalse)];
-        if (
-            ts.isBinaryExpression(node) &&
-            [
-                ts.SyntaxKind.QuestionQuestionToken,
-                ts.SyntaxKind.BarBarToken,
-                ts.SyntaxKind.AmpersandAmpersandToken,
-            ].includes(node.operatorToken.kind)
-        )
-            return [...flow(node.left), ...flow(node.right)];
+        if (isOperandSelection(node)) return valueOperands(node).flatMap(flow);
         if (ts.isObjectLiteralExpression(node))
             return node.properties.flatMap((property): Projection[] => {
                 if (ts.isSpreadAssignment(property)) {

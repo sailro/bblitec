@@ -73,7 +73,9 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    isOperandSelection,
     propertyNameText,
+    valueOperands,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -264,6 +266,16 @@ export class DeclarationLowerer {
                 this.context.sourceFiles(),
                 symbol,
             )
+        );
+    }
+
+    /** Whether an expression evaluates to the object one of its operands names. */
+    private selectsNamedValue(expression: ts.Expression): boolean {
+        return valueOperands(expression, this.context.unwrap).every(
+            (operand) =>
+                ts.isIdentifier(operand) ||
+                ts.isPropertyAccessExpression(operand) ||
+                ts.isElementAccessExpression(operand),
         );
     }
 
@@ -1127,10 +1139,7 @@ export class DeclarationLowerer {
             return;
         }
         const initializer = this.context.unwrap(declaration.initializer);
-        const aliasesRecord =
-            ts.isIdentifier(initializer) ||
-            ts.isPropertyAccessExpression(initializer) ||
-            ts.isElementAccessExpression(initializer);
+        const aliasesRecord = this.selectsNamedValue(initializer);
         // A named or selected record already owns its fields. Allocating a
         // fresh object here would split aliases and discard their known facts.
         if (!aliasesRecord)
@@ -3327,7 +3336,7 @@ export class DeclarationLowerer {
             ts.isIdentifier(name) &&
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer) ||
-            ts.isConditionalExpression(initializer)
+            isOperandSelection(initializer)
                 ? this.inferredObjectIsMutated(name) ||
                   this.context.moduleContainerIsMutated(name)
                 : this.context.sharedClosures.identifierIsRebound(name));
@@ -3615,15 +3624,10 @@ export class DeclarationLowerer {
             !this.context.sharedClosures.identifierIsRebound(name) &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.every(ts.isObjectLiteralExpression);
-        const freshArrayBranches = (expression: ts.Expression): boolean => {
-            const value = this.context.unwrap(expression);
-            return (
-                ts.isArrayLiteralExpression(value) ||
-                (ts.isConditionalExpression(value) &&
-                    freshArrayBranches(value.whenTrue) &&
-                    freshArrayBranches(value.whenFalse))
+        const freshArrayBranches = (expression: ts.Expression): boolean =>
+            valueOperands(expression, this.context.unwrap).every((value) =>
+                ts.isArrayLiteralExpression(value),
             );
-        };
         const scalarArrayLiteral =
             annotated.kind === "vector" &&
             ["number", "boolean", "string", "enum"].includes(
@@ -4232,29 +4236,10 @@ export class DeclarationLowerer {
         const valueNamesAlias = (
             expression: ts.Expression,
             scan: AliasedMutationScan,
-        ): boolean => {
-            const value = this.context.unwrap(expression);
-            if (ts.isConditionalExpression(value))
-                return (
-                    valueNamesAlias(value.whenTrue, scan) ||
-                    valueNamesAlias(value.whenFalse, scan)
-                );
-            if (ts.isBinaryExpression(value)) {
-                const operator = value.operatorToken.kind;
-                if (operator === ts.SyntaxKind.CommaToken)
-                    return valueNamesAlias(value.right, scan);
-                if (
-                    operator === ts.SyntaxKind.QuestionQuestionToken ||
-                    operator === ts.SyntaxKind.BarBarToken ||
-                    operator === ts.SyntaxKind.AmpersandAmpersandToken
-                )
-                    return (
-                        valueNamesAlias(value.left, scan) ||
-                        valueNamesAlias(value.right, scan)
-                    );
-            }
-            return scan.namesAlias(value);
-        };
+        ): boolean =>
+            valueOperands(expression, this.context.unwrap).some((value) =>
+                scan.namesAlias(value),
+            );
         const escapes = (node: ts.Node, scan: AliasedMutationScan): boolean =>
             (ts.isPropertyAssignment(node) &&
                 valueNamesAlias(node.initializer, scan)) ||
@@ -4465,22 +4450,15 @@ export class DeclarationLowerer {
         if (!literal || !ts.isObjectLiteralExpression(literal)) return true;
         const holds = (object: ts.ObjectLiteralExpression): boolean =>
             object.properties.some((property) => {
-                if (ts.isSpreadAssignment(property)) {
-                    const spread = this.context.unwrap(property.expression);
-                    if (ts.isObjectLiteralExpression(spread))
-                        return holds(spread);
-                    if (ts.isConditionalExpression(spread)) {
-                        const arms = [spread.whenTrue, spread.whenFalse].map(
-                            (arm) => this.context.unwrap(arm),
-                        );
-                        return arms.some(
-                            (arm) =>
-                                !ts.isObjectLiteralExpression(arm) ||
-                                holds(arm),
-                        );
-                    }
-                    return true;
-                }
+                if (ts.isSpreadAssignment(property))
+                    return valueOperands(
+                        property.expression,
+                        this.context.unwrap,
+                    ).some(
+                        (operand) =>
+                            !ts.isObjectLiteralExpression(operand) ||
+                            holds(operand),
+                    );
                 const name = property.name;
                 return (
                     name === undefined ||

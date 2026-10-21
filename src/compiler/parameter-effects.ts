@@ -18,6 +18,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    operandYield,
     propertyNameText,
     unwrapExpression,
 } from "./syntax.js";
@@ -871,17 +872,10 @@ class EffectWalker {
             this.consume(parent, nest(values, key), scope);
             return;
         }
-        if (
-            (ts.isConditionalExpression(parent) && parent.condition !== top) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken ||
-                    (parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
-                        parent.right === top)))
-        ) {
+        const yielded = operandYield(parent, top);
+        if (yielded && ts.isExpression(parent)) {
+            // `&&` only tests an object it does not yield.
+            if (!yielded.has("truthy")) return;
             this.consume(parent, values, scope);
             return;
         }

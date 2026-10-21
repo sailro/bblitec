@@ -5,7 +5,11 @@ import {
     libraryGlobal,
     resolvedSymbol,
 } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    unwrapExpression,
+    valueOperands,
+} from "./syntax.js";
 
 /**
  * Whether evaluating an expression yields an object no other reference can
@@ -113,10 +117,9 @@ function fresh(
         (ts.isIdentifier(expression) && expression.text === "undefined")
     )
         return true;
-    if (ts.isConditionalExpression(expression))
-        return (
-            fresh(checker, expression.whenTrue, active) &&
-            fresh(checker, expression.whenFalse, active)
+    if (isOperandSelection(expression))
+        return valueOperands(expression).every((operand) =>
+            fresh(checker, operand, active),
         );
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
         return returnsOnlyFresh(checker, expression, active);

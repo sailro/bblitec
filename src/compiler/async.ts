@@ -24,6 +24,7 @@ import {
     unwrapExpression,
     argumentAt,
     expressionHasEffects,
+    valueOperands,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -2761,34 +2762,11 @@ export class AsyncLowerer {
                 ).some((member) => member.getCallSignatures().length > 0)
             );
         };
-        const customResult = (source: ts.Node): boolean => {
-            if (!ts.isExpression(source))
-                return customThen(
-                    this.context.checker.getTypeAtLocation(source),
-                );
-            const expression = unwrapExpression(source);
-            if (ts.isConditionalExpression(expression))
-                return (
-                    customResult(expression.whenTrue) ||
-                    customResult(expression.whenFalse)
-                );
-            if (ts.isBinaryExpression(expression)) {
-                switch (expression.operatorToken.kind) {
-                    case ts.SyntaxKind.CommaToken:
-                    case ts.SyntaxKind.AmpersandAmpersandToken:
-                        return customResult(expression.right);
-                    case ts.SyntaxKind.BarBarToken:
-                    case ts.SyntaxKind.QuestionQuestionToken:
-                        return (
-                            customResult(expression.left) ||
-                            customResult(expression.right)
-                        );
-                }
-            }
-            return customThen(
-                this.context.checker.getTypeAtLocation(expression),
+        const customResult = (source: ts.Node): boolean =>
+            (ts.isExpression(source) ? valueOperands(source) : [source]).some(
+                (operand) =>
+                    customThen(this.context.checker.getTypeAtLocation(operand)),
             );
-        };
         if (
             value?.recordMethods?.then ||
             value?.recordGetters?.then ||

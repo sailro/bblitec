@@ -360,27 +360,8 @@ function referenceLengthExtent(
     // return their receiver to the node that consumes it.
     let value: ts.Expression = reference;
     for (;;) {
+        value = outermostWrapper(value, { branches: "objects" });
         const parent: ts.Node = value.parent;
-        if (
-            ts.isParenthesizedExpression(parent) ||
-            ts.isNonNullExpression(parent) ||
-            ts.isAsExpression(parent) ||
-            ts.isSatisfiesExpression(parent) ||
-            ts.isTypeAssertionExpression(parent) ||
-            (ts.isConditionalExpression(parent) &&
-                parent.condition !== value) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken ||
-                    (parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
-                        parent.right === value)))
-        ) {
-            value = parent;
-            continue;
-        }
         if (
             ts.isPropertyAccessExpression(parent) &&
             ts.isCallExpression(parent.parent) &&

@@ -23,7 +23,9 @@ import {
     identifierText,
     isAssignmentExpression,
     outermostWrapper,
+    isOperandSelection,
     stringLiteralText,
+    valueOperands,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -1002,19 +1004,20 @@ export class BrowserErasure {
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
-        const unwrapped = this.context.unwrap(expression);
-        const candidate =
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-                ? this.context.unwrap(unwrapped.left)
-                : unwrapped;
+        // An operand the expression may yield that lowers natively keeps it native.
         if (
-            ts.isCallExpression(candidate) &&
-            this.context.options.deferredCapabilities &&
-            deferredCapabilityDescriptor(this.context.checker, candidate)
+            valueOperands(expression, this.context.unwrap).some(
+                (candidate) =>
+                    (ts.isCallExpression(candidate) &&
+                        this.context.options.deferredCapabilities &&
+                        deferredCapabilityDescriptor(
+                            this.context.checker,
+                            candidate,
+                        )) ||
+                    hasDomLowering(this.context.checker, candidate),
+            )
         )
             return false;
-        if (hasDomLowering(this.context.checker, candidate)) return false;
         return this.isBrowserOnlyNode(expression);
     }
 
@@ -1031,6 +1034,10 @@ export class BrowserErasure {
             this.browserValueOf(unwrapped) !== undefined
         )
             return true;
+        if (isOperandSelection(unwrapped))
+            return valueOperands(unwrapped, this.context.unwrap).every(
+                (operand) => this.isBrowserOwner(operand),
+            );
         if (ts.isIdentifier(unwrapped)) {
             if (this.context.libraryGlobal(unwrapped) !== undefined)
                 return true;
@@ -1066,21 +1073,6 @@ export class BrowserErasure {
             ts.isAwaitExpression(unwrapped)
         )
             return this.isBrowserOwner(unwrapped.expression);
-        if (ts.isConditionalExpression(unwrapped))
-            return (
-                this.isBrowserOwner(unwrapped.whenTrue) &&
-                this.isBrowserOwner(unwrapped.whenFalse)
-            );
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-        )
-            return (
-                this.isBrowserOwner(unwrapped.left) &&
-                this.isBrowserOwner(unwrapped.right)
-            );
         if (ts.isNewExpression(unwrapped))
             return (
                 this.context.libraryGlobal(unwrapped.expression) !== undefined
@@ -1650,11 +1642,14 @@ export class BrowserErasure {
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);
-            if (ts.isConditionalExpression(unwrapped)) {
-                // Either arm is the owner: both must bridge the same kind.
-                const whenTrue = owner(unwrapped.whenTrue);
-                return whenTrue?.kind === owner(unwrapped.whenFalse)?.kind
-                    ? whenTrue
+            if (isOperandSelection(unwrapped)) {
+                // Any yielded operand is the owner: all must bridge one kind.
+                const owners = valueOperands(
+                    unwrapped,
+                    this.context.unwrap,
+                ).map(owner);
+                return owners.every((each) => each?.kind === owners[0]?.kind)
+                    ? owners[0]
                     : undefined;
             }
             if (

@@ -106,16 +106,152 @@ export function unwrapExpression(
 
 interface ClimbOptions {
     /**
-     * Also climb out of a conditional's branch (not its condition) and either
-     * operand of `??`: the value they yield is the enclosing expression's.
+     * Also climb out of an operand whose value its parent yields
+     * ({@link operandYield}); `"objects"` only where an object passes, not
+     * out of `&&`'s left operand.
      */
-    readonly branches?: boolean;
+    readonly branches?: boolean | "objects";
+}
+
+/**
+ * The classes of value an operand can pass on to its parent: truthy, falsy
+ * but present (`0`, `""`, `false`, `NaN`, `0n`), or nullish. An object is
+ * always truthy.
+ */
+export type ValueClass = "truthy" | "falsy" | "nullish";
+
+/** The class of a string value: the empty string is falsy. */
+export function valueClassOfString(text: string): ValueClass {
+    return text === "" ? "falsy" : "truthy";
+}
+
+const anyValue: ReadonlySet<ValueClass> = new Set([
+    "truthy",
+    "falsy",
+    "nullish",
+]);
+const presentValue: ReadonlySet<ValueClass> = new Set(["truthy", "falsy"]);
+const truthyValue: ReadonlySet<ValueClass> = new Set(["truthy"]);
+const falsyValue: ReadonlySet<ValueClass> = new Set(["falsy", "nullish"]);
+
+/**
+ * The values of `operand` that `parent` yields as its own: all of them for
+ * a conditional's branches and the right operand of `??`, `||`, `&&` and
+ * `,`; the present ones for `??`'s left, the truthy ones for `||`'s and the
+ * falsy ones for `&&`'s. Undefined when `parent` does not yield `operand`.
+ */
+export function operandYield(
+    parent: ts.Node,
+    operand: ts.Node,
+): ReadonlySet<ValueClass> | undefined {
+    if (ts.isConditionalExpression(parent))
+        return parent.condition === operand ? undefined : anyValue;
+    if (!ts.isBinaryExpression(parent)) return undefined;
+    const left = parent.left === operand;
+    switch (parent.operatorToken.kind) {
+        case ts.SyntaxKind.QuestionQuestionToken:
+            return left ? presentValue : anyValue;
+        case ts.SyntaxKind.BarBarToken:
+            return left ? truthyValue : anyValue;
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+            return left ? falsyValue : anyValue;
+        case ts.SyntaxKind.CommaToken:
+            return left ? undefined : anyValue;
+        default:
+            return undefined;
+    }
+}
+
+/** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
+export function isOperandSelection(node: ts.Node): boolean {
+    return (
+        ts.isConditionalExpression(node) ||
+        (ts.isBinaryExpression(node) &&
+            operandYield(node, node.right) !== undefined)
+    );
+}
+
+/** Whether `parent` chooses at run time which operand it yields (all but `,`). */
+export function choosesOperand(parent: ts.Node): boolean {
+    return (
+        isOperandSelection(parent) &&
+        !(
+            ts.isBinaryExpression(parent) &&
+            parent.operatorToken.kind === ts.SyntaxKind.CommaToken
+        )
+    );
+}
+
+/**
+ * Whether a node evaluates some of its operands only on some runs: a choice
+ * ({@link choosesOperand}), a logical assignment, or an optional chain.
+ */
+export function guardsOperands(node: ts.Node): boolean {
+    return (
+        choosesOperand(node) ||
+        (ts.isBinaryExpression(node) &&
+            isLogicalAssignmentOperator(node.operatorToken.kind)) ||
+        ts.isOptionalChain(node)
+    );
+}
+
+export interface YieldedOperand {
+    readonly operand: ts.Expression;
+    /** The classes of the operand's values the expression yields; never empty. */
+    readonly classes: ReadonlySet<ValueClass>;
+}
+
+/**
+ * The operands, past wrappers and nested selections, one of whose values
+ * an expression evaluates to, each with the classes of value it yields.
+ */
+export function yieldedOperands(
+    expression: ts.Expression,
+    unwrap: (node: ts.Expression) => ts.Expression = unwrapExpression,
+): readonly YieldedOperand[] {
+    const node = unwrap(expression);
+    const operands = ts.isConditionalExpression(node)
+        ? [node.whenTrue, node.whenFalse]
+        : ts.isBinaryExpression(node) && isOperandSelection(node)
+          ? [node.left, node.right]
+          : undefined;
+    if (!operands) return [{ operand: node, classes: anyValue }];
+    return operands.flatMap((operand) => {
+        const passed = operandYield(node, operand);
+        if (!passed) return [];
+        return yieldedOperands(operand, unwrap).flatMap((inner) => {
+            const classes = new Set(
+                [...inner.classes].filter((kind) => passed.has(kind)),
+            );
+            return classes.size > 0
+                ? [{ operand: inner.operand, classes }]
+                : [];
+        });
+    });
+}
+
+/** The operands whose objects (truthy values) an expression can yield. */
+export function valueOperands(
+    expression: ts.Expression,
+    unwrap: (node: ts.Expression) => ts.Expression = unwrapExpression,
+): readonly ts.Expression[] {
+    return yieldedOperands(expression, unwrap).flatMap((entry) =>
+        entry.classes.has("truthy") ? [entry.operand] : [],
+    );
 }
 
 /**
  * The outermost node around `node` that yields its value: past the wrappers
- * around it and, with `branches`, the conditional and `??` operands.
+ * around it and, with `branches`, the parents {@link operandYield} names.
  */
+export function outermostWrapper(
+    node: ts.Expression,
+    options?: ClimbOptions,
+): ts.Expression;
+export function outermostWrapper(
+    node: ts.Node,
+    options?: ClimbOptions,
+): ts.Node;
 export function outermostWrapper(
     node: ts.Node,
     options: ClimbOptions = {},
@@ -126,19 +262,22 @@ export function outermostWrapper(
         // A source file has no parent.
         parent !== undefined &&
         (isExpressionWrapper(parent) ||
-            (options.branches === true && yieldsOperand(parent, current)));
+            climbsOperand(parent, current, options.branches));
         parent = current.parent
     )
         current = parent;
     return current;
 }
 
-/** Whether `parent` yields `operand`'s value: a conditional branch or a `??` operand. */
-function yieldsOperand(parent: ts.Node, operand: ts.Node): boolean {
+function climbsOperand(
+    parent: ts.Node,
+    operand: ts.Node,
+    branches: ClimbOptions["branches"],
+): boolean {
+    const yielded = branches ? operandYield(parent, operand) : undefined;
     return (
-        (ts.isConditionalExpression(parent) && parent.condition !== operand) ||
-        (ts.isBinaryExpression(parent) &&
-            parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+        yielded !== undefined &&
+        (branches !== "objects" || yielded.has("truthy"))
     );
 }
 
@@ -391,14 +530,22 @@ export function assignmentTargets(
 /**
  * The identifiers whose values a stored expression holds as they are: the
  * expression itself, a member, element or spread of a literal it builds,
- * or a branch it selects (`cond ? a : b`, `a ?? b`). A value computed from
+ * or an operand it yields ({@link yieldedOperands}). A value computed from
  * an identifier (a call's result) holds none of them.
  */
 export function heldIdentifiers(
     expression: ts.Expression,
     unwrap: (node: ts.Expression) => ts.Expression = unwrapExpression,
 ): readonly ts.Identifier[] {
-    const node = unwrap(expression);
+    return yieldedOperands(expression, unwrap).flatMap(({ operand }) =>
+        literalHeldIdentifiers(operand, unwrap),
+    );
+}
+
+function literalHeldIdentifiers(
+    node: ts.Expression,
+    unwrap: (node: ts.Expression) => ts.Expression,
+): readonly ts.Identifier[] {
     if (ts.isIdentifier(node)) return [node];
     if (ts.isSpreadElement(node))
         return heldIdentifiers(node.expression, unwrap);
@@ -416,21 +563,6 @@ export function heldIdentifiers(
                     ? heldIdentifiers(property.expression, unwrap)
                     : [],
         );
-    if (ts.isConditionalExpression(node))
-        return [
-            ...heldIdentifiers(node.whenTrue, unwrap),
-            ...heldIdentifiers(node.whenFalse, unwrap),
-        ];
-    if (
-        ts.isBinaryExpression(node) &&
-        (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
-            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
-    )
-        return [
-            ...heldIdentifiers(node.left, unwrap),
-            ...heldIdentifiers(node.right, unwrap),
-        ];
     return [];
 }
 

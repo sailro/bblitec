@@ -10,8 +10,10 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
+    choosesOperand,
     isAssignmentExpression,
     isUpdateExpression,
+    operandYield,
     stringLiteralText,
     unwrapExpression,
 } from "./syntax.js";
@@ -326,16 +328,12 @@ export function hasOnlyReportingEffects(
                     : undefined;
             const beforeRight = reported;
             const right = value(node.right);
-            if (
-                [
-                    ts.SyntaxKind.AmpersandAmpersandToken,
-                    ts.SyntaxKind.BarBarToken,
-                    ts.SyntaxKind.QuestionQuestionToken,
-                ].includes(node.operatorToken.kind)
-            ) {
+            // A chosen right operand may not run: its reports do not stand.
+            if (choosesOperand(node)) {
                 reported = beforeRight;
                 return join(left, right);
             }
+            if (operandYield(node, node.right)) return right;
             return printable(left) && printable(right)
                 ? "primitive"
                 : undefined;

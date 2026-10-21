@@ -5,7 +5,12 @@ import {
     declaredSymbol,
     resolvedSymbol,
 } from "./symbols.js";
-import { propertyNameText, unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    propertyNameText,
+    unwrapExpression,
+    valueOperands,
+} from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
 
@@ -180,22 +185,14 @@ export function concreteArgumentIdentityPaths(
                 ? []
                 : undefined;
         }
-        if (ts.isConditionalExpression(node)) {
-            const left = child(node.whenTrue);
-            const right = child(node.whenFalse);
-            return left && right ? [...left, ...right] : undefined;
-        }
-        if (
-            ts.isBinaryExpression(node) &&
-            [
-                ts.SyntaxKind.QuestionQuestionToken,
-                ts.SyntaxKind.BarBarToken,
-                ts.SyntaxKind.AmpersandAmpersandToken,
-            ].includes(node.operatorToken.kind)
-        ) {
-            const left = child(node.left);
-            const right = child(node.right);
-            return left && right ? [...left, ...right] : undefined;
+        if (isOperandSelection(node)) {
+            const paths: Path[] = [];
+            for (const operand of valueOperands(node)) {
+                const found = child(operand);
+                if (!found) return undefined;
+                paths.push(...found);
+            }
+            return paths;
         }
         if (ts.isObjectLiteralExpression(node)) {
             const paths: Path[] = [];

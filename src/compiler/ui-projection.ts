@@ -125,7 +125,13 @@ import {
     parseAuthoredMarkup,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
-import { argumentAt } from "./syntax.js";
+import {
+    argumentAt,
+    isOperandSelection,
+    valueClassOfString,
+    valueOperands,
+    yieldedOperands,
+} from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
@@ -962,13 +968,10 @@ export class UiProjection {
         const fixed = this.tryUiStaticString(expression);
         if (fixed !== undefined) return [fixed];
         const value = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            const whenTrue = this.uiImageSourceCandidates(value.whenTrue);
-            const whenFalse = this.uiImageSourceCandidates(value.whenFalse);
-            return whenTrue && whenFalse
-                ? [...whenTrue, ...whenFalse]
-                : undefined;
-        }
+        if (isOperandSelection(value))
+            return this.selectedCandidates(value, (operand) =>
+                this.uiImageSourceCandidates(operand),
+            );
         if (
             !ts.isPropertyAccessExpression(value) ||
             !ts.isPropertyAccessExpression(value.expression) ||
@@ -1068,14 +1071,13 @@ export class UiProjection {
                 ? known
                 : { ...known, engineCpp: this.documentEngine(expression) };
         const owner = this.context.unwrap(expression);
-        // The checker types a conditional as the union of its arms, which
-        // no one data type names; each arm answers for itself.
+        // The checker types a selection as the union of its operands, which
+        // no one data type names; each yielded operand answers for itself.
         const holdsElement = (node: ts.Expression): boolean => {
             const value = this.context.unwrap(node);
-            if (ts.isConditionalExpression(value))
-                return (
-                    holdsElement(value.whenTrue) &&
-                    holdsElement(value.whenFalse)
+            if (isOperandSelection(value))
+                return valueOperands(value, this.context.unwrap).every(
+                    holdsElement,
                 );
             const type = this.context.dataLowerer.dataTypeAt(node);
             const inner = type?.kind === "optional" ? type.inner : type;
@@ -1512,6 +1514,30 @@ export class UiProjection {
             : this.uiStaticElements.get(value.uiStaticId);
     }
 
+    /**
+     * The candidates of each operand a selection yields, keeping the strings
+     * of the value classes it passes on (`a || "x"` never yields an empty `a`).
+     */
+    private selectedCandidates(
+        selection: ts.Expression,
+        candidates: (operand: ts.Expression) => string[] | undefined,
+    ): string[] | undefined {
+        const found: string[] = [];
+        for (const { operand, classes } of yieldedOperands(
+            selection,
+            this.context.unwrap,
+        )) {
+            const strings = candidates(operand);
+            if (!strings) return undefined;
+            found.push(
+                ...strings.filter((text) =>
+                    classes.has(valueClassOfString(text)),
+                ),
+            );
+        }
+        return found;
+    }
+
     private uiStringCandidates(
         expression: ts.Expression,
         budget = 32,
@@ -1519,14 +1545,11 @@ export class UiProjection {
         const exact = this.tryUiStaticString(expression);
         if (exact !== undefined) return [exact];
         const value = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            const whenTrue = this.uiStringCandidates(value.whenTrue, budget);
-            const whenFalse = this.uiStringCandidates(value.whenFalse, budget);
-            if (!whenTrue || !whenFalse) return undefined;
-            return [...new EmissionSet([...whenTrue, ...whenFalse])].slice(
-                0,
-                budget,
+        if (isOperandSelection(value)) {
+            const found = this.selectedCandidates(value, (operand) =>
+                this.uiStringCandidates(operand, budget),
             );
+            return found && [...new EmissionSet(found)].slice(0, budget);
         }
         if (
             ts.isBinaryExpression(value) &&

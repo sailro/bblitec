@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    unwrapExpression,
+    yieldedOperands,
+} from "./syntax.js";
 
 /** Fixed authored fragments around runtime text. Null spans never carry markup. */
 export type UiMarkupShape = readonly (string | null)[];
@@ -71,10 +75,12 @@ export function uiMarkupValueShape(
         )
             return shape(declaration.initializer);
     }
-    if (ts.isConditionalExpression(node)) {
-        const yes = shape(node.whenTrue),
-            no = shape(node.whenFalse);
-        if (sameShape(yes, no)) return yes;
+    if (isOperandSelection(node)) {
+        const shapes = yieldedOperands(node).map(({ operand }) =>
+            shape(operand),
+        );
+        if (shapes.every((each) => sameShape(each, shapes[0]!)))
+            return shapes[0]!;
     }
     if (
         ts.isCallExpression(node) &&

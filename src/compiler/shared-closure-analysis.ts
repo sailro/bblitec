@@ -10,7 +10,7 @@ import {
     isSupportedFunction,
     type SupportedFunction,
 } from "./user-functions.js";
-import { rootIdentifier } from "./syntax.js";
+import { choosesOperand, outermostWrapper, rootIdentifier } from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -21,47 +21,25 @@ interface SharedClosureBindings {
 }
 
 /**
- * Where a value written at `node` lands. Wrappers that hand the same value
- * on -- parentheses, `as`/`satisfies`/`!`, a conditional's arm, a `??`, `||`
- * or `&&` operand -- are climbed to the site that consumes it
- * (`register(ready ? f : () => n)` consumes either closure as an argument).
- * `selected` says the value went through a run-time choice.
+ * Where a value written at `node` lands: past the wrappers and operators
+ * that yield it, at the site that consumes it (`register(ready ? f : () =>
+ * n)` consumes either closure as an argument). `selected` says the value
+ * went through a run-time choice.
  */
 function valueSite(node: ts.Expression): {
     value: ts.Expression;
     consumer: ts.Node;
     selected: boolean;
 } {
-    let value = node;
+    const value = outermostWrapper(node, { branches: "objects" });
     let selected = false;
-    for (;;) {
-        const parent = value.parent;
-        if (
-            ts.isParenthesizedExpression(parent) ||
-            ts.isAsExpression(parent) ||
-            ts.isSatisfiesExpression(parent) ||
-            ts.isNonNullExpression(parent) ||
-            ts.isTypeAssertionExpression(parent)
-        ) {
-            value = parent;
-            continue;
-        }
-        if (
-            (ts.isConditionalExpression(parent) &&
-                parent.condition !== value) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken))
-        ) {
-            value = parent;
-            selected = true;
-            continue;
-        }
-        return { value, consumer: parent, selected };
-    }
+    for (
+        let current: ts.Node = node;
+        current !== value;
+        current = current.parent
+    )
+        selected ||= choosesOperand(current.parent);
+    return { value, consumer: value.parent, selected };
 }
 
 /** Whether an async function awaits in its own body: a callback it calls can run after its caller resumed. */

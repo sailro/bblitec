@@ -97,6 +97,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isDeclaredInside,
+    isOperandSelection,
     isUpdateExpression,
     mutatingCallTarget,
     outermostWrapper,
@@ -105,6 +106,7 @@ import {
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
+    yieldedOperands,
     argumentAt,
 } from "./syntax.js";
 import {
@@ -3301,8 +3303,10 @@ export class UserFunctionLowerer {
     ): boolean {
         const dynamic = (expression: ts.Expression): boolean => {
             const value = unwrapExpression(expression);
-            if (ts.isConditionalExpression(value))
-                return dynamic(value.whenTrue) || dynamic(value.whenFalse);
+            if (isOperandSelection(value))
+                return yieldedOperands(value).some(({ operand }) =>
+                    dynamic(operand),
+                );
             if (
                 ts.isObjectLiteralExpression(value) &&
                 value.properties.some(

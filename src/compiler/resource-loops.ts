@@ -35,6 +35,7 @@ import {
     parameterIsReadOnly,
 } from "./parameter-effects.js";
 import {
+    guardsOperands,
     isAssignmentExpression,
     isDeclaredInside,
     isUpdateExpression,
@@ -1611,14 +1612,8 @@ export function parameterizedResourceLoop(
         const guarded =
             conditional ||
             ts.isIfStatement(node) ||
-            ts.isConditionalExpression(node) ||
             ts.isSwitchStatement(node) ||
-            (ts.isBinaryExpression(node) &&
-                (node.operatorToken.kind ===
-                    ts.SyntaxKind.AmpersandAmpersandToken ||
-                    node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.QuestionQuestionToken));
+            guardsOperands(node);
         ts.forEachChild(node, (child) => {
             visit(child, guarded);
         });

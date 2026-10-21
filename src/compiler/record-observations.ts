@@ -19,8 +19,11 @@ import {
     assignmentTargets,
     expressionMayRunCode,
     isAssignmentExpression,
+    isOperandSelection,
     isUpdateExpression,
+    outermostWrapper,
     unwrapExpression,
+    valueOperands,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -611,28 +614,9 @@ function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
     );
 }
 
-/**
- * The expression a reference's value flows on as: through wrappers and
- * the arms of a selection (`?:`, `??`, `||`, the right of `&&`).
- */
+/** The expression a reference's value flows on as, past wrappers and the operators that yield it. */
 function flowingUse(reference: ts.Expression): ts.Expression {
-    let current = climb(reference);
-    for (;;) {
-        const parent = current.parent;
-        if (
-            (ts.isConditionalExpression(parent) &&
-                parent.condition !== current) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    (parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken &&
-                        parent.right === current)))
-        )
-            current = climb(parent);
-        else return current;
-    }
+    return outermostWrapper(reference, { branches: "objects" });
 }
 
 /**
@@ -977,20 +961,6 @@ function holdsRecord(
     );
 }
 
-/** A wrapper that keeps the value of the expression it encloses. */
-function climb(node: ts.Expression): ts.Expression {
-    let current = node;
-    while (
-        ts.isParenthesizedExpression(current.parent) ||
-        ts.isNonNullExpression(current.parent) ||
-        ts.isAsExpression(current.parent) ||
-        ts.isTypeAssertionExpression(current.parent) ||
-        ts.isSatisfiesExpression(current.parent)
-    )
-        current = current.parent;
-    return current;
-}
-
 /**
  * The call a value is handed to as `argument`, when the callee only reads
  * that parameter (`callOnlyReadsArgument`): a copy passed there lives for
@@ -1001,7 +971,7 @@ function readOnlyArgumentCall(
     argument: ts.Node,
 ): ts.CallExpression | undefined {
     if (!ts.isExpression(argument)) return undefined;
-    const use = climb(argument);
+    const use = outermostWrapper(argument);
     const call = use.parent;
     return ts.isCallExpression(call) &&
         call.expression !== use &&
@@ -1025,27 +995,14 @@ export function argumentOnlyRead(
 /**
  * Whether the array `expression` evaluates is read element by element
  * where it is produced, then dropped: the initializer of an array
- * destructuring declaration, reached through wrappers and the arms of a
- * selection (`?:`, `??`, `||`, the right of `&&`), binding names without a
- * default that can run code. Nothing runs between taking a copy of the
- * array and reading it, and nothing keeps the copy, so the two agree.
+ * destructuring declaration, reached through wrappers and the operators
+ * that yield it, binding names without a default that can run code.
+ * Nothing runs between taking a copy of the array and reading it, and
+ * nothing keeps the copy, so the two agree.
  */
 export function arrayDestructuredAtOnce(expression: ts.Expression): boolean {
-    let current = climb(expression);
-    let parent = current.parent;
-    while (
-        (ts.isConditionalExpression(parent) && parent.condition !== current) ||
-        (ts.isBinaryExpression(parent) &&
-            (parent.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken ||
-                parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.AmpersandAmpersandToken &&
-                    parent.right === current)))
-    ) {
-        current = climb(parent);
-        parent = current.parent;
-    }
+    const current = outermostWrapper(expression, { branches: "objects" });
+    const parent = current.parent;
     return (
         ts.isVariableDeclaration(parent) &&
         parent.initializer === current &&
@@ -1160,10 +1117,9 @@ function newArrayExpression(
     expression: ts.Expression,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
-    if (ts.isConditionalExpression(unwrapped))
-        return (
-            newArrayExpression(checker, unwrapped.whenTrue) &&
-            newArrayExpression(checker, unwrapped.whenFalse)
+    if (isOperandSelection(unwrapped))
+        return valueOperands(unwrapped).every((operand) =>
+            newArrayExpression(checker, operand),
         );
     // These methods return their receiver.
     if (
@@ -1194,7 +1150,7 @@ export function returnedRecordLocal(
     if (!ts.isExpression(returned)) return false;
     const unwrapped = unwrapExpression(returned);
     if (!ts.isIdentifier(unwrapped)) return false;
-    const use = climb(unwrapped);
+    const use = outermostWrapper(unwrapped);
     const owner = ts.findAncestor(use.parent, ts.isFunctionLike);
     if (
         !owner ||
@@ -1226,18 +1182,24 @@ export function returnedRecordLocal(
             declaredSymbol(checker, node) !== symbol
         )
             return;
-        const reference = climb(node);
+        const reference = outermostWrapper(node);
         const parent = reference.parent;
-        only =
-            ts.findAncestor(node.parent, ts.isFunctionLike) === owner &&
-            (ts.isPropertyAccessExpression(parent) ||
-                ts.isElementAccessExpression(parent)) &&
-            parent.expression === reference &&
+        if (
+            ts.findAncestor(node.parent, ts.isFunctionLike) !== owner ||
             !(
-                ts.isCallExpression(climb(parent).parent) &&
-                (climb(parent).parent as ts.CallExpression).expression ===
-                    climb(parent)
-            );
+                ts.isPropertyAccessExpression(parent) ||
+                ts.isElementAccessExpression(parent)
+            ) ||
+            parent.expression !== reference
+        ) {
+            only = false;
+            return;
+        }
+        const member = outermostWrapper(parent);
+        only = !(
+            ts.isCallExpression(member.parent) &&
+            member.parent.expression === member
+        );
     });
     return only;
 }

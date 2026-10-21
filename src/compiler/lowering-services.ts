@@ -575,7 +575,8 @@ export interface LoweringServices {
         node: ts.Node,
         destination: string,
     ): void;
-    unwrap(expression: ts.Expression): ts.Expression;
+    /** Bound, so a walk can take it as its unwrap. */
+    readonly unwrap: (expression: ts.Expression) => ts.Expression;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
     bindClassParameterValue(

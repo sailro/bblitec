@@ -100,7 +100,6 @@ import {
     outermostWrapper,
     regularExpressionParts,
     unwrapExpression,
-    wrappedParent,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -383,22 +382,11 @@ export interface ExpressionContext
     ): Value;
 }
 
-/**
- * Whether an expression's value is an object spread's operand, directly or
- * as an arm of a conditional that is one.
- */
+/** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
 function spreadsItsValue(expression: ts.Expression): boolean {
-    let current: ts.Expression = expression;
-    for (;;) {
-        const parent = wrappedParent(current);
-        if (ts.isSpreadAssignment(parent)) return true;
-        if (
-            !ts.isConditionalExpression(parent) ||
-            unwrapExpression(parent.condition) === current
-        )
-            return false;
-        current = parent;
-    }
+    return ts.isSpreadAssignment(
+        outermostWrapper(expression, { branches: "objects" }).parent,
+    );
 }
 
 /**

@@ -24,6 +24,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    outermostWrapper,
     regularExpressionParts,
     rootIdentifier,
     unwrapExpression,
@@ -198,19 +199,6 @@ function isLibraryMap(checker: ts.TypeChecker, node: ts.Node): boolean {
     return symbol?.name === "Map" && declaredInDefaultLibrary(symbol);
 }
 
-/** The node an expression's value flows into, past wrappers that keep it. */
-function valueUse(node: ts.Node): ts.Node {
-    let use = node;
-    while (
-        ts.isParenthesizedExpression(use.parent) ||
-        ts.isNonNullExpression(use.parent) ||
-        ts.isAsExpression(use.parent) ||
-        ts.isSatisfiesExpression(use.parent)
-    )
-        use = use.parent;
-    return use;
-}
-
 /**
  * Classifies how an array a registry's `get` returned is used: reads keep
  * it closed and `push` arguments join its elements. False when it escapes.
@@ -221,14 +209,8 @@ function classifyRegistryArray(
     pushed: ts.Expression[],
     depth = 0,
 ): boolean {
-    const use = valueUse(node);
+    const use = outermostWrapper(node, { branches: "objects" });
     const parent = use.parent;
-    if (
-        ts.isBinaryExpression(parent) &&
-        parent.left === use &&
-        parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-    )
-        return classifyRegistryArray(checker, parent, pushed, depth);
     if (ts.isForOfStatement(parent) && parent.expression === use) return true;
     if (ts.isSpreadElement(parent)) return true;
     if (
@@ -337,7 +319,9 @@ function mapRegistry(
                 // `set` returns the Map itself; a chained or stored result
                 // is another reference this walk does not follow.
                 values.push(call.arguments[1]!);
-                closed = ts.isExpressionStatement(valueUse(call).parent);
+                closed = ts.isExpressionStatement(
+                    outermostWrapper(call).parent,
+                );
             } else if (method === "get" && called)
                 closed = classifyRegistryArray(checker, call, pushed);
             else closed = mapReads.has(method);
