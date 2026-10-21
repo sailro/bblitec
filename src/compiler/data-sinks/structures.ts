@@ -20,7 +20,6 @@ import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
-import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
     completeLiteralSelf,
@@ -31,6 +30,7 @@ import {
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import { ANY_KEY } from "../syntax.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -755,9 +755,7 @@ function valueStruct(
             node,
             "accessors",
         );
-        lowerer.context.dataTypes.noteRecordConversion(dataType, [
-            UNKNOWN_PROPERTIES,
-        ]);
+        lowerer.context.dataTypes.noteRecordConversion(dataType, [ANY_KEY]);
         for (const field of fields)
             lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
         // A parsed entry converts, checked, to a scalar field type.

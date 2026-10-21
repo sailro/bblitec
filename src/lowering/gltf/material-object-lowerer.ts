@@ -3,6 +3,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    bindingElementKey,
 } from "../../compiler/syntax.js";
 import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
@@ -607,10 +608,9 @@ export function lowerGltfMaterialObjectFunction(
                             );
                         lowerer.expression(imported);
                         for (const element of variable.name.elements) {
-                            const importedName =
-                                element.propertyName ?? element.name;
+                            const importedName = bindingElementKey(element);
                             if (
-                                !ts.isIdentifier(importedName) ||
+                                importedName === undefined ||
                                 !ts.isIdentifier(element.name) ||
                                 element.initializer ||
                                 element.dotDotDotToken
@@ -619,7 +619,7 @@ export function lowerGltfMaterialObjectFunction(
                                     element,
                                     "Unsupported material import binding.",
                                 );
-                            const cpp = resolveCall(importedName.text);
+                            const cpp = resolveCall(importedName);
                             if (!cpp)
                                 context.contractError(
                                     element,

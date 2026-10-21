@@ -10,6 +10,9 @@ import {
     propertyKey,
     unwrapExpression,
     valueOperands,
+    arrayLiteralSlots,
+    aliasKey,
+    ANY_KEY,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -225,24 +228,23 @@ export function concreteArgumentIdentityPaths(
         }
         if (ts.isArrayLiteralExpression(node)) {
             const paths: Path[] = [];
-            let variableIndex = false;
-            for (let index = 0; index < node.elements.length; index++) {
-                const element = node.elements[index]!;
+            for (const { element, index } of arrayLiteralSlots(node)) {
                 if (ts.isOmittedExpression(element)) continue;
                 if (ts.isSpreadElement(element)) {
-                    variableIndex = true;
                     const spread = child(element.expression);
                     if (!spread || spread.some((path) => path.length === 0))
                         return undefined;
                     paths.push(
-                        ...spread.map((path) => ["*", ...path.slice(1)]),
+                        ...spread.map((path) => [ANY_KEY, ...path.slice(1)]),
                     );
                 } else {
                     const member = child(element);
                     if (!member) return undefined;
                     paths.push(
                         ...member.map((path) => [
-                            variableIndex ? "*" : String(index),
+                            aliasKey(
+                                index === undefined ? undefined : String(index),
+                            ),
                             ...path,
                         ]),
                     );

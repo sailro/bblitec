@@ -6,6 +6,8 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     propertyKey,
+    bindingElementKey,
+    specifierSourceName,
 } from "./compiler/syntax.js";
 import { sourceLocation } from "./source-location.js";
 import { declaredSymbol, resolvedSymbol } from "./compiler/symbols.js";
@@ -193,7 +195,7 @@ export function scanApiUsage(
             importsSurface(node.moduleSpecifier)
         ) {
             for (const element of node.importClause.namedBindings.elements) {
-                const name = (element.propertyName ?? element.name).text;
+                const name = specifierSourceName(element);
                 if (!Object.hasOwn(surface.snapshot.exports, name))
                     unresolved.add(name);
             }
@@ -255,11 +257,7 @@ export function scanApiUsage(
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)
         ) {
-            const key = node.propertyName
-                ? propertyKey(node.propertyName)
-                : ts.isIdentifier(node.name)
-                  ? node.name.text
-                  : undefined;
+            const key = bindingElementKey(node);
             if (key !== undefined) {
                 add(
                     properties(checker.getTypeAtLocation(node.parent), key),

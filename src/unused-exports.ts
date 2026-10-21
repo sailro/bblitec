@@ -2,7 +2,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 import { aliasTarget, declaredSymbol } from "./compiler/symbols.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
-import { propertyKey } from "./compiler/syntax.js";
+import { bindingElementKey, specifierSourceName } from "./compiler/syntax.js";
 
 interface UnusedExport {
     file: string;
@@ -170,7 +170,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                     for (const specifier of clause.namedBindings.elements)
                         markImported(
                             node.moduleSpecifier,
-                            (specifier.propertyName ?? specifier.name).text,
+                            specifierSourceName(specifier),
                         );
                 return;
             }
@@ -180,7 +180,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                         if (node.moduleSpecifier)
                             markImported(
                                 node.moduleSpecifier,
-                                (specifier.propertyName ?? specifier.name).text,
+                                specifierSourceName(specifier),
                             );
                         else
                             mark(
@@ -197,11 +197,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                 ts.isBindingElement(node) &&
                 ts.isObjectBindingPattern(node.parent)
             ) {
-                const key = node.propertyName
-                    ? propertyKey(node.propertyName)
-                    : ts.isIdentifier(node.name)
-                      ? node.name.text
-                      : undefined;
+                const key = bindingElementKey(node);
                 if (key !== undefined)
                     mark(
                         checker.getPropertyOfType(

@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
+import { specifierSourceName } from "../compiler/syntax.js";
 
 /** The pinned module that declares the error helper. */
 const liteErrorModule = "src/lite-error.ts";
@@ -30,8 +31,7 @@ export function isPinnedErrorCall(
             bindings.elements.some(
                 (binding) =>
                     binding.name.text === callee.text &&
-                    (binding.propertyName ?? binding.name).text ===
-                        "ThrowLiteError",
+                    specifierSourceName(binding) === "ThrowLiteError",
             )
         );
     });

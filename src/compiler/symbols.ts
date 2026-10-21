@@ -2,7 +2,12 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "../repository-root.js";
-import { accessKey, propertyKey, unwrapExpression } from "./syntax.js";
+import {
+    accessKey,
+    propertyKey,
+    unwrapExpression,
+    specifierSourceName,
+} from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -822,7 +827,7 @@ export class CompilerSymbols {
         }
         return imported.nonNamed
             ? "*"
-            : (imported.named?.propertyName?.text ?? imported.named?.name.text);
+            : imported.named && specifierSourceName(imported.named);
     }
 
     /**

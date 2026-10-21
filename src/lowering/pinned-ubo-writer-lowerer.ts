@@ -40,7 +40,11 @@ import {
 } from "./pinned-option-defaults.js";
 
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import { isExpressionWrapper, writeSites } from "../compiler/syntax.js";
+import {
+    isExpressionWrapper,
+    writeSites,
+    bindingElementKey,
+} from "../compiler/syntax.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -1171,9 +1175,13 @@ function emitPlainStatement(
                                 `${element.getText(state.file)}.`,
                         );
                     }
-                    const property =
-                        element.propertyName?.getText(state.file) ??
-                        element.name.text;
+                    const property = bindingElementKey(element);
+                    if (property === undefined)
+                        throw new Error(
+                            `Unsupported destructuring key in pinned ` +
+                                `${state.request.symbolName}: ` +
+                                `${element.getText(state.file)}.`,
+                        );
                     const local = element.name.text;
                     const source = state.request.propertySources[property];
                     if (source === undefined || source === null) {

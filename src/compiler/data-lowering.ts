@@ -232,6 +232,8 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    patternSlots,
+    bindingElementKey,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -16503,23 +16505,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const left = this.context.unwrap(expression.left);
         if (!ts.isObjectLiteralExpression(left)) return false;
         const targets: { key: string; name: ts.Expression }[] = [];
-        for (const property of left.properties) {
+        for (const { read, target, fallback } of patternSlots(left)) {
+            const name = this.context.unwrap(target);
             if (
-                ts.isShorthandPropertyAssignment(property) &&
-                !property.objectAssignmentInitializer
-            ) {
-                targets.push({ key: property.name.text, name: property.name });
-                continue;
-            }
-            const key = ts.isPropertyAssignment(property)
-                ? propertyKey(property.name)
-                : undefined;
-            const name =
-                ts.isPropertyAssignment(property) &&
-                this.context.unwrap(property.initializer);
-            if (
-                key === undefined ||
-                !name ||
+                read.kind !== "member" ||
+                read.key === undefined ||
+                fallback ||
                 !(
                     ts.isIdentifier(name) ||
                     ts.isPropertyAccessExpression(name) ||
@@ -16527,7 +16518,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 )
             )
                 return false;
-            targets.push({ key, name });
+            targets.push({ key: read.key, name });
         }
         const raw = this.context.compileValue(expression.right);
         const narrowed =
@@ -19829,11 +19820,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             for (const binding of name.elements) {
-                const property = binding.propertyName
-                    ? this.context.propertyName(binding.propertyName)
-                    : ts.isIdentifier(binding.name)
-                      ? binding.name.text
-                      : undefined;
+                const property = bindingElementKey(binding, (key) =>
+                    this.context.propertyName(key),
+                );
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||

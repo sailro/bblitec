@@ -14727,3 +14727,11 @@ check(
     if (o[1] !== "one") throw new Error("bigint key");
     `,
 );
+check(
+    "an element after a spread is read at its shifted index",
+    `
+    const xs = [2, 3];
+    const picked = [1, ...xs, 5][2];
+    if (picked !== 3) throw new Error(String(picked));
+    `,
+);

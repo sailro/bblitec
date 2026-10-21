@@ -74,6 +74,7 @@ import {
     floatingOriginStructs,
     havokFloatingOriginModule,
 } from "./physics-floating-origin-lowerer.js";
+import { bindingElementKey } from "../compiler/syntax.js";
 
 /**
  * The five geometry lanes both pinned bags declare, as a struct body.
@@ -362,11 +363,11 @@ export class PhysicsLowerer {
                             "Aggregate scale source",
                         );
                         return local.name.elements.map((element) => {
-                            const axis = element.propertyName!.getText(file);
+                            const axis = bindingElementKey(element);
                             const field = PRELUDE_SCALARS.find(
                                 ([name]) => name === element.name.getText(file),
                             )?.[1];
-                            if (!field)
+                            if (!field || axis === undefined)
                                 return this.context.contractError(
                                     element,
                                     "Unknown aggregate scale lane.",

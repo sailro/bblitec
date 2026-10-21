@@ -22,6 +22,8 @@ import {
     accessKey,
     aliasKey,
     keysMayMatch,
+    arrayLiteralSlots,
+    patternSlots,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -49,6 +51,14 @@ function project(values: readonly Projection[], key: string): Projection[] {
                 : []
             : [{ at: [], from: [...value.from, key] }],
     );
+}
+
+/** The projections of a container holding a value with `values` at `key`. */
+function nest(values: readonly Projection[], key: string): Projection[] {
+    return values.map((value) => ({
+        at: [key, ...value.at],
+        from: value.from,
+    }));
 }
 
 const results = new EmissionWeakMap<
@@ -539,27 +549,31 @@ function parameterProjection(
                 }));
             });
         if (ts.isArrayLiteralExpression(node))
-            return node.elements.flatMap((element, i): Projection[] => {
-                if (ts.isOmittedExpression(element)) return [];
-                const values = ts.isSpreadElement(element)
-                    ? project(flow(element.expression), ANY_KEY)
-                    : flow(element);
-                const elementType = ts.isSpreadElement(element)
-                    ? checker.getIndexTypeOfType(
-                          checker.getTypeAtLocation(element.expression),
-                          ts.IndexKind.Number,
-                      )
-                    : undefined;
-                if (elementType && !typeCanCarryReference(elementType))
-                    return [];
-                return values.map((entry) => ({
-                    at: [
-                        ts.isSpreadElement(element) ? ANY_KEY : String(i),
-                        ...entry.at,
-                    ],
-                    from: entry.from,
-                }));
-            });
+            return arrayLiteralSlots(node).flatMap(
+                ({ element, index }): Projection[] => {
+                    if (ts.isOmittedExpression(element)) return [];
+                    const values = ts.isSpreadElement(element)
+                        ? project(flow(element.expression), ANY_KEY)
+                        : flow(element);
+                    const elementType = ts.isSpreadElement(element)
+                        ? checker.getIndexTypeOfType(
+                              checker.getTypeAtLocation(element.expression),
+                              ts.IndexKind.Number,
+                          )
+                        : undefined;
+                    if (elementType && !typeCanCarryReference(elementType))
+                        return [];
+                    return values.map((entry) => ({
+                        at: [
+                            aliasKey(
+                                index === undefined ? undefined : String(index),
+                            ),
+                            ...entry.at,
+                        ],
+                        from: entry.from,
+                    }));
+                },
+            );
         if (ts.isCallExpression(node) && arrayMethod(node) === "slice") {
             const owner = receiver(node)!;
             const element = checker.getIndexTypeOfType(
@@ -568,10 +582,7 @@ function parameterProjection(
             );
             return element && !typeCanCarryReference(element)
                 ? []
-                : project(flow(owner), ANY_KEY).map((entry) => ({
-                      at: [ANY_KEY, ...entry.at],
-                      from: entry.from,
-                  }));
+                : nest(project(flow(owner), ANY_KEY), ANY_KEY);
         }
         // Calls with a relevant input must separately prove no escape. Their
         // result cannot alias that input when this proof succeeds.
@@ -611,20 +622,14 @@ function parameterProjection(
             }
             return;
         }
-        name.elements.forEach((element, i) => {
-            if (ts.isOmittedExpression(element)) return;
-            const key = ts.isArrayBindingPattern(name)
-                ? String(i)
-                : element.propertyName
-                  ? aliasKey(propertyKey(element.propertyName))
-                  : ts.isIdentifier(element.name)
-                    ? element.name.text
-                    : ANY_KEY;
-            bind(element.name, [
-                ...(element.dotDotDotToken ? values : project(values, key)),
-                ...(element.initializer ? flow(element.initializer) : []),
+        // A rest is a new collection of the remaining members.
+        for (const { target, read, fallback } of patternSlots(name))
+            bind(target, [
+                ...(read.kind === "member"
+                    ? project(values, aliasKey(read.key))
+                    : nest(project(values, ANY_KEY), ANY_KEY)),
+                ...(fallback ? flow(fallback) : []),
             ]);
-        });
     };
     // Alias declarations form a finite graph. A repeated declaration or
     // self-referential projection cannot establish a finite source path.

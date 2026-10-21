@@ -4212,20 +4212,20 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The key a property name declares at generation: the checker's
-     * ({@link staticPropertyKey}), else a computed key generation folds
-     * (`[prefix + "x"]`). Reading the key emits nothing; a key expression
-     * that calls, constructs, awaits or writes is left to run where the
-     * literal evaluates it.
+     * The key a property name declares, when knowing it runs no code: the
+     * checker's ({@link staticPropertyKey}), else a computed key generation
+     * folds (`[prefix + "x"]`). Reading it emits nothing. A computed key that
+     * calls, constructs, awaits or writes has none here: only the literal
+     * that runs it knows it ({@link compilePropertyKey}).
      */
     public propertyName(name: ts.PropertyName): string | undefined {
-        const key = staticPropertyKey(this.checker, name);
         if (
-            key !== undefined ||
-            !ts.isComputedPropertyName(name) ||
+            ts.isComputedPropertyName(name) &&
             expressionHasEffects(name.expression)
         )
-            return key;
+            return undefined;
+        const key = staticPropertyKey(this.checker, name);
+        if (key !== undefined || !ts.isComputedPropertyName(name)) return key;
         const value = this.probeEmission(
             () => this.compileValue(name.expression),
             () => false,

@@ -27,6 +27,7 @@ import {
     foldNumericComparison,
     foldNumericUnary,
 } from "./pinned-operators.js";
+import { bindingElementKey } from "../compiler/syntax.js";
 
 /** A lexical environment: bindings by name, resolved through the parents. */
 export class Env<B> {
@@ -493,9 +494,9 @@ export class PartialEvaluator<V, B> {
             if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
                 this.fail(element, "binding element");
             }
-            const property = element.propertyName
-                ? element.propertyName.getText(frame.file)
-                : element.name.text;
+            const property =
+                bindingElementKey(element) ??
+                this.fail(element, "binding element key");
             frame.env.declare(
                 element.name.text,
                 bind(

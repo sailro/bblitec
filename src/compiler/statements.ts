@@ -54,6 +54,7 @@ import {
     unwrappedIdentifier,
     writeSites,
     bindingNameIdentifiers,
+    patternSlots,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -4135,18 +4136,15 @@ export class StatementLowerer {
                 pattern,
                 "Object destructuring in static for...of requires record or struct elements.",
             );
-        for (const element of pattern.elements) {
-            const property = element.propertyName
-                ? context.propertyName(element.propertyName)
-                : ts.isIdentifier(element.name)
-                  ? element.name.text
-                  : undefined;
-            if (
-                element.dotDotDotToken ||
-                element.initializer ||
-                !ts.isIdentifier(element.name) ||
-                property === undefined
-            )
+        for (const { element, target, read, fallback } of patternSlots(
+            pattern,
+            (name) => context.propertyName(name),
+        )) {
+            const property =
+                read.kind === "member" && !fallback && ts.isIdentifier(target)
+                    ? read.key
+                    : undefined;
+            if (property === undefined || !ts.isIdentifier(target))
                 context.fail(
                     element,
                     "Object destructuring in static for...of binds plain or renamed identifiers.",
@@ -4166,7 +4164,7 @@ export class StatementLowerer {
                     element,
                     `The unrolled element has no property '${property}'.`,
                 );
-            context.bindings.bindLocalValue(element.name, member);
+            context.bindings.bindLocalValue(target, member);
         }
     }
 

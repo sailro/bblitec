@@ -473,6 +473,16 @@ test("property keys are read through one owner per layer", () => {
     );
 });
 
+test("destructuring slots and specifier names are read through syntax.ts", () => {
+    // What a pattern element reads is patternSlots / bindingElementKey, an
+    // array literal element's index arrayLiteralSlots, and a specifier's
+    // source-side name specifierSourceName.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).propertyNameRules > 0),
+        ["src/compiler/syntax.ts"],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

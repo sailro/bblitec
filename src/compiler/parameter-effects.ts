@@ -26,6 +26,9 @@ import {
     aliasKey,
     keysMayMatch,
     keyIndex,
+    arrayLiteralSlots,
+    patternSlots,
+    type PatternRead,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -189,6 +192,19 @@ function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
     const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
     return element === undefined || typeCanCarryReference(element);
+}
+
+/**
+ * The values one destructuring slot takes: a member's projection, or for a
+ * rest a new collection of the members.
+ */
+function slotValues(
+    values: readonly Projection[],
+    read: PatternRead,
+): readonly Projection[] {
+    return read.kind === "member"
+        ? project(values, aliasKey(read.key))
+        : nest(project(values, ANY_KEY), ANY_KEY);
 }
 
 /** Library methods that call the function they are handed before returning. */
@@ -459,29 +475,12 @@ class EffectWalker {
             this.bindSymbol(name, values);
             return;
         }
-        name.elements.forEach((element, position) => {
-            if (ts.isOmittedExpression(element)) return;
-            if (element.dotDotDotToken) {
-                // A rest is a new object or array of the remaining values.
-                if (ts.isObjectBindingPattern(name))
-                    this.emit("enumerated", node, values, scope);
-                this.bindPattern(
-                    element.name,
-                    nest(project(values, ANY_KEY), ANY_KEY),
-                    node,
-                    scope,
-                );
-                return;
-            }
-            const key = ts.isArrayBindingPattern(name)
-                ? String(position)
-                : element.propertyName
-                  ? aliasKey(propertyKey(element.propertyName))
-                  : ts.isIdentifier(element.name)
-                    ? element.name.text
-                    : ANY_KEY;
-            this.bindPattern(element.name, project(values, key), node, scope);
-        });
+        for (const { target, read } of patternSlots(name)) {
+            // An object rest enumerates the remaining keys.
+            if (read.kind === "rest")
+                this.emit("enumerated", node, values, scope);
+            this.bindPattern(target, slotValues(values, read), node, scope);
+        }
     }
 
     /** Whether code in `scope` runs only while the analysed function does. */
@@ -833,13 +832,17 @@ class EffectWalker {
             return;
         }
         if (ts.isArrayLiteralExpression(parent)) {
-            const position = parent.elements.indexOf(top);
-            const key = parent.elements
-                .slice(0, position)
-                .some(ts.isSpreadElement)
-                ? ANY_KEY
-                : String(position);
-            this.consume(parent, nest(values, key), scope);
+            const index = arrayLiteralSlots(parent).find(
+                (slot) => slot.element === top,
+            )?.index;
+            this.consume(
+                parent,
+                nest(
+                    values,
+                    aliasKey(index === undefined ? undefined : String(index)),
+                ),
+                scope,
+            );
             return;
         }
         const yielded = operandYield(parent, top);
@@ -1003,40 +1006,15 @@ class EffectWalker {
             else this.emit("stored", node, values, scope);
             return;
         }
-        if (ts.isArrayLiteralExpression(unwrapped)) {
-            unwrapped.elements.forEach((element, position) =>
-                this.assigned(
-                    ts.isSpreadElement(element) ? element.expression : element,
-                    project(
-                        values,
-                        ts.isSpreadElement(element)
-                            ? ANY_KEY
-                            : String(position),
-                    ),
-                    node,
-                    scope,
-                ),
-            );
-            return;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            for (const property of unwrapped.properties)
-                if (ts.isShorthandPropertyAssignment(property))
-                    this.assigned(
-                        property.name,
-                        project(values, property.name.text),
-                        node,
-                        scope,
-                    );
-                else if (ts.isPropertyAssignment(property))
-                    this.assigned(
-                        property.initializer,
-                        project(values, aliasKey(propertyKey(property.name))),
-                        node,
-                        scope,
-                    );
-                else if (ts.isSpreadAssignment(property))
-                    this.assigned(property.expression, values, node, scope);
+        if (
+            ts.isArrayLiteralExpression(unwrapped) ||
+            ts.isObjectLiteralExpression(unwrapped)
+        ) {
+            for (const { target, read } of patternSlots(unwrapped)) {
+                if (read.kind === "rest")
+                    this.emit("enumerated", node, values, scope);
+                this.assigned(target, slotValues(values, read), node, scope);
+            }
             return;
         }
         if (

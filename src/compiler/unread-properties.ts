@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { accessKey, propertyKey } from "./syntax.js";
+import { accessKey, bindingElementKey } from "./syntax.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -54,11 +54,7 @@ export function propertyNeverObserved(
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)
         ) {
-            const key = node.propertyName
-                ? propertyKey(node.propertyName)
-                : ts.isIdentifier(node.name)
-                  ? node.name.text
-                  : undefined;
+            const key = bindingElementKey(node);
             if (
                 node.dotDotDotToken !== undefined ||
                 key === undefined ||

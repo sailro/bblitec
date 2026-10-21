@@ -1,13 +1,11 @@
 import type ts from "typescript";
 import { EmissionMap } from "./emission-transaction.js";
+import { ANY_KEY } from "./syntax.js";
 
 /** A property every plain record inherits: no record lacks it. */
 const INHERITED_PROPERTIES = new Set(
     Object.getOwnPropertyNames(Object.prototype),
 );
-
-/** Any key: an open source whose keys a conversion cannot enumerate. */
-export const UNKNOWN_PROPERTIES = "*";
 
 /**
  * Properties a native record provably lacks. A struct stores every property
@@ -86,7 +84,7 @@ export class AbsentRecordProperties {
         node: ts.Node,
     ): void {
         const carried = this.carriedInto(struct);
-        if (carried.has(property) || carried.has(UNKNOWN_PROPERTIES)) {
+        if (carried.has(property) || carried.has(ANY_KEY)) {
             this.retain?.(
                 struct,
                 [...this.sourceRecords(struct)],

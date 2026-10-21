@@ -6,6 +6,7 @@ import {
 } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { bindingElementKey } from "../compiler/syntax.js";
 
 export function lowerBabylonSceneData(
     context: LoweringContext,
@@ -282,9 +283,7 @@ export function lowerBabylonSceneData(
                                         element,
                                         "Expected a light mesh-ID name.",
                                     );
-                                const key = context.propertyName(
-                                    element.propertyName ?? element.name,
-                                );
+                                const key = bindingElementKey(element);
                                 if (
                                     !key ||
                                     ![

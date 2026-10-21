@@ -49,6 +49,8 @@ import {
     isAssignmentExpression,
     isValueReference,
     propertyKey,
+    bindingElementKey,
+    specifierSourceName,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -4829,7 +4831,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return undefined;
         return {
             specifier: module.text,
-            name: (declaration.propertyName ?? declaration.name).text,
+            name: specifierSourceName(declaration),
         };
     }
 
@@ -9924,11 +9926,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ? []
             : [`${indent}${this.cpp(shape)} ${source} = ${value};`];
         for (const element of pattern.elements) {
-            const key = element.propertyName
-                ? propertyKey(element.propertyName)
-                : ts.isIdentifier(element.name)
-                  ? element.name.text
-                  : undefined;
+            const key = bindingElementKey(element);
             if (
                 element.dotDotDotToken ||
                 element.initializer ||
@@ -10629,12 +10627,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 bindings: [
                     `const auto& ${item} = ${range}[${index}];`,
                     ...binding.elements.map((part) => {
-                        const key = part.propertyName ?? part.name;
+                        const key = bindingElementKey(part);
                         if (
                             part.initializer ||
                             part.dotDotDotToken ||
                             !ts.isIdentifier(part.name) ||
-                            !ts.isIdentifier(key)
+                            key === undefined
                         )
                             return this.refuse(
                                 part,
@@ -10642,7 +10640,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             );
                         return bind(
                             part.name,
-                            this.model.memberRead(item, element.name, key.text),
+                            this.model.memberRead(item, element.name, key),
                         );
                     }),
                 ],

@@ -15,6 +15,8 @@ interface SourceFacts {
     nameRoleTests: number;
     /** `ts.isIdentifier(x) || ts.isStringLiteral(x)`-style rules for the key a name spells. */
     keyRuleTests: number;
+    /** `x.propertyName ? ... : x.name` / `x.propertyName ?? x.name`: a destructuring or specifier name rule. */
+    propertyNameRules: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -98,6 +100,7 @@ export function sourceFacts(path: string): SourceFacts {
         constructs: new Set(),
         nameRoleTests: 0,
         keyRuleTests: 0,
+        propertyNameRules: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -165,6 +168,18 @@ export function sourceFacts(path: string): SourceFacts {
             keyRule(node)
         )
             facts.keyRuleTests++;
+        const chosen = ts.isConditionalExpression(node)
+            ? node.condition
+            : ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+              ? node.left
+              : undefined;
+        if (
+            chosen &&
+            ts.isPropertyAccessExpression(chosen) &&
+            chosen.name.text === "propertyName"
+        )
+            facts.propertyNameRules++;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

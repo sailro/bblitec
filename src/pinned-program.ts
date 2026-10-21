@@ -11,7 +11,7 @@ import {
     isLibraryTyping,
     libraryTypingFile,
 } from "./typescript-library-files.js";
-import { namesMember } from "./compiler/syntax.js";
+import { namesMember, specifierSourceName } from "./compiler/syntax.js";
 
 /**
  * The sources a typed pinned program is built over: the store that reads
@@ -417,7 +417,7 @@ export class PinnedProgram implements PinnedNames {
         if (ts.isImportSpecifier(declaration)) {
             const from = imported(declaration);
             if (!from) return CHECKER;
-            const name = (declaration.propertyName ?? declaration.name).text;
+            const name = specifierSourceName(declaration);
             return this.importedExport(file, from.specifier, name, seen);
         }
         if (ts.isImportClause(declaration)) {
@@ -439,8 +439,7 @@ export class PinnedProgram implements PinnedNames {
             const clause = declaration.parent.parent;
             if (clause.moduleSpecifier) {
                 if (!ts.isStringLiteral(clause.moduleSpecifier)) return CHECKER;
-                const name = (declaration.propertyName ?? declaration.name)
-                    .text;
+                const name = specifierSourceName(declaration);
                 return this.importedExport(
                     file,
                     clause.moduleSpecifier.text,

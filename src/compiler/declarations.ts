@@ -124,6 +124,7 @@ interface DeclarationContext
         Pick<
             LoweringServices,
             | "absenceTags"
+            | "propertyName"
             | "impureReadCount"
             | "allocateTemporaryCppName"
             | "classLowerer"
@@ -5540,17 +5541,11 @@ export class DeclarationLowerer {
                 element,
                 "A nested binding requires a property key.",
             );
-        let property = propertyKey(propertyName);
-        if (ts.isComputedPropertyName(propertyName)) {
-            const expression = this.context.unwrap(propertyName.expression);
-            if (ts.isStringLiteralLike(expression)) property = expression.text;
-            else if (ts.isNumericLiteral(expression))
-                property = String(Number(expression.text));
-        }
+        const property = this.context.propertyName(propertyName);
         if (property === undefined)
             this.context.fail(
                 propertyName,
-                "Object destructuring requires a literal property key.",
+                "Object destructuring requires a key known at generation.",
             );
         return { name: element.name, property };
     }

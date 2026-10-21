@@ -5,13 +5,13 @@ import { yieldsNewArray } from "./fresh-records.js";
 import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
     isAssignmentExpression,
-    propertyKey,
     unwrapExpression,
     wrappedParent,
     isTypeAssertion,
     writeSites,
     writeSiteOf,
     accessKey,
+    patternSlots,
 } from "./syntax.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
@@ -152,29 +152,29 @@ function readsOnlyAsMember(access: ts.Expression): boolean {
     );
 }
 
-/** The property names a destructuring assignment target reads. */
-function assignmentPatternNames(
+/**
+ * What a destructuring assignment target reads of its source: each member
+ * an object pattern names, and the whole object where a rest or a run-time
+ * key reads members the syntax does not name.
+ */
+function assignmentPatternReads(
     pattern: ts.Expression,
-    names: (name: string, node: ts.Node) => void,
+    named: (name: string, node: ts.Node) => void,
+    wholesale: (object: ts.Expression) => void,
 ): void {
     const target = unwrapExpression(pattern);
-    if (ts.isArrayLiteralExpression(target)) {
-        for (const element of target.elements)
-            assignmentPatternNames(
-                ts.isSpreadElement(element) ? element.expression : element,
-                names,
-            );
+    if (
+        !ts.isArrayLiteralExpression(target) &&
+        !ts.isObjectLiteralExpression(target)
+    )
         return;
-    }
-    if (!ts.isObjectLiteralExpression(target)) return;
-    for (const property of target.properties) {
-        if (ts.isShorthandPropertyAssignment(property))
-            names(property.name.text, property);
-        else if (ts.isPropertyAssignment(property)) {
-            const name = propertyKey(property.name);
-            if (name !== undefined) names(name, property);
-            assignmentPatternNames(property.initializer, names);
+    for (const slot of patternSlots(target)) {
+        if (ts.isObjectLiteralExpression(target)) {
+            if (slot.read.kind === "member" && slot.read.key !== undefined)
+                named(slot.read.key, slot.element);
+            else wholesale(target);
         }
+        assignmentPatternReads(slot.target, named, wholesale);
     }
 }
 
@@ -415,24 +415,18 @@ function observe(program: ts.Program): ProgramObservations {
                 // Read as a member of the access around it.
             } else if (key !== undefined) read(key, node, node.expression);
             else wholesaleReads.push(node.expression);
-        } else if (
-            ts.isBindingElement(node) &&
-            ts.isObjectBindingPattern(node.parent)
-        ) {
-            const name = node.dotDotDotToken
-                ? undefined
-                : node.propertyName
-                  ? propertyKey(node.propertyName)
-                  : ts.isIdentifier(node.name)
-                    ? node.name.text
-                    : undefined;
-            if (name !== undefined) read(name, node, node.parent);
-            else wholesaleReads.push(node.parent);
+        } else if (ts.isObjectBindingPattern(node)) {
+            for (const { element, read: slot } of patternSlots(node))
+                if (slot.kind === "member" && slot.key !== undefined)
+                    read(slot.key, element, node);
+                else wholesaleReads.push(node);
         }
         for (const { target } of writeSites(node)) written(target);
         if (isAssignmentExpression(node)) {
             if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
-                assignmentPatternNames(node.left, read);
+                assignmentPatternReads(node.left, read, (object) =>
+                    wholesaleReads.push(object),
+                );
         } else if (ts.isBinaryExpression(node)) {
             const operator = node.operatorToken.kind;
             if (

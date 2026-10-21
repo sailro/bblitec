@@ -1084,12 +1084,209 @@ export function objectProperty(
     return found;
 }
 
+/** An array literal element and the index it lands at. */
+export interface ArraySlot {
+    readonly element: ts.Expression;
+    /**
+     * The element's index; undefined for a spread and every element after
+     * one, whose index the spread's length decides. A hole keeps its index.
+     */
+    readonly index: number | undefined;
+}
+
+/** Each element of an array literal with the index it lands at ({@link ArraySlot}). */
+export function arrayLiteralSlots(
+    literal: ts.ArrayLiteralExpression,
+): ArraySlot[] {
+    let shifted = false;
+    return literal.elements.map((element, position) => {
+        if (ts.isSpreadElement(element)) shifted = true;
+        return { element, index: shifted ? undefined : position };
+    });
+}
+
+/**
+ * The name a specifier reads on its source side: the export it imports or
+ * re-exports (`a` in `import { a as b }`), or the local binding a local
+ * export exposes.
+ */
+export function specifierSourceName(
+    specifier: ts.ImportSpecifier | ts.ExportSpecifier,
+): string {
+    return (specifier.propertyName ?? specifier.name).text;
+}
+
+/**
+ * The key an object binding element reads: its `propertyName`'s, else its
+ * own identifier's (`{ a }`). Undefined for a run-time computed key.
+ */
+export function bindingElementKey(
+    element: ts.BindingElement,
+    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
+): string | undefined {
+    return element.propertyName
+        ? keyOf(element.propertyName)
+        : ts.isIdentifier(element.name)
+          ? element.name.text
+          : undefined;
+}
+
+/** What one destructuring element takes from the value its pattern reads. */
+export type PatternRead =
+    /**
+     * One member: an object element's key (undefined for a run-time computed
+     * key) or an array element's index (`key` is its text).
+     */
+    | {
+          readonly kind: "member";
+          readonly key: string | undefined;
+          readonly index?: number;
+      }
+    /** An object rest: a new object of the own keys the pattern did not name. */
+    | {
+          readonly kind: "rest";
+          /** The keys named before it; undefined when one is a run-time key. */
+          readonly excluded: readonly string[] | undefined;
+      }
+    /** An array rest: a new array of the elements from `index` on. */
+    | { readonly kind: "rest-from"; readonly index: number };
+
+/** One element of a binding or assignment pattern. */
+export interface PatternSlot<
+    Target extends ts.BindingName | ts.Expression =
+        ts.BindingName | ts.Expression,
+> {
+    readonly element: ts.Node;
+    /** What receives the value: a name, a nested pattern or a write target. */
+    readonly target: Target;
+    readonly read: PatternRead;
+    /** The default that stands in for an undefined value (`{ a = 1 }`). */
+    readonly fallback?: ts.Expression;
+}
+
+/**
+ * Each element of a destructuring pattern, declared (`const { a } = v`) or
+ * assigned (`({ a } = v)`), with what it reads ({@link PatternRead}). Holes
+ * read nothing but keep later indices. `keyOf` reads an object element's
+ * key: the syntax's by default, a lowering's resolver where the checker or
+ * generation fixes a computed key.
+ */
+export function patternSlots(
+    pattern: ts.BindingPattern,
+    keyOf?: (name: ts.PropertyName) => string | undefined,
+): PatternSlot<ts.BindingName>[];
+export function patternSlots(
+    pattern: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+    keyOf?: (name: ts.PropertyName) => string | undefined,
+): PatternSlot<ts.Expression>[];
+export function patternSlots(
+    pattern:
+        | ts.BindingPattern
+        | ts.ObjectLiteralExpression
+        | ts.ArrayLiteralExpression,
+    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
+): PatternSlot[] {
+    const slots: PatternSlot[] = [];
+    // `x = fallback` in an assignment pattern.
+    const assigned = (
+        element: ts.Node,
+        value: ts.Expression,
+        read: PatternRead,
+    ): PatternSlot =>
+        isAssignmentExpression(value) &&
+        value.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ? { element, target: value.left, read, fallback: value.right }
+            : { element, target: value, read };
+    if (
+        ts.isArrayBindingPattern(pattern) ||
+        ts.isArrayLiteralExpression(pattern)
+    ) {
+        pattern.elements.forEach((element, index) => {
+            if (ts.isOmittedExpression(element)) return;
+            const rest =
+                ts.isSpreadElement(element) ||
+                (ts.isBindingElement(element) && element.dotDotDotToken);
+            const read: PatternRead = rest
+                ? { kind: "rest-from", index }
+                : { kind: "member", key: String(index), index };
+            if (ts.isBindingElement(element))
+                slots.push({
+                    element,
+                    target: element.name,
+                    read,
+                    ...(element.initializer
+                        ? { fallback: element.initializer }
+                        : {}),
+                });
+            else
+                slots.push(
+                    assigned(
+                        element,
+                        ts.isSpreadElement(element)
+                            ? element.expression
+                            : element,
+                        read,
+                    ),
+                );
+        });
+        return slots;
+    }
+    let excluded: string[] | undefined = [];
+    const named = (key: string | undefined): PatternRead => {
+        if (key === undefined) excluded = undefined;
+        else excluded?.push(key);
+        return { kind: "member", key };
+    };
+    const rest = (): PatternRead => ({
+        kind: "rest",
+        excluded: excluded && [...excluded],
+    });
+    const elements: readonly ts.Node[] = ts.isObjectBindingPattern(pattern)
+        ? pattern.elements
+        : pattern.properties;
+    for (const element of elements) {
+        if (ts.isBindingElement(element)) {
+            const read = element.dotDotDotToken
+                ? rest()
+                : named(bindingElementKey(element, keyOf));
+            slots.push({
+                element,
+                target: element.name,
+                read,
+                ...(element.initializer
+                    ? { fallback: element.initializer }
+                    : {}),
+            });
+        } else if (ts.isShorthandPropertyAssignment(element)) {
+            slots.push({
+                element,
+                target: element.name,
+                read: named(element.name.text),
+                ...(element.objectAssignmentInitializer
+                    ? { fallback: element.objectAssignmentInitializer }
+                    : {}),
+            });
+        } else if (ts.isPropertyAssignment(element)) {
+            slots.push(
+                assigned(
+                    element,
+                    element.initializer,
+                    named(keyOf(element.name)),
+                ),
+            );
+        } else if (ts.isSpreadAssignment(element)) {
+            slots.push({ element, target: element.expression, read: rest() });
+        }
+    }
+    return slots;
+}
+
 /**
  * The expression a literal's member takes its value from: the last plain
  * or shorthand property of an object literal writing `key`, with no spread
  * or computed key after it that may write it too, or an array literal's
- * element at index `key` when no spread shifts the indices. Undefined where
- * the syntax does not name one.
+ * element at index `key` when no spread before it shifts it. Undefined
+ * where the syntax does not name one (a hole reads undefined).
  */
 export function literalMember(
     expression: ts.Expression,
@@ -1097,12 +1294,10 @@ export function literalMember(
 ): ts.Expression | undefined {
     const literal = unwrapExpression(expression);
     if (typeof key === "number") {
-        if (
-            !ts.isArrayLiteralExpression(literal) ||
-            literal.elements.some(ts.isSpreadElement)
-        )
-            return undefined;
-        const element = literal.elements[key];
+        if (!ts.isArrayLiteralExpression(literal)) return undefined;
+        const element = arrayLiteralSlots(literal).find(
+            (slot) => slot.index === key,
+        )?.element;
         return element && !ts.isOmittedExpression(element)
             ? element
             : undefined;

@@ -19,6 +19,7 @@ import {
     isExpressionWrapper,
     unwrapExpression,
     propertyKey,
+    literalMember,
 } from "./syntax.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
@@ -768,14 +769,8 @@ export function staticNumberValue(
                 return entry.staticNumber;
             }
         }
-        if (
-            !ts.isArrayLiteralExpression(target) ||
-            index === undefined ||
-            !Number.isInteger(index)
-        ) {
-            return undefined;
-        }
-        const element = target.elements[index];
+        if (index === undefined || !Number.isInteger(index)) return undefined;
+        const element = literalMember(target, index);
         return element ? staticNumberValue(context, element) : undefined;
     }
     const libraryGlobal = (expression: ts.Expression): string | undefined =>
