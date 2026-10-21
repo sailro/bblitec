@@ -117,6 +117,15 @@ export function foldSettledComparison(
         if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken) return equal;
         if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) return !equal;
     }
+    // Two strings order by UTF-16 code units, as the generator's own `<`
+    // does; two C++ literals would compare their addresses.
+    if (left.staticString !== undefined && right.staticString !== undefined) {
+        const [a, b] = [left.staticString, right.staticString];
+        if (kind === ts.SyntaxKind.LessThanToken) return a < b;
+        if (kind === ts.SyntaxKind.LessThanEqualsToken) return a <= b;
+        if (kind === ts.SyntaxKind.GreaterThanToken) return a > b;
+        if (kind === ts.SyntaxKind.GreaterThanEqualsToken) return a >= b;
+    }
     const staticNumber = (value: Value): number | undefined =>
         value.kind === "number" && !value.parameterBinding
             ? value.staticNumber

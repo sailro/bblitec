@@ -14999,3 +14999,15 @@ check(
     if (calls !== 1 || formats !== 1) throw new Error("erased effects " + calls + formats);
     `,
 );
+check(
+    "strings compare by UTF-16 code units",
+    `
+    const words = JSON.parse('["pear", "apple", "fig"]') as string[];
+    const sorted = words.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const pair = JSON.parse('["\\ud83d\\ude00", "\\ufffd"]') as string[];
+    const [emoji, replacement] = [pair[0]!, pair[1]!];
+    const constants = "apple" < "banana" && "Zebra" < "apple";
+    if (sorted.join() !== "apple,fig,pear" || !(emoji < replacement) || !constants)
+        throw new Error(sorted.join());
+    `,
+);

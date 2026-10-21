@@ -5,7 +5,7 @@
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { isNullable } from "./type-facts.js";
+import { isNullable, holdsOnly } from "./type-facts.js";
 import {
     compileClassInstanceOf,
     conditionComparison,
@@ -875,6 +875,28 @@ export class ConditionLowerer {
                   )
                 : undefined;
             if (strict !== undefined) return strict;
+            // Two strings order by UTF-16 code units, not by number or by
+            // their UTF-8 bytes; a dynamic value typed string is one.
+            const text = (value: Value, node: ts.Expression): string =>
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    { kind: "string" },
+                    node,
+                );
+            if (
+                !equality &&
+                holdsOnly(
+                    this.context.checker.getTypeAtLocation(unwrapped.left),
+                    ["string"],
+                ) &&
+                holdsOnly(
+                    this.context.checker.getTypeAtLocation(unwrapped.right),
+                    ["string"],
+                )
+            ) {
+                this.context.reachJsData();
+                return `bbl::js::string_code_units(${text(leftValue, unwrapped.left)}) ${operator} bbl::js::string_code_units(${text(rightValue, unwrapped.right)})`;
+            }
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (
