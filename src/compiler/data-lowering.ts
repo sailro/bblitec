@@ -2,6 +2,7 @@ import { filledLengthGrowth } from "./array-length-growth.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     hasScalarFacts,
+    isAbsentValue,
     isPresentValue,
     isStringValue,
     nativeDataMetadata,
@@ -8912,7 +8913,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 argument,
                 "A number argument that may be null or undefined requires distinguishable null and undefined storage.",
             );
-        if (value.kind === "json-null" || isUndefinedDataType(value.dataType)) {
+        if (isAbsentValue(value)) {
             this.context.emitDiscardedValue(value);
             if (absent.null && absent.undefined && undefinedReads !== 0)
                 ambiguous();

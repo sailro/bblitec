@@ -3,7 +3,7 @@ import type { DataType } from "./data-types/model.js";
 import { erasedFieldWidens } from "./data-types/operations.js";
 import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
-import type { ClassFieldDeclaration } from "./class-field-presence-storage.js";
+import type { InstanceProperty } from "./class-members.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import {
@@ -35,7 +35,7 @@ export type StorageRequest =
     | { kind: "record"; demand: NativeRecordStorageDemand }
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
-    | { kind: "class-field-presence"; declaration: ClassFieldDeclaration }
+    | { kind: "class-field-presence"; declaration: InstanceProperty }
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
     | {
           kind: "asserted-handle-field";

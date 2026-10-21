@@ -53,13 +53,7 @@ function absenceTagDeclaration(
         ? unwrapExpression(expression)
         : expression;
     if (ts.isIdentifier(node)) {
-        // A shorthand property reads the binding it names.
-        const declaration = (
-            ts.isShorthandPropertyAssignment(node.parent) &&
-            node.parent.name === node
-                ? checker.getShorthandAssignmentValueSymbol(node.parent)
-                : resolvedSymbol(checker, node)
-        )?.valueDeclaration;
+        const declaration = resolvedSymbol(checker, node)?.valueDeclaration;
         return isAbsenceTagDeclaration(declaration) &&
             !ts.isPropertySignature(declaration) &&
             !ts.isPropertyDeclaration(declaration)

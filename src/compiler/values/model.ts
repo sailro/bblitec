@@ -1,6 +1,7 @@
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
+import { isUndefinedDataType } from "../data-types/operations.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
 import {
@@ -193,6 +194,11 @@ export function contextCanvas(value: Value | undefined): Value | undefined {
  * A value that cannot be absent: an element the host holds, whatever storage
  * it was kept in, or a value with no presence to test that is not `null`.
  */
+/** A value that is no value: `null` or `undefined`. */
+export function isAbsentValue(value: Value): boolean {
+    return value.kind === "json-null" || isUndefinedDataType(value.dataType);
+}
+
 export function isPresentValue(value: Value): boolean {
     return (
         value.uiHostId !== undefined ||

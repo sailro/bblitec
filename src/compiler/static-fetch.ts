@@ -1,5 +1,6 @@
 import { EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { localAssetPath } from "../asset-source.js";
 // Closed asset discovery serves both generation-time inputs and owned fetch
 // responses in asynchronous realms. Other asset consumers retain native paths.
 import ts from "typescript";
@@ -392,7 +393,9 @@ export function compileStaticFetchMethod(
                     ? {
                           fetchedBytes: {
                               expression: call,
-                              sources: owner.packagedSources,
+                              sources: owner.packagedSources.map((source) =>
+                                  fetchedFile(context, source),
+                              ),
                           },
                       }
                     : {}),
@@ -415,7 +418,10 @@ export function compileStaticFetchMethod(
                 "bbl::js::ArrayBuffer(bbl::pal::read_binary_file(" +
                 `bbl::asset_path(${context.cppString(asset.output)})))`,
             dataType: { kind: "arraybuffer" },
-            fetchedBytes: { expression: call, sources: [asset.source] },
+            fetchedBytes: {
+                expression: call,
+                sources: [fetchedFile(context, asset.source)],
+            },
         };
     }
     if (method === "text") {
@@ -698,4 +704,16 @@ function jsonValue(
     node: ts.Node,
 ): Value {
     return jsonToValue(context, staticFetchJsonPolicy, value, node);
+}
+
+/**
+ * The file a packaged response's bytes come from, resolved: a registered
+ * source is entry-relative, and registering it again must not read it as a
+ * URL beneath the deployment's base.
+ */
+function fetchedFile(
+    context: Pick<LoweringServices, "options">,
+    source: string,
+): string {
+    return localAssetPath(source, context.options.fileName) ?? source;
 }

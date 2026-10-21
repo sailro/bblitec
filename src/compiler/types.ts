@@ -11,6 +11,7 @@ export {
     optionalPresentCpp,
     optionalValueCpp,
     contextCanvas,
+    isAbsentValue,
     isPresentValue,
     hasLiteralStringCpp,
     hasScalarFacts,

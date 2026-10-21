@@ -519,11 +519,6 @@ function storedPairLanes(
 }
 
 /**
- * The key and value lanes of a native entry pair: a fixed tuple's own
- * lanes, or an array's first two elements. Undefined for any other value.
- * An array pair's length is the consumer's to check.
- */
-/**
  * A pair array types both its lanes as one union (`[key, record]` as
  * `(string | Rec)[]`): the value lane of a slot storing another record type
  * is the union's one record member, read checked (`std::get` throws on
@@ -538,13 +533,12 @@ function recordLane(
     const union = type?.kind === "optional" ? type.inner : type;
     if (target.kind !== "struct" || union?.kind !== "union") return lane;
     const records = union.members.flatMap((member, index) =>
-        member.kind === "struct" ? [index] : [],
+        member.kind === "struct" ? [{ member, index }] : [],
     );
     if (records.length !== 1) return lane;
-    const index = records[0]!;
-    const member = union.members[index]!;
+    const { member, index } = records[0]!;
     // The slot's own record already selects its member.
-    if (member.kind !== "struct" || member.name === target.name) return lane;
+    if (member.name === target.name) return lane;
     if (type?.kind !== "optional")
         return lowerer.leafValue(`std::get<${index}>(${lane.cpp})`, member);
     // A reference record is nullable storage of its own.
@@ -560,6 +554,11 @@ function recordLane(
     );
 }
 
+/**
+ * The key and value lanes of a native entry pair: a fixed tuple's own
+ * lanes, or an array's first two elements. Undefined for any other value.
+ * An array pair's length is the consumer's to check.
+ */
 function nativePairLanes(
     lowerer: DataLowerer,
     pair: Value,

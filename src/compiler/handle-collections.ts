@@ -1384,9 +1384,7 @@ export class HandleCollections {
             engineCpp: engine,
             // A document without punctual lights has its root as its one
             // entity: the root stands for the whole container.
-            ...(assetKind === "gltf" &&
-            owner.asset &&
-            this.soleGltfRoot(owner.asset, collection)
+            ...(owner.asset && this.soleGltfRoot(owner.asset, collection)
                 ? { soleAssetEntity: true as const }
                 : {}),
         };

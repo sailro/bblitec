@@ -1,8 +1,4 @@
-import type ts from "typescript";
-
-/** A class property declaration: a field or a constructor parameter property. */
-export type ClassFieldDeclaration =
-    ts.PropertyDeclaration | ts.ParameterDeclaration;
+import type { InstanceProperty } from "./class-members.js";
 
 /**
  * A shared class field that one construction binds to a value and another
@@ -10,7 +6,7 @@ export type ClassFieldDeclaration =
  * method inlined on a stored instance reads the one value or nothing.
  */
 export class ClassFieldPresenceRequired extends Error {
-    constructor(readonly declaration: ClassFieldDeclaration) {
+    constructor(readonly declaration: InstanceProperty) {
         super("A shared class field must store whether it is present.");
     }
 }

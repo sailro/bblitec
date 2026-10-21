@@ -6005,7 +6005,8 @@ export class UserFunctionLowerer {
             parameter.type,
             parameter.declaration,
         );
-        if (!type) return value;
+        // An array argument is not copied into tagged elements.
+        if (type?.kind !== "tagged") return value;
         const name = context.allocateTemporaryCppName("tagged_argument");
         context.emit({
             kind: "declaration",

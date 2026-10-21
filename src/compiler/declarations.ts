@@ -534,17 +534,11 @@ export class DeclarationLowerer {
             ? this.context.checker.getTypeFromTypeNode(declaration.type)
             : this.context.checker.getTypeAtLocation(declaration.name);
         const site = declaration.type ?? declaration.name;
-        const type =
-            this.context.dataTypes.taggedDeclarationStorage(
-                declaration,
-                declared,
-                site,
-            ) ??
-            this.context.dataTypes.taggedElementStorage(
-                declaration,
-                declared,
-                site,
-            );
+        const type = this.context.dataTypes.taggedDeclarationStorage(
+            declaration,
+            declared,
+            site,
+        );
         if (!type) return false;
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(type);

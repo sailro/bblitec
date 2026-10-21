@@ -16,6 +16,7 @@
 
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { canvasBakeBrowserArgs } from "../browser-harness.js";
@@ -90,14 +91,14 @@ export function browserGeneratedString(
     // sent to Chromium, where it returned an object), while a body-scoped
     // one would still be a source-text decision, which generated behaviour
     // does not make.
-    if (!readsCanvasDataUrl(declaration.body)) return undefined;
     // What the bake carries back is the helper's string.
     const signature = checker.getSignatureFromDeclaration(declaration);
     if (
         !signature ||
         (checker.getReturnTypeOfSignature(signature).flags &
             ts.TypeFlags.StringLike) ===
-            0
+            0 ||
+        !readsCanvasDataUrl(declaration.body)
     )
         return undefined;
     const source = declaration.getSourceFile();
@@ -223,21 +224,14 @@ function runCanvasHelperInChromium(
  * A nested function's read is that function's, not the helper's.
  */
 function readsCanvasDataUrl(body: ts.Node): boolean {
-    let reads = false;
-    const visit = (node: ts.Node): void => {
-        if (reads || (node !== body && ts.isFunctionLike(node))) return;
-        if (
+    return someAnalysisNode(
+        body,
+        (node) =>
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "toDataURL"
-        ) {
-            reads = true;
-            return;
-        }
-        node.forEachChild(visit);
-    };
-    visit(body);
-    return reads;
+            node.expression.name.text === "toDataURL",
+        { functions: "skip" },
+    );
 }
 
 /**

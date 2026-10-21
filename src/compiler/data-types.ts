@@ -419,6 +419,8 @@ export interface DataStructField {
     defaultWhenMissing?: boolean;
     /** Which union tags actually own this field (wire serialization observes absence). */
     presentForTags?: Array<Array<{ discriminant: string; value: string }>>;
+    /** A class layout slot storing whether this source property is present. */
+    presenceOf?: string;
     /**
      * The source declared the property with `?`, so JavaScript can observe it
      * as absent rather than as null. `JSON.stringify` is the observer: it
@@ -1513,38 +1515,21 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The tagged storage of a source declaration whose value has `type`
-     * (resolved at `site`), when the program observes which absent value it
-     * holds ({@link absenceTaggedStorage}); undefined while one state answers.
+     * The storage of a source declaration whose value has `type` (resolved
+     * at `site`) when the program observes which absent value it holds:
+     * tagged, or an array of tagged elements ({@link absenceTaggedStorage});
+     * undefined while one state answers.
      */
     public taggedDeclarationStorage(
         declaration: ts.Declaration,
         type: ts.Type,
         site: ts.Node,
-    ): DataType<"tagged"> | undefined {
+    ): DataType | undefined {
         if (!this.storage.absenceTags.has(declaration)) return undefined;
         const stored = this.fromStoredTsType(type, site);
         const storage =
             stored && this.absenceTaggedStorage(declaration, stored);
-        return storage?.kind === "tagged" ? storage : undefined;
-    }
-
-    /**
-     * The storage of a source array declaration whose elements keep their
-     * absence tags ({@link absenceTaggedStorage}); undefined otherwise.
-     */
-    public taggedElementStorage(
-        declaration: ts.Declaration,
-        type: ts.Type,
-        site: ts.Node,
-    ): DataType<"vector"> | undefined {
-        if (!this.storage.absenceTags.has(declaration)) return undefined;
-        const stored = this.fromStoredTsType(type, site);
-        const storage =
-            stored && this.absenceTaggedStorage(declaration, stored);
-        return storage?.kind === "vector" && storage.element.kind === "tagged"
-            ? storage
-            : undefined;
+        return storage === stored ? undefined : storage;
     }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
@@ -7899,6 +7884,7 @@ export class DataTypeRegistry {
                         name: sanitizeIdentifier(`${nativeName}_present`),
                         declarations: [member],
                         type: { kind: "boolean" },
+                        presenceOf: member.name.text,
                     };
                     fields.push(presence);
                     presences.push({});
@@ -8058,6 +8044,19 @@ export class DataTypeRegistry {
         return this.classStructLayout(name).find(
             (candidate) => candidate.sourceName === property,
         );
+    }
+
+    /**
+     * The slot storing whether a class field is present
+     * (`ClassFieldPresenceRequired`), when its layout keeps one.
+     */
+    public classFieldPresenceSlot(
+        name: string,
+        property: string,
+    ): DataStructField | undefined {
+        return this.storage.classFieldPresence.size === 0
+            ? undefined
+            : this.classStructField(name, classFieldPresenceSource(property));
     }
 
     /**
