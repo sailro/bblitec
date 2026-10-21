@@ -45,7 +45,7 @@ import {
     isGeneratorFunction,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
-import { nullability, isVoid } from "./type-facts.js";
+import { nullability, isVoid, holdsOnly } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -133,14 +133,14 @@ function isInertExpression(
     const inert = (expression: ts.Expression): boolean =>
         isInertExpression(checker, expression, classSymbols);
     const primitive = (expression: ts.Expression): boolean =>
-        (checker.getTypeAtLocation(expression).flags &
-            (ts.TypeFlags.NumberLike |
-                ts.TypeFlags.StringLike |
-                ts.TypeFlags.BooleanLike |
-                ts.TypeFlags.BigIntLike |
-                ts.TypeFlags.Undefined |
-                ts.TypeFlags.Null)) !==
-        0;
+        holdsOnly(checker.getTypeAtLocation(expression), [
+            "number",
+            "string",
+            "boolean",
+            "bigint",
+            "undefined",
+            "null",
+        ]);
     const expression = unwrapExpression(node);
     if (
         ts.isLiteralExpression(expression) ||

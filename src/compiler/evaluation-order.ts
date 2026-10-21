@@ -26,6 +26,7 @@ import {
     writeSites,
     isSuspensionPoint,
 } from "./syntax.js";
+import { holdsOnly, valueKinds, valueKindOf } from "./type-facts.js";
 
 /**
  * JavaScript evaluates the operands of one expression left to right. The
@@ -486,9 +487,8 @@ export class EvaluationOrder {
                 elements.elements.every(
                     (element) =>
                         !ts.isSpreadElement(element) &&
-                        (this.checker.getTypeAtLocation(element).flags &
-                            ts.TypeFlags.NumberLike) !==
-                            0,
+                        valueKindOf(this.checker.getTypeAtLocation(element)) ===
+                            "number",
                 )
             );
         }
@@ -570,16 +570,11 @@ export class EvaluationOrder {
         const receiver = this.checker.getTypeAtLocation(
             unwrapExpression(callee.expression),
         );
+        const receiverKinds = valueKinds(receiver);
         if (
-            (receiver.isUnion() ? receiver.types : [receiver]).some(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Any |
-                            ts.TypeFlags.Unknown)) !==
-                    0,
-            )
+            receiverKinds.has("null") ||
+            receiverKinds.has("undefined") ||
+            receiverKinds.has("unknown")
         )
             return false;
         if (
@@ -1333,19 +1328,14 @@ export class EvaluationOrder {
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
     private isPrimitive(expression: ts.Expression): boolean {
-        const type = this.checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.StringLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.EnumLike |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Null)) !==
-                0,
-        );
+        return holdsOnly(this.checker.getTypeAtLocation(expression), [
+            "number",
+            "string",
+            "boolean",
+            "bigint",
+            "undefined",
+            "null",
+        ]);
     }
 
     /** The function a name always holds: a function declaration, or a never-reassigned `const`. */

@@ -38,6 +38,7 @@ import {
     functionOfDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
+import { valueKindOf } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -1084,8 +1085,8 @@ class AssetUrlDomain {
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            this.context.checker.getTypeAtLocation(node).flags &
-                ts.TypeFlags.StringLike
+            valueKindOf(this.context.checker.getTypeAtLocation(node)) ===
+                "string"
         ) {
             const parts: Domain[] = [];
             const collect = (value: ts.Expression): void => {
@@ -1093,8 +1094,9 @@ class AssetUrlDomain {
                 if (
                     ts.isBinaryExpression(operand) &&
                     operand.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                    this.context.checker.getTypeAtLocation(operand).flags &
-                        ts.TypeFlags.StringLike
+                    valueKindOf(
+                        this.context.checker.getTypeAtLocation(operand),
+                    ) === "string"
                 ) {
                     collect(operand.left);
                     collect(operand.right);
@@ -1243,10 +1245,7 @@ class AssetUrlDomain {
             }
             return this.returned(callback, projection.slice(1), nested);
         }
-        if (
-            projection.length ||
-            !(receiverType.flags & ts.TypeFlags.StringLike)
-        )
+        if (projection.length || valueKindOf(receiverType) !== "string")
             return undefined;
         const source = this.operand(callee.expression, [], environment);
         if (!source) return undefined;

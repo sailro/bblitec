@@ -122,6 +122,7 @@ import {
     type AbsentValueKind,
     undefinedOnly,
     isVoid,
+    holdsNoPayload,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -4743,11 +4744,7 @@ export class DataTypeRegistry {
                     !actualSignature
                         ? declaredType
                         : (override ?? declaredType);
-                if (
-                    (parameterType.flags &
-                        (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
-                    0
-                ) {
+                if (holdsNoPayload(parameterType)) {
                     erasedParameters.push(index);
                     return [];
                 }

@@ -14903,3 +14903,13 @@ check(
     if (c.add() !== undefined || c.n !== 10) throw new Error("undefined result " + c.n);
     `,
 );
+check(
+    "a branded primitive is its primitive",
+    `
+    type Id = number & { readonly brand: unique symbol };
+    const make = (n: number): Id => n as Id;
+    const ids: Id[] = [make(3), make(4)];
+    const total = ids.reduce((sum, id) => sum + id, 0);
+    if (total !== 7 || typeof ids[0] !== "number") throw new Error("branded " + total);
+    `,
+);

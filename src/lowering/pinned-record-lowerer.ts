@@ -104,6 +104,11 @@ import {
     typedElementCpp,
     type RecordShape,
 } from "./record-shapes.js";
+import {
+    presentMembers,
+    isNullable,
+    valueKindOf,
+} from "../compiler/type-facts.js";
 export type { RecordShape } from "./record-shapes.js";
 
 /** One member the port spells itself. */
@@ -359,9 +364,6 @@ interface ModuleVariable {
     /** The constructed initial value; absent state starts empty. */
     readonly initializer?: string;
 }
-
-const nullishFlags =
-    ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
 /**
  * A `RegExp`: the entry compiler's own runtime regular expression
@@ -906,9 +908,7 @@ export class PinnedRecordModel {
                 return { kind: "json" };
         }
         if (type.isUnion()) {
-            const present = type.types.filter(
-                (member) => (member.flags & nullishFlags) === 0,
-            );
+            const present = presentMembers(type);
             if (present.length === 0) return { kind: "void" };
             const shape = this.unionShape(present, site);
             return present.length === type.types.length
@@ -924,11 +924,10 @@ export class PinnedRecordModel {
                 site,
                 `Pinned type '${this.checker.typeToString(type)}' is unresolved; the record model needs every value typed.`,
             );
-        if (flags & ts.TypeFlags.NumberLike) return { kind: "number" };
-        if (flags & ts.TypeFlags.BooleanLike) return { kind: "boolean" };
-        if (flags & ts.TypeFlags.StringLike) return { kind: "string" };
-        if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined))
-            return { kind: "void" };
+        const kind = valueKindOf(type);
+        if (kind === "number" || kind === "boolean" || kind === "string")
+            return { kind };
+        if (kind === "undefined" || kind === "void") return { kind: "void" };
         if (flags & ts.TypeFlags.NonPrimitive) return { kind: "object" };
         if (flags & ts.TypeFlags.Object) {
             const symbol = type.getSymbol();
@@ -970,7 +969,7 @@ export class PinnedRecordModel {
                 return { kind: "array", element: regExpCaptureShape };
             if (library && name === "ArrayLike") {
                 const [element] = argumentsOf();
-                if (!element || !(element.flags & ts.TypeFlags.NumberLike))
+                if (!element || valueKindOf(element) !== "number")
                     return this.fail(
                         site,
                         "Pinned ArrayLike is admitted over numbers only.",
@@ -4919,15 +4918,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      * named; anything else stays dynamic.
      */
     private jsonNarrowed(type: ts.Type, site: ts.Node): RecordShape {
-        const flags = type.flags;
-        if (flags & ts.TypeFlags.NumberLike) return { kind: "number" };
-        if (flags & ts.TypeFlags.StringLike) return { kind: "string" };
-        if (flags & ts.TypeFlags.BooleanLike) return { kind: "boolean" };
+        const kind = valueKindOf(type);
+        if (kind === "number" || kind === "string" || kind === "boolean")
+            return { kind };
         if (
             this.checker.isTupleType(type) &&
             this.checker
                 .getTypeArguments(type as ts.TypeReference)
-                .every((element) => element.flags & ts.TypeFlags.NumberLike)
+                .every((element) => valueKindOf(element) === "number")
         )
             return this.model.shapeOf(type, site);
         return { kind: "json" };
@@ -4992,9 +4990,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (
                 present?.kind === "error" &&
                 narrowedType.isUnion() &&
-                narrowedType.types.every(
-                    (part) => (part.flags & nullishFlags) === 0,
-                )
+                !isNullable(narrowedType)
             )
                 return present;
             if (
@@ -5007,11 +5003,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             (ts.TypeFlags.Unknown | ts.TypeFlags.Any)))
             ) {
                 const type = this.typeAt(node);
-                const nullish = type.isUnion()
-                    ? type.types.some(
-                          (part) => (part.flags & nullishFlags) !== 0,
-                      )
-                    : (type.flags & nullishFlags) !== 0;
+                const nullish = isNullable(type);
                 return nullish || present.kind === "error" ? storage : present;
             }
             const declaration = this.model.declarationOf(node);
@@ -5060,11 +5052,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)
                             ? member.shape.kind === "optional" ||
                               ts.isOptionalChain(node)
-                            : type.isUnion()
-                              ? type.types.some(
-                                    (part) => (part.flags & nullishFlags) !== 0,
-                                )
-                              : (type.flags & nullishFlags) !== 0;
+                            : isNullable(type);
                     return nullish
                         ? optionalOf(member.shape)
                         : stripOptional(member.shape);
@@ -9980,7 +9968,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             const value = this.value(expression);
             const type = this.typeAt(expression);
-            return type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)
+            // A void or undefined result (not a union with one) is already
+            // discarded.
+            const kind = valueKindOf(type);
+            return kind === "void" || kind === "undefined"
                 ? value
                 : `static_cast<void>(${value})`;
         }

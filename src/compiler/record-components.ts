@@ -5,6 +5,7 @@ import {
     type DeclarationOrigin,
 } from "./symbols.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import { holdsOnly } from "./type-facts.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -526,16 +527,10 @@ function layoutsHoldBoth(
     if (!compared) seen.set(a, (compared = new Set()));
     if (compared.has(b)) return true;
     compared.add(b);
-    const like = (type: ts.Type, flags: ts.TypeFlags): boolean =>
-        (type.isUnion() ? type.types : [type]).every(
-            (member) => (member.flags & flags) !== 0,
-        );
     if (
-        (like(a, ts.TypeFlags.StringLike) &&
-            like(b, ts.TypeFlags.StringLike)) ||
-        (like(a, ts.TypeFlags.NumberLike) &&
-            like(b, ts.TypeFlags.NumberLike)) ||
-        (like(a, ts.TypeFlags.BooleanLike) && like(b, ts.TypeFlags.BooleanLike))
+        (["string", "number", "boolean"] as const).some(
+            (kind) => holdsOnly(a, [kind]) && holdsOnly(b, [kind]),
+        )
     )
         return true;
     const element = (type: ts.Type): ts.Type | undefined =>
@@ -549,15 +544,7 @@ function layoutsHoldBoth(
     const dictionary = (record: ts.Type, view: ts.Type): boolean => {
         if (!isPlainRecord(checker, record)) return false;
         const value = checker.getIndexTypeOfType(view, ts.IndexKind.String);
-        if (
-            !value ||
-            !like(
-                value,
-                ts.TypeFlags.StringLike |
-                    ts.TypeFlags.NumberLike |
-                    ts.TypeFlags.BooleanLike,
-            )
-        )
+        if (!value || !holdsOnly(value, ["string", "number", "boolean"]))
             return false;
         return checker
             .getPropertiesOfType(record)

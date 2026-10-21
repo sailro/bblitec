@@ -10,6 +10,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { enumMemberConstant, resolvedSymbol } from "./symbols.js";
 import { unwrapExpression, propertyKey } from "./syntax.js";
 import type { Value } from "./types.js";
+import { holdsOnly } from "./type-facts.js";
 
 type EnumObjectContext = Pick<
     LoweringServices,
@@ -30,12 +31,6 @@ export function enumObjectSymbol(
 }
 
 /** Whether a type, or each member of its union, has one of `flags`. */
-function everyMember(type: ts.Type, flags: ts.TypeFlags): boolean {
-    return type.isUnion()
-        ? type.types.every((member) => (member.flags & flags) !== 0)
-        : (type.flags & flags) !== 0;
-}
-
 /** Every member of a (possibly merged) enum with its folded value. */
 function enumMembers(
     context: EnumObjectContext,
@@ -74,7 +69,7 @@ export function compileEnumElementAccess(
         access.argumentExpression,
     );
     const key = context.compileValue(access.argumentExpression);
-    if (everyMember(keyType, ts.TypeFlags.NumberLike)) {
+    if (holdsOnly(keyType, ["number"])) {
         const arms = members.flatMap(({ name, value }) =>
             typeof value === "number"
                 ? [
@@ -91,7 +86,7 @@ export function compileEnumElementAccess(
             arms,
         );
     }
-    if (!everyMember(keyType, ts.TypeFlags.StringLike))
+    if (!holdsOnly(keyType, ["string"]))
         context.fail(
             access.argumentExpression,
             "An enum object is read by a number (its reverse mapping) or a string key.",

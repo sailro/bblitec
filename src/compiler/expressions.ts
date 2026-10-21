@@ -193,7 +193,13 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import { absenceKind, isNullable, nullability, isVoid } from "./type-facts.js";
+import {
+    absenceKind,
+    isNullable,
+    nullability,
+    isVoid,
+    valueKindOf,
+} from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
@@ -1530,9 +1536,8 @@ export class ExpressionLowerer {
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+                "string"
         ) {
             const operands: ts.Expression[] = [];
             this.collectStringPlusOperands(unwrapped, operands);
@@ -1651,9 +1656,8 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken) &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+                "string"
         ) {
             return this.context.dataLowerer.compileStringLogicalValue(
                 unwrapped,
@@ -2171,9 +2175,8 @@ export class ExpressionLowerer {
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+                "string"
         ) {
             this.collectStringPlusOperands(unwrapped.left, operands);
             this.collectStringPlusOperands(unwrapped.right, operands);
@@ -7120,8 +7123,9 @@ export class ExpressionLowerer {
         }
         if (
             callee.name.text === "toLocaleString" &&
-            this.context.checker.getTypeAtLocation(callee.expression).flags &
-                ts.TypeFlags.NumberLike
+            valueKindOf(
+                this.context.checker.getTypeAtLocation(callee.expression),
+            ) === "number"
         ) {
             const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind !== "number")

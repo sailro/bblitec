@@ -71,6 +71,7 @@ import {
     foldNumericUnary,
     jsBitwiseCall,
 } from "./pinned-operators.js";
+import { isNullable, holdsOnly } from "../compiler/type-facts.js";
 
 /**
  * Each list-shaped binding's C++ storage, and what indexing it yields.
@@ -4220,13 +4221,8 @@ export class PinnedNumericLowerer {
                 return this.valueKind(node.left);
         }
         const type = pinnedCheckerOf(this.file).getTypeAtLocation(node);
-        const parts = type.isUnion() ? type.types : [type];
-        if (
-            parts.every((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0)
-        )
-            return "boolean";
-        if (parts.every((part) => (part.flags & ts.TypeFlags.StringLike) !== 0))
-            return "string";
+        if (holdsOnly(type, ["boolean"])) return "boolean";
+        if (holdsOnly(type, ["string"])) return "string";
         // The numeric port's untyped adapters and arithmetic return numbers.
         return "number";
     }
@@ -4323,14 +4319,9 @@ export class PinnedNumericLowerer {
     private provenPresent(node: ts.Expression): boolean {
         const at = ts.isNonNullExpression(node.parent) ? node.parent : node;
         const type = pinnedCheckerOf(this.file).getTypeAtLocation(at);
-        const absent =
-            ts.TypeFlags.Undefined |
-            ts.TypeFlags.Null |
-            ts.TypeFlags.Void |
-            ts.TypeFlags.Any |
-            ts.TypeFlags.Unknown;
-        return (type.isUnion() ? type.types : [type]).every(
-            (part) => (part.flags & absent) === 0,
+        return (
+            !isNullable(type) &&
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
         );
     }
 

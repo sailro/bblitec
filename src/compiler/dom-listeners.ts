@@ -10,6 +10,7 @@ import {
     optionalOptionValue,
 } from "./option-helpers.js";
 import { pinCpp } from "./evaluation-order.js";
+import { valueKindOf } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -286,9 +287,7 @@ export function listenerOptions(
     const result = { capture: "false", once: "false", passive: "false" };
     if (!expression) return result;
     if (
-        (context.checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.BooleanLike) !==
-        0
+        valueKindOf(context.checker.getTypeAtLocation(expression)) === "boolean"
     ) {
         result.capture = context.conditions.compileCondition(expression);
         return result;

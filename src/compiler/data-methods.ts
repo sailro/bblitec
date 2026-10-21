@@ -85,6 +85,7 @@ import {
     declaredContextualType,
     isTypeReference,
     slotHoldsOnlyNull,
+    valueKindOf,
 } from "./type-facts.js";
 
 /**
@@ -362,8 +363,7 @@ export function mayCompileDataMethodCall(
         !staticMemberReceiver(checker, callee.expression) &&
         !pinnedHandleKind(owner) &&
         !platformHandleKind(owner) &&
-        (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
-            0
+        !["number", "boolean"].includes(valueKindOf(owner))
     );
 }
 

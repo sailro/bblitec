@@ -141,7 +141,7 @@ import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
-import { presentMembers } from "./type-facts.js";
+import { presentMembers, valueKindOf } from "./type-facts.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -1410,9 +1410,8 @@ export class UiProjection {
             if (!runtimeOperands)
                 return collect(current.left) && collect(current.right);
             if (
-                (this.context.checker.getTypeAtLocation(current).flags &
-                    ts.TypeFlags.StringLike) ===
-                0
+                valueKindOf(this.context.checker.getTypeAtLocation(current)) !==
+                "string"
             )
                 return false;
             operand(current.left);
@@ -5055,9 +5054,8 @@ export class UiProjection {
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(node).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(node)) ===
+                "string"
         )
             return [
                 ...this.uiMarkupParts(node.left),

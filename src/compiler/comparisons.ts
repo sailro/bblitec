@@ -17,6 +17,7 @@ import { localClassOfSymbol } from "./class-members.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { valueKinds } from "./type-facts.js";
 
 const STRICT_EQUALITY = new Map<ts.SyntaxKind, ts.SyntaxKind>([
     [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken],
@@ -36,21 +37,15 @@ interface ConditionComparison {
 function primitiveKind(
     type: ts.Type,
 ): "number" | "string" | "boolean" | "bigint" | undefined {
-    const kinds = new Set(
-        (type.isUnion() ? type.types : [type]).map((member) =>
-            member.flags & ts.TypeFlags.NumberLike
-                ? "number"
-                : member.flags & ts.TypeFlags.StringLike
-                  ? "string"
-                  : member.flags & ts.TypeFlags.BooleanLike
-                    ? "boolean"
-                    : member.flags & ts.TypeFlags.BigIntLike
-                      ? "bigint"
-                      : undefined,
-        ),
-    );
+    const kinds = valueKinds(type);
     const [kind] = kinds;
-    return kinds.size === 1 ? kind : undefined;
+    return kinds.size === 1 &&
+        (kind === "number" ||
+            kind === "string" ||
+            kind === "boolean" ||
+            kind === "bigint")
+        ? kind
+        : undefined;
 }
 
 /**
@@ -178,9 +173,7 @@ export function foldBooleanComparison(
         // A specialized option can hold a known boolean even when its
         // declaration also permits an object. The value proof below still
         // requires a concrete boolean on at least one side.
-        return (type.isUnion() ? type.types : [type]).some(
-            (member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0,
-        );
+        return valueKinds(type).has("boolean");
     };
     if (!booleanLike(expression.left) || !booleanLike(expression.right))
         return undefined;

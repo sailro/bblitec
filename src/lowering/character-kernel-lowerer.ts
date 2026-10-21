@@ -23,6 +23,7 @@ import {
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
 import { isSuspensionPoint } from "../compiler/syntax.js";
+import { valueKindOf, holdsOnly } from "../compiler/type-facts.js";
 
 /** A pinned value with its represented storage and alias lifetime. */
 export interface KernelValue {
@@ -144,11 +145,10 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     /** The kernel representation of a checker type. */
     public representation(type: ts.Type, at: ts.Node): RecordShape {
         const flags = type.flags;
-        if (flags & ts.TypeFlags.NumberLike) return recordScalars.number;
-        if (flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
-        if (flags & ts.TypeFlags.StringLike) return recordScalars.string;
-        if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined))
-            return recordScalars.void;
+        const kind = valueKindOf(type);
+        if (kind === "number" || kind === "boolean" || kind === "string")
+            return recordScalars[kind];
+        if (kind === "undefined" || kind === "void") return recordScalars.void;
         if (flags & ts.TypeFlags.NonPrimitive) return recordScalars.object;
         if (flags & ts.TypeFlags.Unknown && this.schema.unknown)
             return this.schema.unknown;
@@ -292,13 +292,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         }
         const type = this.checker.getTypeAtLocation(node);
         if (type.flags & ts.TypeFlags.Any) return undefined;
-        if (type.flags & ts.TypeFlags.NumberLike) return recordScalars.number;
-        if (type.flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
-        if (
-            type.isUnion() &&
-            type.types.every((member) => member.flags & ts.TypeFlags.NumberLike)
-        )
-            return recordScalars.number;
+        if (holdsOnly(type, ["number"])) return recordScalars.number;
+        if (valueKindOf(type) === "boolean") return recordScalars.boolean;
         return undefined;
     }
 

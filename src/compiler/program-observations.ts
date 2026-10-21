@@ -19,6 +19,7 @@ import {
     patternSlots,
     equalityOperator,
 } from "./syntax.js";
+import { valueKindOf } from "./type-facts.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
 export interface ObservedWrite {
@@ -322,7 +323,7 @@ function observe(program: ts.Program): ProgramObservations {
             const argument = unwrapExpression(unwrapped.argumentExpression);
             if (
                 !ts.isStringLiteralLike(argument) &&
-                (typeOf(argument).flags & ts.TypeFlags.NumberLike) !== 0
+                valueKindOf(typeOf(argument)) === "number"
             )
                 return;
             const property = accessKey(unwrapped);

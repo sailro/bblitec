@@ -619,25 +619,38 @@ test("a void result reads as undefined through one rule", () => {
 });
 
 test("a type's absent members are read through type-facts.ts", () => {
-    // undefinedOnly (every member undefined or void: a call completes
-    // without a value), nullability, presentMembers and isNullable read
-    // `void`; symbols.ts compares against a nullish literal. The pending
-    // files dispatch on a type's value kind (the value-kinds unit) or lower
-    // equality (the L4 equality unit).
+    // undefinedOnly, isVoid, holdsNoPayload, nullability, presentMembers
+    // and isNullable read `void`; symbols.ts compares against a nullish
+    // literal.
     assert.deepEqual(
         sourcePaths
             .filter((path) => sourceFacts(path).members.has("Void"))
             .sort(),
+        ["src/compiler/symbols.ts", "src/compiler/type-facts.ts"],
+    );
+});
+
+test("a type's value kinds are read through type-facts.ts", () => {
+    // valueKindOf / valueKinds / holdsOnly classify a member once (a branded
+    // primitive is its primitive); data-types.ts maps each kind to storage,
+    // and symbols.ts sits below type-facts.ts.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return [
+                    "NumberLike",
+                    "StringLike",
+                    "BooleanLike",
+                    "BigIntLike",
+                    "ESSymbolLike",
+                ].some((flag) => members.has(flag));
+            })
+            .sort(),
         [
-            "src/compiler/canvas-instrumentation.ts",
-            "src/compiler/data-lowering.ts",
             "src/compiler/data-types.ts",
             "src/compiler/symbols.ts",
             "src/compiler/type-facts.ts",
-            "src/compiler/user-functions.ts",
-            "src/lowering/character-kernel-lowerer.ts",
-            "src/lowering/pinned-numeric-lowerer.ts",
-            "src/lowering/pinned-record-lowerer.ts",
         ],
     );
 });

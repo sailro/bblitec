@@ -6,6 +6,7 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { notJson, staticJsonValue } from "./option-helpers.js";
 import { resolvedSymbol } from "./symbols.js";
+import { valueKindOf } from "./type-facts.js";
 
 interface StaticDocumentContext extends Pick<
     LoweringServices,
@@ -29,11 +30,7 @@ export function staticDocumentText(
     context: StaticDocumentContext,
     expression: ts.Expression,
 ): string | undefined {
-    if (
-        (context.checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.StringLike) ===
-        0
-    )
+    if (valueKindOf(context.checker.getTypeAtLocation(expression)) !== "string")
         return undefined;
     const active = new Set<ts.Node>();
     const decline = Symbol("dynamic document");

@@ -5,6 +5,7 @@ import {
     unwrapExpression,
     yieldedOperands,
 } from "./syntax.js";
+import { valueKindOf } from "./type-facts.js";
 
 /** Fixed authored fragments around runtime text. Null spans never carry markup. */
 export type UiMarkupShape = readonly (string | null)[];
@@ -56,9 +57,7 @@ export function uiMarkupValueShape(
     if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-        (context.checker.getTypeAtLocation(node).flags &
-            ts.TypeFlags.StringLike) !==
-            0
+        valueKindOf(context.checker.getTypeAtLocation(node)) === "string"
     )
         return join([...shape(node.left), ...shape(node.right)]);
     if (ts.isIdentifier(node)) {

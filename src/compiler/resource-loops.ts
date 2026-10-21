@@ -60,6 +60,7 @@ import {
 } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { isComposedAudioEnum } from "./audio-surface.js";
+import { holdsOnly } from "./type-facts.js";
 
 interface ResourceLoopContext
     extends
@@ -604,9 +605,7 @@ function reachesSpecializingEffect(
             const keyType = context.checker.getTypeAtLocation(
                 node.argumentExpression,
             );
-            const stringKey = (
-                keyType.isUnion() ? keyType.types : [keyType]
-            ).every((type) => (type.flags & ts.TypeFlags.StringLike) !== 0);
+            const stringKey = holdsOnly(keyType, ["string"]);
             if (
                 expressionHandleKind(context, node.expression) ||
                 (stringKey &&

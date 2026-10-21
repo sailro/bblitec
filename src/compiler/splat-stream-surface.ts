@@ -14,6 +14,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { isPinnedType } from "./data-types.js";
 import { resolvedSymbol } from "./symbols.js";
+import { valueKindOf, holdsOnly } from "./type-facts.js";
 
 interface SplatStreamSurfaceContext extends Pick<
     LoweringServices,
@@ -68,8 +69,7 @@ function publicMember(
     };
 }
 
-const isNumber = (type: ts.Type): boolean =>
-    (type.flags & ts.TypeFlags.NumberLike) !== 0;
+const isNumber = (type: ts.Type): boolean => valueKindOf(type) === "number";
 
 /** A stats value's data type: a number, a phase string, or a nullable number or error. */
 function statsValue(
@@ -81,7 +81,7 @@ function statsValue(
     if (isNumber(type))
         return context.dataLowerer.leafValue(read, { kind: "number" });
     const members = type.isUnion() ? type.types : [type];
-    if (members.every((member) => member.flags & ts.TypeFlags.StringLike))
+    if (holdsOnly(type, ["string"]))
         return context.dataLowerer.leafValue(read, { kind: "string" });
     const present = members.filter(
         (member) => !(member.flags & ts.TypeFlags.Null),

@@ -30,6 +30,10 @@ import {
     nullability,
     presentLiteralKeys,
     typeCanCarryReference,
+    holdsOnly,
+    isNullable,
+    holdsNoPayload,
+    valueKindOf,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -1508,33 +1512,22 @@ export class UserFunctionLowerer {
             signature && this.checker.getReturnTypeOfSignature(signature);
         const flags = returned?.flags;
         const stringResult =
-            returned !== undefined &&
-            (returned.isUnion() ? returned.types : [returned]).every(
-                (member) => (member.flags & ts.TypeFlags.StringLike) !== 0,
-            );
+            returned !== undefined && holdsOnly(returned, ["string"]);
         const nullableScalarResult =
             returned?.isUnion() === true &&
-            returned.types.some(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                    0,
-            ) &&
-            returned.types.every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.StringLike |
-                            ts.TypeFlags.NumberLike |
-                            ts.TypeFlags.BooleanLike |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined)) !==
-                    0,
-            );
+            isNullable(returned) &&
+            holdsOnly(returned, [
+                "string",
+                "number",
+                "boolean",
+                "null",
+                "undefined",
+            ]);
         if (
             flags === undefined ||
             (!stringResult &&
                 !nullableScalarResult &&
-                (flags & ts.TypeFlags.BooleanLike) === 0)
+                valueKindOf(returned!) !== "boolean")
         )
             return undefined;
         const knownArgument = (value: Value): boolean =>
@@ -5192,10 +5185,7 @@ export class UserFunctionLowerer {
             context.fail(node, message),
         );
         const runtimeParameters = ir.parameters.filter(
-            (parameter) =>
-                (parameter.type.flags &
-                    (ts.TypeFlags.Never | ts.TypeFlags.Void)) ===
-                0,
+            (parameter) => !holdsNoPayload(parameter.type),
         );
         if (
             runtimeParameters
@@ -5380,11 +5370,7 @@ export class UserFunctionLowerer {
                     );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
-                        if (
-                            (parameter.type.flags &
-                                (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
-                            0
-                        ) {
+                        if (holdsNoPayload(parameter.type)) {
                             const initializer =
                                 parameter.declaration.initializer;
                             if (initializer) {

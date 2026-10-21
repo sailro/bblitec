@@ -69,7 +69,12 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { isJsonValue } from "./json-bridge.js";
-import { absenceKind, excludesObjectColour, isNullable } from "./type-facts.js";
+import {
+    absenceKind,
+    excludesObjectColour,
+    isNullable,
+    valueKindOf,
+} from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -778,9 +783,7 @@ export class StaticEvaluator {
         }
         if (
             numericGlobal &&
-            (this.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.NumberLike) !==
-                0
+            valueKindOf(this.checker.getTypeAtLocation(unwrapped)) === "number"
         )
             return this.castNumber(this.resolveValue(unwrapped), precision);
         if (ts.isPostfixUnaryExpression(unwrapped)) {
@@ -2135,9 +2138,7 @@ export class StaticEvaluator {
         }
         if (
             ts.isCallExpression(unwrapped) &&
-            (this.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.checker.getTypeAtLocation(unwrapped)) === "string"
         ) {
             try {
                 return this.generationText(unwrapped);
@@ -2196,9 +2197,7 @@ export class StaticEvaluator {
         const number = this.staticNumberThroughRecords(resolved);
         if (number !== undefined) return String(number);
         if (
-            (this.checker.getTypeAtLocation(resolved).flags &
-                ts.TypeFlags.StringLike) !==
-            0
+            valueKindOf(this.checker.getTypeAtLocation(resolved)) === "string"
         ) {
             return this.compileStringLiteral(resolved);
         }

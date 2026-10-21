@@ -7,21 +7,77 @@ import {
 } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
+/**
+ * What a value of one member of a type is at run time. `void` is its own
+ * kind: a result its caller is not meant to read, whose run-time value only
+ * a proven completion makes `undefined`. `unknown` covers `any`, `unknown`
+ * and types only an instantiation decides.
+ */
+export type ValueKind =
+    | "number"
+    | "string"
+    | "boolean"
+    | "bigint"
+    | "symbol"
+    | "null"
+    | "undefined"
+    | "void"
+    | "object"
+    | "unknown";
+
+const scalarKinds: readonly [ts.TypeFlags, ValueKind][] = [
+    [ts.TypeFlags.NumberLike, "number"],
+    [ts.TypeFlags.StringLike, "string"],
+    [ts.TypeFlags.BooleanLike, "boolean"],
+    [ts.TypeFlags.BigIntLike, "bigint"],
+    [ts.TypeFlags.ESSymbolLike, "symbol"],
+    [ts.TypeFlags.Null, "null"],
+    [ts.TypeFlags.Undefined, "undefined"],
+    [ts.TypeFlags.Void, "void"],
+];
+
+/** The kind of value one member of a type (not a union) holds. */
+export function valueKindOf(member: ts.Type): ValueKind {
+    for (const [flags, kind] of scalarKinds)
+        if ((member.flags & flags) !== 0) return kind;
+    if (member.isIntersection()) {
+        // A branded primitive (`number & { brand }`) is its primitive.
+        const kinds = member.types.map(valueKindOf);
+        return (
+            kinds.find((kind) => kind !== "object" && kind !== "unknown") ??
+            (kinds.includes("unknown") ? "unknown" : "object")
+        );
+    }
+    return (member.flags &
+        (ts.TypeFlags.Object | ts.TypeFlags.NonPrimitive)) !==
+        0
+        ? "object"
+        : "unknown";
+}
+
+/** The kinds of value a type's members hold; `never` holds none. */
+export function valueKinds(type: ts.Type): ReadonlySet<ValueKind> {
+    if ((type.flags & ts.TypeFlags.Never) !== 0) return new Set();
+    return new Set((type.isUnion() ? type.types : [type]).map(valueKindOf));
+}
+
+/** Whether every value of a type is of one of `kinds`. */
+export function holdsOnly(type: ts.Type, kinds: readonly ValueKind[]): boolean {
+    return [...valueKinds(type)].every((kind) => kinds.includes(kind));
+}
+
 /** Scalars copy into callees; composites and unresolved types may alias. */
 export function typeCanCarryReference(type: ts.Type): boolean {
-    if (type.isUnion() || type.isIntersection())
-        return type.types.some(typeCanCarryReference);
-    const scalar =
-        ts.TypeFlags.NumberLike |
-        ts.TypeFlags.StringLike |
-        ts.TypeFlags.BooleanLike |
-        ts.TypeFlags.BigIntLike |
-        ts.TypeFlags.ESSymbolLike |
-        ts.TypeFlags.Null |
-        ts.TypeFlags.Undefined |
-        ts.TypeFlags.Void |
-        ts.TypeFlags.Never;
-    return (type.flags & scalar) === 0;
+    return !holdsOnly(type, [
+        "number",
+        "string",
+        "boolean",
+        "bigint",
+        "symbol",
+        "null",
+        "undefined",
+        "void",
+    ]);
 }
 
 const ABSENT = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
@@ -168,6 +224,14 @@ interface Nullability {
  */
 export function isVoid(type: ts.Type): boolean {
     return (type.flags & ts.TypeFlags.Void) !== 0;
+}
+
+/**
+ * Whether a slot of this type holds no payload: `void` or `never`. Such a
+ * parameter only fills a position; its argument is erased.
+ */
+export function holdsNoPayload(type: ts.Type): boolean {
+    return isVoid(type) || (type.flags & ts.TypeFlags.Never) !== 0;
 }
 
 /**

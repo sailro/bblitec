@@ -21,7 +21,13 @@ import {
     writeSiteOf,
     positionalParameter,
 } from "./syntax.js";
-import { undefinedOnly, presentMembers, isVoid } from "./type-facts.js";
+import {
+    undefinedOnly,
+    presentMembers,
+    isVoid,
+    holdsOnly,
+    typeCanCarryReference,
+} from "./type-facts.js";
 
 type ReportingValue =
     | "primitive"
@@ -91,21 +97,17 @@ export function hasOnlyReportingEffects(
             index === 0 && options.ownedRejection ? "error" : "input",
         );
     }
-    const primitive = (expression: ts.Expression): boolean => {
-        const type = checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.StringLike |
-                        ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Void)) !==
-                0,
-        );
-    };
+    // A symbol is not printable: concatenating one throws.
+    const primitive = (expression: ts.Expression): boolean =>
+        holdsOnly(checker.getTypeAtLocation(expression), [
+            "string",
+            "number",
+            "boolean",
+            "bigint",
+            "null",
+            "undefined",
+            "void",
+        ]);
     const printable = (value: ReportingValue | undefined): boolean =>
         value === "primitive" || value === "error" || value === "printable";
     const join = (
@@ -469,23 +471,8 @@ function hasOnlyInstrumentationEffects(
     };
     const valueDeclaration = (node: ts.Node): ts.Declaration | undefined =>
         resolvedSymbol(checker, node)?.valueDeclaration;
-    const isPrimitive = (expression: ts.Expression): boolean => {
-        const type = checker.getTypeAtLocation(expression);
-        const members = type.isUnion() ? type.types : [type];
-        return members.every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.StringLike |
-                        ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.ESSymbolLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Void)) !==
-                0,
-        );
-    };
+    const isPrimitive = (expression: ts.Expression): boolean =>
+        !typeCanCarryReference(checker.getTypeAtLocation(expression));
     const isBrowserType = (expression: ts.Expression): boolean => {
         const direct = checker.getTypeAtLocation(expression);
         const type = checker.getAwaitedType(direct) ?? direct;

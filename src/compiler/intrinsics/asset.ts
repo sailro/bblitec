@@ -38,6 +38,7 @@ import {
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
+import { valueKindOf } from "../type-facts.js";
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -296,7 +297,7 @@ function fetchedGltfSource(
     expression: ts.Expression,
 ): string | undefined {
     const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & ts.TypeFlags.StringLike) !== 0) return undefined;
+    if (valueKindOf(type) === "string") return undefined;
     // The bytes' own carrier, read in a probe that leaves no trace: the
     // loader packages the file itself, not the response's opaque copy.
     const bytes = context.probeEmission(

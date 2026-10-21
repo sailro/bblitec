@@ -74,6 +74,9 @@ import {
     slotHoldsOnlyNull,
     presentMembers,
     isVoid,
+    holdsOnly,
+    holdsNoPayload,
+    valueKindOf,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -1605,9 +1608,7 @@ export class DataLowerer {
                     const unwrapped = this.context.unwrap(argument);
                     if (!(
                         ts.isIdentifier(unwrapped) &&
-                        ((argumentType.flags &
-                            (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
-                            0 ||
+                        (holdsNoPayload(argumentType) ||
                             isGlobalUndefined(this.context.checker, unwrapped))
                     )) {
                         this.context.fail(
@@ -9219,9 +9220,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       .getCallSignatures()[0];
         return (
             signature !== undefined &&
-            (this.context.checker.getReturnTypeOfSignature(signature).flags &
-                ts.TypeFlags.BooleanLike) !==
-                0
+            valueKindOf(
+                this.context.checker.getReturnTypeOfSignature(signature),
+            ) === "boolean"
         );
     }
 
@@ -10531,9 +10532,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             source ??
             (ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.NumberLike) ===
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) !==
+                "number"
                 ? this.context.compileValue(unwrapped)
                 : undefined);
         // A guarded optional or union reads as the member the checker
@@ -18057,21 +18057,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const left = this.context.unwrapValue(expression.left);
         const right = this.context.unwrapValue(expression.right);
         if (!loose && this.context.options.workers) {
-            const primitive =
-                ts.TypeFlags.NumberLike |
-                ts.TypeFlags.StringLike |
-                ts.TypeFlags.BooleanLike |
-                ts.TypeFlags.BigIntLike |
-                ts.TypeFlags.ESSymbolLike;
+            const primitive = (side: ts.Expression): boolean =>
+                holdsOnly(this.context.checker.getTypeAtLocation(side), [
+                    "number",
+                    "string",
+                    "boolean",
+                    "bigint",
+                    "symbol",
+                ]);
             if (
-                ((this.context.checker.getTypeAtLocation(right).flags &
-                    primitive) !==
-                    0 &&
+                (primitive(right) &&
                     this.dataTypeAt(left)?.kind === "promise") ||
-                ((this.context.checker.getTypeAtLocation(left).flags &
-                    primitive) !==
-                    0 &&
-                    this.dataTypeAt(right)?.kind === "promise")
+                (primitive(left) && this.dataTypeAt(right)?.kind === "promise")
             )
                 return this.context.fail(
                     expression,

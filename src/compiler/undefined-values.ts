@@ -12,7 +12,7 @@ import {
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
-import { undefinedOnly } from "./type-facts.js";
+import { undefinedOnly, holdsOnly } from "./type-facts.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -287,19 +287,15 @@ export function hasNonThenableCompletion(
             undefinedLibraryCall(checker, expression)
         )
             return true;
-        const type = checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.StringLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.ESSymbolLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Never)) !==
-                0,
-        );
+        // A void result may be any value, a thenable included.
+        return holdsOnly(checker.getTypeAtLocation(expression), [
+            "number",
+            "string",
+            "boolean",
+            "bigint",
+            "symbol",
+            "null",
+            "undefined",
+        ]);
     });
 }

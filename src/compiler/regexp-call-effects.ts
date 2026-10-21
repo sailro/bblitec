@@ -15,6 +15,7 @@ import {
     referenceSite,
     equalityOperator,
 } from "./syntax.js";
+import { holdsOnly } from "./type-facts.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
 interface RegExpEffects {
@@ -66,12 +67,9 @@ function builtinCall(checker: ts.TypeChecker, node: ts.Node): boolean {
         declaration.parent.name.text !== "RegExp"
     )
         return false;
-    const primitiveString = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.every(primitiveString)
-            : (type.flags & ts.TypeFlags.StringLike) !== 0;
-    return primitiveString(
+    return holdsOnly(
         checker.getTypeAtLocation(unwrapExpression(node.arguments[0]!)),
+        ["string"],
     );
 }
 
@@ -239,11 +237,7 @@ function onlyObserved(
         // source from a primitive number. A string or coercible object is
         // still an escape, as are calls and constructor-property reads.
         const type = checker.getTypeAtLocation(parent.arguments[0]!);
-        const numeric = (member: ts.Type): boolean =>
-            member.isUnion()
-                ? member.types.every(numeric)
-                : (member.flags & ts.TypeFlags.NumberLike) !== 0;
-        if (numeric(type)) return true;
+        if (holdsOnly(type, ["number"])) return true;
     }
     if (!constant(parent) || parent.initializer !== expression) return false;
     const symbol = resolvedSymbol(checker, parent.name);

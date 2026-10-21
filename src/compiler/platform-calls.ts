@@ -50,6 +50,7 @@ import {
     classifyUiQuerySelector,
     uiQuerySelectorCpp,
 } from "./ui-query-selectors.js";
+import { valueKindOf } from "./type-facts.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -252,7 +253,7 @@ export class PlatformCalls {
         const type = argument
             ? this.context.checker.getTypeAtLocation(argument)
             : undefined;
-        if (!argument || (type && type.flags & ts.TypeFlags.BooleanLike)) {
+        if (!argument || (type && valueKindOf(type) === "boolean")) {
             const top = argument
                 ? this.context.compileBoolean(argument)
                 : "true";

@@ -14,7 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { presentMembers } from "./type-facts.js";
+import { presentMembers, holdsOnly } from "./type-facts.js";
 import ts from "typescript";
 import {
     isEffectTaskMethodName,
@@ -3478,12 +3478,8 @@ export class PropertyAccessLowerer {
                         (optionalProperty.flags & ts.SymbolFlags.Optional) !==
                             0) ||
                     (declared?.kind === "function" &&
-                        declaredMembers.some(
-                            (member) =>
-                                (member.flags &
-                                    (ts.TypeFlags.Null |
-                                        ts.TypeFlags.Undefined)) !==
-                                0,
+                        declaredMembers.some((member) =>
+                            holdsOnly(member, ["null", "undefined"]),
                         ))
                 ) {
                     // Object literals omit optional fields entirely. A
