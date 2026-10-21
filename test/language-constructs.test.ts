@@ -14948,3 +14948,20 @@ check(
     if (hits !== 11 || braced !== 11 || own !== 13) throw new Error(hits + ":" + braced + ":" + own);
     `,
 );
+check(
+    "closures capture each iteration's own for-let binding",
+    `
+    const plain: Array<() => number> = [];
+    for (let i = 0; i < 3; i++) plain.push(() => i);
+    const written: Array<() => number> = [];
+    for (let i = 0; i < 4; i++) { written.push(() => i * 10); if (i === 1) i++; }
+    const skipped: Array<() => number> = [];
+    for (let i = 0; i < 4; i++) { if (i % 2) continue; skipped.push(() => i); }
+    const manual: Array<() => number> = [];
+    for (let i = 0; i < 3;) { manual.push(() => i); i++; }
+    const pairs: Array<() => string> = [];
+    for (let i = 0, j = 10; i < 2; i++, j--) pairs.push(() => i + ":" + j);
+    const seen = [plain, written, skipped, manual].map((list) => list.map((f) => f()).join()).join("|") + "|" + pairs.map((f) => f()).join();
+    if (seen !== "0,1,2|0,20,30|0,2|1,2,3|0:10,1:9") throw new Error(seen);
+    `,
+);

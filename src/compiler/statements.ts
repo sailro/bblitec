@@ -2620,6 +2620,7 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
+            const iterationCells: string[] = [];
             const counter = integerLoopCounter(context, statement);
             const counterCpp =
                 counter && context.bindings.cppIdentifier(counter.binding.text);
@@ -2645,6 +2646,23 @@ export class StatementLowerer {
                             declaration,
                         );
                     }
+                    // Each iteration of `for (let ...)` has bindings of its
+                    // own: a closure keeps the cell it captured, and the
+                    // next iteration counts on a copy (CreatePerIterationEnvironment).
+                    if ((statement.initializer.flags & ts.NodeFlags.Let) !== 0)
+                        for (const declaration of statement.initializer
+                            .declarations)
+                            if (
+                                ts.isIdentifier(declaration.name) &&
+                                context.sharedClosures.needsSharedClosureStorage(
+                                    declaration,
+                                )
+                            )
+                                iterationCells.push(
+                                    context.bindings.cppIdentifier(
+                                        declaration.name.text,
+                                    ),
+                                );
                 } else {
                     this.emitExpression(context, statement.initializer);
                 }
@@ -2745,6 +2763,14 @@ export class StatementLowerer {
                         )
                     )
                         header = "";
+                    else if (iterationCells.length > 0)
+                        header = [
+                            ...iterationCells.map(
+                                (cell) =>
+                                    `${cell} = bbl::js::make_gc_shared<std::decay_t<decltype(*${cell})>>(*${cell})`,
+                            ),
+                            ...(header ? [header] : []),
+                        ].join(", ");
                     context.emit({
                         kind: "open",
                         code: `for (; ${condition}; ${header}) {`,
