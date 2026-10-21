@@ -265,6 +265,7 @@ import {
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 import { readsErasedVoid } from "./undefined-values.js";
+import { classPrototypeKeys, classMemberTable } from "./class-members.js";
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -14222,8 +14223,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           ?.ownCpp
                     : undefined;
             };
+            // A class instance also inherits its classes' methods and
+            // accessors.
+            const prototypeKeys =
+                operator === "in" && narrowed.classDeclaration
+                    ? classPrototypeKeys(
+                          classMemberTable(
+                              this.context.checker,
+                              narrowed.classDeclaration,
+                          ),
+                      )
+                    : new Set<string>();
             const inherited = (key: string): boolean =>
-                operator === "in" && Object.hasOwn(Object.prototype, key);
+                operator === "in" &&
+                (Object.hasOwn(Object.prototype, key) ||
+                    prototypeKeys.has(key));
             if (key.staticString !== undefined) {
                 if (
                     keys.includes(key.staticString) &&
@@ -14346,9 +14360,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ownerNode,
             );
             if (!field) {
+                const classDeclaration = this.context.dataTypes.classStruct(
+                    dataType.name,
+                )?.declaration;
                 if (
                     operator === "in" &&
-                    Object.hasOwn(Object.prototype, key.staticString)
+                    (Object.hasOwn(Object.prototype, key.staticString) ||
+                        (classDeclaration !== undefined &&
+                            classPrototypeKeys(
+                                classMemberTable(
+                                    this.context.checker,
+                                    classDeclaration,
+                                ),
+                            ).has(key.staticString)))
                 )
                     return "true";
                 this.context.dataTypes.requireStoredRecordProperties(

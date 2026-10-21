@@ -1,12 +1,16 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     declaredInDefaultLibrary,
     resolvedSymbol,
     staticPropertyKey,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
-import { unwrapExpression, wrappedParent } from "./syntax.js";
+import {
+    unwrapExpression,
+    wrappedParent,
+    expressionHasEffects,
+} from "./syntax.js";
 
 /**
  * The local class a name's symbol declares: a class declaration, or a
@@ -139,10 +143,28 @@ function isAbstractClass(declaration: ts.ClassLikeDeclaration): boolean {
 }
 
 /** A static property the program folds from its initializer at generation. */
+/**
+ * Whether a static field reads as its initializer wherever it is read: it
+ * is readonly, and evaluating the initializer again changes nothing and
+ * builds no fresh object (`next++`, `[]` or a function make it a field the
+ * class definition evaluates once).
+ */
 function isStaticConstant(member: ts.PropertyDeclaration): boolean {
+    const initializer = member.initializer;
     return (
-        member.initializer !== undefined &&
-        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !== 0
+        initializer !== undefined &&
+        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !==
+            0 &&
+        !expressionHasEffects(initializer) &&
+        !someAnalysisNode(
+            initializer,
+            (node) =>
+                ts.isArrayLiteralExpression(node) ||
+                ts.isObjectLiteralExpression(node) ||
+                ts.isRegularExpressionLiteral(node) ||
+                ts.isFunctionLike(node) ||
+                ts.isClassLike(node),
+        )
     );
 }
 
@@ -318,6 +340,22 @@ export function classChain(table: ClassMemberTable): ClassMemberTable[] {
         chain.push(current);
     }
     return chain;
+}
+
+/**
+ * The names an instance of `table`'s class inherits from its prototype
+ * chain: its classes' methods and accessors (fields are own properties).
+ */
+export function classPrototypeKeys(table: ClassMemberTable): Set<string> {
+    const keys = new Set<string>();
+    for (const link of classChain(table))
+        for (const name of [
+            ...link.methods.keys(),
+            ...Object.keys(link.getters),
+            ...Object.keys(link.setters),
+        ])
+            keys.add(name);
+    return keys;
 }
 
 /** Whether `table`'s class is `ancestor` or extends it. */

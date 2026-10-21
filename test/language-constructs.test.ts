@@ -14965,3 +14965,25 @@ check(
     if (seen !== "0,1,2|0,20,30|0,2|1,2,3|0:10,1:9") throw new Error(seen);
     `,
 );
+check(
+    "in sees a class instance's inherited methods and accessors",
+    `
+    class B { b(): number { return 1; } get g(): number { return 2; } }
+    class C extends B { v = 1; c(): number { return 3; } }
+    const c = new C();
+    if (!("b" in c) || !("g" in c) || !("c" in c) || !("v" in c) || ("z" in c) || !("toString" in c))
+        throw new Error("in chain");
+    `,
+);
+check(
+    "a static readonly field with effects or a fresh object is evaluated once",
+    `
+    let next = 0;
+    class Q { static readonly id = next++; static readonly free: number[] = []; static readonly HALF = Math.PI / 2; }
+    const a = Q.id, b = Q.id;
+    Q.free.push(1);
+    Q.free.push(2);
+    if (a !== 0 || b !== 0 || next !== 1 || Q.free.length !== 2 || Q.HALF !== Math.PI / 2)
+        throw new Error("static once " + a + b + next + Q.free.length);
+    `,
+);
