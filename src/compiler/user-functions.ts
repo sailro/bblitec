@@ -108,6 +108,7 @@ import {
     writeSites,
     referenceSite,
     accessKey,
+    bindingNameIdentifiers,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -598,6 +599,9 @@ export function retainedNativeMutationTarget(
  * per-kind half the callers keep — arrays and plain objects recognize
  * writes differently — and `mutates` may itself extend the set through
  * `addAlias` (the object walk follows call arguments into parameters).
+ * A walk that tracks members too says through `aliasingMember` which name
+ * a destructuring binds out of `source` (`const { b } = record`,
+ * `[, s] = values`) holds one.
  */
 export function aliasedMutationScan(
     identifier: ts.Identifier,
@@ -608,6 +612,11 @@ export function aliasedMutationScan(
             scan: AliasedMutationScan,
         ) => boolean;
         readonly mutates: (node: ts.Node, scan: AliasedMutationScan) => boolean;
+        readonly aliasingMember?: (
+            source: ts.Expression,
+            leaf: ts.Identifier,
+            scan: AliasedMutationScan,
+        ) => boolean;
     },
 ): boolean {
     const initial = valueSymbol(identifier);
@@ -630,21 +639,27 @@ export function aliasedMutationScan(
         changed = false;
         const mutated = someAnalysisNode(source, (node) => {
             if (walk.mutates(node, scan)) return true;
-            if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.initializer &&
-                walk.aliasingInitializer(node.initializer, scan)
-            ) {
-                scan.addAlias(valueSymbol(node.name));
+            if (ts.isVariableDeclaration(node) && node.initializer) {
+                if (ts.isIdentifier(node.name)) {
+                    if (walk.aliasingInitializer(node.initializer, scan))
+                        scan.addAlias(valueSymbol(node.name));
+                } else
+                    for (const leaf of bindingNameIdentifiers(node.name))
+                        if (walk.aliasingMember?.(node.initializer, leaf, scan))
+                            scan.addAlias(valueSymbol(leaf));
             }
-            for (const { target, stored } of writeSites(node))
-                if (
-                    stored &&
-                    ts.isIdentifier(target) &&
-                    walk.aliasingInitializer(stored, scan)
+            for (const { target, stored, from } of writeSites(node)) {
+                if (!ts.isIdentifier(target)) continue;
+                if (stored ? walk.aliasingInitializer(stored, scan) : false)
+                    scan.addAlias(valueSymbol(target));
+                // A pattern leaf takes a member of what the assignment reads.
+                else if (
+                    !stored &&
+                    from &&
+                    walk.aliasingMember?.(from, target, scan)
                 )
                     scan.addAlias(valueSymbol(target));
+            }
             return false;
         });
         if (mutated) return true;

@@ -14735,3 +14735,101 @@ check(
     if (picked !== 3) throw new Error(String(picked));
     `,
 );
+check(
+    "a write through an element read reaches the literal's record",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const second = values[1]!;
+        second.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("index alias");
+    `,
+);
+check(
+    "a write through an object destructuring reaches the literal's record",
+    `
+    function second(): number {
+        const record = { a: { v: 1 }, b: { v: 2 } };
+        const { b } = record;
+        b.v = 7;
+        return record.b.v;
+    }
+    if (second() !== 7) throw new Error("object alias");
+    `,
+);
+check(
+    "a write through an array destructuring reaches the literal's record",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const [, second] = values;
+        second!.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("element alias");
+    `,
+);
+check(
+    "an array rest binding shifts its indices",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const [, ...rest] = values;
+        rest[0]!.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("rest not shifted");
+    `,
+);
+check(
+    "an array rest assignment shifts its indices",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        let first: { v: number } = { v: 0 };
+        let rest: { v: number }[] = [];
+        [first, ...rest] = values;
+        rest[0]!.v = 7;
+        return values[1]!.v + first.v;
+    }
+    if (second() !== 8) throw new Error("rest assignment");
+    `,
+);
+check(
+    "a nested write through a literal's element reaches its record",
+    `
+    function f(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        values[1]!.v = 7;
+        return values[1]!.v;
+    }
+    if (f() !== 7) throw new Error("direct nested");
+    `,
+);
+check(
+    "a write through an assigned destructuring reaches the literal's record",
+    `
+    function f(): number {
+        const record = { a: { v: 1 }, b: { v: 2 } };
+        let b = { v: 0 };
+        ({ b } = record);
+        b.v = 7;
+        return record.b.v;
+    }
+    if (f() !== 7) throw new Error("assigned destructuring");
+    `,
+);
+check(
+    "a write through a destructured member reaches a module constant",
+    `
+    const CONFIG = { inner: { v: 1 }, list: [{ v: 1 }] };
+    const { inner } = CONFIG;
+    inner.v = 2;
+    const [first] = CONFIG.list;
+    first!.v = 3;
+    if (CONFIG.inner.v !== 2 || CONFIG.list[0]!.v !== 3)
+        throw new Error("module const alias");
+    `,
+);

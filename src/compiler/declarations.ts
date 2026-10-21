@@ -47,7 +47,11 @@ import {
 import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
-import { nullability, presentLiteralKeys } from "./type-facts.js";
+import {
+    nullability,
+    presentLiteralKeys,
+    typeCanCarryReference,
+} from "./type-facts.js";
 import {
     provenUndefinedValue,
     isNonThenableDataType,
@@ -75,6 +79,8 @@ import {
     propertyKey,
     valueOperands,
     writeSites,
+    rootIdentifier,
+    unwrapExpression,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -4245,13 +4251,38 @@ export class DeclarationLowerer {
                     ? node
                     : ts.findAncestor(node, ts.isFunctionLike)) !==
                     declaringFunction);
+        /** Whether `node`'s value can hold a reference into the array's contents. */
+        const carriesContents = (node: ts.Node): boolean =>
+            typeCanCarryReference(this.context.checker.getTypeAtLocation(node));
+        /** Whether `expression` reads a member out of a tracked alias. */
+        const readsMember = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
+            const value = unwrapExpression(expression, { await: true });
+            const root = rootIdentifier(value);
+            return (
+                value !== root &&
+                root !== undefined &&
+                scan.namesAlias(root) &&
+                carriesContents(value)
+            );
+        };
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
             {
+                aliasingMember: (source, leaf, scan) =>
+                    carriesContents(leaf) &&
+                    (valueOperands(source, (expression) =>
+                        unwrapExpression(expression, { await: true }),
+                    ).some((value) => scan.namesAlias(value)) ||
+                        readsMember(source, scan)),
                 aliasingInitializer: (initializer, scan) => {
                     const value = this.context.unwrap(initializer);
                     if (valueNamesAlias(value, scan)) return true;
+                    // `const record = values[1]` holds one of its elements.
+                    if (readsMember(value, scan)) return true;
                     const callee = ts.isCallExpression(value)
                         ? this.context.unwrap(value.expression)
                         : undefined;
@@ -4345,11 +4376,13 @@ export class DeclarationLowerer {
                     return writeSites(node).some(
                         ({ target, from }) =>
                             // Rebinding an alias, or writing, stepping or
-                            // deleting one of its elements (`arr[0]++`).
+                            // deleting anything under one (`arr[0]++`,
+                            // `arr[1].v = 7`, `element.v = 7`).
                             scan.namesAlias(target) ||
-                            (ts.isElementAccessExpression(target) &&
+                            ((ts.isElementAccessExpression(target) ||
+                                ts.isPropertyAccessExpression(target)) &&
                                 scan.namesAlias(
-                                    this.context.unwrap(target.expression),
+                                    rootIdentifier(target) ?? target,
                                 )) ||
                             // Storing an alias into another object.
                             ((ts.isPropertyAccessExpression(target) ||
@@ -4531,14 +4564,16 @@ export class DeclarationLowerer {
             scan: AliasedMutationScan,
             expression: ts.Expression,
             active = new Set<ts.Node>(),
+            unwrap: (expression: ts.Expression) => ts.Expression = this.context
+                .unwrap,
         ): boolean => {
-            const node = this.context.unwrap(expression);
+            const node = unwrap(expression);
             if (ts.isIdentifier(node)) return scan.namesAlias(node);
             if (
                 ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)
             )
-                return isAlias(scan, node.expression, active);
+                return isAlias(scan, node.expression, active, unwrap);
             if (!ts.isCallExpression(node)) return false;
             const called =
                 this.context.checker.getResolvedSignature(node)?.declaration;
@@ -4556,10 +4591,15 @@ export class DeclarationLowerer {
                           (statement) =>
                               ts.isReturnStatement(statement) &&
                               !!statement.expression &&
-                              isAlias(scan, statement.expression, active),
+                              isAlias(
+                                  scan,
+                                  statement.expression,
+                                  active,
+                                  unwrap,
+                              ),
                           { functions: "skip" },
                       )
-                    : isAlias(scan, called.body, active);
+                    : isAlias(scan, called.body, active, unwrap);
             } finally {
                 active.delete(called);
             }
@@ -4570,6 +4610,16 @@ export class DeclarationLowerer {
             {
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer),
+                // `const { inner } = record` holds a member, as
+                // `const inner = record.inner` does.
+                // Queries record no await: read through it without counting.
+                aliasingMember: (source, leaf, scan) =>
+                    isAlias(scan, source, new Set(), (expression) =>
+                        unwrapExpression(expression, { await: true }),
+                    ) &&
+                    typeCanCarryReference(
+                        this.context.checker.getTypeAtLocation(leaf),
+                    ),
                 mutates: (node, scan) => {
                     if (
                         ts.isVariableDeclaration(node) &&
