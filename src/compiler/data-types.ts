@@ -1529,7 +1529,10 @@ export class DataTypeRegistry {
         const stored = this.fromStoredTsType(type, site);
         const storage =
             stored && this.absenceTaggedStorage(declaration, stored);
-        return storage === stored ? undefined : storage;
+        return storage?.kind === "tagged" ||
+            (storage?.kind === "vector" && storage.element.kind === "tagged")
+            ? storage
+            : undefined;
     }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
