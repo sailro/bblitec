@@ -19,7 +19,7 @@ import {
     patternSlots,
     equalityOperator,
 } from "./syntax.js";
-import { valueKindOf } from "./type-facts.js";
+import { valueKindOf, arrayShape } from "./type-facts.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
 export interface ObservedWrite {
@@ -209,10 +209,10 @@ function observe(program: ts.Program): ProgramObservations {
         evolving?: ts.Symbol;
     }[] = [];
     const arrayLocalElements = new Map<ts.Symbol, ts.Type[]>();
-    const mutableElement = (type: ts.Type): ts.Type | undefined =>
-        checker.isArrayType(type) && type.getSymbol()?.name === "Array"
-            ? checker.getTypeArguments(type as ts.TypeReference)[0]
-            : undefined;
+    const mutableElement = (type: ts.Type): ts.Type | undefined => {
+        const shape = arrayShape(checker, type);
+        return shape?.mutable && !shape.tuple ? shape.element : undefined;
+    };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);

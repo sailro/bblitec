@@ -5,7 +5,7 @@ import {
     type DeclarationOrigin,
 } from "./symbols.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { holdsOnly } from "./type-facts.js";
+import { holdsOnly, arrayElementType } from "./type-facts.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -416,8 +416,8 @@ function heldRecords(
     if (compared.has(b)) return [];
     compared.add(b);
     if (checker.isArrayLikeType(a) && checker.isArrayLikeType(b)) {
-        const elementA = checker.getIndexTypeOfType(a, ts.IndexKind.Number);
-        const elementB = checker.getIndexTypeOfType(b, ts.IndexKind.Number);
+        const elementA = arrayElementType(checker, a);
+        const elementB = arrayElementType(checker, b);
         return elementA && elementB
             ? heldRecords(checker, elementA, elementB, seen)
             : [];
@@ -535,7 +535,7 @@ function layoutsHoldBoth(
         return true;
     const element = (type: ts.Type): ts.Type | undefined =>
         checker.isArrayLikeType(type)
-            ? checker.getIndexTypeOfType(type, ts.IndexKind.Number)
+            ? arrayElementType(checker, type)
             : undefined;
     const elementA = element(a);
     const elementB = element(b);

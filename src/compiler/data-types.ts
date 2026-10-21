@@ -123,6 +123,7 @@ import {
     undefinedOnly,
     isVoid,
     holdsNoPayload,
+    arrayShape,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -8108,7 +8109,8 @@ export class DataTypeRegistry {
         const concrete = this.checker.getNonNullableType(
             this.resolveTypeParameter(sourceType),
         );
-        return concrete.symbol?.name === "ReadonlyArray"
+        const shape = arrayShape(this.checker, concrete);
+        return shape && !shape.mutable && !shape.tuple
             ? this.ownReturnedArray(type)
             : type;
     }

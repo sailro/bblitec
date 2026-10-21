@@ -65,6 +65,7 @@ import {
     undefinedOnly,
     presentMembers,
     isVoid,
+    arrayElementType,
 } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { propertyNeverObserved } from "./unread-properties.js";
@@ -1052,10 +1053,7 @@ export class AsyncLowerer {
                 promise.promiseType !== first?.promiseType,
         )
             ? this.iterableSettlement(
-                  context.checker.getIndexTypeOfType(
-                      argumentType,
-                      ts.IndexKind.Number,
-                  ),
+                  arrayElementType(context.checker, argumentType),
                   argument,
                   operation,
               )
@@ -1113,9 +1111,9 @@ export class AsyncLowerer {
             return undefined;
         const context = this.context;
         const lowerer = context.dataLowerer;
-        const source = context.checker.getIndexTypeOfType(
+        const source = arrayElementType(
+            context.checker,
             context.checker.getTypeAtLocation(argument),
-            ts.IndexKind.Number,
         );
         let type = this.mappedIterableSettlement(source, argument);
         let array: DataType<"vector"> | undefined;
@@ -1226,7 +1224,7 @@ export class AsyncLowerer {
     private iterableSourceType(node: ts.Node): ts.Type | undefined {
         const checker = this.context.checker;
         const source = checker.getTypeAtLocation(node);
-        const indexed = checker.getIndexTypeOfType(source, ts.IndexKind.Number);
+        const indexed = arrayElementType(checker, source);
         if (indexed) return indexed;
         if (isTypeReference(source)) return checker.getTypeArguments(source)[0];
         return undefined;
@@ -2297,7 +2295,7 @@ export class AsyncLowerer {
         const checker = this.context.checker;
         return checker.isTupleType(type)
             ? checker.getTypeArguments(type as ts.TypeReference)[index]
-            : checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+            : arrayElementType(checker, type);
     }
 
     private withoutProducerStorage(value: Value): Value {

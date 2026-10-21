@@ -9,6 +9,7 @@ import {
     contextualProperty,
     isTypeReference,
     presentMembers,
+    arrayShape,
 } from "./type-facts.js";
 import {
     outermostWrapper,
@@ -104,14 +105,8 @@ function arrayElement(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): ts.Type | undefined {
-    if (
-        (type.symbol?.name !== "Array" &&
-            type.symbol?.name !== "ReadonlyArray") ||
-        !declaredInDefaultLibrary(type.symbol) ||
-        !isTypeReference(type)
-    )
-        return undefined;
-    return checker.getTypeArguments(type)[0];
+    const shape = arrayShape(checker, type);
+    return shape && !shape.tuple ? shape.element : undefined;
 }
 
 /** One step from a slot's declared type to the position a value is stored in. */

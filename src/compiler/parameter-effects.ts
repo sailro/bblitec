@@ -34,7 +34,7 @@ import {
     functionKind,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
 
 /**
  * What a function does with the object one of its parameters holds, from
@@ -193,7 +193,7 @@ function derive(values: readonly Projection[]): readonly Projection[] {
 function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!typeCanCarryReference(type)) return false;
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
-    const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    const element = arrayElementType(checker, type);
     return element === undefined || typeCanCarryReference(element);
 }
 
@@ -761,9 +761,9 @@ class EffectWalker {
             );
             return;
         }
-        const element = this.checker.getIndexTypeOfType(
+        const element = arrayElementType(
+            this.checker,
             this.checker.getTypeAtLocation(top),
-            ts.IndexKind.Number,
         );
         const elements = project(values, ANY_KEY);
         if (element && !typeCanCarryReference(element)) return;

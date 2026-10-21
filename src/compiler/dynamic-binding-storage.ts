@@ -7,7 +7,7 @@ import {
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
-import { nullability } from "./type-facts.js";
+import { nullability, arrayElementType } from "./type-facts.js";
 import type { Value } from "./types.js";
 import {
     NativeRecordStorageRequired,
@@ -71,10 +71,7 @@ export function demandedStorageType(
     }
     if (storage === "array")
         return dataTypes.withDynamicJsonTypes(true, () => {
-            const indexed = checker.getIndexTypeOfType(
-                source,
-                ts.IndexKind.Number,
-            );
+            const indexed = arrayElementType(checker, source);
             const element =
                 indexed &&
                 (dataTypes.fromStoredTsType(indexed, declaration) ??

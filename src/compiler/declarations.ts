@@ -52,6 +52,7 @@ import {
     presentLiteralKeys,
     typeCanCarryReference,
     isVoid,
+    arrayElementType,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -4176,10 +4177,7 @@ export class DeclarationLowerer {
                 return;
             const type = checker.getTypeAtLocation(node);
             if (!checker.isArrayType(type)) return;
-            const element = checker.getIndexTypeOfType(
-                type,
-                ts.IndexKind.Number,
-            );
+            const element = arrayElementType(checker, type);
             if (
                 !element ||
                 (element.flags &
@@ -5002,9 +5000,9 @@ export class DeclarationLowerer {
                 }
                 if (element.initializer) {
                     if (!defaultType) {
-                        const indexed = this.context.checker.getIndexTypeOfType(
+                        const indexed = arrayElementType(
+                            this.context.checker,
                             this.context.checker.getTypeAtLocation(pattern),
-                            ts.IndexKind.Number,
                         );
                         const absent = indexed && nullability(indexed);
                         if (absent?.null && absent.undefined)

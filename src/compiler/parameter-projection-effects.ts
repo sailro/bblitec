@@ -28,7 +28,7 @@ import {
     parameterForArgument,
     isSuspensionPoint,
 } from "./syntax.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 
@@ -357,11 +357,7 @@ function parameterProjection(
                 projectedType && checker.getPropertyOfType(projectedType, key);
             projectedType = property
                 ? checker.getTypeOfSymbolAtLocation(property, parameter.name)
-                : projectedType &&
-                  checker.getIndexTypeOfType(
-                      projectedType,
-                      ts.IndexKind.Number,
-                  );
+                : projectedType && arrayElementType(checker, projectedType);
         }
         return projectedType;
     };
@@ -552,9 +548,9 @@ function parameterProjection(
                         ? project(flow(element.expression), ANY_KEY)
                         : flow(element);
                     const elementType = ts.isSpreadElement(element)
-                        ? checker.getIndexTypeOfType(
+                        ? arrayElementType(
+                              checker,
                               checker.getTypeAtLocation(element.expression),
-                              ts.IndexKind.Number,
                           )
                         : undefined;
                     if (elementType && !typeCanCarryReference(elementType))
@@ -572,9 +568,9 @@ function parameterProjection(
             );
         if (ts.isCallExpression(node) && arrayMethod(node) === "slice") {
             const owner = receiver(node)!;
-            const element = checker.getIndexTypeOfType(
+            const element = arrayElementType(
+                checker,
                 checker.getTypeAtLocation(owner),
-                ts.IndexKind.Number,
             );
             return element && !typeCanCarryReference(element)
                 ? []
@@ -845,9 +841,9 @@ function parameterProjection(
                         ((!independentFields && !identityPaths) || uses(owner))
                     ) {
                         const method = arrayMethod(node);
-                        const element = checker.getIndexTypeOfType(
+                        const element = arrayElementType(
+                            checker,
                             checker.getTypeAtLocation(owner),
-                            ts.IndexKind.Number,
                         );
                         if (
                             !method ||

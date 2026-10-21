@@ -208,6 +208,42 @@ export function arrayElementType(
     );
 }
 
+/** An array or tuple type: its element type, whether writes through it are allowed, and whether it is a tuple. */
+export interface ArrayShape {
+    readonly element: ts.Type;
+    readonly mutable: boolean;
+    readonly tuple: boolean;
+}
+
+/**
+ * The shape of a library array (`T[]`, `Array<T>`, `ReadonlyArray<T>`) or a
+ * tuple; undefined for any other type, a union included.
+ */
+export function arrayShape(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ArrayShape | undefined {
+    if (checker.isTupleType(type)) {
+        const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        return (
+            element && {
+                element,
+                mutable: !(type as ts.TupleTypeReference).target.readonly,
+                tuple: true,
+            }
+        );
+    }
+    if (!checker.isArrayType(type)) return undefined;
+    const [element] = checker.getTypeArguments(type as ts.TypeReference);
+    return (
+        element && {
+            element,
+            mutable: type.getSymbol()?.name === "Array",
+            tuple: false,
+        }
+    );
+}
+
 /** Which absent values a type admits. */
 interface Nullability {
     /** A member is `null`. */

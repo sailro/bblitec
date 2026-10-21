@@ -16,7 +16,7 @@ import {
     plainDataMembers,
     functionKind,
 } from "./syntax.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
 
 type Path = readonly string[];
@@ -44,7 +44,7 @@ export function concreteArgumentIdentityPaths(
         const type = checker.getNonNullableType(
             checker.getTypeAtLocation(expression),
         );
-        const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        const element = arrayElementType(checker, type);
         return (
             (checker.isArrayType(type) || checker.isTupleType(type)) &&
             element !== undefined &&
@@ -82,10 +82,7 @@ export function concreteArgumentIdentityPaths(
             )
                 return false;
             if (checker.isArrayType(type) || checker.isTupleType(type)) {
-                const element = checker.getIndexTypeOfType(
-                    type,
-                    ts.IndexKind.Number,
-                );
+                const element = arrayElementType(checker, type);
                 return (
                     element !== undefined &&
                     excludesSelected(element, activeTypes)

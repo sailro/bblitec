@@ -14,7 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { presentMembers, holdsOnly } from "./type-facts.js";
+import { presentMembers, holdsOnly, arrayShape } from "./type-facts.js";
 import ts from "typescript";
 import {
     isEffectTaskMethodName,
@@ -1787,11 +1787,10 @@ function readsWithoutMutableAlias(
         const parts = presentMembers(type);
         return (
             parts.length > 0 &&
-            parts.every((part) =>
-                checker.isTupleType(part)
-                    ? (part as ts.TupleTypeReference).target.readonly
-                    : part.getSymbol()?.getName() === "ReadonlyArray",
-            )
+            parts.every((part) => {
+                const shape = arrayShape(checker, part);
+                return shape !== undefined && !shape.mutable;
+            })
         );
     };
     // The outermost assertion types the value; `satisfies` keeps its type.

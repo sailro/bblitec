@@ -71,6 +71,7 @@ import {
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
+import { arrayElementType } from "./type-facts.js";
 
 /**
  * One engine handle collection an expression names.
@@ -743,10 +744,7 @@ export class HandleCollections {
                 `'${unwrapped.name.text}' is a promise of its collection; read it under await.`,
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            awaited,
-            ts.IndexKind.Number,
-        );
+        const elementType = arrayElementType(this.context.checker, awaited);
         if (!elementType) {
             this.context.fail(
                 unwrapped,
@@ -1060,11 +1058,9 @@ export class HandleCollections {
                 "The asset handle table does not expose its mesh collection.",
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            this.context.checker.getNonNullableType(
-                this.context.checker.getTypeAtLocation(expression),
-            ),
-            ts.IndexKind.Number,
+        const elementType = arrayElementType(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
         );
         const element = elementType
             ? this.context.dataTypes.fromTsType(elementType, expression)

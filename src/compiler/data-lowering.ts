@@ -3360,10 +3360,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const container = this.dataTypeAt(expression);
         const sourceType = this.context.checker.getTypeAtLocation(expression);
         const tupleElement = this.context.checker.isTupleType(sourceType)
-            ? this.context.checker.getIndexTypeOfType(
-                  sourceType,
-                  ts.IndexKind.Number,
-              )
+            ? arrayElementType(this.context.checker, sourceType)
             : undefined;
         const declaredElement =
             container?.kind === "vector" || container?.kind === "span"
@@ -5960,9 +5957,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     access,
                     "Dynamic mixed-tuple writes require mutable union-backed lanes.",
                 );
-            const elementTsType = this.context.checker.getIndexTypeOfType(
+            const elementTsType = arrayElementType(
+                this.context.checker,
                 this.context.checker.getTypeAtLocation(access.expression),
-                ts.IndexKind.Number,
             );
             const elementType = elementTsType
                 ? this.context.dataTypes.fromTsType(elementTsType, access)
@@ -7044,11 +7041,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return false;
         }
-        const element = this.context.checker.getIndexTypeOfType(
-            this.context.checker.getNonNullableType(
-                this.context.checker.getTypeAtLocation(unwrapped),
-            ),
-            ts.IndexKind.Number,
+        const element = arrayElementType(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(unwrapped),
         );
         const mapped =
             element && this.context.dataTypes.fromTsType(element, unwrapped);
@@ -9303,9 +9298,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const captures = this.context.captureNativeDependencies(() =>
                 this.context.useNativeValue(owner),
             );
-            const sourceElement = this.context.checker.getIndexTypeOfType(
+            const sourceElement = arrayElementType(
+                this.context.checker,
                 this.context.checker.getTypeAtLocation(node),
-                ts.IndexKind.Number,
             );
             // Losing array membership facts does not change readonly scalar
             // fields when whole-program analysis rules out writes through aliases.
@@ -16421,10 +16416,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const itemType = lane
                 ? this.context.checker.getTypeOfSymbolAtLocation(lane, name)
                 : sourceType &&
-                  this.context.checker.getIndexTypeOfType(
-                      sourceType,
-                      ts.IndexKind.Number,
-                  );
+                  arrayElementType(this.context.checker, sourceType);
             const readItem = (): Value => {
                 if (rest) return this.arrayRestValue(value, index, name);
                 if (value.kind === "tuple")

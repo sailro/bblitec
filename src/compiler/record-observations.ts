@@ -3,7 +3,7 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
-import { nullability } from "./type-facts.js";
+import { nullability, arrayElementType, arrayShape } from "./type-facts.js";
 import {
     programObservations,
     type ObservedWrite,
@@ -270,7 +270,7 @@ function observedArrayWrites(
     const observations = programObservations(context.program);
     const { checker } = context;
     const elementOf = (type: ts.Type): ts.Type | undefined =>
-        checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        arrayElementType(checker, type);
     const sourceElement = elementOf(source);
     const targetElement = elementOf(target);
     const assignable = (from: ts.Type, to: ts.Type): boolean =>
@@ -296,19 +296,17 @@ function observedArrayWrites(
                     : assignable(own, sourceElement)),
         ) ||
         observations.assertions.some(({ asserted, open }) => {
+            const shape = arrayShape(checker, asserted);
             const wide =
-                checker.isArrayType(asserted) &&
-                asserted.getSymbol()?.name === "Array"
-                    ? elementOf(asserted)
-                    : undefined;
+                shape?.mutable && !shape.tuple ? shape.element : undefined;
             return (
                 wide !== undefined &&
                 assignable(wide, element) &&
                 (open || assignable(sourceElement, wide))
             );
         });
-    const targetMutable =
-        checker.isArrayType(target) && target.getSymbol()?.name === "Array";
+    const targetShape = arrayShape(checker, target);
+    const targetMutable = targetShape?.mutable === true && !targetShape.tuple;
     const writtenHolder = (holder: ts.Type): boolean =>
         holdsArray(checker, holder, [source, target], (element) => {
             if (
@@ -378,10 +376,7 @@ function observedArrayIdentity(
         [...observations.identities].some((type) =>
             holdsArray(checker, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
-                    const own = checker.getIndexTypeOfType(
-                        copy,
-                        ts.IndexKind.Number,
-                    );
+                    const own = arrayElementType(checker, copy);
                     return (
                         own === undefined ||
                         checker.isTypeAssignableTo(own, element) ||
@@ -796,7 +791,7 @@ function holdsArray(
         return holder.types.some((member) =>
             holdsArray(checker, member, arrays, related),
         );
-    const element = checker.getIndexTypeOfType(holder, ts.IndexKind.Number);
+    const element = arrayElementType(checker, holder);
     if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
         return holdsRecord(checker, holder, arrays);
     // A type parameter's array holds what its constraint admits.
@@ -808,10 +803,7 @@ function holdsArray(
             (constraint.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
                 0 ||
             arrays.some((array) => {
-                const own = checker.getIndexTypeOfType(
-                    array,
-                    ts.IndexKind.Number,
-                );
+                const own = arrayElementType(checker, array);
                 return (
                     own === undefined ||
                     checker.isTypeAssignableTo(own, constraint) ||

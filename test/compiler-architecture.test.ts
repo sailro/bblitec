@@ -655,6 +655,25 @@ test("a type's value kinds are read through type-facts.ts", () => {
     );
 });
 
+test("array element types are read through type-facts.ts", () => {
+    // arrayElementType (present members' number index) and arrayShape
+    // (element, mutable, tuple); data-types.ts maps them to storage, and the
+    // other two read a dictionary's string index.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("getIndexTypeOfType"),
+            )
+            .sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/data-types.ts",
+            "src/compiler/record-components.ts",
+            "src/compiler/type-facts.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The
