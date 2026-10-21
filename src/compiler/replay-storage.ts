@@ -3,6 +3,7 @@ import type { DataType } from "./data-types/model.js";
 import { erasedFieldWidens } from "./data-types/operations.js";
 import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
+import type { ClassFieldDeclaration } from "./class-field-presence-storage.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import {
@@ -34,6 +35,7 @@ export type StorageRequest =
     | { kind: "record"; demand: NativeRecordStorageDemand }
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
+    | { kind: "class-field-presence"; declaration: ClassFieldDeclaration }
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
     | {
           kind: "asserted-handle-field";
@@ -74,6 +76,8 @@ export class ReplayStorage {
     readonly genericFunctions = new GenericFunctionStorage();
     /** @unjournaled Demands outlive the attempts that met them. Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
     readonly absenceTags = new Set<ts.Declaration>();
+    /** @unjournaled Demands outlive the attempts that met them. Shared class fields that store whether they are present. */
+    readonly classFieldPresence = new Set<ts.Declaration>();
     /** @unjournaled Resource storages whose reached uses require their actual engine. */
     readonly engineOwners = new Set<ts.Declaration>();
     /** @unjournaled Reached assertions settle erased resource field layouts before emission. */
@@ -134,6 +138,8 @@ export class ReplayStorage {
                 return this.genericFunctions.add(request.demand);
             case "absence-tag":
                 return addNew(this.absenceTags, request.declaration);
+            case "class-field-presence":
+                return addNew(this.classFieldPresence, request.declaration);
             case "engine-owner":
                 return addNew(this.engineOwners, request.declaration);
             case "asserted-handle-field": {

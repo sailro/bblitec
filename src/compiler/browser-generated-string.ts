@@ -91,6 +91,15 @@ export function browserGeneratedString(
     // one would still be a source-text decision, which generated behaviour
     // does not make.
     if (!readsCanvasDataUrl(declaration.body)) return undefined;
+    // What the bake carries back is the helper's string.
+    const signature = checker.getSignatureFromDeclaration(declaration);
+    if (
+        !signature ||
+        (checker.getReturnTypeOfSignature(signature).flags &
+            ts.TypeFlags.StringLike) ===
+            0
+    )
+        return undefined;
     const source = declaration.getSourceFile();
 
     const functionName = declaration.name?.text;
@@ -211,11 +220,12 @@ function runCanvasHelperInChromium(
  * makes it is what generation executes. The test is the call's own
  * property name in the AST -- a `.toDataURL(` in a comment or a string is
  * not a call, and generated behaviour is never decided by source text.
+ * A nested function's read is that function's, not the helper's.
  */
 function readsCanvasDataUrl(body: ts.Node): boolean {
     let reads = false;
     const visit = (node: ts.Node): void => {
-        if (reads) return;
+        if (reads || (node !== body && ts.isFunctionLike(node))) return;
         if (
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&

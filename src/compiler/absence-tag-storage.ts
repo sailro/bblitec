@@ -53,13 +53,28 @@ function absenceTagDeclaration(
         ? unwrapExpression(expression)
         : expression;
     if (ts.isIdentifier(node)) {
-        const declaration = resolvedSymbol(checker, node)?.valueDeclaration;
+        // A shorthand property reads the binding it names.
+        const declaration = (
+            ts.isShorthandPropertyAssignment(node.parent) &&
+            node.parent.name === node
+                ? checker.getShorthandAssignmentValueSymbol(node.parent)
+                : resolvedSymbol(checker, node)
+        )?.valueDeclaration;
         return isAbsenceTagDeclaration(declaration) &&
             !ts.isPropertySignature(declaration) &&
             !ts.isPropertyDeclaration(declaration)
             ? declaration
             : undefined;
     }
+    // An element read keeps the tags of the array the storage holds.
+    if (ts.isElementAccessExpression(node))
+        return checker.isArrayType(
+            checker.getNonNullableType(
+                checker.getTypeAtLocation(node.expression),
+            ),
+        )
+            ? absenceTagDeclaration(checker, node.expression)
+            : undefined;
     if (ts.isPropertyAccessExpression(node)) {
         const declarations =
             declaredSymbol(checker, node.name)?.declarations ?? [];

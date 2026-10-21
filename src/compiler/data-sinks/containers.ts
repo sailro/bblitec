@@ -36,7 +36,10 @@ import {
     admitsUndefined,
     storedAsReadonlyArray,
 } from "../type-facts.js";
-import { refuseEitherAbsence } from "../absence-tag-storage.js";
+import {
+    refuseEitherAbsence,
+    requireAbsenceTag,
+} from "../absence-tag-storage.js";
 import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
@@ -518,6 +521,17 @@ function convertedElementsCopy(
             // An array of ArrayLike slots takes the kind of its elements.
             lowerer.requireNumericSlot(value, dataType, node);
             requireStringElements(lowerer, element, dataType.element);
+            // Elements that keep their absence tags here keep them there.
+            if (
+                array !== undefined &&
+                dataType.element.kind === "tagged" &&
+                dataTypesEqual(dataType.element.inner, element)
+            )
+                requireAbsenceTag(
+                    lowerer.context.checker,
+                    lowerer.context.absenceTags,
+                    array,
+                );
             lowerer.context.fail(
                 node,
                 `An array stored as an array of another element type is a copy, and ${observed}; JavaScript keeps one array.`,

@@ -521,7 +521,8 @@ export class DeclarationLowerer {
     /**
      * A binding whose `null` and `undefined` the program tells apart
      * (`AbsenceTagStorageRequired`) keeps both in tagged storage: undefined
-     * until its initializer or an assignment defines it.
+     * until its initializer or an assignment defines it. An array keeps
+     * them per element.
      */
     private emitAbsenceTaggedDeclaration(
         declaration: ts.VariableDeclaration,
@@ -529,13 +530,21 @@ export class DeclarationLowerer {
         sharedClosureStorage: boolean,
     ): boolean {
         if (!ts.isIdentifier(declaration.name)) return false;
-        const type = this.context.dataTypes.taggedDeclarationStorage(
-            declaration,
-            declaration.type
-                ? this.context.checker.getTypeFromTypeNode(declaration.type)
-                : this.context.checker.getTypeAtLocation(declaration.name),
-            declaration.type ?? declaration.name,
-        );
+        const declared = declaration.type
+            ? this.context.checker.getTypeFromTypeNode(declaration.type)
+            : this.context.checker.getTypeAtLocation(declaration.name);
+        const site = declaration.type ?? declaration.name;
+        const type =
+            this.context.dataTypes.taggedDeclarationStorage(
+                declaration,
+                declared,
+                site,
+            ) ??
+            this.context.dataTypes.taggedElementStorage(
+                declaration,
+                declared,
+                site,
+            );
         if (!type) return false;
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(type);

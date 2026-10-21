@@ -16,7 +16,7 @@ import {
     type DeploymentOptions,
 } from "./deployment.js";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
 import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
@@ -502,6 +502,12 @@ export function probePixelsAsset(
         "pixel buffer",
     );
 }
+
+/** Whether `path` names a regular file. */
+function isFile(path: string): boolean {
+    return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
 export function resolveBundledAsset(
     source: string,
     entryFileName?: string,
@@ -510,6 +516,14 @@ export function resolveBundledAsset(
     // A prior resolution or directory scan may already have produced a local
     // absolute path. On POSIX its leading slash also resembles a public URL.
     if (isAbsolute(source) && existsSync(source)) return source;
+    // A packaged fetch names its file relative to the entry: a path, not a
+    // URL beneath the deployment's base.
+    if (
+        entryFileName &&
+        (source.startsWith("./") || source.startsWith("../")) &&
+        isFile(resolve(dirname(resolve(entryFileName)), source))
+    )
+        return source;
     const deployed = deploymentAssetSource(source, deployment);
     if (deployed !== undefined) return deployed;
     if (source === "/brdf-lut.png") {

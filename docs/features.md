@@ -32,6 +32,8 @@ Rules:
 - Operands that touch the same state evaluate left to right; the compiler pins them into temporaries.
 - RGB and vector tuple inputs accept conditional expressions; only the selected arm evaluates.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
+  An array keeps the tag per element, and a map built from `[key, record]` pairs reads the record lane checked.
+- A stored class field that some constructions bind to one value and others leave absent keeps a presence slot.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
   module `const`s run at generation, and an inlined call's argument for a parameter its body never rebinds.

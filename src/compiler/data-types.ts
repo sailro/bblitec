@@ -94,6 +94,7 @@ import {
 } from "./record-components.js";
 import ts from "typescript";
 import { requireDeclarationAbsenceTag } from "./absence-tag-storage.js";
+import { classFieldPresenceSource } from "./class-field-presence-storage.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
 import {
@@ -1498,10 +1499,16 @@ export class DataTypeRegistry {
             declaration === undefined ||
             !this.storage.absenceTags.has(declaration) ||
             type.kind === "json" ||
-            type.kind === "tagged" ||
-            this.slotPresentCpp(type, "slot") === undefined
+            type.kind === "tagged"
         )
             return type;
+        // An array is never absent itself: its elements keep the tags.
+        if (type.kind === "vector" && type.element.kind === "optional")
+            return {
+                ...type,
+                element: { kind: "tagged", inner: type.element },
+            };
+        if (this.slotPresentCpp(type, "slot") === undefined) return type;
         return { kind: "tagged", inner: type };
     }
 
@@ -1520,6 +1527,24 @@ export class DataTypeRegistry {
         const storage =
             stored && this.absenceTaggedStorage(declaration, stored);
         return storage?.kind === "tagged" ? storage : undefined;
+    }
+
+    /**
+     * The storage of a source array declaration whose elements keep their
+     * absence tags ({@link absenceTaggedStorage}); undefined otherwise.
+     */
+    public taggedElementStorage(
+        declaration: ts.Declaration,
+        type: ts.Type,
+        site: ts.Node,
+    ): DataType<"vector"> | undefined {
+        if (!this.storage.absenceTags.has(declaration)) return undefined;
+        const stored = this.fromStoredTsType(type, site);
+        const storage =
+            stored && this.absenceTaggedStorage(declaration, stored);
+        return storage?.kind === "vector" && storage.element.kind === "tagged"
+            ? storage
+            : undefined;
     }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
@@ -7866,6 +7891,19 @@ export class DataTypeRegistry {
                 );
             }
             if (!mapped) {
+                // A hoisted field one construction leaves absent stores
+                // whether it is present (`ClassFieldPresenceRequired`).
+                if (this.storage.classFieldPresence.has(member)) {
+                    const presence: DataStructField = {
+                        sourceName: classFieldPresenceSource(member.name.text),
+                        name: sanitizeIdentifier(`${nativeName}_present`),
+                        declarations: [member],
+                        type: { kind: "boolean" },
+                    };
+                    fields.push(presence);
+                    presences.push({});
+                    fieldsByName.set(presence.sourceName, presence);
+                }
                 continue;
             }
             const sourceName = member.name.text;

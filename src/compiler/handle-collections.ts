@@ -1382,6 +1382,13 @@ export class HandleCollections {
                     : `bbl::asset_container_root(${engine}, ${owner.cpp})`,
             assetKind: "gltf",
             engineCpp: engine,
+            // A document without punctual lights has its root as its one
+            // entity: the root stands for the whole container.
+            ...(assetKind === "gltf" &&
+            owner.asset &&
+            this.soleGltfRoot(owner.asset, collection)
+                ? { soleAssetEntity: true as const }
+                : {}),
         };
     }
 

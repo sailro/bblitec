@@ -457,7 +457,7 @@ export function compileEntryCollection(
                     type: "const auto",
                     name: value,
                     initializer: lowerer.compileLaneForSink(
-                        lanes[1],
+                        recordLane(lowerer, lanes[1], collectionType.value),
                         collectionType.value,
                         input,
                     ),
@@ -523,6 +523,43 @@ function storedPairLanes(
  * lanes, or an array's first two elements. Undefined for any other value.
  * An array pair's length is the consumer's to check.
  */
+/**
+ * A pair array types both its lanes as one union (`[key, record]` as
+ * `(string | Rec)[]`): the value lane of a slot storing another record type
+ * is the union's one record member, read checked (`std::get` throws on
+ * another member) and converted from there.
+ */
+function recordLane(
+    lowerer: DataLowerer,
+    lane: Value,
+    target: DataType,
+): Value {
+    const type = lane.dataType;
+    const union = type?.kind === "optional" ? type.inner : type;
+    if (target.kind !== "struct" || union?.kind !== "union") return lane;
+    const records = union.members.flatMap((member, index) =>
+        member.kind === "struct" ? [index] : [],
+    );
+    if (records.length !== 1) return lane;
+    const index = records[0]!;
+    const member = union.members[index]!;
+    // The slot's own record already selects its member.
+    if (member.kind !== "struct" || member.name === target.name) return lane;
+    if (type?.kind !== "optional")
+        return lowerer.leafValue(`std::get<${index}>(${lane.cpp})`, member);
+    // A reference record is nullable storage of its own.
+    const absent: DataType = lowerer.context.dataTypes.isReferenceStruct(
+        member.name,
+    )
+        ? member
+        : { kind: "optional", inner: member };
+    const cppType = lowerer.context.dataTypes.cppType(absent);
+    return lowerer.leafValue(
+        `(${optionalPresentCpp(lane.cpp)} ? ${cppType}{std::get<${index}>(${optionalValueCpp(lane.cpp)})} : ${cppType}{})`,
+        absent,
+    );
+}
+
 function nativePairLanes(
     lowerer: DataLowerer,
     pair: Value,
