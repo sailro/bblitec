@@ -184,18 +184,34 @@ export function provenUndefinedValue(
             // declaration (a specialized callback parameter) calls it.
             if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
                 return true;
-            const declaration = declaredSymbol(
+            const binding = declaredSymbol(
                 context.checker,
                 callee,
             )?.valueDeclaration;
             if (
-                !declaration ||
+                !binding ||
                 !(
-                    ts.isFunctionDeclaration(declaration) ||
-                    context.bindings.isImmutableVariable(declaration)
+                    ts.isFunctionDeclaration(binding) ||
+                    context.bindings.isImmutableVariable(binding)
                 )
             )
                 return false;
+            // A name bound to a function literal calls that literal, whatever
+            // signature its annotation declares (`const f: () => void = ...`).
+            const literal =
+                ts.isVariableDeclaration(binding) && binding.initializer
+                    ? unwrapExpression(binding.initializer)
+                    : undefined;
+            if (
+                literal &&
+                (ts.isArrowFunction(literal) ||
+                    ts.isFunctionExpression(literal))
+            )
+                return hasUndefinedCompletion(
+                    context.checker,
+                    literal,
+                    awaited,
+                );
         } else if (
             !ts.isArrowFunction(callee) &&
             !ts.isFunctionExpression(callee)
@@ -204,6 +220,44 @@ export function provenUndefinedValue(
         return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
     return visit(node);
+}
+
+/**
+ * Whether reading `value` as `undefined` would guess. A void annotation
+ * erases whatever the function returned, so a void result is `undefined`
+ * only when its completion is proven so ({@link provenUndefinedValue});
+ * `erasedVoidCompletion` marks an `undefined` converted without that proof.
+ * `node` is the expression that produced `value`; without one, only the
+ * mark counts.
+ */
+export function readsErasedVoid(
+    context: UndefinedContext,
+    value: Value,
+    node: ts.Node | undefined,
+): boolean {
+    return (
+        value.erasedVoidCompletion === true ||
+        (node !== undefined &&
+            value.kind === "void" &&
+            !provenUndefinedValue(context, node))
+    );
+}
+
+/**
+ * The `undefined` a void result converts to where nothing reads it yet:
+ * marked when its completion is not proven, so the read that comes refuses.
+ */
+export function undefinedFromVoid(
+    context: UndefinedContext,
+    node: ts.Node,
+): Value {
+    return {
+        kind: "json-null",
+        cpp: "std::nullopt",
+        ...(provenUndefinedValue(context, node)
+            ? {}
+            : { erasedVoidCompletion: true as const }),
+    };
 }
 
 /** Primitive return lanes cannot participate in thenable adoption. */

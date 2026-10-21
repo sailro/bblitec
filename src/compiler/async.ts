@@ -10,6 +10,7 @@ import {
     hasNonThenableCompletion,
     hasUndefinedCallbackCompletion,
     provenUndefinedValue,
+    undefinedFromVoid,
 } from "./undefined-values.js";
 import {
     renderClosure,
@@ -269,13 +270,7 @@ export class AsyncLowerer {
                           awaited.promiseType,
                       );
             if (settled.kind === "void")
-                return {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                    ...(!provenUndefinedValue(context, node)
-                        ? { erasedVoidCompletion: true as const }
-                        : {}),
-                };
+                return undefinedFromVoid(context, node);
             // The settled data belongs to the expression awaiting it, so a
             // declaration it initializes takes it rather than copying it.
             if (settled.dataType !== undefined || settled.kind === "string")

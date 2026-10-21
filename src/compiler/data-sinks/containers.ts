@@ -41,7 +41,7 @@ import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
-import { provenUndefinedValue } from "../undefined-values.js";
+import { readsErasedVoid } from "../undefined-values.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -199,8 +199,7 @@ function valueOptional(
         // this value; its result settles through the activation.
         if (
             !value.abruptCompletion &&
-            (value.erasedVoidCompletion ||
-                !provenUndefinedValue(lowerer.context, node))
+            readsErasedVoid(lowerer.context, value, node)
         )
             lowerer.context.fail(
                 node,

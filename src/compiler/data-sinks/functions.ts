@@ -10,6 +10,7 @@ import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
     isNonThenableDataType,
+    readsErasedVoid,
 } from "../undefined-values.js";
 
 import { plainLane } from "./containers.js";
@@ -404,6 +405,11 @@ function valueFunction(
     node: ts.Node,
 ): string | undefined {
     if (value.kind === "void") {
+        if (readsErasedVoid(lowerer.context, value, node))
+            lowerer.context.fail(
+                node,
+                "A void result stored as a function requires a proven undefined completion.",
+            );
         lowerer.context.emitDiscardedValue(value);
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }

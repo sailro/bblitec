@@ -16,7 +16,7 @@ import {
     errorConstructor,
     thrownMessage,
 } from "../error-values.js";
-import { provenUndefinedValue } from "../undefined-values.js";
+import { readsErasedVoid } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
 import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
@@ -194,8 +194,7 @@ function valueJson(
     }
     if (
         value.kind === "void" &&
-        !value.erasedVoidCompletion &&
-        provenUndefinedValue(lowerer.context, node)
+        !readsErasedVoid(lowerer.context, value, node)
     ) {
         lowerer.context.emitDiscardedValue(value);
         return "bbl::js::JsonValue{}";
@@ -589,11 +588,7 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, lowerer, value, node) => {
             if (isUndefinedDataType(value.dataType))
                 return `(static_cast<void>(${value.cpp}), bbl::js::Undefined{})`;
-            if (
-                value.erasedVoidCompletion ||
-                (value.kind === "void" &&
-                    !provenUndefinedValue(lowerer.context, node))
-            )
+            if (readsErasedVoid(lowerer.context, value, node))
                 lowerer.context.fail(
                     node,
                     "A stored void field requires a proven undefined completion.",

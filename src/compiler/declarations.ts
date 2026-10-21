@@ -53,10 +53,10 @@ import {
     typeCanCarryReference,
 } from "./type-facts.js";
 import {
-    provenUndefinedValue,
     isNonThenableDataType,
     hasUndefinedCallbackCompletion,
     hasNonThenableCompletion,
+    readsErasedVoid,
 } from "./undefined-values.js";
 import { localClassOfSymbol } from "./class-members.js";
 import { ownKeysKnown } from "./object-statics.js";
@@ -1073,12 +1073,8 @@ export class DeclarationLowerer {
         if (
             nullableResource &&
             !this.context.dynamicBindings.has(declaration) &&
-            (value.kind === "json-null" ||
-                (value.kind === "void" &&
-                    provenUndefinedValue(
-                        this.context,
-                        declaration.initializer,
-                    )))
+            (value.kind === "json-null" || value.kind === "void") &&
+            !readsErasedVoid(this.context, value, declaration.initializer)
         ) {
             this.context.emitDiscardedValue(value);
             this.bindOptionalResource(
@@ -1267,7 +1263,7 @@ export class DeclarationLowerer {
                 !this.context.sharedClosures.identifierIsRebound(
                     declaration.name,
                 ) &&
-                provenUndefinedValue(this.context, declaration.initializer)
+                !readsErasedVoid(this.context, value, declaration.initializer)
             ) {
                 this.context.emitDiscardedValue(value);
                 this.context.bindings.defineVariable(declaration.name, {

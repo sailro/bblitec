@@ -47,6 +47,7 @@ import {
     sameCompiledValue,
     type Value,
 } from "./types.js";
+import { readsErasedVoid } from "./undefined-values.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -263,6 +264,11 @@ export class ConditionLowerer {
         if (this.context.options.workers && ts.isAwaitExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             if (value.kind === "void") {
+                if (readsErasedVoid(this.context, value, unwrapped))
+                    this.context.fail(
+                        unwrapped,
+                        "A tested void result requires a proven undefined completion.",
+                    );
                 this.context.emitDiscardedValue(value);
                 return "false";
             }

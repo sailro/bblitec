@@ -2,8 +2,8 @@ import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 import { lowerThinInstanceUploadBody } from "./compiler/thin-instance-upload.js";
 import {
-    provenUndefinedValue,
     isNonThenableDataType,
+    readsErasedVoid,
 } from "./compiler/undefined-values.js";
 import { hasNoValueCompletion } from "./compiler/native-return-type.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
@@ -8547,9 +8547,8 @@ class Compiler implements LoweringServices {
         if (!storage) return false;
         const value = this.compileValue(expression.right);
         if (
-            value.kind === "json-null" ||
-            (value.kind === "void" &&
-                provenUndefinedValue(this, expression.right))
+            (value.kind === "json-null" || value.kind === "void") &&
+            !readsErasedVoid(this, value, expression.right)
         ) {
             this.emitDiscardedValue(value);
             this.emit({ kind: "expression", code: `${storage}.reset();` });

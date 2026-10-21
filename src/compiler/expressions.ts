@@ -53,7 +53,7 @@ import {
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
-import { provenUndefinedValue } from "./undefined-values.js";
+import { readsErasedVoid } from "./undefined-values.js";
 import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -1724,7 +1724,16 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
-            if (isUndefinedDataType(operand.dataType)) {
+            if (readsErasedVoid(this.context, operand, expression))
+                this.context.fail(
+                    expression,
+                    "typeof a void result requires a proven undefined completion.",
+                );
+            // A void call still runs for its effects.
+            if (
+                operand.kind === "void" ||
+                isUndefinedDataType(operand.dataType)
+            ) {
                 this.context.emitDiscardedValue(operand);
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
@@ -1806,11 +1815,9 @@ export class ExpressionLowerer {
                             this.context.dataTypes.structCall(dataType.name) !==
                                 undefined)
                       ? "function"
-                      : operand.kind === "void"
-                        ? "undefined"
-                        : dataType
-                          ? typeofTag(dataType)
-                          : "object";
+                      : dataType
+                        ? typeofTag(dataType)
+                        : "object";
             let present = presenceCpp(operand);
             if (operand.dataType?.kind === "function") {
                 const callable = `static_cast<bool>(${operand.cpp})`;
@@ -5642,8 +5649,7 @@ export class ExpressionLowerer {
             value.kind === "void" &&
             !value.abruptCompletion &&
             !value.coroutineResult &&
-            !value.erasedVoidCompletion &&
-            provenUndefinedValue(this.context, expression)
+            !readsErasedVoid(this.context, value, expression)
         ) {
             this.context.emitDiscardedValue(value);
             return { kind: "json-null", cpp: "std::nullopt" };
@@ -6434,6 +6440,17 @@ export class ExpressionLowerer {
                 }
                 // `...undefined` and `...null` spread no key at all.
                 if (spread.kind === "void" || spread.kind === "json-null") {
+                    if (
+                        readsErasedVoid(
+                            this.context,
+                            spread,
+                            property.expression,
+                        )
+                    )
+                        this.context.fail(
+                            property,
+                            "Spreading a void result requires a proven undefined completion.",
+                        );
                     this.context.emitDiscardedValue(spread);
                     continue;
                 }

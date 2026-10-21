@@ -258,6 +258,7 @@ import {
     literalSelf,
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
+import { readsErasedVoid } from "./undefined-values.js";
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -16299,6 +16300,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : undefined;
                     if (compiled?.kind === "json-null") return compiled;
                     if (compiled?.kind === "void") {
+                        if (readsErasedVoid(this.context, compiled, element))
+                            this.context.fail(
+                                element,
+                                "A void result stored as an element requires a proven undefined completion.",
+                            );
                         this.context.emitDiscardedValue(compiled);
                         return { kind: "json-null", cpp: "std::nullopt" };
                     }

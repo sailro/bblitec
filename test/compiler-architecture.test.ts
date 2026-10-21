@@ -591,6 +591,33 @@ test("function kinds and suspension points are read through syntax.ts", () => {
     );
 });
 
+test("a void result reads as undefined through one rule", () => {
+    // readsErasedVoid / undefinedFromVoid (undefined-values.ts): a void
+    // annotation alone does not make a result undefined. async.ts proves a
+    // reaction's completion and forwards the mark; compiler.ts checks a
+    // stored intrinsic callback's.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).calls.has("provenUndefinedValue"),
+            )
+            .sort(),
+        ["src/compiler/async.ts", "src/compiler/undefined-values.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("erasedVoidCompletion"),
+            )
+            .sort(),
+        [
+            "src/compiler.ts",
+            "src/compiler/async.ts",
+            "src/compiler/undefined-values.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

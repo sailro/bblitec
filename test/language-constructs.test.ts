@@ -14869,3 +14869,26 @@ checkInRealm(
     })();
     `,
 );
+check(
+    "a void call proven undefined reads undefined and still runs",
+    `
+    let calls = 0;
+    function quiet(): void { calls++; }
+    const silent: () => void = () => { calls++; };
+    function pick(a: unknown = 5): unknown { return a; }
+    if (typeof quiet() !== "undefined" || typeof silent() !== "undefined") throw new Error("typeof");
+    if (pick(quiet()) !== 5 || pick(silent()) !== 5) throw new Error("default");
+    if (calls !== 4) throw new Error("calls " + calls);
+    `,
+);
+test("a void result read without a proven undefined completion refuses", () => {
+    for (const source of [
+        "const ask: () => void = () => 3; const kind = typeof ask(); export {};",
+        "function three(): number { return 3; } const ask: () => void = three; const kind = typeof ask(); export {};",
+        "const ask: () => void = () => 3; function pick(a: unknown = 5): unknown { return a; } const v = pick(ask()); export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /requires a proven undefined completion/,
+        );
+});

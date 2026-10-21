@@ -79,6 +79,7 @@ import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
+    readsErasedVoid,
 } from "./undefined-values.js";
 import {
     staticNumberValue,
@@ -7591,6 +7592,12 @@ export class UserFunctionLowerer {
             argument.kind === "void" ||
             (argument.kind === "json-null" && argument.cpp === "std::nullopt")
         ) {
+            // A void result takes the default only when it is undefined.
+            if (argument && readsErasedVoid(context, argument, source))
+                context.fail(
+                    source ?? parameter.declaration,
+                    "A void result bound to a defaulted parameter requires a proven undefined completion.",
+                );
             if (argument?.kind === "void") context.emitDiscardedValue(argument);
             return this.defaultParameterValue(
                 context,
