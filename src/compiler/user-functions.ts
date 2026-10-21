@@ -109,6 +109,7 @@ import {
     referenceSite,
     accessKey,
     bindingNameIdentifiers,
+    plainDataMembers,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -197,13 +198,7 @@ export function snapshotArrayLiteral(
             return (
                 ts.isIdentifier(record) ||
                 (ts.isObjectLiteralExpression(record) &&
-                    record.properties.every(
-                        (property) =>
-                            (ts.isPropertyAssignment(property) ||
-                                ts.isShorthandPropertyAssignment(property)) &&
-                            !ts.isComputedPropertyName(property.name) &&
-                            property.name.text !== "__proto__",
-                    ))
+                    plainDataMembers(record) !== undefined)
             );
         })
     )
@@ -2058,13 +2053,7 @@ export class UserFunctionLowerer {
                 returnType?.kind === "struct" &&
                 recordReturn &&
                 ts.isObjectLiteralExpression(recordReturn) &&
-                recordReturn.properties.every(
-                    (property) =>
-                        (ts.isPropertyAssignment(property) ||
-                            ts.isShorthandPropertyAssignment(property)) &&
-                        !ts.isComputedPropertyName(property.name) &&
-                        property.name.text !== "__proto__",
-                ) &&
+                plainDataMembers(recordReturn) !== undefined &&
                 ir.statements.length === 0 &&
                 !context.evaluationOrder.writesStorage(recordReturn) &&
                 argumentValues.every(generationKnownStringArgument)
@@ -2173,13 +2162,7 @@ export class UserFunctionLowerer {
                 recordReturn &&
                 ts.isObjectLiteralExpression(recordReturn) &&
                 !firstReturn(ir.statements) &&
-                recordReturn.properties.every(
-                    (property) =>
-                        (ts.isPropertyAssignment(property) ||
-                            ts.isShorthandPropertyAssignment(property)) &&
-                        !ts.isComputedPropertyName(property.name) &&
-                        property.name.text !== "__proto__",
-                )
+                plainDataMembers(recordReturn) !== undefined
             ) {
                 const fields = context.dataTypes.structFields(
                     returnType.name,

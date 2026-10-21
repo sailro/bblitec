@@ -483,6 +483,39 @@ test("destructuring slots and specifier names are read through syntax.ts", () =>
     );
 });
 
+test("object literal members are read through syntax.ts", () => {
+    // Which member decides a key is lastWriter / objectProperty /
+    // plainDataMembers (a `__proto__:` setter is no own key). The pending
+    // files match pinned upstream shapes by hand; they leave the list with
+    // the text-matching unit (L5), and no other file may start.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).memberScans > 0).sort(),
+        [
+            "src/gltf-mesh-plan.ts",
+            "src/lowering/animation-property-playback.ts",
+            "src/lowering/babylon-textures.ts",
+            "src/lowering/camera-mutation-lowerer.ts",
+            "src/lowering/flow-graph-lowerer.ts",
+            "src/lowering/gltf/animation-playback.ts",
+            "src/lowering/gltf/animation-pose.ts",
+            "src/lowering/light-lowerer.ts",
+            "src/lowering/light-parameters.ts",
+            "src/lowering/mesh-recovery.ts",
+            "src/lowering/node-particle-live-lowerer.ts",
+            "src/lowering/physics-event-lowerer.ts",
+            "src/lowering/physics-thin-advanced-lowerer.ts",
+            "src/lowering/physics-thin-instance-lowerer.ts",
+            "src/lowering/pinned-blend-table.ts",
+            "src/lowering/pinned-euler-proxy.ts",
+            "src/lowering/post-process-lowerer.ts",
+            "src/lowering/shadow-enabled.ts",
+            "src/lowering/storage-buffer-lowerer.ts",
+            "src/lowering/vat-lowerer.ts",
+            "src/pinned-standard-variants.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

@@ -8,7 +8,7 @@ import {
     yieldsNewArray,
 } from "../fresh-records.js";
 import { returnedRecordLocal } from "../record-observations.js";
-import { propertyKey, unwrapExpression } from "../syntax.js";
+import { unwrapExpression, objectLiteralMembers } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { DataSinkHost } from "./contracts.js";
 
@@ -106,13 +106,12 @@ export function unaliasedDataRecord(
         const literal = unwrapExpression(expression);
         return (
             ts.isObjectLiteralExpression(literal) &&
-            literal.properties.every(
-                (property) =>
-                    ts.isSpreadAssignment(property) ||
-                    ((ts.isPropertyAssignment(property) ||
-                        ts.isShorthandPropertyAssignment(property)) &&
-                        !ts.isComputedPropertyName(property.name) &&
-                        propertyKey(property.name) !== "__proto__"),
+            objectLiteralMembers(literal).every(
+                (member) =>
+                    member.kind === "spread" ||
+                    ((member.kind === "property" ||
+                        member.kind === "shorthand") &&
+                        member.key !== undefined),
             )
         );
     };

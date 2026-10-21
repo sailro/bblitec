@@ -18,8 +18,10 @@ import {
     argumentAt,
     isExpressionWrapper,
     unwrapExpression,
-    propertyKey,
     literalMember,
+    lastWriter,
+    objectLiteralMembers,
+    plainDataMembers,
 } from "./syntax.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
@@ -641,14 +643,21 @@ export function staticJsonValue(
 ): unknown {
     const node = context.resolveStaticExpression(expression);
     if (ts.isObjectLiteralExpression(node)) {
+        // A `__proto__` setter, spread, method or run-time key is no JSON.
+        const members = plainDataMembers(node);
+        if (!members) return notJson;
         const value: Record<string, unknown> = {};
-        for (const property of node.properties) {
-            if (!ts.isPropertyAssignment(property)) return notJson;
-            const name = propertyKey(property.name);
-            if (name === undefined) return notJson;
-            const member = staticJsonValue(context, property.initializer);
+        for (const { kind, key, value: initializer } of members) {
+            if (kind !== "property") return notJson;
+            const member = staticJsonValue(context, initializer);
             if (member === notJson) return notJson;
-            value[name] = member;
+            // An own `["__proto__"]` key is data; `=` would set the prototype.
+            Object.defineProperty(value, key, {
+                value: member,
+                enumerable: true,
+                writable: true,
+                configurable: true,
+            });
         }
         return value;
     }
@@ -885,15 +894,14 @@ export function staticVec3Value(
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
     if (!ts.isObjectLiteralExpression(node)) return undefined;
+    // A missing axis is 0; one a spread or run-time key may write is unknown.
+    const members = objectLiteralMembers(node);
     const axis = (name: "x" | "y" | "z"): number | undefined => {
-        const property = node.properties.find(
-            (candidate) =>
-                candidate.name !== undefined &&
-                propertyKey(candidate.name) === name,
-        );
-        if (!property) return 0;
-        if (!ts.isPropertyAssignment(property)) return undefined;
-        return staticNumberValue(context, property.initializer);
+        const writer = lastWriter(members, name);
+        if (writer === undefined) return 0;
+        return writer !== "unknown" && writer.value
+            ? staticNumberValue(context, writer.value)
+            : undefined;
     };
     const x = axis("x");
     const y = axis("y");

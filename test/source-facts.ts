@@ -17,6 +17,8 @@ interface SourceFacts {
     keyRuleTests: number;
     /** `x.propertyName ? ... : x.name` / `x.propertyName ?? x.name`: a destructuring or specifier name rule. */
     propertyNameRules: number;
+    /** `x.properties.find(...)`: a literal's member looked up by hand. */
+    memberScans: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -101,6 +103,7 @@ export function sourceFacts(path: string): SourceFacts {
         nameRoleTests: 0,
         keyRuleTests: 0,
         propertyNameRules: 0,
+        memberScans: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -180,6 +183,14 @@ export function sourceFacts(path: string): SourceFacts {
             chosen.name.text === "propertyName"
         )
             facts.propertyNameRules++;
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            ["find", "findLast"].includes(node.expression.name.text) &&
+            ts.isPropertyAccessExpression(node.expression.expression) &&
+            node.expression.expression.name.text === "properties"
+        )
+            facts.memberScans++;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

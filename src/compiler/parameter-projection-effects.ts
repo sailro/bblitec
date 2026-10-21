@@ -24,6 +24,7 @@ import {
     keysMayMatch,
     arrayLiteralSlots,
     patternSlots,
+    plainDataMembers,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -155,12 +156,7 @@ export function visitMutableArgumentReferences(
         const current = unwrapExpression(value);
         if (
             ts.isObjectLiteralExpression(current) &&
-            current.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) ||
-                        ts.isShorthandPropertyAssignment(property)) &&
-                    propertyKey(property.name) !== undefined,
-            )
+            plainDataMembers(current) !== undefined
         ) {
             for (const property of current.properties) {
                 if (
@@ -244,12 +240,7 @@ export function parameterProjectionIsReadOnly(
         if (
             !freshOwner ||
             !ts.isObjectLiteralExpression(freshOwner) ||
-            !freshOwner.properties.every(
-                (member) =>
-                    (ts.isPropertyAssignment(member) ||
-                        ts.isShorthandPropertyAssignment(member)) &&
-                    !ts.isComputedPropertyName(member.name),
-            )
+            plainDataMembers(freshOwner) === undefined
         ) {
             freshOwner = undefined;
             break;
@@ -261,13 +252,7 @@ export function parameterProjectionIsReadOnly(
         independentFields &&
         literal &&
         ts.isObjectLiteralExpression(literal) &&
-        literal.properties.every(
-            (property) =>
-                (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)) &&
-                !ts.isComputedPropertyName(property.name) &&
-                propertyKey(property.name) !== "__proto__",
-        )
+        plainDataMembers(literal) !== undefined
             ? literal.properties.map((property) => propertyKey(property.name!)!)
             : undefined;
     return parameterProjection(

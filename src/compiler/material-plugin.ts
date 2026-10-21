@@ -29,6 +29,7 @@ type MaterialPluginFamily = "standard" | "pbr";
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
 interface MaterialPluginContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "checker"
     | "program"
     | "evaluationOrder"
@@ -657,17 +658,13 @@ function foldPluginObject(
                         returned,
                         "Plugin uniforms require exactly the ubo declaration array.",
                     );
-                const property = object.properties.find(
-                    (property) =>
-                        property.name &&
-                        context.propertyName(property.name) === "ubo",
-                );
-                if (!property || !ts.isPropertyAssignment(property))
+                const ubo = context.objectProperty(object, "ubo");
+                if (!ubo)
                     context.fail(
                         returned,
                         "Plugin uniforms require a ubo declaration array.",
                     );
-                returned = property.initializer;
+                returned = ubo;
             }
             const fields = foldPluginFieldDeclarations(
                 context,

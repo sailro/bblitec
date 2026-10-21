@@ -5,7 +5,8 @@ import {
     unwrapExpression,
     outermostWrapper,
     writeSiteOf,
-    propertyKey,
+    lastWriter,
+    objectLiteralMembers,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
@@ -99,16 +100,10 @@ function setsPresentField(
     ) {
         return false;
     }
-    const property = value.properties.find(
-        (candidate) =>
-            candidate.name !== undefined &&
-            propertyKey(candidate.name) === field,
-    );
-    if (!property) return false;
-    const stored = ts.isPropertyAssignment(property)
-        ? property.initializer
-        : (property as ts.ShorthandPropertyAssignment).name;
-    return !isNullable(context.checker.getTypeAtLocation(stored));
+    const writer = lastWriter(objectLiteralMembers(value), field);
+    if (writer === undefined || writer === "unknown" || !writer.value)
+        return false;
+    return !isNullable(context.checker.getTypeAtLocation(writer.value));
 }
 
 /** Every use of the binding reads one of its fields or tests its presence. */

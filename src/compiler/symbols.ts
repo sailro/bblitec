@@ -483,6 +483,25 @@ export function staticAccessKey(
     );
 }
 
+/**
+ * Whether a value can carry `key` as its type knows it: a declared property,
+ * an index signature, or a type that names no members (`any`, `unknown`).
+ */
+export function typeMayHoldKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    key: string,
+): boolean {
+    const type = checker.getNonNullableType(
+        checker.getTypeAtLocation(expression),
+    );
+    return (
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+        checker.getPropertyOfType(type, key) !== undefined ||
+        checker.getIndexInfosOfType(type).length > 0
+    );
+}
+
 /** Whether a property key is a symbol's: no string-keyed enumeration lists it. */
 export function isSymbolPropertyKey(key: string): boolean {
     return key.startsWith("__@");

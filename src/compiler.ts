@@ -236,6 +236,7 @@ import {
     enumMemberConstant,
     staticPropertyKey,
     type DeclarationOrigin,
+    typeMayHoldKey,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -282,7 +283,6 @@ import {
     isDeclaredInside,
     literalMember,
     isUpdateExpression,
-    objectProperty,
     propertyKey,
     sourceFunctionName,
     stringLiteralText,
@@ -291,6 +291,9 @@ import {
     writeSites,
     isValueReference,
     expressionHasEffects,
+    lastWriter,
+    objectLiteralMembers,
+    plainDataMembers,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -3129,21 +3132,13 @@ class Compiler implements LoweringServices {
         const scalarRecord =
             initializer &&
             ts.isObjectLiteralExpression(initializer) &&
-            initializer.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) &&
-                        propertyKey(property.name) !== undefined &&
-                        propertyKey(property.name) !== "__proto__" &&
-                        !typeCanCarryReference(
-                            this.checker.getTypeAtLocation(
-                                property.initializer,
-                            ),
-                        )) ||
-                    (ts.isShorthandPropertyAssignment(property) &&
-                        !typeCanCarryReference(
-                            this.checker.getTypeAtLocation(property.name),
-                        )),
-            );
+            (plainDataMembers(initializer)?.every(
+                (member) =>
+                    !typeCanCarryReference(
+                        this.checker.getTypeAtLocation(member.value),
+                    ),
+            ) ??
+                false);
         const selectedRecordKeys =
             scalarRecord &&
             initializer &&
@@ -3708,13 +3703,9 @@ class Compiler implements LoweringServices {
                 "GPUQueue.writeTexture destination must name a pixels texture.",
             );
         }
-        const textureProperty = destination.properties.find(
-            (property): property is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === "texture",
-        );
-        const textureMember = textureProperty
-            ? this.unwrap(textureProperty.initializer)
+        const textureValue = this.objectProperty(destination, "texture");
+        const textureMember = textureValue
+            ? this.unwrap(textureValue)
             : undefined;
         if (
             !textureMember ||
@@ -4172,13 +4163,31 @@ class Compiler implements LoweringServices {
         return this.fail(resolved, "Expected an object literal.");
     }
 
+    /**
+     * The value a literal (static spreads expanded) gives `name`, from its
+     * last writer ({@link lastWriter}); undefined when no member writes it.
+     * A later spread whose type may hold `name`, or a key generation cannot
+     * read, leaves it to the run time: refused here rather than read as
+     * absent.
+     */
     public objectProperty(
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        return objectProperty(this.objectProperties(object), name, (key) =>
-            this.propertyName(key),
+        const writer = lastWriter(
+            objectLiteralMembers(this.objectProperties(object), (key) =>
+                this.propertyName(key),
+            ),
+            name,
+            (spread, key) =>
+                typeMayHoldKey(this.checker, spread.expression, key),
         );
+        if (writer === "unknown")
+            return this.fail(
+                object,
+                `'${name}' may come from a spread or key only the run time knows.`,
+            );
+        return writer?.value;
     }
 
     public objectProperties(
@@ -5334,21 +5343,15 @@ class Compiler implements LoweringServices {
         const initializer = this.unwrap(source.initializer!);
         if (
             !ts.isObjectLiteralExpression(initializer) ||
-            !initializer.properties.every((property) => {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    ts.isComputedPropertyName(property.name)
-                )
-                    return false;
-                const key = propertyKey(property.name);
-                return (
-                    key !== undefined &&
-                    key !== "__proto__" &&
-                    !typeCanCarryReference(
-                        this.checker.getTypeAtLocation(property.initializer),
-                    )
-                );
-            }) ||
+            !(
+                plainDataMembers(initializer)?.every(
+                    (member) =>
+                        member.kind === "property" &&
+                        !typeCanCarryReference(
+                            this.checker.getTypeAtLocation(member.value),
+                        ),
+                ) ?? false
+            ) ||
             !this.evaluationOrder.isPureExpression(initializer) ||
             this.evaluationOrder.hasModuleEffects(initializer)
         )
@@ -5581,22 +5584,23 @@ class Compiler implements LoweringServices {
         }
         if (ts.isObjectLiteralExpression(node)) {
             const record: { [name: string]: ExecutedArgument } = {};
-            for (const property of node.properties) {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    ts.isComputedPropertyName(property.name)
-                )
-                    return undefined;
-                const name = propertyKey(property.name);
-                if (name === undefined || name === "__proto__")
-                    return undefined;
-                const value = this.generationArgument(property.initializer);
+            const members = plainDataMembers(node);
+            if (!members) return undefined;
+            for (const member of members) {
+                if (member.kind !== "property") return undefined;
+                const value = this.generationArgument(member.value);
                 if (
                     value?.value === undefined ||
                     !losslessGenerationNumber(value.value)
                 )
                     return undefined;
-                record[name] = value.value;
+                // An own `["__proto__"]` key is data; `=` would set the prototype.
+                Object.defineProperty(record, member.key, {
+                    value: value.value,
+                    enumerable: true,
+                    writable: true,
+                    configurable: true,
+                });
             }
             return { value: record };
         }

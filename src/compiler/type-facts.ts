@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { declaredSymbol } from "./symbols.js";
-import { propertyKey, unwrapExpression, wrappedParent } from "./syntax.js";
+import {
+    unwrapExpression,
+    wrappedParent,
+    objectLiteralMembers,
+} from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -180,22 +184,14 @@ export function presentLiteralKeys(
     literal: ts.ObjectLiteralExpression,
 ): string[] {
     const keys: string[] = [];
-    for (const property of literal.properties) {
+    for (const member of objectLiteralMembers(literal)) {
         if (
-            !ts.isPropertyAssignment(property) &&
-            !ts.isShorthandPropertyAssignment(property)
+            (member.kind !== "property" && member.kind !== "shorthand") ||
+            member.key === undefined
         )
             continue;
-        const key = propertyKey(property.name);
-        if (key === undefined) continue;
-        const absent = nullability(
-            checker.getTypeAtLocation(
-                ts.isPropertyAssignment(property)
-                    ? property.initializer
-                    : property.name,
-            ),
-        );
-        if (!absent.null && !absent.undefined) keys.push(key);
+        const absent = nullability(checker.getTypeAtLocation(member.value));
+        if (!absent.null && !absent.undefined) keys.push(member.key);
     }
     return keys;
 }

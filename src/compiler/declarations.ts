@@ -81,6 +81,7 @@ import {
     writeSites,
     rootIdentifier,
     unwrapExpression,
+    plainDataMembers,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -2999,13 +3000,7 @@ export class DeclarationLowerer {
                     !sharedClosureStorage &&
                     !this.context.sharedClosures.identifierIsRebound(name) &&
                     ts.isObjectLiteralExpression(literal) &&
-                    literal.properties.every(
-                        (property) =>
-                            (ts.isPropertyAssignment(property) ||
-                                ts.isShorthandPropertyAssignment(property)) &&
-                            !ts.isComputedPropertyName(property.name) &&
-                            property.name.text !== "__proto__",
-                    )
+                    plainDataMembers(literal) !== undefined
                         ? this.context.compileValue(literal)
                         : (type.kind === "union" || type.kind === "struct") &&
                             !resourceRecordSnapshot &&

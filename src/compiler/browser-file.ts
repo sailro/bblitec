@@ -15,6 +15,7 @@ import { isStringValue, type Value } from "./types.js";
  */
 export interface BrowserFileContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "checker"
     | "options"
     | "defaultEngine"
@@ -161,19 +162,15 @@ function runtimeBlobType(
     if (!options) return undefined;
     const resolved = context.unwrap(context.resolveStaticExpression(options));
     if (!ts.isObjectLiteralExpression(resolved)) return undefined;
-    const type = resolved.properties.find(
-        (property): property is ts.PropertyAssignment =>
-            ts.isPropertyAssignment(property) &&
-            context.propertyName(property.name) === "type",
-    );
+    const type = context.objectProperty(resolved, "type");
     if (
         resolved.properties.length !== 1 ||
         !type ||
-        ts.isStringLiteralLike(context.unwrap(type.initializer))
+        ts.isStringLiteralLike(context.unwrap(type))
     )
         return undefined;
     return (current) =>
-        current.dataLowerer.compileForSink(type.initializer, {
+        current.dataLowerer.compileForSink(type, {
             kind: "string",
         });
 }

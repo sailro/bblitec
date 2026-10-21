@@ -22,7 +22,7 @@ import { canvasBakeBrowserArgs } from "../browser-harness.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { evaluateInSharedPage } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, plainDataMembers } from "./syntax.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -264,10 +264,12 @@ function isLiteralConfiguration(expression: ts.Expression): boolean {
         );
     }
     if (ts.isObjectLiteralExpression(current)) {
-        return current.properties.every(
-            (property) =>
-                ts.isPropertyAssignment(property) &&
-                isLiteralConfiguration(property.initializer),
+        return (
+            plainDataMembers(current)?.every(
+                (member) =>
+                    member.kind === "property" &&
+                    isLiteralConfiguration(member.value),
+            ) ?? false
         );
     }
     return false;

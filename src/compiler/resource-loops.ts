@@ -43,6 +43,7 @@ import {
     writeSites,
     isValueReference,
     propertyKey,
+    plainDataMembers,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -1077,25 +1078,13 @@ function runtimeProfileCall(
     if (!options?.length || !call.arguments[1]) return true;
     const expression = context.resolveStaticExpression(call.arguments[1]);
     if (!ts.isObjectLiteralExpression(expression)) return false;
-    return expression.properties.every((property) => {
-        if (
-            !ts.isPropertyAssignment(property) &&
-            !ts.isShorthandPropertyAssignment(property)
-        )
-            return false;
-        const name = property.name;
-        if (!ts.isIdentifier(name) && !ts.isStringLiteralLike(name))
-            return false;
-        return (
-            !options.includes(name.text) ||
-            staticNumberValue(
-                context,
-                ts.isPropertyAssignment(property)
-                    ? property.initializer
-                    : property.name,
-            ) !== undefined
-        );
-    });
+    return (
+        plainDataMembers(expression)?.every(
+            (member) =>
+                !options.includes(member.key) ||
+                staticNumberValue(context, member.value) !== undefined,
+        ) ?? false
+    );
 }
 const runtimeMeshProperties = new EmissionSet([
     "position",
@@ -1250,11 +1239,10 @@ export function parameterizedResourceLoop(
             );
         }
         if (ts.isObjectLiteralExpression(node)) {
-            return node.properties.every((property) =>
-                ts.isPropertyAssignment(property)
-                    ? invariant(property.initializer, seen)
-                    : ts.isShorthandPropertyAssignment(property) &&
-                      invariant(property.name, seen),
+            return (
+                plainDataMembers(node)?.every((member) =>
+                    invariant(member.value, seen),
+                ) ?? false
             );
         }
         let answer = true;

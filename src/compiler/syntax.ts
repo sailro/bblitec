@@ -863,7 +863,8 @@ export function declarationNamed(
  * module-side name, a JSX attribute.
  */
 export function namesMember(identifier: ts.Identifier): boolean {
-    const parent = identifier.parent;
+    const parent = identifier.parent as ts.Node | undefined;
+    if (!parent) return false;
     if (
         (isMemberDeclaration(parent) ||
             ts.isPropertyAccessExpression(parent) ||
@@ -891,7 +892,9 @@ export function namesMember(identifier: ts.Identifier): boolean {
  * reads the local `x`, and a class's `extends` expression runs.
  */
 export function isValueReference(identifier: ts.Identifier): boolean {
-    const parent = identifier.parent;
+    // A synthesized identifier standing alone reads its binding.
+    const parent = identifier.parent as ts.Node | undefined;
+    if (!parent) return true;
     if (declarationNamed(identifier) || namesMember(identifier)) return false;
     if (ts.isExportSpecifier(parent))
         return !parent.isTypeOnly && !parent.parent.parent.isTypeOnly;
@@ -1051,37 +1054,164 @@ export function accessKey(
 }
 
 /**
- * The initializer an object literal (or its properties, spreads already
- * expanded) gives a named property, or the shorthand identifier that stands
- * for one; a later write wins. A spread, a method or an accessor carries no
- * initializer to read and is skipped.
- *
- * `propertyName` says what a key spells: the literal text by default, and
- * the compiler's own resolver where a computed key folded at generation
- * (`{ [key]: value }` with a static `key`) must be found too.
+ * One member of an object literal, as the literal evaluates it: `key` is
+ * the key it writes, undefined for a run-time key. A `proto` member is a
+ * non-computed `__proto__: v`, which sets the prototype and is no own key;
+ * a `spread` copies keys the syntax does not name.
+ */
+export type ObjectMember =
+    | {
+          readonly kind: "property";
+          readonly node: ts.PropertyAssignment;
+          readonly key: string | undefined;
+          readonly value: ts.Expression;
+      }
+    | {
+          readonly kind: "shorthand";
+          readonly node: ts.ShorthandPropertyAssignment;
+          readonly key: string;
+          readonly value: ts.Identifier;
+      }
+    | {
+          readonly kind: "method" | "accessor";
+          readonly node:
+              | ts.MethodDeclaration
+              | ts.GetAccessorDeclaration
+              | ts.SetAccessorDeclaration;
+          readonly key: string | undefined;
+          readonly value?: undefined;
+      }
+    | {
+          readonly kind: "proto";
+          readonly node: ts.PropertyAssignment;
+          readonly key?: undefined;
+          readonly value: ts.Expression;
+      }
+    | {
+          readonly kind: "spread";
+          readonly node: ts.SpreadAssignment;
+          readonly key?: undefined;
+          readonly value?: undefined;
+      };
+
+/**
+ * Whether a literal member is a `__proto__: v` or `"__proto__": v`: it sets
+ * the new object's prototype and creates no own key. A computed
+ * `["__proto__"]`, a shorthand or a method named so are own keys.
+ */
+export function isProtoSetter(member: ts.ObjectLiteralElementLike): boolean {
+    return (
+        ts.isPropertyAssignment(member) &&
+        !ts.isComputedPropertyName(member.name) &&
+        propertyKey(member.name) === "__proto__"
+    );
+}
+
+/**
+ * The members of an object literal (or of its properties, spreads already
+ * expanded), in evaluation order. `keyOf` reads a key: the syntax's by
+ * default, a lowering's resolver where the checker or generation fixes a
+ * computed key.
+ */
+export function objectLiteralMembers(
+    object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
+    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
+): ObjectMember[] {
+    return ("properties" in object ? object.properties : object).map(
+        (node): ObjectMember => {
+            if (ts.isSpreadAssignment(node)) return { kind: "spread", node };
+            if (ts.isShorthandPropertyAssignment(node))
+                return {
+                    kind: "shorthand",
+                    node,
+                    key: node.name.text,
+                    value: node.name,
+                };
+            if (ts.isPropertyAssignment(node))
+                return isProtoSetter(node)
+                    ? { kind: "proto", node, value: node.initializer }
+                    : {
+                          kind: "property",
+                          node,
+                          key: keyOf(node.name),
+                          value: node.initializer,
+                      };
+            return {
+                kind: ts.isMethodDeclaration(node) ? "method" : "accessor",
+                node,
+                key: keyOf(node.name),
+            };
+        },
+    );
+}
+
+/** A member storing named data: a property or shorthand with a known key. */
+export type DataMember = Extract<
+    ObjectMember,
+    { kind: "property" | "shorthand" }
+> & {
+    readonly key: string;
+};
+
+/**
+ * The members of an object literal that only stores named data, in order;
+ * undefined when one is a spread, a method, an accessor, a `__proto__`
+ * setter or a run-time key.
+ */
+export function plainDataMembers(
+    literal: ts.ObjectLiteralExpression,
+    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
+): readonly DataMember[] | undefined {
+    const members: DataMember[] = [];
+    for (const member of objectLiteralMembers(literal, keyOf)) {
+        if (
+            (member.kind !== "property" && member.kind !== "shorthand") ||
+            member.key === undefined
+        )
+            return undefined;
+        members.push({ ...member, key: member.key });
+    }
+    return members;
+}
+
+/**
+ * The member that decides `key`: the last one writing it, `"unknown"` when
+ * a later spread or run-time key may write it too, undefined when nothing
+ * does. `spreadMayWrite` narrows which spreads can (the checker knows a
+ * spread whose type has no such key); by default every one may.
+ */
+export function lastWriter(
+    members: readonly ObjectMember[],
+    key: string,
+    spreadMayWrite: (
+        spread: ts.SpreadAssignment,
+        key: string,
+    ) => boolean = () => true,
+): ObjectMember | "unknown" | undefined {
+    let writer: ObjectMember | "unknown" | undefined;
+    for (const member of members) {
+        if (member.kind === "proto") continue;
+        if (member.kind === "spread") {
+            if (spreadMayWrite(member.node, key)) writer = "unknown";
+        } else if (member.key === key) writer = member;
+        else if (member.key === undefined) writer = "unknown";
+    }
+    return writer;
+}
+
+/**
+ * The value an object literal (or its properties, spreads already expanded)
+ * gives `name`: its last writer's initializer, or the shorthand identifier
+ * standing for one ({@link lastWriter}). Undefined where no member writes
+ * it, a method or accessor does, or a later spread or run-time key may.
  */
 export function objectProperty(
     object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
-    propertyName: (name: ts.PropertyName) => string | undefined = propertyKey,
+    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): ts.Expression | undefined {
-    let found: ts.Expression | undefined;
-    for (const property of "properties" in object
-        ? object.properties
-        : object) {
-        if (
-            ts.isPropertyAssignment(property) &&
-            propertyName(property.name) === name
-        ) {
-            found = property.initializer;
-        } else if (
-            ts.isShorthandPropertyAssignment(property) &&
-            property.name.text === name
-        ) {
-            found = property.name;
-        }
-    }
-    return found;
+    const writer = lastWriter(objectLiteralMembers(object, keyOf), name);
+    return writer === "unknown" ? undefined : writer?.value;
 }
 
 /** An array literal element and the index it lands at. */
@@ -1302,23 +1432,9 @@ export function literalMember(
             ? element
             : undefined;
     }
-    if (!ts.isObjectLiteralExpression(literal)) return undefined;
-    let found: ts.Expression | undefined;
-    for (const property of literal.properties) {
-        const name =
-            property.name === undefined
-                ? undefined
-                : propertyKey(property.name);
-        if (ts.isSpreadAssignment(property) || name === undefined)
-            found = undefined;
-        else if (name === key)
-            found = ts.isPropertyAssignment(property)
-                ? property.initializer
-                : ts.isShorthandPropertyAssignment(property)
-                  ? property.name
-                  : undefined;
-    }
-    return found;
+    return ts.isObjectLiteralExpression(literal)
+        ? objectProperty(literal, key)
+        : undefined;
 }
 
 /**

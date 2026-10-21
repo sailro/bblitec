@@ -148,6 +148,7 @@ import {
     isTypeAssertion,
     wrappersUnder,
     declarationNamed,
+    objectLiteralMembers,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
@@ -6792,22 +6793,23 @@ export class DataTypeRegistry {
         if (!literal || !ts.isObjectLiteralExpression(literal))
             return undefined;
         const keys: string[] = [];
-        for (const property of literal.properties) {
-            const names = ts.isSpreadAssignment(property)
-                ? (() => {
-                      const source = this.checker.getNonNullableType(
-                          this.checker.getTypeAtLocation(property.expression),
-                      );
-                      return (
-                          this.objectLiteralKeyOrder(source) ??
-                          this.checker
-                              .getPropertiesOfType(source)
-                              .map((symbol) => symbol.name)
-                      );
-                  })()
-                : property.name && propertyKey(property.name);
-            if (names === undefined) return undefined;
-            keys.push(...(typeof names === "string" ? [names] : names));
+        for (const member of objectLiteralMembers(literal)) {
+            // A `__proto__` setter creates no own key.
+            if (member.kind === "proto") continue;
+            if (member.kind === "spread") {
+                const source = this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(member.node.expression),
+                );
+                keys.push(
+                    ...(this.objectLiteralKeyOrder(source) ??
+                        this.checker
+                            .getPropertiesOfType(source)
+                            .map((symbol) => symbol.name)),
+                );
+                continue;
+            }
+            if (member.key === undefined) return undefined;
+            keys.push(member.key);
         }
         // An object of these keys orders them as JavaScript does.
         return Object.keys(

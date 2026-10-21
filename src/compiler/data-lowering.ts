@@ -234,6 +234,7 @@ import {
     accessKey,
     patternSlots,
     bindingElementKey,
+    isProtoSetter,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -506,6 +507,7 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "symbols"
     | "optionalChainStop"
     | "moduleNamespaces"
@@ -7980,12 +7982,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         let element: () => Value;
         let increment = false;
         if (ts.isObjectLiteralExpression(sourceNode)) {
-            const length = sourceNode.properties.find(
-                (property): property is ts.PropertyAssignment =>
-                    ts.isPropertyAssignment(property) &&
-                    ts.isIdentifier(property.name) &&
-                    property.name.text === "length",
-            );
+            const length = this.context.objectProperty(sourceNode, "length");
             if (!length)
                 return context.fail(
                     sourceNode,
@@ -8001,7 +7998,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "declaration",
                 type: "const std::size_t",
                 name: count,
-                initializer: `bbl::js::array_from_length(${context.compileNumber(length.initializer, "double")})`,
+                initializer: `bbl::js::array_from_length(${context.compileNumber(length, "double")})`,
             });
             loop = `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`;
             element = () => ({ kind: "json-null", cpp: "std::nullopt" });
@@ -12212,6 +12209,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     property.name && ts.isComputedPropertyName(property.name),
             );
         for (const property of literal.properties) {
+            if (isProtoSetter(property))
+                this.context.fail(
+                    property,
+                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                );
             if (!ts.isPropertyAssignment(property)) {
                 this.context.fail(
                     property,
@@ -12303,6 +12305,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         let spread = false;
         for (const property of literal.properties) {
+            if (isProtoSetter(property))
+                this.context.fail(
+                    property,
+                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                );
             if (ts.isSpreadAssignment(property)) {
                 this.context.emit({
                     kind: "expression",
@@ -12388,6 +12395,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `${this.context.dataTypes.cppType(dataType)} ${result};`,
             );
             for (const property of literal.properties) {
+                if (isProtoSetter(property))
+                    this.context.fail(
+                        property,
+                        "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                    );
                 if (ts.isSpreadAssignment(property)) {
                     const source = this.context.compileValue(
                         property.expression,
@@ -12616,6 +12628,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.Expression | ts.MethodDeclaration
         >();
         for (const property of literal.properties) {
+            if (isProtoSetter(property))
+                this.context.fail(
+                    property,
+                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                );
             if (ts.isSpreadAssignment(property)) {
                 this.context.fail(
                     property,
@@ -13158,6 +13175,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ),
             );
         for (const [index, property] of literal.properties.entries()) {
+            if (isProtoSetter(property))
+                this.context.fail(
+                    property,
+                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                );
             if (ts.isSpreadAssignment(property)) {
                 const replaced = writtenAfter(index);
                 const source =

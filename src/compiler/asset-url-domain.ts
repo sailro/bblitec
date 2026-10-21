@@ -29,6 +29,8 @@ import {
     referenceSite,
     accessKey,
     keyIndex,
+    lastWriter,
+    objectLiteralMembers,
 } from "./syntax.js";
 import {
     functionOfDeclaration,
@@ -1004,23 +1006,20 @@ class AssetUrlDomain {
             typeof projection[0] === "string"
         ) {
             const key = projection[0];
-            for (const property of [...node.properties].reverse()) {
-                if (ts.isSpreadAssignment(property)) return undefined;
-                if (this.context.propertyName(property.name) !== key) continue;
-                if (ts.isPropertyAssignment(property))
-                    return this.read(
-                        property.initializer,
-                        projection.slice(1),
-                        environment,
-                    );
-                if (ts.isShorthandPropertyAssignment(property))
-                    return this.read(
-                        property.name,
-                        projection.slice(1),
-                        environment,
-                    );
+            const writer = lastWriter(
+                objectLiteralMembers(node, (name) =>
+                    this.context.propertyName(name),
+                ),
+                key,
+            );
+            if (writer === "unknown" || (writer && !writer.value))
                 return undefined;
-            }
+            if (writer?.value)
+                return this.read(
+                    writer.value,
+                    projection.slice(1),
+                    environment,
+                );
             // A record without the member reads undefined.
             return this.nullish && projection.length === this.nullishDepth + 1
                 ? nothing

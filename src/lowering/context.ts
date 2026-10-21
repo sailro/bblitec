@@ -6,6 +6,8 @@ import {
     unwrapExpression as unwrapSyntaxWrappers,
     writeSites,
     type WriteSite,
+    lastWriter,
+    objectLiteralMembers,
 } from "../compiler/syntax.js";
 import {
     sharedUpstreamStore,
@@ -1390,25 +1392,32 @@ export class LoweringContext {
         );
     }
 
+    /**
+     * The member a pinned literal writes for `name` itself: its last explicit
+     * writer. A later spread is the caller's contract (an intrinsic merges
+     * `...options.textureOptions` over the pin's defaults); a later run-time
+     * key that may write `name` is refused.
+     */
     public propertyInitializer(
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression {
-        const property = object.properties.find(
-            (candidate) =>
-                (ts.isPropertyAssignment(candidate) ||
-                    ts.isShorthandPropertyAssignment(candidate)) &&
-                ts.isIdentifier(candidate.name) &&
-                candidate.name.text === name,
+        const writer = lastWriter(
+            objectLiteralMembers(object),
+            name,
+            () => false,
         );
-        if (!property) {
-            this.contractError(object, `Expected object property '${name}'.`);
-        }
-        if (ts.isPropertyAssignment(property)) return property.initializer;
-        if (ts.isShorthandPropertyAssignment(property)) return property.name;
-        return this.contractError(
-            property,
-            `Expected object property '${name}'.`,
+        if (writer === "unknown")
+            return this.contractError(
+                object,
+                `Expected object property '${name}' no run-time key may override.`,
+            );
+        return (
+            writer?.value ??
+            this.contractError(
+                writer?.node ?? object,
+                `Expected object property '${name}'.`,
+            )
         );
     }
 

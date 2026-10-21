@@ -26,6 +26,7 @@ import {
     isOperandSelection,
     stringLiteralText,
     valueOperands,
+    plainDataMembers,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -987,10 +988,12 @@ export class BrowserErasure {
             return true;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return unwrapped.properties.every(
-                (property) =>
-                    ts.isPropertyAssignment(property) &&
-                    this.isBrowserHelperArgument(property.initializer),
+            return (
+                plainDataMembers(unwrapped)?.every(
+                    (member) =>
+                        member.kind === "property" &&
+                        this.isBrowserHelperArgument(member.value),
+                ) ?? false
             );
         }
         if (ts.isArrayLiteralExpression(unwrapped)) {

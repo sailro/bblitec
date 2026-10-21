@@ -51,6 +51,7 @@ import {
     propertyKey,
     bindingElementKey,
     specifierSourceName,
+    objectProperty,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -6056,15 +6057,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return undefined;
         initializer = unwrapTypePreserving(initializer.expression);
         if (!ts.isObjectLiteralExpression(initializer)) return undefined;
-        const property = [...initializer.properties]
-            .reverse()
-            .find(
-                (candidate) =>
-                    ts.isPropertyAssignment(candidate) &&
-                    propertyKey(candidate.name) === node.name.text,
-            );
-        if (!property || !ts.isPropertyAssignment(property)) return undefined;
-        const value = unwrapTypePreserving(property.initializer);
+        const member = objectProperty(initializer, node.name.text);
+        if (!member) return undefined;
+        const value = unwrapTypePreserving(member);
         const literal = (expression: ts.Expression): boolean =>
             ts.isNumericLiteral(expression) ||
             ts.isStringLiteralLike(expression) ||
@@ -6073,16 +6068,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             (ts.isPrefixUnaryExpression(expression) &&
                 expression.operator === ts.SyntaxKind.MinusToken &&
                 ts.isNumericLiteral(expression.operand));
-        // A spread after the member could replace it.
-        const index = initializer.properties.indexOf(property);
-        if (
-            !literal(value) ||
-            initializer.properties
-                .slice(index + 1)
-                .some((later) => !ts.isPropertyAssignment(later))
-        )
-            return undefined;
-        return value;
+        // objectProperty already declines a member a later spread may replace.
+        return literal(value) ? value : undefined;
     }
 
     /** The C++ spelling of a pinned local or parameter an adapter names. */

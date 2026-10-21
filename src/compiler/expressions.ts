@@ -101,6 +101,7 @@ import {
     regularExpressionParts,
     isTypeAssertion,
     writeSites,
+    isProtoSetter,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -334,6 +335,7 @@ export interface ExpressionContext
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
             | "propertyName"
+            | "objectProperty"
             | "compilePropertyKey"
             | "namesLocalFunction"
             | "cppString"
@@ -6383,6 +6385,11 @@ export class ExpressionLowerer {
             );
         };
         for (const [index, property] of unwrapped.properties.entries()) {
+            if (isProtoSetter(property))
+                this.context.fail(
+                    property,
+                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+                );
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
                 refuseErrorReflection(this.context, spread, property);

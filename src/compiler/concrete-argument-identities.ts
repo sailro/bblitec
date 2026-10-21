@@ -13,6 +13,7 @@ import {
     arrayLiteralSlots,
     aliasKey,
     ANY_KEY,
+    plainDataMembers,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -53,14 +54,8 @@ export function concreteArgumentIdentityPaths(
         const node = unwrapExpression(expression);
         return (
             ts.isObjectLiteralExpression(node) &&
-            node.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) &&
-                        propertyKey(property.name) !== undefined &&
-                        scalar(property.initializer)) ||
-                    (ts.isShorthandPropertyAssignment(property) &&
-                        scalar(property.name)),
-            )
+            (plainDataMembers(node)?.every((member) => scalar(member.value)) ??
+                false)
         );
     };
     const excludesSelected = (
