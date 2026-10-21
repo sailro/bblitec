@@ -14987,3 +14987,15 @@ check(
         throw new Error("static once " + a + b + next + Q.free.length);
     `,
 );
+check(
+    "an erased console call still runs its arguments' effects",
+    `
+    let calls = 0;
+    let formats = 0;
+    function tag(s: TemplateStringsArray): string { calls++; return s[0]!; }
+    class Meter { v = 2; toFixed(d: number): string { formats++; return this.v.toFixed(d); } }
+    const meter = new Meter();
+    console.log(tag\`x\`, meter.toFixed(2), (3.14159).toFixed(2));
+    if (calls !== 1 || formats !== 1) throw new Error("erased effects " + calls + formats);
+    `,
+);

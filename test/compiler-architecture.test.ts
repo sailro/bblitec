@@ -727,6 +727,19 @@ test("jumps bind their targets through syntax.ts", () => {
         );
 });
 
+test("what an expression's evaluation runs is read through syntax.ts", () => {
+    // expressionHasEffects (calls, tags, constructions, suspensions, writes
+    // and deletes; a nested function is a value) and expressionMayRunCode
+    // (plus property reads); symbols.ts names the library number formatters
+    // that run nothing of the program's.
+    for (const name of [
+        "containsEvaluatedCall",
+        "expressionHasObservableEvaluation",
+        "PURE_NUMBER_FORMATTERS",
+    ])
+        assert.deepEqual(declarationOwners(name), [], name);
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

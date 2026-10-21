@@ -5,7 +5,7 @@ import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
-import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { UiProjection } from "./ui-projection.js";
@@ -68,6 +68,7 @@ import {
     nullishComparison,
     typeMayHoldNullish,
     libraryName,
+    isLibraryNumberFormatter,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
@@ -103,7 +104,6 @@ import {
     outermostWrapper,
     regularExpressionParts,
     isTypeAssertion,
-    writeSites,
     isProtoSetter,
     isAsyncFunction,
     containsSuspension,
@@ -224,23 +224,6 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
-/**
- * Number formatters the language owns rather than the scene.
- *
- * What `containsEvaluatedCall` is really asking is "could dropping this
- * argument drop an effect the program still needs" -- a user function's
- * body may mutate state, so it has to run. `Number.prototype.toFixed` and
- * its siblings cannot: they read one number and return a string. Treating
- * them as calls made an erased `console.log` emit its whole formatted
- * template as a discarded statement, which is dead work whose only visible
- * trace is the compiler rejecting the discard.
- */
-export const PURE_NUMBER_FORMATTERS = new EmissionSet([
-    "toFixed",
-    "toPrecision",
-    "toExponential",
-]);
-
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["encodeURIComponent", "encode_uri_component"],
@@ -250,33 +233,6 @@ const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["btoa", "string_to_base64"],
     ["atob", "string_from_base64"],
 ]);
-
-/**
- * Calls in an argument are evaluated before their enclosing call. Stop at a
- * nested function boundary because creating a callback does not execute its
- * body.
- */
-function containsEvaluatedCall(node: ts.Node): boolean {
-    if (ts.isFunctionLike(node)) {
-        return false;
-    }
-    if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        PURE_NUMBER_FORMATTERS.has(node.expression.name.text)
-    ) {
-        // The receiver may still hold one -- `advance().toFixed(1)`.
-        return containsEvaluatedCall(node.expression.expression);
-    }
-    if (
-        ts.isCallExpression(node) ||
-        ts.isNewExpression(node) ||
-        writeSites(node).length > 0
-    ) {
-        return true;
-    }
-    return ts.forEachChild(node, containsEvaluatedCall) ?? false;
-}
 
 export interface ExpressionContext
     extends
@@ -1615,7 +1571,7 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            (!containsEvaluatedCall(unwrapped.left) ||
+            (!this.runsCode(unwrapped.left) ||
                 !this.context.evaluationOrder.writesStorage(unwrapped.left))
         ) {
             let leftValue: Value | undefined;
@@ -2321,6 +2277,18 @@ export class ExpressionLowerer {
         };
     }
 
+    /**
+     * Whether evaluating `expression` now runs code dropping it would lose:
+     * an effect, a library number formatter's receiver aside (`n.toFixed(2)`
+     * reads one number).
+     */
+    private runsCode(expression: ts.Expression): boolean {
+        return expressionHasEffects(expression, {
+            pureCall: (call) =>
+                isLibraryNumberFormatter(this.context.checker, call),
+        });
+    }
+
     private compileBrowserValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
@@ -2338,7 +2306,7 @@ export class ExpressionLowerer {
                 );
             for (const argument of unwrapped.arguments) {
                 if (
-                    !containsEvaluatedCall(argument) &&
+                    !this.runsCode(argument) &&
                     !someAnalysisNode(
                         argument,
                         (node) =>
@@ -2493,7 +2461,7 @@ export class ExpressionLowerer {
         // Reusing the member must never execute its factory again.
         if (
             isHandleKind(value.kind) &&
-            containsEvaluatedCall(expression) &&
+            this.runsCode(expression) &&
             !value.nativeBinding
         ) {
             return this.context.bindings.pinValueToTemporary(
@@ -5669,7 +5637,7 @@ export class ExpressionLowerer {
                 ? browserCondition.value
                     ? "true"
                     : "false"
-                : !containsEvaluatedCall(unwrapped.condition) ||
+                : !this.runsCode(unwrapped.condition) ||
                     !this.context.evaluationOrder.writesStorage(
                         unwrapped.condition,
                     )
@@ -7155,7 +7123,7 @@ export class ExpressionLowerer {
                 };
             }
         }
-        if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
+        if (isLibraryNumberFormatter(this.context.checker, call)) {
             this.context.expectArgumentCount(call, 0, 1);
             const owner = this.numberMethodReceiver(callee.expression);
             const number =

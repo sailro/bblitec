@@ -86,7 +86,7 @@ import {
     plainDataMembers,
     parameterForArgument,
     isAsyncFunction,
-    isSuspensionPoint,
+    expressionHasEffects,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -1207,7 +1207,7 @@ export class DeclarationLowerer {
         if (
             value.impure ||
             readsImpure ||
-            this.expressionHasObservableEvaluation(declaration.initializer)
+            expressionHasEffects(declaration.initializer)
         ) {
             // A `const` bound to a clock is a snapshot of it, so later
             // uses must read the native local rather than fold back to
@@ -2486,31 +2486,6 @@ export class DeclarationLowerer {
                 value.callbackRecordOwner,
             ),
         });
-    }
-
-    /**
-     * Whether re-expanding a scalar initializer could evaluate source work a
-     * second time. Calls are conservatively snapshots: even a currently pure
-     * helper can close over mutable state, and JavaScript evaluates it once at
-     * the declaration rather than again at every numeric sink.
-     */
-    private expressionHasObservableEvaluation(node: ts.Node): boolean {
-        let found = false;
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (candidate) => {
-                if (found) return "skip";
-                if (
-                    ts.isCallExpression(candidate) ||
-                    ts.isNewExpression(candidate) ||
-                    isSuspensionPoint(candidate) ||
-                    ts.isTaggedTemplateExpression(candidate)
-                ) {
-                    found = true;
-                    return "skip";
-                }
-            });
-        visit(node);
-        return found;
     }
 
     /** Emits a self-recursive local data callback as a capturing C++ lambda. */

@@ -259,6 +259,29 @@ export function declaredInDefaultLibrary(
     return declaredIn(symbol, "default-lib", "dom");
 }
 
+const NUMBER_FORMATTERS = new Set(["toFixed", "toPrecision", "toExponential"]);
+
+/**
+ * Whether a call is a library number formatter (`n.toFixed(2)`,
+ * `toPrecision`, `toExponential`): it reads one number and runs nothing of
+ * the program's. A scene method of the same name is a call like any other.
+ */
+export function isLibraryNumberFormatter(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
+    const callee = unwrapExpression(call.expression);
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        NUMBER_FORMATTERS.has(callee.name.text) &&
+        declaration !== undefined &&
+        declarationInDefaultLibrary(declaration) &&
+        ts.isInterfaceDeclaration(declaration.parent) &&
+        declaration.parent.name.text === "Number"
+    );
+}
+
 /**
  * The name of a library declaration (`Promise`, `File`, `GPUDevice`): a
  * type's or symbol's name when the default, DOM or WebGPU library declares

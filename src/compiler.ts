@@ -198,10 +198,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
-import {
-    ExpressionLowerer,
-    PURE_NUMBER_FORMATTERS,
-} from "./compiler/expressions.js";
+import { ExpressionLowerer } from "./compiler/expressions.js";
 import { NativeFunctionLowerer } from "./compiler/native-functions.js";
 import {
     emitReachableStatements,
@@ -239,6 +236,7 @@ import {
     parameterInput,
     libraryName,
     computedEnumMember,
+    isLibraryNumberFormatter,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -5052,7 +5050,7 @@ class Compiler implements LoweringServices {
         if (
             !ts.isCallExpression(formatted) ||
             !ts.isPropertyAccessExpression(formatted.expression) ||
-            !PURE_NUMBER_FORMATTERS.has(formatted.expression.name.text) ||
+            !isLibraryNumberFormatter(this.checker, formatted) ||
             !ts.isIdentifier(formatted.expression.expression)
         ) {
             return {

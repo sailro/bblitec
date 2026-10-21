@@ -23,35 +23,50 @@ export function regularExpressionParts(
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LibraryGlobal } from "./symbols.js";
 
-/** Calls, accessors and writes can change an earlier selected receiver/value. */
-export function expressionMayRunCode(expression: ts.Expression): boolean {
+/** What may run code or change state when an expression is evaluated now. */
+interface EffectOptions {
+    /** A call that runs nothing of the program's (a library formatter). */
+    readonly pureCall?: (call: ts.CallExpression) => boolean;
+}
+
+/**
+ * Whether evaluating `expression` now has an effect a second evaluation
+ * would repeat: it calls (a tag included), constructs, suspends or writes
+ * (`delete` included). A nested function is a value, not run.
+ */
+export function expressionHasEffects(
+    expression: ts.Expression,
+    options: EffectOptions = {},
+): boolean {
     return someAnalysisNode(
         expression,
         (node) =>
-            ts.isCallExpression(node) ||
+            (ts.isCallExpression(node) && !options.pureCall?.(node)) ||
             ts.isNewExpression(node) ||
+            ts.isTaggedTemplateExpression(node) ||
             isSuspensionPoint(node) ||
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node) ||
-            isUpdateExpression(node) ||
-            isAssignmentExpression(node),
+            writeSites(node).length > 0,
         { functions: "skip", types: "skip" },
     );
 }
 
 /**
- * Whether evaluating `expression` twice could repeat an effect: it calls,
- * constructs, awaits, updates or assigns. Property reads count as none.
+ * Whether evaluating `expression` now may run code that changes an earlier
+ * selected receiver or value: an effect, or a property read (an accessor).
  */
-export function expressionHasEffects(expression: ts.Expression): boolean {
-    return someAnalysisNode(
-        expression,
-        (node) =>
-            ts.isCallExpression(node) ||
-            ts.isNewExpression(node) ||
-            isSuspensionPoint(node) ||
-            isUpdateExpression(node) ||
-            isAssignmentExpression(node),
+export function expressionMayRunCode(
+    expression: ts.Expression,
+    options: EffectOptions = {},
+): boolean {
+    return (
+        expressionHasEffects(expression, options) ||
+        someAnalysisNode(
+            expression,
+            (node) =>
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node),
+            { functions: "skip", types: "skip" },
+        )
     );
 }
 

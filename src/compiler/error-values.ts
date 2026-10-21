@@ -287,7 +287,9 @@ function compileAggregateError(
               args[0]!,
           );
     const list = context.allocateTemporaryCppName("aggregate_errors");
-    const snapshotsErrors = args.slice(1).some(expressionMayRunCode);
+    const snapshotsErrors = args
+        .slice(1)
+        .some((argument) => expressionMayRunCode(argument));
     context.emit(
         snapshotsErrors
             ? `const auto ${list} = bbl::js::snapshot_value(${errors});`
