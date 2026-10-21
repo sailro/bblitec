@@ -6,7 +6,7 @@ import { isStorageDemand } from "./storage-demand-planner.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
-import { writeSites, isValueReference } from "./syntax.js";
+import { writeSites, isValueReference, isSuspensionPoint } from "./syntax.js";
 
 type CaseSplitContext = Pick<
     LoweringServices,
@@ -186,8 +186,7 @@ function runtimeSelectors(
         } else if (
             ts.isNewExpression(node) ||
             ts.isTaggedTemplateExpression(node) ||
-            ts.isAwaitExpression(node) ||
-            ts.isYieldExpression(node) ||
+            isSuspensionPoint(node, { yield: true }) ||
             writeSites(node).length > 0
         ) {
             effects = true;

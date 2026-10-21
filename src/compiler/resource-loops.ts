@@ -45,6 +45,7 @@ import {
     isValueReference,
     propertyKey,
     plainDataMembers,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -1257,7 +1258,7 @@ export function parameterizedResourceLoop(
         if (loop === statement && knownIterations !== undefined)
             return knownIterations;
         if (
-            loop.awaitModifier ||
+            isSuspensionPoint(loop) ||
             !ts.isVariableDeclarationList(loop.initializer) ||
             loop.initializer.declarations.length !== 1
         )
@@ -1445,7 +1446,7 @@ export function parameterizedResourceLoop(
             ts.isContinueStatement(node) ||
             ts.isReturnStatement(node) ||
             ts.isTryStatement(node) ||
-            ts.isAwaitExpression(node) ||
+            isSuspensionPoint(node) ||
             ts.isNewExpression(node)
         ) {
             safe = false;

@@ -6,7 +6,11 @@ import {
     libraryGlobal,
 } from "./symbols.js";
 import { hasNoValueCompletion } from "./native-return-type.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    unwrapExpression,
+    isAsyncFunction,
+    isGeneratorFunction,
+} from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 
@@ -58,13 +62,8 @@ function everyCompletion(
     )
         return false;
     if (
-        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
-        (!awaited &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ))
+        isGeneratorFunction(declaration) ||
+        (!awaited && isAsyncFunction(declaration))
     )
         return false;
     return ts.isBlock(declaration.body)

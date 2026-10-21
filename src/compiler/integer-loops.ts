@@ -5,7 +5,7 @@ import {
 } from "./analysis-walk.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { Value } from "./types.js";
-import { isUpdateExpression } from "./syntax.js";
+import { isUpdateExpression, isSuspensionPoint } from "./syntax.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -95,8 +95,7 @@ export function integerLoopCounter(
             someAnalysisNode(
                 region,
                 (node) =>
-                    ts.isAwaitExpression(node) ||
-                    ts.isYieldExpression(node) ||
+                    isSuspensionPoint(node, { yield: true }) ||
                     writesThroughTrackedRoot(node, names),
                 { functions: "skip" },
             ) ||

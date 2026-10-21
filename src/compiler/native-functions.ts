@@ -11,6 +11,9 @@ import {
     soleReturnedExpression,
     unwrapExpression,
     writeSites,
+    functionKind,
+    isGeneratorFunction,
+    isSuspensionPoint,
 } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
@@ -386,12 +389,7 @@ export class NativeFunctionLowerer {
             callee,
             (node, message) => this.context.fail(node, message),
         );
-        if (
-            declaration &&
-            "asteriskToken" in declaration &&
-            declaration.asteriskToken
-        )
-            return undefined;
+        if (declaration && isGeneratorFunction(declaration)) return undefined;
         if (!declaration) {
             return undefined;
         }
@@ -1525,8 +1523,7 @@ export class NativeFunctionLowerer {
                 }
                 if (
                     ts.isNewExpression(node) ||
-                    ts.isAwaitExpression(node) ||
-                    ts.isYieldExpression(node) ||
+                    isSuspensionPoint(node, { yield: true }) ||
                     ts.isThrowStatement(node)
                 )
                     return true;
@@ -2042,7 +2039,7 @@ export class NativeFunctionLowerer {
             !ts.isMemberName(member.name) ||
             !member.body ||
             !ts.isBlock(member.body) ||
-            member.asteriskToken !== undefined ||
+            functionKind(member) !== "plain" ||
             member.questionToken !== undefined ||
             member.typeParameters?.length ||
             (ts.canHaveDecorators(member) && ts.getDecorators(member)?.length)
@@ -2051,9 +2048,7 @@ export class NativeFunctionLowerer {
         }
         if (
             (ts.getCombinedModifierFlags(member) &
-                (ts.ModifierFlags.Static |
-                    ts.ModifierFlags.Abstract |
-                    ts.ModifierFlags.Async)) !==
+                (ts.ModifierFlags.Static | ts.ModifierFlags.Abstract)) !==
             0
         ) {
             return false;

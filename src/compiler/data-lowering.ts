@@ -236,6 +236,8 @@ import {
     bindingElementKey,
     isProtoSetter,
     equalityOperator,
+    containsSuspension,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -892,7 +894,7 @@ export class DataLowerer {
             (node) =>
                 ts.isCallExpression(node) ||
                 ts.isNewExpression(node) ||
-                ts.isAwaitExpression(node) ||
+                isSuspensionPoint(node) ||
                 writeSites(node).length > 0,
             {
                 skip: (node) =>
@@ -4296,10 +4298,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         type?: DataType,
     ): string {
         if (lines.length === 0) return cpp;
-        if (
-            this.context.options.workers &&
-            someAnalysisNode(node, ts.isAwaitExpression, { functions: "skip" })
-        )
+        if (this.context.options.workers && containsSuspension(node))
             this.context.fail(
                 node,
                 "An awaited operand of a short circuit must be bound to its own declaration first.",
@@ -4518,9 +4517,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 absentCpp !== undefined &&
                 this.context.options.workers &&
-                someAnalysisNode(expression.right, ts.isAwaitExpression, {
-                    functions: "skip",
-                })
+                containsSuspension(expression.right)
             )
                 return this.awaitedFallback(expression.right, type, absentCpp);
             const arm = this.compileArm(() =>
@@ -10854,9 +10851,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             this.context.options.workers &&
             [unwrapped.whenTrue, unwrapped.whenFalse].some((branch) =>
-                someAnalysisNode(branch, ts.isAwaitExpression, {
-                    functions: "skip",
-                }),
+                containsSuspension(branch),
             )
         ) {
             // Await belongs to the enclosing coroutine, never a synchronous

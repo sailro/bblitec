@@ -26,6 +26,7 @@ import {
     patternSlots,
     plainDataMembers,
     parameterForArgument,
+    isSuspensionPoint,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -786,7 +787,7 @@ function parameterProjection(
                     // A fresh scalar projection has no external owner alias;
                     // captured writes and escapes are checked throughout the body.
                     if (
-                        (ts.isAwaitExpression(node) && !inspectCaptures) ||
+                        (isSuspensionPoint(node) && !inspectCaptures) ||
                         ts.isYieldExpression(node)
                     )
                         return true;

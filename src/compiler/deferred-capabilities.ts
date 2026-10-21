@@ -14,6 +14,7 @@ import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
 import { isWindowReceiver } from "./window-members.js";
+import { requiredParameterCount } from "./syntax.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -296,17 +297,8 @@ export class DeferredCapabilities {
             if (descriptor.timing === "reject" && !context.options.workers)
                 throw new ApplicationRealmRequired();
             const signature = context.checker.getResolvedSignature(call)!;
-            const parameters = signature.declaration!.parameters.filter(
-                ts.isParameter,
-            );
-            const required = parameters.reduce(
-                (count, parameter, index) =>
-                    parameter.questionToken ||
-                    parameter.initializer ||
-                    parameter.dotDotDotToken
-                        ? count
-                        : index + 1,
-                0,
+            const required = requiredParameterCount(
+                signature.declaration!.parameters.filter(ts.isParameter),
             );
             if (call.arguments.length < required)
                 return context.fail(

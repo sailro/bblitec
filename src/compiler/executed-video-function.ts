@@ -25,7 +25,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { resolvedSymbol } from "./symbols.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { isValueReference } from "./syntax.js";
+import { isValueReference, functionKind } from "./syntax.js";
 
 /** The source shape a call site matched, before anything is executed. */
 export interface ExecutedVideoFunctionShape {
@@ -149,8 +149,7 @@ export function executedVideoFunctionShape(
         methods.length !== 1 ||
         !ts.isIdentifier(method!.name) ||
         method!.parameters.length !== 0 ||
-        method!.asteriskToken ||
-        (ts.getCombinedModifierFlags(method!) & ts.ModifierFlags.Async) !== 0
+        functionKind(method!) !== "plain"
     )
         return refuse(
             "returns methods generation cannot measure: it measures one synchronous, parameterless method.",

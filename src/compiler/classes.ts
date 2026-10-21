@@ -41,6 +41,8 @@ import {
     sourceFunctionName,
     unwrapExpression,
     writeSites,
+    isAsyncFunction,
+    isGeneratorFunction,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import { nullability } from "./type-facts.js";
@@ -2081,7 +2083,7 @@ export class ClassLowerer {
         const method =
             classIteratorMethod(this.context.checker, this.table(owner)) ??
             declared;
-        if (!method.asteriskToken || !method.body)
+        if (!isGeneratorFunction(method) || !method.body)
             this.context.fail(
                 method,
                 "A [Symbol.iterator] method is lowered as a generator method.",
@@ -2341,19 +2343,14 @@ export class ClassLowerer {
                 `Reached method '${methodLabel(method)}' requires a body.`,
             );
         }
-        if (method.asteriskToken)
+        if (isGeneratorFunction(method))
             return this.compileGeneratorMethod(
                 instance,
                 method,
                 this.compileClassArguments(method, call.arguments, "method"),
                 call,
             );
-        if (
-            this.context.options.workers &&
-            method.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
-        ) {
+        if (this.context.options.workers && isAsyncFunction(method)) {
             const arguments_ = this.compileClassArguments(
                 method,
                 call.arguments,
@@ -2409,10 +2406,7 @@ export class ClassLowerer {
             ? this.context.checker.getReturnTypeOfSignature(signature)
             : undefined;
         const effectiveReturn =
-            checkerReturn &&
-            method.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
+            checkerReturn && isAsyncFunction(method)
                 ? (this.context.checker.getAwaitedType(checkerReturn) ??
                   checkerReturn)
                 : checkerReturn;

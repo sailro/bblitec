@@ -340,7 +340,9 @@ export function hasOnlyReportingEffects(
                 reported = beforeRight;
                 return join(left, right);
             }
-            if (operandYield(node, node.right)) return right;
+            // A comma yields its right operand once its left one is known.
+            if (operandYield(node, node.right))
+                return left === undefined ? undefined : right;
             return printable(left) && printable(right)
                 ? "primitive"
                 : undefined;

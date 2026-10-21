@@ -8,6 +8,7 @@ import {
     meshCompositionRowsCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
+import { isAsyncFunction } from "../compiler/syntax.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -31,11 +32,7 @@ export class EngineLowerer {
             modulePath,
             "startEngine",
         ).declaration;
-        if (
-            !create.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
-        ) {
+        if (!isAsyncFunction(create)) {
             throw new Error("Upstream createEngine is no longer async.");
         }
         if (!this.context.hasCall(start, "requestAnimationFrame")) {

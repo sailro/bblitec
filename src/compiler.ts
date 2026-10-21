@@ -295,6 +295,8 @@ import {
     lastWriter,
     objectLiteralMembers,
     plainDataMembers,
+    containsSuspension,
+    functionKind,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -1697,11 +1699,7 @@ class Compiler implements LoweringServices {
         };
         const suspends =
             this.options.workers &&
-            entry.some((statement) =>
-                someAnalysisNode(statement, ts.isAwaitExpression, {
-                    functions: "skip",
-                }),
-            );
+            entry.some((statement) => containsSuspension(statement));
         if (!suspends) {
             emitBody();
             return;
@@ -1963,10 +1961,7 @@ class Compiler implements LoweringServices {
         if (
             (!ts.isArrowFunction(handler) &&
                 !ts.isFunctionExpression(handler)) ||
-            (ts.isFunctionExpression(handler) && handler.asteriskToken) ||
-            handler.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            functionKind(handler) !== "plain" ||
             handler.parameters.length !== 1 ||
             !ts.isBlock(handler.body) ||
             handler.body.statements.length !== 1
@@ -10230,13 +10225,7 @@ class Compiler implements LoweringServices {
         const name = sourceFunctionName(declaration);
         if (name === undefined || !selected.includes(name)) return [];
         // A scope lives on the native stack; a suspended body would outlive it.
-        if (
-            ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Async ||
-            (ts.isFunctionLike(declaration) &&
-                "asteriskToken" in declaration &&
-                declaration.asteriskToken)
-        )
-            return [];
+        if (functionKind(declaration) !== "plain") return [];
         this.reachFeature("profile:source", declaration);
         this.sourceProfileScopes.add(name);
         return sourceProfileScope(

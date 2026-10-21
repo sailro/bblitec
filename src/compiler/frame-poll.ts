@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { argumentAt, identifierText } from "./syntax.js";
+import { argumentAt, identifierText, isAsyncFunction } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { declaredSymbol, type LibraryGlobal } from "./symbols.js";
 
@@ -84,12 +84,8 @@ export function framePollExecutor(
         !sameSymbol(resolve.expression.expression, resolveParameter) ||
         !sameSymbol(argumentAt(raf, 0), poll.name) ||
         !sameSymbol(initialCall.expression.expression, poll.name) ||
-        executor.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        poll.initializer.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
+        isAsyncFunction(executor) ||
+        isAsyncFunction(poll.initializer)
     )
         return undefined;
     if (

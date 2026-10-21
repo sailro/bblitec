@@ -52,6 +52,9 @@ import {
     bindingElementKey,
     specifierSourceName,
     objectProperty,
+    functionKind,
+    isAsyncFunction,
+    isGeneratorFunction,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -383,17 +386,6 @@ function detailNamespace(module: string): string {
     let stem = posix.basename(module, ".ts");
     while (stem.startsWith("_")) stem = stem.slice(1);
     return `bbl::${stem.replaceAll("-", "_")}_detail`;
-}
-
-/** Whether a function-like is `async`. */
-function isAsyncFunction(node: ts.FunctionLikeDeclaration): boolean {
-    return (
-        ts
-            .getModifiers(node)
-            ?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ?? false
-    );
 }
 
 /** Whether a node is a function-like body the record model lowers. */
@@ -4223,12 +4215,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 node,
                 "A pinned closure takes more parameters than its callers pass.",
             );
-        if (
-            (ts.isFunctionDeclaration(node) ||
-                ts.isFunctionExpression(node) ||
-                ts.isMethodDeclaration(node)) &&
-            node.asteriskToken
-        )
+        if (isGeneratorFunction(node))
             return this.refuse(node, "Pinned generator closure.");
         const async = isAsyncFunction(node);
         if (async && to.result.kind !== "promise")
@@ -4349,7 +4336,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 node,
                 "A pinned callback takes more parameters than its caller passes.",
             );
-        if (isAsyncFunction(node) || node.asteriskToken)
+        if (functionKind(node) !== "plain")
             return this.refuse(node, "Pinned async or generator callback.");
         const outer = this.frame;
         const visible = this.visibleEnvironment(outer)?.environment;

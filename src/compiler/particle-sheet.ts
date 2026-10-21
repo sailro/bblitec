@@ -9,6 +9,7 @@ import {
     frozenParticleBuffer,
     requireParticleBakeWritable,
 } from "./particle-buffer.js";
+import { functionKind } from "./syntax.js";
 
 /** The manually supplied sheet is native shared storage, independent of the baked graph. */
 export function emitFrozenParticleSheetAssignment(
@@ -95,10 +96,7 @@ export function emitFrozenParticleSheetAssignment(
             (parameter) =>
                 parameter.initializer || !ts.isIdentifier(parameter.name),
         ) ||
-        update.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        (ts.isFunctionExpression(update) && update.asteriskToken)
+        functionKind(update) !== "plain"
     ) {
         context.fail(
             update,

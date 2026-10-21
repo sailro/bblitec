@@ -16,6 +16,9 @@ import {
     rootIdentifier,
     writeSites,
     parameterForArgument,
+    containsSuspension,
+    isAsyncFunction,
+    isGeneratorFunction,
 } from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
@@ -50,24 +53,12 @@ function valueSite(node: ts.Expression): {
 
 /** Whether an async function awaits in its own body: a callback it calls can run after its caller resumed. */
 function suspendsBeforeReturn(owner: ts.Node): boolean {
-    if (
-        !isSupportedFunction(owner) ||
-        !owner.body ||
-        !ts
-            .getModifiers(owner)
-            ?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-    )
-        return false;
-    let found = false;
-    forEachAnalysisNode(owner.body, (node) => {
-        if (found || ts.isFunctionLike(node)) return "skip";
-        if (
-            ts.isAwaitExpression(node) ||
-            (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
-        )
-            found = true;
-    });
-    return found;
+    return (
+        isSupportedFunction(owner) &&
+        owner.body !== undefined &&
+        isAsyncFunction(owner) &&
+        containsSuspension(owner.body)
+    );
 }
 
 /**
@@ -554,16 +545,8 @@ export class SharedClosureAnalysis {
                 // outer bindings must therefore use the same cells as callbacks.
                 if (
                     isSupportedFunction(node) &&
-                    (("asteriskToken" in node &&
-                        node.asteriskToken !== undefined) ||
-                        (this.context.options.workers &&
-                            ts
-                                .getModifiers(node)
-                                ?.some(
-                                    (modifier) =>
-                                        modifier.kind ===
-                                        ts.SyntaxKind.AsyncKeyword,
-                                )))
+                    (isGeneratorFunction(node) ||
+                        (this.context.options.workers && isAsyncFunction(node)))
                 ) {
                     addRoot(node);
                 }

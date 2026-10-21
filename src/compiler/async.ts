@@ -27,6 +27,8 @@ import {
     valueOperands,
     outermostWrapper,
     positionalParameter,
+    functionKind,
+    isAsyncFunction,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -537,15 +539,7 @@ export class AsyncLowerer {
             : ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)
               ? callee
               : undefined;
-        if (
-            !declaration ||
-            ("asteriskToken" in declaration && declaration.asteriskToken) ||
-            !ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
+        if (!declaration || functionKind(declaration) !== "async")
             return undefined;
         if (context.browserErasure.isBrowserOnlyLocalCall(node))
             return undefined;
@@ -577,15 +571,7 @@ export class AsyncLowerer {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined {
-        if (
-            ("asteriskToken" in declaration && declaration.asteriskToken) ||
-            !ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
-            return undefined;
+        if (functionKind(declaration) !== "async") return undefined;
         const values = arguments_.map((value, index) =>
             this.pinArgument(
                 value,
@@ -922,13 +908,7 @@ export class AsyncLowerer {
         const declaration = ts.isIdentifier(callback)
             ? tryResolveFunctionDeclaration(context.checker, callback)
             : callback;
-        const asynchronous =
-            declaration &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                );
+        const asynchronous = declaration && isAsyncFunction(declaration);
         // An async executor suspends inside construction.
         if (synchronous && asynchronous) throw new ApplicationRealmRequired();
         // Outside a realm a Promise<T> is represented by T itself.
@@ -1589,13 +1569,7 @@ export class AsyncLowerer {
             );
         const nonThenableCompletion =
             cleanup && hasNonThenableCompletion(context.checker, declaration);
-        const asynchronous =
-            declaration &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                );
+        const asynchronous = declaration && isAsyncFunction(declaration);
         const signature = context.checker
             .getTypeAtLocation(callback)
             .getCallSignatures()[0];

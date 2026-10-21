@@ -37,6 +37,8 @@ import {
     unwrapExpression as unwrapWalkExpression,
     isExpressionWrapper,
     equalityOperator,
+    functionKind,
+    isSuspensionPoint,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -191,11 +193,8 @@ function assetOwnerMapBuilder(
     ): ts.Identifier[] | undefined => {
         if (
             !fn.body ||
-            fn.asteriskToken ||
+            functionKind(fn) !== "plain" ||
             fn.typeParameters?.length ||
-            fn.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
             fn.parameters.length !== count ||
             fn.parameters.some(
                 (parameter) =>
@@ -218,7 +217,7 @@ function assetOwnerMapBuilder(
     ): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
         if (
             !ts.isForOfStatement(statement) ||
-            statement.awaitModifier ||
+            isSuspensionPoint(statement) ||
             !ts.isVariableDeclarationList(statement.initializer) ||
             !(statement.initializer.flags & ts.NodeFlags.Const) ||
             statement.initializer.declarations.length !== 1
@@ -982,7 +981,7 @@ export class HandleCollections {
         if (
             !loop ||
             !ts.isForOfStatement(loop) ||
-            loop.awaitModifier ||
+            isSuspensionPoint(loop) ||
             !ts.isVariableDeclarationList(loop.initializer) ||
             loop.initializer.declarations.length !== 1
         ) {
@@ -3039,10 +3038,7 @@ function isAssetDescendantNameSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -3182,10 +3178,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3724,7 +3717,7 @@ function isClosureMeshFlattenCollector(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3777,7 +3770,7 @@ function isClosureMeshFlattenCollector(
     // from every root, so the walk covers the whole container.
     if (
         !ts.isForOfStatement(loop!) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {
@@ -3850,7 +3843,7 @@ function isClosureMeshFlattenCollector(
     const recursion = inner[0]!;
     if (
         !ts.isForOfStatement(recursion) ||
-        recursion.awaitModifier ||
+        isSuspensionPoint(recursion) ||
         !ts.isVariableDeclarationList(recursion.initializer) ||
         recursion.initializer.declarations.length !== 1
     ) {
@@ -3948,7 +3941,7 @@ function typeGuardConjunction(
 ): { parameter: ts.Identifier; operands: ts.Expression[] } | undefined {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         declaration.body.statements.length !== 1
@@ -4118,7 +4111,7 @@ function isRecursiveMeshFlattenVisitor(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -4192,7 +4185,7 @@ function isRecursiveMeshFlattenVisitor(
         !loop ||
         !children ||
         !names.some((name) => isPropertyReadOf(children, name, "children")) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {

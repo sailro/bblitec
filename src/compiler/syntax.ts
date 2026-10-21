@@ -30,7 +30,7 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
         (node) =>
             ts.isCallExpression(node) ||
             ts.isNewExpression(node) ||
-            ts.isAwaitExpression(node) ||
+            isSuspensionPoint(node) ||
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node) ||
             isUpdateExpression(node) ||
@@ -49,7 +49,7 @@ export function expressionHasEffects(expression: ts.Expression): boolean {
         (node) =>
             ts.isCallExpression(node) ||
             ts.isNewExpression(node) ||
-            ts.isAwaitExpression(node) ||
+            isSuspensionPoint(node) ||
             isUpdateExpression(node) ||
             isAssignmentExpression(node),
     );
@@ -1681,10 +1681,74 @@ export function localSyncFunction(
         ts.isArrowFunction(fn) ||
         ts.isFunctionExpression(fn)) &&
         fn.body !== undefined &&
-        !fn.asteriskToken &&
-        !fn.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
+        functionKind(fn) === "plain"
         ? fn
         : undefined;
+}
+
+/**
+ * What calling a function-like starts: its body at once (`plain`), or a
+ * promise, an iterator or an async iterator that runs it.
+ */
+export type FunctionKind = "plain" | "async" | "generator" | "async generator";
+
+/** The kind a function-like is declared as: `async`, `*`, both or neither. */
+export function functionKind(fn: ts.SignatureDeclaration): FunctionKind {
+    const generator = "asteriskToken" in fn && fn.asteriskToken !== undefined;
+    const async =
+        ts.canHaveModifiers(fn) &&
+        (ts
+            .getModifiers(fn)
+            ?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            ) ??
+            false);
+    if (async) return generator ? "async generator" : "async";
+    return generator ? "generator" : "plain";
+}
+
+/** Whether a node is a function declared `async` (an async generator too): its body may await. */
+export function isAsyncFunction(node: ts.Node): boolean {
+    if (!ts.isFunctionLike(node)) return false;
+    const kind = functionKind(node);
+    return kind === "async" || kind === "async generator";
+}
+
+/** Whether a node is a generator function (an async generator too): calling it returns an iterator. */
+export function isGeneratorFunction(node: ts.Node): boolean {
+    if (!ts.isFunctionLike(node)) return false;
+    const kind = functionKind(node);
+    return kind === "generator" || kind === "async generator";
+}
+
+/**
+ * Whether `node` itself suspends its activation: an `await`, a `for await`
+ * loop (every step awaits) and, when asked, a generator's `yield`.
+ */
+export function isSuspensionPoint(
+    node: ts.Node,
+    options: { readonly yield?: boolean } = {},
+): boolean {
+    return (
+        ts.isAwaitExpression(node) ||
+        (ts.isForOfStatement(node) && node.awaitModifier !== undefined) ||
+        (options.yield === true && ts.isYieldExpression(node))
+    );
+}
+
+/**
+ * Whether the activation running `node` suspends anywhere in it. A function
+ * is another activation, `node` itself included: pass a function's body.
+ */
+export function containsSuspension(
+    node: ts.Node,
+    options: { readonly yield?: boolean } = {},
+): boolean {
+    if (ts.isFunctionLike(node)) return false;
+    return (
+        isSuspensionPoint(node, options) ||
+        ts.forEachChild(node, (child) =>
+            containsSuspension(child, options) ? true : undefined,
+        ) === true
+    );
 }

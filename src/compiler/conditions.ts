@@ -30,6 +30,7 @@ import {
     isAssignmentExpression,
     unwrapExpression,
     equalityOperator,
+    containsSuspension,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
 import { declaredIn, resolvedSymbol } from "./symbols.js";
@@ -349,9 +350,7 @@ export class ConditionLowerer {
             if (rightLines.length > 0) {
                 if (
                     this.context.options.workers &&
-                    someAnalysisNode(unwrapped.right, ts.isAwaitExpression, {
-                        functions: "skip",
-                    })
+                    containsSuspension(unwrapped.right)
                 ) {
                     const result =
                         this.context.allocateTemporaryCppName("logical_result");

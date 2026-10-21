@@ -28,6 +28,7 @@ import {
     valueOperands,
     plainDataMembers,
     equalityOperator,
+    functionKind,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -2422,10 +2423,7 @@ export class BrowserErasure {
                     parameter.initializer !== undefined ||
                     parameter.dotDotDotToken !== undefined,
             ) ||
-            declaration.asteriskToken !== undefined ||
-            declaration.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            functionKind(declaration) !== "plain" ||
             this.helperBodies.some((frame) => frame.body === body)
         ) {
             return undefined;

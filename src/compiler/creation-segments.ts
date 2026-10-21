@@ -1,6 +1,11 @@
 import ts from "typescript";
 import { returnsOnly } from "./fresh-records.js";
-import { localSyncFunction, unwrapExpression, writeSites } from "./syntax.js";
+import {
+    localSyncFunction,
+    unwrapExpression,
+    writeSites,
+    isSuspensionPoint,
+} from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 
 interface CreationSegmentContext {
@@ -129,12 +134,7 @@ function suspendsOrAssigns(
     names: ((node: ts.Node) => boolean) | undefined,
 ): boolean {
     if (ts.isFunctionLike(node)) return false;
-    if (
-        ts.isAwaitExpression(node) ||
-        ts.isYieldExpression(node) ||
-        (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
-    )
-        return true;
+    if (isSuspensionPoint(node, { yield: true })) return true;
     if (names && writeSites(node).some(({ target }) => names(target)))
         return true;
     return (

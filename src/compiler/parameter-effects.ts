@@ -31,6 +31,7 @@ import {
     type PatternRead,
     equalityOperator,
     parameterForArgument,
+    functionKind,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -332,19 +333,11 @@ function summarize(
 ): ParameterEffects {
     const symbol = fn.body ? declaredSymbol(checker, binding) : undefined;
     if (!symbol) return OPAQUE;
-    const generator =
-        (ts.isFunctionDeclaration(fn) ||
-            ts.isFunctionExpression(fn) ||
-            ts.isMethodDeclaration(fn)) &&
-        fn.asteriskToken !== undefined;
     summarizing.add(fn);
     try {
         return {
             analyzable: true,
-            deferred:
-                generator ||
-                (ts.getCombinedModifierFlags(fn) & ts.ModifierFlags.Async) !==
-                    0,
+            deferred: functionKind(fn) !== "plain",
             // A rest parameter holds each argument as an element.
             uses: new EffectWalker(checker, fn).run(symbol, {
                 at: isRestBinding(binding) ? [ANY_KEY] : [],

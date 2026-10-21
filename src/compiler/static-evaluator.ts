@@ -87,6 +87,7 @@ import {
     wrappersUnder,
     rootExpression,
     writeSites,
+    functionKind,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -1741,12 +1742,9 @@ export class StaticEvaluator {
         if (
             !declaration?.body ||
             declaration.parameters.length !== call.arguments.length ||
-            declaration.asteriskToken ||
+            functionKind(declaration) !== "plain" ||
             declaration.getSourceFile().isDeclarationFile ||
-            !isModuleScopeFunction(declaration) ||
-            ts
-                .getModifiers(declaration)
-                ?.some(({ kind }) => kind === ts.SyntaxKind.AsyncKeyword)
+            !isModuleScopeFunction(declaration)
         ) {
             return undefined;
         }

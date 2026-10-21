@@ -49,6 +49,7 @@ import {
     isTypeOnlyWrapper,
     bindingNameIdentifiers,
     isValueReference,
+    isAsyncFunction,
 } from "./syntax.js";
 
 export interface DeterministicRandomContext extends Pick<
@@ -121,11 +122,7 @@ function seedFactoryDeclaration(
         );
     }
     const factory = declaration;
-    if (
-        factory.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
-    ) {
+    if (isAsyncFunction(factory)) {
         context.fail(
             callee,
             "A deterministic Math.random factory is not async; the driver " +

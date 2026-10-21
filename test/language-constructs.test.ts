@@ -14833,3 +14833,39 @@ check(
         throw new Error("module const alias");
     `,
 );
+check(
+    "a tag's rest parameter at index zero takes the strings and every substitution",
+    `
+    function parts(...values: unknown[]): string {
+        return values.length + ":" + String(values[1]);
+    }
+    if (parts\`a\${7}b\` !== "2:7") throw new Error(parts\`a\${7}b\`);
+    `,
+);
+checkInRealm(
+    "for await suspends inside catch and finally blocks",
+    `
+    async function fails(): Promise<void> {
+        await Promise.resolve();
+        throw new Error("x");
+    }
+    async function* values(): AsyncGenerator<number, void, unknown> {
+        yield 1;
+    }
+    void (async () => {
+        let n = 0;
+        try {
+            await fails();
+        } catch {
+            for await (const v of values()) n += v;
+        }
+        try {
+            await Promise.resolve();
+        } finally {
+            for await (const v of values()) n += v * 2;
+        }
+        if (n !== 3) throw new Error(String(n));
+        globalThis.close();
+    })();
+    `,
+);

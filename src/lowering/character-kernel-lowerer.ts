@@ -22,6 +22,7 @@ import {
     type PinnedNumericScope,
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
+import { isSuspensionPoint } from "../compiler/syntax.js";
 
 /** A pinned value with its represented storage and alias lifetime. */
 export interface KernelValue {
@@ -492,7 +493,11 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             ts.isVariableDeclarationList(list) && list.declarations.length === 1
                 ? list.declarations[0]!
                 : undefined;
-        if (statement.awaitModifier || !element || !ts.isIdentifier(binding))
+        if (
+            isSuspensionPoint(statement) ||
+            !element ||
+            !ts.isIdentifier(binding)
+        )
             return this.refuse(
                 statement,
                 "Pinned for-of loop requires one ordinary binding.",

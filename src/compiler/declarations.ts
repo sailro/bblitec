@@ -83,6 +83,8 @@ import {
     unwrapExpression,
     plainDataMembers,
     parameterForArgument,
+    isAsyncFunction,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -2502,7 +2504,7 @@ export class DeclarationLowerer {
                 if (
                     ts.isCallExpression(candidate) ||
                     ts.isNewExpression(candidate) ||
-                    ts.isAwaitExpression(candidate) ||
+                    isSuspensionPoint(candidate) ||
                     ts.isTaggedTemplateExpression(candidate)
                 ) {
                     found = true;
@@ -2585,14 +2587,7 @@ export class DeclarationLowerer {
             });
             return;
         }
-        if (
-            this.context.options.workers &&
-            ts
-                .getModifiers(callback)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        ) {
+        if (this.context.options.workers && isAsyncFunction(callback)) {
             const type = this.context.dataTypes.fromTsType(
                 this.context.checker.getTypeAtLocation(callback),
                 callback,

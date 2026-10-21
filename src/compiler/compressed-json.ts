@@ -26,7 +26,14 @@ import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { Value } from "./types.js";
 import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
-import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    unwrapExpression,
+    functionKind,
+    isAsyncFunction,
+    isSuspensionPoint,
+} from "./syntax.js";
 
 interface CompressedJsonContext extends Pick<
     LoweringServices,
@@ -228,7 +235,7 @@ function forOfBinding(
     if (
         !ts.isForOfStatement(statement) ||
         !ts.isVariableDeclarationList(statement.initializer) ||
-        statement.awaitModifier ||
+        isSuspensionPoint(statement) ||
         (statement.initializer.flags & ts.NodeFlags.Const) === 0 ||
         statement.initializer.declarations.length !== 1 ||
         !identifierIs(statement.expression, collection) ||
@@ -252,10 +259,7 @@ function isGzipBase64JsonDecoder(
 ): boolean {
     if (
         !declaration.body ||
-        !declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "async" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 3
@@ -295,9 +299,7 @@ function isGzipBase64JsonDecoder(
         decoded.arguments.length !== 1 ||
         !identifierIs(decoded.arguments[0], encoded) ||
         !ts.isArrowFunction(mapper) ||
-        mapper.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        isAsyncFunction(mapper) ||
         mapper.parameters.length !== 1 ||
         !plainIdentifierParameter(mapper.parameters[0]!) ||
         ts.isBlock(mapper.body)
@@ -458,10 +460,7 @@ function isInputNameAliasRestorer(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 4

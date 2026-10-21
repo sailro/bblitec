@@ -6,6 +6,7 @@ import {
     unwrapExpression,
     writeSiteOf,
     writeSites,
+    isSuspensionPoint,
 } from "./syntax.js";
 
 /**
@@ -348,12 +349,10 @@ function exitsLoop(node: ts.Node): boolean {
         if (found || ts.isFunctionLike(child) || ts.isClassLike(child)) return;
         if (
             ts.isReturnStatement(child) ||
-            ts.isAwaitExpression(child) ||
-            ts.isYieldExpression(child) ||
+            isSuspensionPoint(child, { yield: true }) ||
             ((ts.isBreakStatement(child) || ts.isContinueStatement(child)) &&
                 child.label !== undefined) ||
-            (ts.isBreakStatement(child) && !nestedBreakTarget) ||
-            (ts.isForOfStatement(child) && child.awaitModifier !== undefined)
+            (ts.isBreakStatement(child) && !nestedBreakTarget)
         ) {
             found = true;
             return;

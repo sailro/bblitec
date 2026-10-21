@@ -56,6 +56,8 @@ import {
     bindingNameIdentifiers,
     patternSlots,
     equalityOperator,
+    containsSuspension,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -2035,7 +2037,7 @@ export class StatementLowerer {
                 finallyBlock,
                 (node) =>
                     (coroutine &&
-                        (ts.isAwaitExpression(node) ||
+                        (isSuspensionPoint(node) ||
                             ts.isThrowStatement(node) ||
                             (ts.isExpressionStatement(node) &&
                                 callsNever(
@@ -2272,11 +2274,7 @@ export class StatementLowerer {
             }
             const suspendedCatch =
                 context.asyncActivations.workerCheckpointCpp() &&
-                someAnalysisNode(
-                    statement.catchClause.block,
-                    ts.isAwaitExpression,
-                    { functions: "skip" },
-                )
+                containsSuspension(statement.catchClause.block)
                     ? context.allocateTemporaryCppName("pending_exception")
                     : undefined;
             const protectedBody = context.captureEmittedStatements(() => {
@@ -2721,13 +2719,9 @@ export class StatementLowerer {
                                 .map((line) => line.slice(0, -1))
                                 .join(", ");
                         } else if (
-                            someAnalysisNode(
-                                statement.incrementor,
-                                (node) =>
-                                    ts.isAwaitExpression(node) ||
-                                    ts.isYieldExpression(node),
-                                { functions: "skip" },
-                            ) ||
+                            containsSuspension(statement.incrementor, {
+                                yield: true,
+                            }) ||
                             emitted.some(
                                 (item) =>
                                     item.statement.kind === "control" &&
@@ -3473,7 +3467,7 @@ export class StatementLowerer {
             );
         }
         const declaration = statement.initializer.declarations[0]!;
-        if (statement.awaitModifier)
+        if (isSuspensionPoint(statement))
             return this.emitForAwait(context, statement, declaration);
         if (declaration.initializer) {
             context.fail(

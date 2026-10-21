@@ -11,6 +11,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
+import { isSuspensionPoint } from "../compiler/syntax.js";
 
 const modulePath = "src/shadow/csm-shadow-task-hooks.ts";
 
@@ -381,7 +382,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                 collection.shape.kind !== "array" ||
                 !declaration ||
                 !ts.isIdentifier(declaration.name) ||
-                statement.awaitModifier
+                isSuspensionPoint(statement)
             ) {
                 return this.context.contractError(
                     statement,

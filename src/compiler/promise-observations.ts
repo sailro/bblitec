@@ -7,6 +7,7 @@ import {
     outermostWrapper,
     unwrapExpression,
     isTypeAssertion,
+    isAsyncFunction,
 } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
@@ -25,15 +26,7 @@ function adoptsPromise(expression: ts.Expression): boolean {
         : ts.isArrowFunction(parent) && parent.body === current
           ? parent
           : undefined;
-    return (
-        owner !== undefined &&
-        ts.canHaveModifiers(owner) &&
-        ts
-            .getModifiers(owner)
-            ?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) === true
-    );
+    return owner !== undefined && isAsyncFunction(owner);
 }
 
 /** Reached object observations need promises, even when their settlements are immediate. */

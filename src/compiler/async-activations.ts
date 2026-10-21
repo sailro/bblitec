@@ -8,7 +8,11 @@ import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
-import { unwrapExpression, outermostWrapper } from "./syntax.js";
+import {
+    unwrapExpression,
+    outermostWrapper,
+    isAsyncFunction,
+} from "./syntax.js";
 import type { Value } from "./types.js";
 import type {
     LoweringServices,
@@ -206,10 +210,7 @@ export class AsyncActivations {
 
     private isAsyncReturn(expression: ts.Expression): boolean {
         const owner = ts.findAncestor(expression.parent, ts.isFunctionLike);
-        return (
-            owner !== undefined &&
-            (ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) !== 0
-        );
+        return owner !== undefined && isAsyncFunction(owner);
     }
 
     /** Refuse source thenables before a typed return sink erases their shape. */
@@ -291,15 +292,7 @@ export class AsyncActivations {
         const declaration = ts.isIdentifier(target)
             ? tryResolveFunctionDeclaration(this.context.checker, target)
             : target;
-        if (
-            !declaration?.body ||
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
-            return body();
+        if (!declaration?.body || isAsyncFunction(declaration)) return body();
         const returned = ts.isBlock(declaration.body)
             ? declaration.body.statements.at(-1)
             : declaration.body;

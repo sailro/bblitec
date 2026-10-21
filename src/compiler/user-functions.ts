@@ -111,6 +111,9 @@ import {
     bindingNameIdentifiers,
     plainDataMembers,
     positionalParameter,
+    isAsyncFunction,
+    isGeneratorFunction,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -1807,10 +1810,7 @@ export class UserFunctionLowerer {
             argumentValues,
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
-            if (
-                "asteriskToken" in ir.declaration &&
-                ir.declaration.asteriskToken
-            )
+            if (isGeneratorFunction(ir.declaration))
                 return inBodyScope(() =>
                     this.lowerGenerator(context, ir, argumentValues, call),
                 );
@@ -1911,8 +1911,7 @@ export class UserFunctionLowerer {
         pinArguments = true,
         closedEffectsOnly = false,
     ): Value | undefined {
-        if ("asteriskToken" in ir.declaration && ir.declaration.asteriskToken)
-            return undefined;
+        if (isGeneratorFunction(ir.declaration)) return undefined;
         if (
             closedEffectsOnly &&
             ir.declaration.body &&
@@ -3350,14 +3349,7 @@ export class UserFunctionLowerer {
         if (
             recursive &&
             context.options.workers &&
-            declarations.some((declaration) =>
-                ts
-                    .getModifiers(declaration)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                    ),
-            )
+            declarations.some(isAsyncFunction)
         ) {
             // Every sibling must survive suspension. Materialize the group with
             // the stored-function body/ownership protocol, including sync peers.
@@ -3483,9 +3475,7 @@ export class UserFunctionLowerer {
                 );
             }
             const asyncWithoutValueReturn =
-                declaration.modifiers?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) === true &&
+                isAsyncFunction(declaration) &&
                 (!declaration.body ||
                     !this.containsValueReturn(
                         ts.isBlock(declaration.body)
@@ -5029,11 +5019,7 @@ export class UserFunctionLowerer {
             );
         }
         const values = arguments_.slice(0, ir.parameters.length);
-        if (
-            !body?.generator &&
-            "asteriskToken" in ir.declaration &&
-            ir.declaration.asteriskToken
-        )
+        if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, values, callNode);
         if (!body?.coroutine && !body?.generator) {
             const asynchronous = context.asyncActivations.compileAsyncCall(
@@ -5256,12 +5242,7 @@ export class UserFunctionLowerer {
             cppName: `${prefix}arg_${index}`,
         }));
         const asynchronous =
-            !!context.options.workers &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) === true;
+            !!context.options.workers && isAsyncFunction(declaration);
         const resultType =
             dataType.result?.kind === "optional"
                 ? dataType.result.inner
@@ -5279,15 +5260,14 @@ export class UserFunctionLowerer {
                 : undefined;
         const promiseType =
             resultType?.kind === "promise" ? resultType : settledPromise;
-        const generator =
-            "asteriskToken" in declaration && declaration.asteriskToken
-                ? resultType?.kind === "iterator"
-                    ? resultType
-                    : context.fail(
-                          declaration,
-                          "Stored generators require a typed iterator result.",
-                      )
-                : undefined;
+        const generator = isGeneratorFunction(declaration)
+            ? resultType?.kind === "iterator"
+                ? resultType
+                : context.fail(
+                      declaration,
+                      "Stored generators require a typed iterator result.",
+                  )
+            : undefined;
         if (generator?.traced)
             context.fail(
                 declaration,
@@ -6162,11 +6142,7 @@ export class UserFunctionLowerer {
         body?: CallbackInvocationOptions,
         captureReturn?: (value: Value) => void,
     ): Value {
-        if (
-            !body?.generator &&
-            "asteriskToken" in ir.declaration &&
-            ir.declaration.asteriskToken
-        )
+        if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, arguments_, callNode);
         // A function re-entered through a callback its caller passed lowers
         // again at another call site; re-entering a call site that is still
@@ -6677,10 +6653,7 @@ export class UserFunctionLowerer {
                 sinkResult,
             ) ?? context.compileValue(expression);
         captureReturn?.(returned);
-        const asynchronous =
-            (ts.getCombinedModifierFlags(ir.declaration) &
-                ts.ModifierFlags.Async) !==
-            0;
+        const asynchronous = isAsyncFunction(ir.declaration);
         // Resolution reads a custom thenable's `then` before the settled
         // value converts.
         if (asynchronous)
@@ -6949,13 +6922,13 @@ export class UserFunctionLowerer {
             someAnalysisNode(
                 body,
                 (node) =>
-                    (ts.isForOfStatement(node) && !!node.awaitModifier) ||
+                    (ts.isForOfStatement(node) && isSuspensionPoint(node)) ||
                     (ts.isTryStatement(node) &&
                         !!node.finallyBlock &&
                         someAnalysisNode(
                             node.finallyBlock,
                             (child) =>
-                                ts.isAwaitExpression(child) ||
+                                isSuspensionPoint(child) ||
                                 ts.isReturnStatement(child),
                             { functions: "skip" },
                         )),
@@ -7408,13 +7381,7 @@ export class UserFunctionLowerer {
                 ir.declaration,
                 call,
             ) ||
-            (context.options.workers &&
-                ts
-                    .getModifiers(ir.declaration)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                    ));
+            (context.options.workers && isAsyncFunction(ir.declaration));
         const values: Value[] = [];
         const expanded: Value[] = [];
         // An argument a later one touches the storage of, either one

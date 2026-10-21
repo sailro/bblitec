@@ -5,6 +5,7 @@ import {
     restParameterIndex,
     unwrapExpression,
     writeSites,
+    isSuspensionPoint,
 } from "./syntax.js";
 import {
     accessedPropertySymbol,
@@ -165,8 +166,7 @@ class InertWalk {
         if (writeSites(node).some(({ target }) => !this.isOwnLocal(target)))
             return false;
         if (
-            ts.isAwaitExpression(node) ||
-            ts.isYieldExpression(node) ||
+            isSuspensionPoint(node, { yield: true }) ||
             ts.isTaggedTemplateExpression(node) ||
             ts.isNonNullExpression(node) ||
             ts.isClassLike(node) ||
@@ -181,7 +181,7 @@ class InertWalk {
         } else if (ts.isNewExpression(node)) {
             if (!this.construction(node)) return false;
         } else if (ts.isForOfStatement(node)) {
-            if (node.awaitModifier || !this.isArray(node.expression)) {
+            if (isSuspensionPoint(node) || !this.isArray(node.expression)) {
                 return false;
             }
         } else if (

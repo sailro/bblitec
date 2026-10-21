@@ -104,6 +104,9 @@ import {
     isTypeAssertion,
     writeSites,
     isProtoSetter,
+    isAsyncFunction,
+    containsSuspension,
+    restParameterIndex,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -1970,15 +1973,15 @@ export class ExpressionLowerer {
                   )
                 : value;
         });
-        // A rest parameter takes the substitutions from its position on.
-        const signature = this.context.checker.getResolvedSignature(expression);
-        const parameters = signature?.getDeclaration()?.parameters ?? [];
-        const rest = parameters.findIndex(
-            (parameter) => parameter.dotDotDotToken !== undefined,
-        );
+        // A rest parameter takes the arguments from its position on; the
+        // strings array is the first argument.
+        const declaration = this.context.checker
+            .getResolvedSignature(expression)
+            ?.getDeclaration();
+        const rest = declaration && restParameterIndex(declaration);
         const arguments_: Value[] = [stringsValue, ...substitutions];
         const values =
-            rest > 0
+            rest !== undefined
                 ? [
                       ...arguments_.slice(0, rest),
                       ...(arguments_.length >= rest
@@ -2594,10 +2597,7 @@ export class ExpressionLowerer {
         node: ts.Expression,
         guard: () => string,
     ): Value | undefined {
-        if (
-            this.context.options.workers &&
-            someAnalysisNode(node, ts.isAwaitExpression, { functions: "skip" })
-        )
+        if (this.context.options.workers && containsSuspension(node))
             return undefined;
         // Every member is a record, a tuple, a compile-time value or a plain
         // native value the tuple can hold.
@@ -4853,11 +4853,7 @@ export class ExpressionLowerer {
     ): Value {
         if (
             ts.isIdentifier(callback) ||
-            ts
-                .getModifiers(callback)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) ||
+            isAsyncFunction(callback) ||
             callback.parameters.length === 0 ||
             !ts.isArrayBindingPattern(callback.parameters[0]!.name)
         ) {
@@ -6634,16 +6630,7 @@ export class ExpressionLowerer {
         // returns. Allocate its mutable fields before either branch calls it.
         const asyncReceiver =
             this.context.options.workers &&
-            Object.values(methods).some(
-                (method) =>
-                    !ts.isIdentifier(method) &&
-                    ts
-                        .getModifiers(method)
-                        ?.some(
-                            (modifier) =>
-                                modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                        ),
-            );
+            Object.values(methods).some(isAsyncFunction);
         return asyncReceiver
             ? this.context.bindings.materializeEscapingValue(
                   record,

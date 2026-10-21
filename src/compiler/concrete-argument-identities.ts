@@ -14,6 +14,7 @@ import {
     aliasKey,
     ANY_KEY,
     plainDataMembers,
+    functionKind,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -284,10 +285,7 @@ export function concreteArgumentIdentityPaths(
         if (
             !isSupportedFunction(declaration) ||
             !declaration.body ||
-            declaration.asteriskToken ||
-            declaration.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            functionKind(declaration) !== "plain" ||
             active.has(declaration) ||
             node.arguments.some(ts.isSpreadElement) ||
             node.arguments.length > declaration.parameters.length

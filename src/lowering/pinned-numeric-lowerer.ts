@@ -50,6 +50,7 @@ import {
     writeSiteOf,
     namesMember,
     declarationNamed,
+    isSuspensionPoint,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -1051,7 +1052,7 @@ export class PinnedNumericLowerer {
         if (ts.isForOfStatement(statement)) {
             const list = statement.initializer;
             if (
-                statement.awaitModifier ||
+                isSuspensionPoint(statement) ||
                 !ts.isVariableDeclarationList(list) ||
                 list.declarations.length !== 1
             )

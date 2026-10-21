@@ -20,7 +20,12 @@ import {
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
-import { unwrapExpression, rootExpression, writeSites } from "./syntax.js";
+import {
+    unwrapExpression,
+    rootExpression,
+    writeSites,
+    isSuspensionPoint,
+} from "./syntax.js";
 
 /**
  * JavaScript evaluates the operands of one expression left to right. The
@@ -374,8 +379,7 @@ export class EvaluationOrder {
                         if (effects) return "skip";
                         if (
                             ts.isThrowStatement(current) ||
-                            ts.isAwaitExpression(current) ||
-                            ts.isYieldExpression(current) ||
+                            isSuspensionPoint(current, { yield: true }) ||
                             ts.isTaggedTemplateExpression(current) ||
                             ts.isWhileStatement(current) ||
                             ts.isDoStatement(current) ||

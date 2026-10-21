@@ -560,6 +560,37 @@ test("equality operators and nullish comparisons have one owner", () => {
     );
 });
 
+test("function kinds and suspension points are read through syntax.ts", () => {
+    // functionKind / isAsyncFunction / isGeneratorFunction read `async` and
+    // `*`; isSuspensionPoint / containsSuspension what suspends an
+    // activation (`await`, `for await`, `yield`). The others rebuild or strip
+    // syntax: AST updates pass the tokens through, the browser transpile
+    // drops `async` and `await` by span, and compiler.ts lowers `yield*`.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return (
+                    members.has("AsyncKeyword") ||
+                    members.has("Async") ||
+                    members.has("asteriskToken") ||
+                    members.has("awaitModifier")
+                );
+            })
+            .sort(),
+        [
+            "src/compiler.ts",
+            "src/compiler/syntax.ts",
+            "src/gltf-animation-bindings.ts",
+            "src/gltf-ibl-plan.ts",
+            "src/gltf-mesh-plan.ts",
+            "src/lowering/babylon-material-maps.ts",
+            "src/lowering/pbr-material-groups.ts",
+            "src/typescript-transpile.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

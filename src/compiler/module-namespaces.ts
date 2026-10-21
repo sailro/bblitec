@@ -3,9 +3,8 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
 import { aliasTarget, declaredIn, declaredSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, containsSuspension } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { someAnalysisNode } from "./analysis-walk.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -152,11 +151,7 @@ export class ModuleNamespaces {
                             statement,
                             "Lazy enum evaluation requires represented module storage.",
                         );
-                    if (
-                        someAnalysisNode(statement, ts.isAwaitExpression, {
-                            functions: "skip",
-                        })
-                    )
+                    if (containsSuspension(statement))
                         context.fail(
                             statement,
                             "Top-level await in a lazy module requires asynchronous module activation.",

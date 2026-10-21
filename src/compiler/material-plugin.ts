@@ -8,7 +8,7 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
  * Standard retains its existing fragment texture contract.
  */
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, isSuspensionPoint } from "./syntax.js";
 import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
@@ -1206,7 +1206,7 @@ function foldTexturePushes(
         for (const statement of statements) {
             if (ts.isForOfStatement(statement)) {
                 if (
-                    statement.awaitModifier ||
+                    isSuspensionPoint(statement) ||
                     !ts.isVariableDeclarationList(statement.initializer) ||
                     statement.initializer.declarations.length !== 1
                 )
