@@ -25,6 +25,7 @@ import {
     argumentAt,
     expressionHasEffects,
     valueOperands,
+    outermostWrapper,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -807,14 +808,7 @@ export class AsyncLowerer {
      * the application realm, whose promises keep it.
      */
     compileSynchronousConstructor(node: ts.NewExpression): Value {
-        let consumer: ts.Node = node.parent;
-        while (
-            ts.isParenthesizedExpression(consumer) ||
-            ts.isAsExpression(consumer) ||
-            ts.isSatisfiesExpression(consumer) ||
-            ts.isNonNullExpression(consumer)
-        )
-            consumer = consumer.parent;
+        const consumer = outermostWrapper(node).parent;
         if (
             (!ts.isAwaitExpression(consumer) &&
                 !ts.isReturnStatement(consumer) &&

@@ -8957,6 +8957,14 @@ class Compiler implements LoweringServices {
     public readonly unwrap = (expression: ts.Expression): ts.Expression =>
         this.evaluator.unwrap(expression);
 
+    /**
+     * The expression whose value this one is: through an `await` only where
+     * it settles in place. In a worker realm an await suspends, so its
+     * value is the await's own.
+     */
+    public readonly unwrapValue = (expression: ts.Expression): ts.Expression =>
+        this.evaluator.unwrap(expression, { await: !this.options.workers });
+
     /** Captured mutable parameters own their binding, not the caller's slot. */
     public mutableCapturedParameter(
         identifier: ts.Identifier,

@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { forEachReturn } from "./loop-control.js";
-import { localSyncFunction, unwrapExpression } from "./syntax.js";
+import {
+    localSyncFunction,
+    unwrapExpression,
+    outermostWrapper,
+} from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
 
@@ -138,19 +142,10 @@ function onlyReadsFields(
 }
 
 function isFieldReadOrTest(identifier: ts.Identifier): boolean {
-    let use: ts.Node = identifier;
-    while (
-        ts.isParenthesizedExpression(use.parent) ||
-        ts.isNonNullExpression(use.parent)
-    ) {
-        use = use.parent;
-    }
+    const use = outermostWrapper(identifier);
     const parent = use.parent;
     if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
-        let access: ts.Node = parent;
-        while (ts.isParenthesizedExpression(access.parent)) {
-            access = access.parent;
-        }
+        const access = outermostWrapper(parent);
         const target = access.parent;
         // A method call may write its receiver; a write names the field.
         return !(

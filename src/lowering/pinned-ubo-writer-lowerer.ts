@@ -40,6 +40,7 @@ import {
 } from "./pinned-option-defaults.js";
 
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+import { isExpressionWrapper } from "../compiler/syntax.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -333,7 +334,7 @@ function templateOffsetField(
 
 /** The absolute float lane a `data[...]` index refers to. */
 function dataLane(state: WriterState, expression: ts.Expression): number {
-    if (ts.isNonNullExpression(expression))
+    if (isExpressionWrapper(expression))
         return dataLane(state, expression.expression);
     if (
         ts.isCallExpression(expression) &&
@@ -374,9 +375,6 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         Number(expression.right.text) === 4
     ) {
         return dataLane(state, expression.left);
-    }
-    if (ts.isParenthesizedExpression(expression)) {
-        return dataLane(state, expression.expression);
     }
     if (
         ts.isBinaryExpression(expression) &&
@@ -484,7 +482,7 @@ function readsNullLocal(
     expression: ts.Expression,
 ): boolean {
     let node = expression;
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     while (
         ts.isPropertyAccessExpression(node) ||
         ts.isPropertyAccessChain(node) ||
@@ -508,7 +506,7 @@ function vectorPropertyLanes(
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (!ts.isPropertyAccessExpression(node)) return undefined;
     return state.request.vectorProperties?.[node.name.getText()];
 }
@@ -519,7 +517,7 @@ function readsAbsentProperty(
     expression: ts.Expression,
 ): boolean {
     let node = expression;
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (
         !ts.isPropertyAccessExpression(node) &&
         !ts.isPropertyAccessChain(node)
@@ -590,7 +588,7 @@ function aliasesRecord(state: WriterState, expression: ts.Expression): boolean {
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (
         !ts.isPropertyAccessExpression(node) &&
         !ts.isPropertyAccessChain(node)
@@ -614,7 +612,7 @@ function vectorOriginProperty(expression: ts.Expression): string | undefined {
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     return ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)
         ? node.name.getText()
         : undefined;
@@ -636,7 +634,7 @@ function discardedProperty(
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
         return node.name.getText();
     }
@@ -871,9 +869,7 @@ function emitRecordExpression(
                 staticResult ? node.whenTrue : node.whenFalse,
             );
         }
-        const condition = ts.isNonNullExpression(node.condition)
-            ? node.condition.expression
-            : node.condition;
+        const condition = unwrapExpression(node.condition);
         const guardsVectorLocal =
             ts.isIdentifier(condition) &&
             state.vectorLocals.has(condition.text);

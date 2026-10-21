@@ -14,7 +14,7 @@ import type { DataLowerer } from "./data-lowering.js";
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, isExpressionWrapper, unwrapExpression } from "./syntax.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { pinCpp } from "./evaluation-order.js";
@@ -738,8 +738,8 @@ export function staticNumberValue(
         const value = Number(node.text);
         return Number.isFinite(value) ? value : undefined;
     }
-    if (ts.isParenthesizedExpression(node)) {
-        return staticNumberValue(context, node.expression);
+    if (isExpressionWrapper(node)) {
+        return staticNumberValue(context, unwrapExpression(node));
     }
     if (ts.isPrefixUnaryExpression(node)) {
         const operand = staticNumberValue(context, node.operand);

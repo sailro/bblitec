@@ -34,7 +34,7 @@ import type { NativeCaptureBinding } from "../closure-captures.js";
 // are. A native build links a solver through `pal_physics_*.cpp` and never
 // sees the WASM the browser loaded.
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, unwrapExpression } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
 import { vec3Record } from "./mesh.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
@@ -543,15 +543,7 @@ function compileImpulsePoint(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
 ): string {
-    let unwrapped = expression;
-    while (
-        ts.isParenthesizedExpression(unwrapped) ||
-        ts.isAsExpression(unwrapped) ||
-        ts.isTypeAssertionExpression(unwrapped) ||
-        ts.isNonNullExpression(unwrapped)
-    ) {
-        unwrapped = unwrapped.expression;
-    }
+    const unwrapped = unwrapExpression(expression);
     if (ts.isConditionalExpression(unwrapped)) {
         const absent = unwrapped.whenFalse;
         if (!context.symbols.isGlobalUndefined(absent)) {

@@ -10,6 +10,7 @@ import {
     propertyNameText,
     unwrapExpression,
     wrappedParent,
+    isTypeAssertion,
 } from "./syntax.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
@@ -369,7 +370,7 @@ function observe(program: ts.Program): ProgramObservations {
                         });
                 }
         }
-        if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+        if (isTypeAssertion(node)) {
             const asserted = typeOf(node);
             if (
                 (asserted.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===

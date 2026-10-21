@@ -1,6 +1,6 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, outermostWrapper } from "../syntax.js";
 import { rejectedWhenRefused } from "../promises.js";
 import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -529,9 +529,7 @@ export function compileShadowIntrinsic(
                 };
             // A scene's awaits complete in order: the awaited rejection is a
             // throw at the await, and an unawaited one has no scene spelling.
-            let parent: ts.Node = call.parent;
-            while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
-            if (!ts.isAwaitExpression(parent))
+            if (!ts.isAwaitExpression(outermostWrapper(call).parent))
                 context.fail(
                     call,
                     "A scene awaits enableCsmStaticCache directly; its rejection is the await's throw.",

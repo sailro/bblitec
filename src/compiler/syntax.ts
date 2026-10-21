@@ -71,7 +71,7 @@ interface UnwrapOptions {
  * operation under it: grouping parentheses, `as`, angle-bracket assertions,
  * `!` and `satisfies` — plus `await` when the caller asks.
  */
-function isExpressionWrapper(
+export function isExpressionWrapper(
     node: ts.Node,
     options: UnwrapOptions = {},
 ): node is
@@ -89,6 +89,74 @@ function isExpressionWrapper(
         ts.isSatisfiesExpression(node) ||
         (options.await === true && ts.isAwaitExpression(node))
     );
+}
+
+/**
+ * Whether a wrapper keeps both the value and the static type under it:
+ * parentheses and `satisfies`. An assertion or `!` changes the type.
+ */
+export function isTypePreservingWrapper(
+    node: ts.Node,
+): node is ts.ParenthesizedExpression | ts.SatisfiesExpression {
+    return ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node);
+}
+
+/** Strip the wrappers that keep the value and its static type. */
+export function unwrapTypePreserving(expression: ts.Expression): ts.Expression {
+    let current = expression;
+    while (isTypePreservingWrapper(current)) current = current.expression;
+    return current;
+}
+
+/** Whether a wrapper exists only in TypeScript: `as`, `<T>`, `!`, `satisfies`. */
+export function isTypeOnlyWrapper(
+    node: ts.Node,
+): node is
+    | ts.AsExpression
+    | ts.TypeAssertion
+    | ts.NonNullExpression
+    | ts.SatisfiesExpression {
+    return isExpressionWrapper(node) && !ts.isParenthesizedExpression(node);
+}
+
+/**
+ * Whether a wrapper asserts a type (`x as T`, `<T>x`): the checker types it
+ * as the asserted type. `satisfies` only checks; its value keeps its own type.
+ */
+export function isTypeAssertion(
+    node: ts.Node,
+): node is ts.AsExpression | ts.TypeAssertion {
+    return ts.isAsExpression(node) || ts.isTypeAssertionExpression(node);
+}
+
+/** The wrappers under an expression, outermost first, down to the value they wrap. */
+export function wrappersUnder(
+    expression: ts.Expression,
+    options: UnwrapOptions = {},
+): readonly ts.Expression[] {
+    const wrappers: ts.Expression[] = [];
+    for (
+        let current = expression;
+        isExpressionWrapper(current, options);
+        current = current.expression
+    )
+        wrappers.push(current);
+    return wrappers;
+}
+
+/** The wrappers around a node, innermost first, up to its consumer. */
+export function wrappersAround(
+    node: ts.Node,
+    options: UnwrapOptions = {},
+): readonly ts.Expression[] {
+    const wrappers: ts.Expression[] = [];
+    for (
+        let parent = node.parent;
+        parent !== undefined && isExpressionWrapper(parent, options);
+        parent = parent.parent
+    )
+        wrappers.push(parent);
+    return wrappers;
 }
 
 /** Strip the type-only and grouping wrappers around an expression. */
@@ -111,6 +179,8 @@ interface ClimbOptions {
      * out of `&&`'s left operand.
      */
     readonly branches?: boolean | "objects";
+    /** Also climb out of an `await`, for a reader of the settled value. */
+    readonly await?: boolean;
 }
 
 /**
@@ -261,7 +331,7 @@ export function outermostWrapper(
         let parent = current.parent;
         // A source file has no parent.
         parent !== undefined &&
-        (isExpressionWrapper(parent) ||
+        (isExpressionWrapper(parent, options) ||
             climbsOperand(parent, current, options.branches));
         parent = current.parent
     )
@@ -292,12 +362,9 @@ export function wrappedParent(expression: ts.Expression): ts.Node {
  * because the optional value under them is then read without a guard.
  */
 export function hasNonNullAssertion(expression: ts.Expression): boolean {
-    let current = expression;
-    while (isExpressionWrapper(current, { await: true })) {
-        if (ts.isNonNullExpression(current)) return true;
-        current = current.expression;
-    }
-    return false;
+    return wrappersUnder(expression, { await: true }).some(
+        ts.isNonNullExpression,
+    );
 }
 
 /**

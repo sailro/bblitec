@@ -397,3 +397,42 @@ test("operand selection is read through syntax.ts", () => {
         [],
     );
 });
+
+test("wrapper transparency is decided in syntax.ts", () => {
+    // Which of `()`, `as`, `<T>`, `!` and `satisfies` keep a value, its
+    // type, or neither is syntax.ts's (unwrapExpression, outermostWrapper,
+    // isTypeAssertion, isTypePreservingWrapper, wrappersUnder/Around). The
+    // files below test a wrapper kind for its own meaning (`!` asserts
+    // presence, `satisfies` keeps the operand's type) or lower that node;
+    // no other file may.
+    const wrapperTests = [
+        "ts.isParenthesizedExpression",
+        "ts.isAsExpression",
+        "ts.isSatisfiesExpression",
+        "ts.isTypeAssertionExpression",
+        "ts.isNonNullExpression",
+    ];
+    const ownMeaning = [
+        "src/compiler/data-methods.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/home-object-methods.ts",
+        "src/compiler/native-inert-calls.ts",
+        "src/lowering/compute-shader-gpu-lowerer.ts",
+        "src/lowering/gltf/weighted-animation-targets.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/renderer-lowerer.ts",
+    ];
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/syntax.ts" &&
+                    wrapperTests.some((call) =>
+                        sourceFacts(path).calls.has(call),
+                    ),
+            )
+            .sort(),
+        ownMeaning,
+    );
+});

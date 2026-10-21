@@ -18,7 +18,7 @@ import {
 } from "./storage-buffer.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, unwrapExpression } from "../syntax.js";
 import { float32Literal, floatLiteral } from "../../cpp-literals.js";
 import {
     compileLocalCubemapIntrinsic,
@@ -134,9 +134,10 @@ function compileMeshNamePredicate(
     binding: string,
     expression: ts.Expression,
 ): SceneMeshNamePredicate {
-    const node = context.resolveStaticExpression(expression);
-    if (ts.isParenthesizedExpression(node)) {
-        return compileMeshNamePredicate(context, binding, node.expression);
+    const resolved = context.resolveStaticExpression(expression);
+    const node = unwrapExpression(resolved);
+    if (node !== resolved) {
+        return compileMeshNamePredicate(context, binding, node);
     }
     if (
         ts.isPrefixUnaryExpression(node) &&

@@ -2,7 +2,6 @@ import ts from "typescript";
 import { cppIdentifierPattern, isCppPath } from "../cpp-literals.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import { numericSlotKind } from "./numeric-slot-storage.js";
-import { unwrapExpression } from "./syntax.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
@@ -307,9 +306,7 @@ export function dataUnionEquality(
                 (type.kind === "struct" &&
                     lowerer.context.dataTypes.isReferenceStruct(type.name)));
     const storageType = (expression: ts.Expression): DataType | undefined => {
-        const node = lowerer.context.options.workers
-            ? unwrapExpression(expression)
-            : lowerer.context.unwrap(expression);
+        const node = lowerer.context.unwrapValue(expression);
         if (ts.isIdentifier(node)) {
             const bound = lowerer.context.bindings.lookupOptional(node);
             if (

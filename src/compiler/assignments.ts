@@ -995,16 +995,8 @@ function explicitOptionalNumberExpandoOwner(
     expression: ts.Expression,
     property: string,
 ): ts.Expression | undefined {
-    let asserted = expression;
-    while (ts.isParenthesizedExpression(asserted)) {
-        asserted = asserted.expression;
-    }
-    if (
-        !ts.isAsExpression(asserted) &&
-        !ts.isTypeAssertionExpression(asserted)
-    ) {
-        return undefined;
-    }
+    const asserted = wrappersUnder(expression).find(isTypeAssertion);
+    if (!asserted) return undefined;
     if (!optionalNumberPropertyInAssertion(asserted.type, property)) {
         return undefined;
     }
@@ -2369,7 +2361,12 @@ import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
 } from "./effect-task-methods.js";
-import { argumentAt, expressionHasEffects } from "./syntax.js";
+import {
+    argumentAt,
+    expressionHasEffects,
+    isTypeAssertion,
+    wrappersUnder,
+} from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";
 import { emitBrowserFileAssignment } from "./browser-file.js";

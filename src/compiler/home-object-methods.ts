@@ -3,7 +3,13 @@ import ts from "typescript";
 import type { DataStructField, DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
-import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
+import {
+    propertyNameText,
+    unwrapExpression,
+    wrappedParent,
+    isTypeAssertion,
+    wrappersAround,
+} from "./syntax.js";
 import { declaredContextualType } from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
@@ -71,13 +77,11 @@ function homeObjectType(
         ? method.parent
         : wrappedParent(method).parent;
     if (!ts.isObjectLiteralExpression(literal)) return undefined;
-    for (
-        let wrapper: ts.Node = literal.parent;
-        ts.isParenthesizedExpression(wrapper) ||
-        ts.isSatisfiesExpression(wrapper);
-        wrapper = wrapper.parent
-    )
+    // `satisfies` keeps the literal's own type; an assertion retypes it.
+    for (const wrapper of wrappersAround(literal)) {
         if (ts.isSatisfiesExpression(wrapper)) return undefined;
+        if (isTypeAssertion(wrapper)) break;
+    }
     const declared = declaredContextualType(checker, literal);
     const type = declared && checker.getNonNullableType(declared);
     return type &&

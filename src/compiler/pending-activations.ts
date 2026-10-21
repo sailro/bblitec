@@ -8,7 +8,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { libraryGlobal, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, outermostWrapper } from "./syntax.js";
 
 type Activation = ts.SignatureDeclaration;
 
@@ -21,15 +21,6 @@ const PROMISE_REACTIONS: ReadonlySet<string> = new Set([
     "finally",
 ]);
 
-function isTransparentWrapper(node: ts.Node): boolean {
-    return (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAsExpression(node) ||
-        ts.isSatisfiesExpression(node) ||
-        ts.isNonNullExpression(node)
-    );
-}
-
 /**
  * The use of the promise `node` produces. A reaction chained on it
  * (`p.then(...)`) is used as the chain is: the reactions run in place in the
@@ -38,11 +29,8 @@ function isTransparentWrapper(node: ts.Node): boolean {
 function promiseUse(node: ts.Expression): PromiseUse {
     let current: ts.Node = node;
     for (;;) {
+        current = outermostWrapper(current);
         const parent = current.parent;
-        if (isTransparentWrapper(parent)) {
-            current = parent;
-            continue;
-        }
         if (
             ts.isPropertyAccessExpression(parent) &&
             parent.expression === current &&
@@ -54,9 +42,7 @@ function promiseUse(node: ts.Expression): PromiseUse {
             continue;
         }
         if (ts.isVoidExpression(parent)) {
-            let statement: ts.Node = parent.parent;
-            while (isTransparentWrapper(statement))
-                statement = statement.parent;
+            const statement = outermostWrapper(parent).parent;
             return ts.isExpressionStatement(statement) ? "discarded" : "stored";
         }
         if (ts.isAwaitExpression(parent)) return "awaited";
@@ -272,8 +258,7 @@ export class PendingActivations {
                 return false;
         }
         if (!activation || !this.suspending.has(activation)) return false;
-        let callee: ts.Node = site;
-        while (isTransparentWrapper(callee.parent)) callee = callee.parent;
+        const callee = outermostWrapper(site);
         return !(
             ts.isCallExpression(callee.parent) &&
             callee.parent.expression === callee

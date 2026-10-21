@@ -227,6 +227,9 @@ import {
     outermostWrapper,
     propertyNameText,
     unwrapExpression,
+    isExpressionWrapper,
+    isTypeAssertion,
+    wrappersUnder,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -321,11 +324,7 @@ function arrayLengthWrite(
 function isWriteTarget(node: ts.Expression): boolean {
     let target: ts.Node = node;
     while (
-        ts.isParenthesizedExpression(target.parent) ||
-        ts.isNonNullExpression(target.parent) ||
-        ts.isAsExpression(target.parent) ||
-        ts.isSatisfiesExpression(target.parent) ||
-        ts.isTypeAssertionExpression(target.parent) ||
+        isExpressionWrapper(target.parent) ||
         ts.isSpreadElement(target.parent) ||
         ts.isSpreadAssignment(target.parent) ||
         ts.isArrayLiteralExpression(target.parent) ||
@@ -580,6 +579,7 @@ interface DataLoweringContext extends Pick<
     | "executedModuleConstantMapEntry"
     | "executedInitializerElements"
     | "unwrap"
+    | "unwrapValue"
     | "emit"
     | "probeEmission"
     | "captureEmittedLines"
@@ -712,15 +712,9 @@ function updateStepCpp(
  * documented value-copy contract: locals bound from data paths are copies and
  * reject writes; owned locals reject writes after escaping by copy.
  */
-/** Whether an expression, past parentheses and `!`, is a type assertion. */
+/** Whether an expression's wrappers include a type assertion. */
 function assertsType(expression: ts.Expression): boolean {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isNonNullExpression(current)
-    )
-        current = current.expression;
-    return ts.isAsExpression(current) || ts.isTypeAssertionExpression(current);
+    return wrappersUnder(expression).some(isTypeAssertion);
 }
 
 /** A type the checker's flow narrowed to exclude null and undefined. */
@@ -2202,9 +2196,7 @@ export class DataLowerer {
         mode: "read" | "write",
         throughReceiver = false,
     ): Value | undefined {
-        const unwrapped = this.context.options.workers
-            ? unwrapExpression(expression)
-            : this.context.unwrap(expression);
+        const unwrapped = this.context.unwrapValue(expression);
         // Await creates an owned result temporary. A member read or write
         // through that result uses its settled storage, never the promise.
         if (
@@ -7656,9 +7648,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private objectIdentityRead(
         expression: ts.Expression,
     ): { readonly cpp: string; readonly read?: Value } | undefined {
-        const unwrapped = this.context.options.workers
-            ? unwrapExpression(expression)
-            : this.context.unwrap(expression);
+        const unwrapped = this.context.unwrapValue(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return { cpp: "nullptr" };
         }
@@ -10996,10 +10986,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           ),
                   );
         if (assigned !== undefined) return assigned;
-        if (
-            this.context.options.workers &&
-            ts.isAwaitExpression(unwrapExpression(expression))
-        )
+        if (ts.isAwaitExpression(this.context.unwrapValue(expression)))
             return this.compileKnownValueForSink(
                 this.context.compileValue(expression),
                 dataType,
@@ -18108,12 +18095,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
-        const left = this.context.options.workers
-            ? unwrapExpression(expression.left)
-            : this.context.unwrap(expression.left);
-        const right = this.context.options.workers
-            ? unwrapExpression(expression.right)
-            : this.context.unwrap(expression.right);
+        const left = this.context.unwrapValue(expression.left);
+        const right = this.context.unwrapValue(expression.right);
         if (!loose && this.context.options.workers) {
             const primitive =
                 ts.TypeFlags.NumberLike |
@@ -18513,9 +18496,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : undefined;
         };
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
-            const unwrapped = this.context.options.workers
-                ? unwrapExpression(operand)
-                : this.context.unwrap(operand);
+            const unwrapped = this.context.unwrapValue(operand);
             if (ts.isIdentifier(unwrapped)) {
                 const bound = this.context.bindings.lookupOptional(unwrapped);
                 return optionalRepresentation(bound, operand);

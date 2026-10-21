@@ -99,7 +99,7 @@ import {
     expressionMayRunCode,
     outermostWrapper,
     regularExpressionParts,
-    unwrapExpression,
+    isTypeAssertion,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -298,6 +298,7 @@ export interface ExpressionContext
             | "symbols"
             | "bindings"
             | "unwrap"
+            | "unwrapValue"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
             | "emitUiDatasetProperty"
@@ -607,17 +608,13 @@ export class ExpressionLowerer {
         // store key) reads back wherever the lowering reaches it.
         const held = this.context.dataLowerer.assignedValue(expression);
         if (held) return held;
-        if (
-            this.context.options.workers &&
-            ts.isAwaitExpression(unwrapExpression(expression))
-        ) {
+        if (ts.isAwaitExpression(this.context.unwrapValue(expression))) {
             const awaited = this.context.compileWorkerValue(expression);
             if (awaited) return awaited;
         }
         let assertedValue: Value | undefined;
         if (
-            (ts.isAsExpression(expression) ||
-                ts.isTypeAssertionExpression(expression)) &&
+            isTypeAssertion(expression) &&
             this.assertedTypeIncludesImportedName(expression.type, "Mesh")
         ) {
             const asserted = this.compileValue(expression.expression);
@@ -649,10 +646,7 @@ export class ExpressionLowerer {
                 };
             }
         }
-        if (
-            ts.isAsExpression(expression) ||
-            ts.isTypeAssertionExpression(expression)
-        ) {
+        if (isTypeAssertion(expression)) {
             const sourceType = this.context.dataLowerer.dataTypeAt(
                 expression.expression,
             );

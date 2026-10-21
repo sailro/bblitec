@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { encodePinnedErrorContracts } from "./pinned-error.js";
 import {
+    isExpressionWrapper,
     propertyNameText,
     unwrapExpression as unwrapSyntaxWrappers,
 } from "../compiler/syntax.js";
@@ -1158,13 +1159,13 @@ export class LoweringContext {
         label: string,
         count = 1,
     ): void {
-        // A parenthesized expression fingerprints as its operand, and the
-        // walk visits both; the operand is the shape, the parenthesis is
-        // not a second statement of it.
+        // A wrapper fingerprints as its operand, and the walk visits both;
+        // the operand is the shape, the wrapper is not a second statement
+        // of it.
         const found = this.findNodes(
             root,
             (node): node is ts.Expression =>
-                !ts.isParenthesizedExpression(node) &&
+                !isExpressionWrapper(node) &&
                 this.expressionMatchesShape(node as ts.Expression, expected),
         ).length;
         if (found !== count) {
@@ -1693,14 +1694,7 @@ export class LoweringContext {
      * undefined for the wrappers the fingerprint sees through.
      */
     private fingerprintHead(node: ts.Node): string | undefined {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node)
-        ) {
-            return undefined;
-        }
+        if (isExpressionWrapper(node)) return undefined;
         if (ts.isIdentifier(node)) {
             return `identifier:${node.text}`;
         }
@@ -1717,14 +1711,8 @@ export class LoweringContext {
     }
 
     private nodeFingerprint(node: ts.Node): string {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node)
-        ) {
+        if (isExpressionWrapper(node))
             return this.nodeFingerprint(node.expression);
-        }
         if (ts.isIdentifier(node)) {
             return `identifier:${node.text}`;
         }

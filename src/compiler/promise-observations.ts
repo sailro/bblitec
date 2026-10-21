@@ -3,7 +3,11 @@ import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
 import { declaredInDefaultLibrary, declarationOrigin } from "./symbols.js";
 import { declaredContextualType, isTypeReference } from "./type-facts.js";
-import { outermostWrapper, unwrapExpression } from "./syntax.js";
+import {
+    outermostWrapper,
+    unwrapExpression,
+    isTypeAssertion,
+} from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type Context = Pick<
@@ -65,11 +69,9 @@ export function requireObservedPromise(
     // An actual Promise crossing an erased slot must become owned before
     // its source type disappears. Broad slots elsewhere in the program do
     // not establish that this value reaches them.
-    const expected =
-        ts.isAsExpression(expression) ||
-        ts.isTypeAssertionExpression(expression)
-            ? context.checker.getTypeAtLocation(expression)
-            : declaredContextualType(context.checker, expression);
+    const expected = isTypeAssertion(expression)
+        ? context.checker.getTypeAtLocation(expression)
+        : declaredContextualType(context.checker, expression);
     if (!expected) return;
     const seen = new Map<ts.Type, Set<ts.Type | undefined>>();
     const erases = (source: ts.Type, target: ts.Type | undefined): boolean => {

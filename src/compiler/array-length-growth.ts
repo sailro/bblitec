@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { declarationOrigin, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, outermostWrapper } from "./syntax.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -156,14 +156,11 @@ function identityEscapes(
 function enclosedReference(
     name: ts.Identifier | ts.PrivateIdentifier,
 ): boolean {
-    let reference: ts.Node = name;
-    if (ts.isPropertyAccessExpression(name.parent) && name.parent.name === name)
-        reference = name.parent;
-    while (
-        ts.isParenthesizedExpression(reference.parent) ||
-        ts.isNonNullExpression(reference.parent)
-    )
-        reference = reference.parent;
+    const reference = outermostWrapper(
+        ts.isPropertyAccessExpression(name.parent) && name.parent.name === name
+            ? name.parent
+            : name,
+    );
     const parent = reference.parent;
     if (
         ts.isPropertyAccessExpression(parent) &&

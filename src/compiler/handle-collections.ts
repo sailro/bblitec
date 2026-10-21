@@ -35,6 +35,7 @@ import {
     expressionHasEffects,
     identifierText,
     unwrapExpression as unwrapWalkExpression,
+    isExpressionWrapper,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -612,32 +613,22 @@ export class HandleCollections {
         expression: ts.Expression,
         unwrapped: ts.Expression,
     ): boolean {
-        const transparent = (
-            node: ts.Node,
-        ): node is
-            | ts.ParenthesizedExpression
-            | ts.NonNullExpression
-            | ts.AsExpression
-            | ts.TypeAssertion
-            | ts.SatisfiesExpression =>
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node) ||
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isSatisfiesExpression(node);
         let node: ts.Node = expression;
         while (node !== unwrapped) {
             if (ts.isAwaitExpression(node)) return true;
-            if (transparent(node)) {
+            if (isExpressionWrapper(node)) {
                 node = node.expression;
-            } else if (ts.isBinaryExpression(node)) {
+            } else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            ) {
                 node = node.left;
             } else {
                 break;
             }
         }
         let above: ts.Node | undefined = unwrapped.parent;
-        while (above && (transparent(above) || ts.isAwaitExpression(above))) {
+        while (above && isExpressionWrapper(above, { await: true })) {
             if (ts.isAwaitExpression(above)) return true;
             above = above.parent;
         }

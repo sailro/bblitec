@@ -24,6 +24,7 @@ import {
     outermostWrapper,
     unwrapExpression,
     valueOperands,
+    isExpressionWrapper,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -545,9 +546,7 @@ function storedIdentity(
         ts.isShorthandPropertyAssignment(holder.parent) ||
         ts.isObjectLiteralExpression(holder.parent) ||
         ts.isArrayLiteralExpression(holder.parent) ||
-        ts.isParenthesizedExpression(holder.parent) ||
-        ts.isAsExpression(holder.parent) ||
-        ts.isSatisfiesExpression(holder.parent)
+        isExpressionWrapper(holder.parent)
     )
         holder = holder.parent;
     const call = holder.parent;

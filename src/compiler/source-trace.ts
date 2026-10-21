@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { EmissionWeakSet, emissionArray } from "./emission-transaction.js";
+import { isExpressionWrapper } from "./syntax.js";
 
 interface SourceTrace {
     program: ts.Program;
@@ -72,14 +73,7 @@ export function traceSourceNode(node: ts.Node): void {
         node.parent.initializer === node
     )
         reached.add(node.parent);
-    if (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAsExpression(node) ||
-        ts.isTypeAssertionExpression(node) ||
-        ts.isNonNullExpression(node) ||
-        ts.isAwaitExpression(node) ||
-        ts.isVoidExpression(node)
-    )
+    if (isExpressionWrapper(node, { await: true }) || ts.isVoidExpression(node))
         traceSourceNode(node.expression);
     if (ts.isObjectLiteralExpression(node))
         for (const property of node.properties) reached.add(property);

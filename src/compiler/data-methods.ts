@@ -27,6 +27,8 @@ import {
     expressionMayRunCode,
     regularExpressionParts,
     rootIdentifier,
+    isTypeAssertion,
+    wrappersAround,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -3519,12 +3521,11 @@ function compileArrayRemoval(
         lowerer.context.fail(call, `Array.${method} expects no arguments.`);
     }
     lowerer.invalidateAliases(narrowed.cpp);
-    let parent = call.parent;
-    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
     if (
-        ts.isNonNullExpression(parent) ||
-        ts.isAsExpression(parent) ||
-        ts.isTypeAssertionExpression(parent)
+        wrappersAround(call).some(
+            (wrapper) =>
+                ts.isNonNullExpression(wrapper) || isTypeAssertion(wrapper),
+        )
     ) {
         return lowerer.leafValue(
             `bbl::js::array_${method}(${narrowed.cpp})`,

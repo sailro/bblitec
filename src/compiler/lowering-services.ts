@@ -577,6 +577,8 @@ export interface LoweringServices {
     ): void;
     /** Bound, so a walk can take it as its unwrap. */
     readonly unwrap: (expression: ts.Expression) => ts.Expression;
+    /** As unwrap, but an await that suspends (a worker realm's) is kept. */
+    readonly unwrapValue: (expression: ts.Expression) => ts.Expression;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
     bindClassParameterValue(

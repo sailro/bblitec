@@ -12,7 +12,12 @@ import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { isDeclaredInside, literalMember, unwrapExpression } from "./syntax.js";
+import {
+    isDeclaredInside,
+    literalMember,
+    unwrapExpression,
+    isExpressionWrapper,
+} from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -786,7 +791,7 @@ export class BindingScopes {
                 ts.isTryStatement(node) ||
                 ts.isExpressionStatement(node) ||
                 ts.isBinaryExpression(node) ||
-                ts.isParenthesizedExpression(node) ||
+                isExpressionWrapper(node) ||
                 ts.isSourceFile(node)
             ) {
                 continue;

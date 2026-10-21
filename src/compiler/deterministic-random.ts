@@ -45,6 +45,7 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 // random functions retain their JavaScript identity and captured state.
 import ts from "typescript";
 import { transpileForBrowser } from "../typescript-transpile.js";
+import { isTypeOnlyWrapper } from "./syntax.js";
 
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
@@ -74,13 +75,7 @@ function refuseTypeSyntax(
     arrow: ts.ArrowFunction,
 ): void {
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isSatisfiesExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isNonNullExpression(node) ||
-            ts.isTypeNode(node)
-        ) {
+        if (isTypeOnlyWrapper(node) || ts.isTypeNode(node)) {
             context.fail(
                 node,
                 "A deterministic Math.random arrow travels to generation as " +

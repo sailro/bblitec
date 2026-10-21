@@ -141,7 +141,12 @@ import {
     isStaticMember,
 } from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { propertyNameText, unwrapExpression } from "./syntax.js";
+import {
+    propertyNameText,
+    unwrapExpression,
+    isTypeAssertion,
+    wrappersUnder,
+} from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
@@ -1548,10 +1553,7 @@ export class DataTypeRegistry {
                     ts.isSetAccessorDeclaration(node)
                 )
                     this.registerAccessor(node);
-                else if (
-                    ts.isAsExpression(node) ||
-                    ts.isTypeAssertionExpression(node)
-                ) {
+                else if (isTypeAssertion(node)) {
                     this.registerAssertedRecord(node);
                     if (ts.isTypeReferenceNode(node.type))
                         this.namedAssertions.push(node);
@@ -3214,7 +3216,7 @@ export class DataTypeRegistry {
         );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
-            : ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+            : isTypeAssertion(node)
               ? "assertion"
               : "value";
         // A join an earlier replay demanded that left the two apart refuses.
@@ -3692,24 +3694,21 @@ export class DataTypeRegistry {
     public fromCheckedObjectInitializer(
         initializer: ts.Expression,
     ): DataType | undefined {
-        while (ts.isParenthesizedExpression(initializer))
-            initializer = initializer.expression;
+        const check = wrappersUnder(initializer).find(ts.isSatisfiesExpression);
         if (
-            !ts.isSatisfiesExpression(initializer) ||
-            !ts.isObjectLiteralExpression(
-                unwrapExpression(initializer.expression),
-            )
+            !check ||
+            !ts.isObjectLiteralExpression(unwrapExpression(check.expression))
         )
             return undefined;
         const target = this.fromTsType(
-            this.checker.getTypeFromTypeNode(initializer.type),
-            initializer.type,
+            this.checker.getTypeFromTypeNode(check.type),
+            check.type,
         );
         if (target?.kind !== "struct") return undefined;
         const properties = this.checker.getPropertiesOfType(
-            this.checker.getTypeAtLocation(initializer.expression),
+            this.checker.getTypeAtLocation(check.expression),
         );
-        const fields = this.structFields(target.name, initializer);
+        const fields = this.structFields(target.name, check);
         if (properties.length !== fields.length) return undefined;
         for (const field of fields) {
             const property = properties.find(
@@ -3719,7 +3718,7 @@ export class DataTypeRegistry {
             const node =
                 property.valueDeclaration ??
                 property.declarations?.[0] ??
-                initializer;
+                check;
             const actual = this.fromTsType(
                 this.checker.getTypeOfSymbolAtLocation(property, node),
                 node,

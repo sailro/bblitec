@@ -78,6 +78,7 @@ interface ConditionContext
             | "sharedClosures"
             | "symbols"
             | "unwrap"
+            | "unwrapValue"
         > {}
 
 /** The collection classes `instanceof` names, by their storage. */
@@ -245,9 +246,7 @@ export class ConditionLowerer {
         );
         if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
-        const unwrapped = this.context.options.workers
-            ? unwrapExpression(expression)
-            : this.context.unwrap(expression);
+        const unwrapped = this.context.unwrapValue(expression);
         if (
             unwrapped.kind === ts.SyntaxKind.NullKeyword ||
             this.context.symbols.isGlobalUndefined(unwrapped)

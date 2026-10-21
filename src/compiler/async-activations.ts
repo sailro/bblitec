@@ -8,7 +8,7 @@ import {
     tryResolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, outermostWrapper } from "./syntax.js";
 import type { Value } from "./types.js";
 import type {
     LoweringServices,
@@ -246,15 +246,8 @@ export class AsyncActivations {
     @journaled private accessor orderedSetupInput: ts.Expression | undefined;
 
     private immediatelyAwaited(node: ts.Node): boolean {
-        let consumer = node;
-        while (
-            consumer.parent &&
-            (ts.isParenthesizedExpression(consumer.parent) ||
-                ts.isAsExpression(consumer.parent) ||
-                ts.isNonNullExpression(consumer.parent))
-        )
-            consumer = consumer.parent;
-        return !!consumer.parent && ts.isAwaitExpression(consumer.parent);
+        const consumer = outermostWrapper(node).parent;
+        return consumer !== undefined && ts.isAwaitExpression(consumer);
     }
 
     private withOrderedSetupInput<T>(

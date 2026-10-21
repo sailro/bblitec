@@ -83,6 +83,8 @@ import {
     unwrapExpression,
     argumentAt,
     soleReturnedExpression,
+    isTypeAssertion,
+    wrappersUnder,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -697,13 +699,8 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         };
-        let assertion: ts.Expression = expression;
-        while (ts.isParenthesizedExpression(assertion))
-            assertion = assertion.expression;
-        if (
-            ts.isAsExpression(assertion) ||
-            ts.isTypeAssertionExpression(assertion)
-        ) {
+        const assertion = wrappersUnder(expression).find(isTypeAssertion);
+        if (assertion) {
             // JavaScript erases the assertion: a value that may be absent
             // reads as ToNumber reads it, NaN for undefined and 0 for null.
             if (
@@ -2239,11 +2236,14 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
-    public unwrap(expression: ts.Expression): ts.Expression {
+    public unwrap(
+        expression: ts.Expression,
+        options: { readonly await?: boolean } = {},
+    ): ts.Expression {
         let current = expression;
         for (;;) {
             current = unwrapExpression(current, {
-                await: true,
+                await: options.await ?? true,
                 onAwait: this.onAwait,
             });
             // The pin's `wgsl` tag is the identity over its template.

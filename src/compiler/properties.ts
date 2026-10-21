@@ -86,7 +86,12 @@ import { readFrozenParticleProperty } from "./particle-buffer.js";
 import { recordAt } from "./record-access.js";
 import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { staticFetchProperty } from "./static-fetch.js";
-import { isAssignmentOperator } from "./syntax.js";
+import {
+    isAssignmentOperator,
+    isTypeAssertion,
+    outermostWrapper,
+    wrappersAround,
+} from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
@@ -1769,8 +1774,7 @@ function readsWithoutMutableAlias(
     checker: ts.TypeChecker,
     read: ts.Node,
 ): boolean {
-    let use = read;
-    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const use = outermostWrapper(read);
     const parent = use.parent;
     if (
         ts.isElementAccessExpression(parent) &&
@@ -1790,8 +1794,9 @@ function readsWithoutMutableAlias(
             )
         );
     };
-    if (ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent))
-        return readonly(checker.getTypeFromTypeNode(parent.type));
+    // The outermost assertion types the value; `satisfies` keeps its type.
+    const assertion = wrappersAround(read).filter(isTypeAssertion).at(-1);
+    if (assertion) return readonly(checker.getTypeFromTypeNode(assertion.type));
     return ts.isExpression(use) && readonly(checker.getContextualType(use));
 }
 

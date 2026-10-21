@@ -21,6 +21,7 @@ import {
     operandYield,
     propertyNameText,
     unwrapExpression,
+    outermostWrapper,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -188,20 +189,6 @@ function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
     const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
     return element === undefined || typeCanCarryReference(element);
-}
-
-/** The outermost wrapper around an expression that keeps its value. */
-function climb(node: ts.Expression): ts.Expression {
-    let current = node;
-    while (
-        ts.isParenthesizedExpression(current.parent) ||
-        ts.isNonNullExpression(current.parent) ||
-        ts.isAsExpression(current.parent) ||
-        ts.isTypeAssertionExpression(current.parent) ||
-        ts.isSatisfiesExpression(current.parent)
-    )
-        current = current.parent;
-    return current;
 }
 
 function accessKey(
@@ -544,8 +531,11 @@ class EffectWalker {
     private libraryCallbackCall(scope: ts.Node): ts.CallExpression | undefined {
         if (!ts.isArrowFunction(scope) && !ts.isFunctionExpression(scope))
             return undefined;
-        const call = climb(scope).parent;
-        if (!ts.isCallExpression(call) || call.expression === climb(scope))
+        const call = outermostWrapper(scope).parent;
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression === outermostWrapper(scope)
+        )
             return undefined;
         const callee = unwrapExpression(call.expression);
         const declaration =
@@ -640,7 +630,7 @@ class EffectWalker {
         let node = expression;
         let current = values;
         for (;;) {
-            const outer = climb(node);
+            const outer = outermostWrapper(node);
             const parent = outer.parent;
             if (!(
                 (ts.isPropertyAccessExpression(parent) ||
@@ -653,7 +643,7 @@ class EffectWalker {
                 this.write(parent, current, key, scope);
                 return;
             }
-            const access = climb(parent);
+            const access = outermostWrapper(parent);
             if (
                 ts.isCallExpression(access.parent) &&
                 access.parent.expression === access
@@ -665,7 +655,7 @@ class EffectWalker {
             if (current.length === 0) return;
             node = parent;
         }
-        const top = climb(node);
+        const top = outermostWrapper(node);
         const parent = top.parent;
         if (this.writeTargets.has(unwrapExpression(top))) {
             // The binding itself is assigned.
@@ -1797,7 +1787,9 @@ export function fixedLengthParameterWrites(
                             return null;
                     } else if (
                         !lengthPreservingArrayMethods.has(use.method) ||
-                        !ts.isExpressionStatement(climb(use.call).parent)
+                        !ts.isExpressionStatement(
+                            outermostWrapper(use.call).parent,
+                        )
                     )
                         return null;
                     break;

@@ -1068,9 +1068,7 @@ export class BrowserErasure {
             );
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped) ||
-            ts.isNonNullExpression(unwrapped) ||
-            ts.isAwaitExpression(unwrapped)
+            ts.isElementAccessExpression(unwrapped)
         )
             return this.isBrowserOwner(unwrapped.expression);
         if (ts.isNewExpression(unwrapped))

@@ -992,16 +992,7 @@ class ModuleInitializerPlanner {
     private calledFunction(
         expression: ts.Expression,
     ): ts.FunctionLikeDeclaration | undefined {
-        let current = expression;
-        while (
-            ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isNonNullExpression(current) ||
-            ts.isSatisfiesExpression(current)
-        ) {
-            current = current.expression;
-        }
+        const current = unwrapExpression(expression);
         if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
             return current;
         }

@@ -1,7 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { caughtErrorValue } from "./error-values.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, outermostWrapper } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 
@@ -353,17 +353,7 @@ function compileImmediateCatch(
 }
 
 function unwrappedResultUse(expression: ts.Expression): ts.Node {
-    let node: ts.Node = expression;
-    while (
-        ts.isAwaitExpression(node.parent) ||
-        ts.isParenthesizedExpression(node.parent) ||
-        ts.isAsExpression(node.parent) ||
-        ts.isNonNullExpression(node.parent) ||
-        ts.isSatisfiesExpression(node.parent)
-    ) {
-        node = node.parent;
-    }
-    return node;
+    return outermostWrapper(expression, { await: true });
 }
 
 function isImmediateReactionResultUsed(
