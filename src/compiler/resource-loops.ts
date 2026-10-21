@@ -36,11 +36,11 @@ import {
 } from "./parameter-effects.js";
 import {
     guardsOperands,
-    isAssignmentExpression,
     isDeclaredInside,
     isUpdateExpression,
     rootIdentifier,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -745,34 +745,31 @@ function reachesSpecializingEffect(
                 return false;
             }
         }
-        const target = isAssignmentExpression(node)
-            ? node.left
-            : isUpdateExpression(node)
-              ? node.operand
-              : undefined;
-        if (!target) return;
-        let member = unwrapExpression(target);
-        while (ts.isPropertyAccessExpression(member)) {
-            const kind = expressionHandleKind(context, member.expression);
-            if (kind) {
-                const property = member.name.text;
-                required =
-                    kind === "mesh" ||
-                    kind === "transform-node" ||
-                    (!keepsRetainedFacts && kind === "scene-node")
-                        ? !runtimeMeshProperties.has(property) &&
-                          property !== "material" &&
-                          property !== "receiveShadows" &&
-                          (keepsRetainedFacts || property !== "parent")
-                        : kind === "node-input"
-                          ? property !== "texture"
-                          : kind === "material"
-                            ? !callEffects &&
-                              !runtimeMaterialProperties.has(property)
-                            : true;
-                return !required;
+        for (const { target } of writeSites(node)) {
+            let member: ts.Expression = target;
+            while (ts.isPropertyAccessExpression(member)) {
+                const kind = expressionHandleKind(context, member.expression);
+                if (kind) {
+                    const property = member.name.text;
+                    required =
+                        kind === "mesh" ||
+                        kind === "transform-node" ||
+                        (!keepsRetainedFacts && kind === "scene-node")
+                            ? !runtimeMeshProperties.has(property) &&
+                              property !== "material" &&
+                              property !== "receiveShadows" &&
+                              (keepsRetainedFacts || property !== "parent")
+                            : kind === "node-input"
+                              ? property !== "texture"
+                              : kind === "material"
+                                ? !callEffects &&
+                                  !runtimeMaterialProperties.has(property)
+                                : true;
+                    if (required) return false;
+                    break;
+                }
+                member = unwrapExpression(member.expression);
             }
-            member = unwrapExpression(member.expression);
         }
     });
     return required;
@@ -1479,13 +1476,8 @@ export function parameterizedResourceLoop(
             safe = false;
             return;
         }
-        const assignment = isAssignmentExpression(node)
-            ? { target: node.left, value: node.right }
-            : isUpdateExpression(node)
-              ? { target: node.operand, value: undefined }
-              : undefined;
-        if (assignment) {
-            const target = unwrapExpression(assignment.target);
+        // A compound or update stores a value computed from the old one.
+        for (const { target, stored } of writeSites(node)) {
             // An outer optional handle would retain one arbitrary iteration's
             // composition identity. Containers already withdraw that identity.
             if (
@@ -1500,9 +1492,7 @@ export function parameterizedResourceLoop(
                 const kind = expressionHandleKind(context, lane.expression);
                 if (kind) {
                     const property = lane.name.text;
-                    const fixed =
-                        assignment.value !== undefined &&
-                        invariant(assignment.value);
+                    const fixed = stored !== undefined && invariant(stored);
                     if (kind === "material") {
                         if (
                             !runtimeMaterialProperties.has(property) &&
@@ -1512,8 +1502,7 @@ export function parameterizedResourceLoop(
                     } else if (kind !== "mesh" && kind !== "transform-node") {
                         safe = false;
                     } else if (property === "material") {
-                        if (conditional || assignment.value === undefined)
-                            safe = false;
+                        if (conditional || stored === undefined) safe = false;
                     } else if (property === "receiveShadows") {
                         if (conditional || !fixed) safe = false;
                     } else if (!runtimeMeshProperties.has(property)) {

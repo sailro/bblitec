@@ -15,13 +15,12 @@ import {
     libraryGlobal,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     isAssignmentExpression,
-    isUpdateExpression,
     operandYield,
     propertyNameText,
     unwrapExpression,
     outermostWrapper,
+    writeSites,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -378,23 +377,12 @@ class EffectWalker {
         private readonly fn: EffectFunction,
     ) {
         const targets = new Set<ts.Node>();
-        const add = (target: ts.Expression): void => {
-            targets.add(unwrapExpression(target));
-        };
         for (const root of this.roots())
             forEachAnalysisNode(
                 root,
                 (node) => {
-                    if (isAssignmentExpression(node))
-                        assignmentTargets(node.left).forEach(add);
-                    else if (isUpdateExpression(node)) add(node.operand);
-                    else if (ts.isDeleteExpression(node)) add(node.expression);
-                    else if (
-                        (ts.isForOfStatement(node) ||
-                            ts.isForInStatement(node)) &&
-                        !ts.isVariableDeclarationList(node.initializer)
-                    )
-                        assignmentTargets(node.initializer).forEach(add);
+                    for (const site of writeSites(node))
+                        targets.add(site.target);
                 },
                 { types: "skip" },
             );

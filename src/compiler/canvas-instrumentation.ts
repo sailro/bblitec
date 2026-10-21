@@ -16,6 +16,8 @@ import {
     operandYield,
     stringLiteralText,
     unwrapExpression,
+    writeSites,
+    writeSiteOf,
 } from "./syntax.js";
 
 type ReportingValue =
@@ -665,16 +667,12 @@ function hasOnlyInstrumentationEffects(
     };
     const visit = (node: ts.Node): boolean => {
         if (ts.isTypeNode(node)) return true;
-        if (isAssignmentExpression(node) && !safeWrite(node.left)) return false;
-        if (
-            isAssignmentExpression(node) &&
-            isFetch(node.left) &&
-            !confined(node.right)
-        )
-            return false;
-        if (isUpdateExpression(node) && !safeWrite(node.operand)) return false;
-        if (ts.isDeleteExpression(node) && !safeWrite(node.expression))
-            return false;
+        for (const { target, stored } of writeSites(node))
+            if (
+                !safeWrite(target) ||
+                (stored && isFetch(target) && !confined(stored))
+            )
+                return false;
         if (
             (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
             !safeCall(node)
@@ -766,15 +764,8 @@ export function writesUnobservedCanvasMetadata(
                 valid = false;
                 return;
             }
-            const write = field.parent;
-            if (
-                !(
-                    ts.isBinaryExpression(write) &&
-                    write.left === field &&
-                    write.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                ) &&
-                !(ts.isDeleteExpression(write) && write.expression === field)
-            ) {
+            const kind = writeSiteOf(field)?.kind;
+            if (kind !== "assign" && kind !== "delete") {
                 valid = false;
                 return;
             }

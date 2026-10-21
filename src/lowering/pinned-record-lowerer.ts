@@ -46,6 +46,7 @@ import {
     outermostWrapper,
     unwrapTypePreserving,
     wrappersUnder,
+    isAssignmentExpression,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -5812,10 +5813,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isBinaryExpression(binary) &&
             !this.sequencing.has(binary) &&
             !NONSEQUENCED_BINARY_OPERATORS.has(binary.operatorToken.kind) &&
-            !(
-                binary.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                binary.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-            ) &&
+            !isAssignmentExpression(binary) &&
             this.orderPlan([binary.left, binary.right], "unordered")
         )
             return cppPrimary(

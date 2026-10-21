@@ -46,6 +46,8 @@ import { isPinnedErrorCall } from "./pinned-error.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    writeSites,
+    writeSiteOf,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -1444,17 +1446,7 @@ export class PinnedNumericLowerer {
         let written = false;
         const visit = (node: ts.Node): void => {
             if (written) return;
-            if (
-                (ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                    ownsMember(node.left)) ||
-                ((ts.isPrefixUnaryExpression(node) ||
-                    ts.isPostfixUnaryExpression(node)) &&
-                    (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                        node.operator === ts.SyntaxKind.MinusMinusToken) &&
-                    ownsMember(node.operand))
-            ) {
+            if (writeSites(node).some(({ target }) => ownsMember(target))) {
                 written = true;
                 return;
             }
@@ -1514,7 +1506,7 @@ export class PinnedNumericLowerer {
         return owned && references > 0;
     }
 
-    /** Whether the function declaring `name` assigns it again. */
+    /** Whether the function declaring `name` writes it again, by any write. */
     private reassigned(
         declaration: ts.VariableDeclaration,
         name: string,
@@ -1522,10 +1514,7 @@ export class PinnedNumericLowerer {
         return identifierReferences(enclosingFunction(declaration), name).some(
             (reference) =>
                 reference !== declaration.name &&
-                ts.isBinaryExpression(reference.parent) &&
-                reference.parent.left === reference &&
-                reference.parent.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken,
+                writeSiteOf(reference) !== undefined,
         );
     }
 
@@ -1536,12 +1525,10 @@ export class PinnedNumericLowerer {
     ): boolean {
         const text = source.getText();
         return (
-            findAnalysisNode(
-                enclosingFunction(declaration),
-                (node) =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    unwrapExpression(node.left).getText() === text,
+            findAnalysisNode(enclosingFunction(declaration), (node) =>
+                writeSites(node).some(
+                    ({ target }) => target.getText() === text,
+                ),
             ) !== undefined
         );
     }

@@ -4,6 +4,8 @@ import {
     isExpressionWrapper,
     propertyNameText,
     unwrapExpression as unwrapSyntaxWrappers,
+    writeSites,
+    type WriteSite,
 } from "../compiler/syntax.js";
 import {
     sharedUpstreamStore,
@@ -832,35 +834,31 @@ export class LoweringContext {
     }
 
     /**
-     * Every assignment (`=`, `??=`) anywhere in the pinned sources whose
+     * Every write anywhere in the pinned sources ({@link writeSites}) whose
      * target is the binding or property `name`, whatever the receiver.
      */
-    public writersOf(name: string): readonly ts.BinaryExpression[] {
+    public writersOf(name: string): readonly WriteSite[] {
         let index = writerIndexes.get(this);
         if (!index) {
-            const built = new Map<string, ts.BinaryExpression[]>();
+            const built = new Map<string, WriteSite[]>();
             for (const modulePath of this.store.listSources()) {
                 if (!modulePath.startsWith("src/")) continue;
-                for (const write of findNodes(
-                    this.sourceFile(modulePath),
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        (node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken ||
-                            node.operatorToken.kind ===
-                                ts.SyntaxKind.QuestionQuestionEqualsToken),
-                )) {
-                    const target = unwrapExpression(write.left);
-                    const written = ts.isIdentifier(target)
-                        ? target.text
-                        : ts.isPropertyAccessExpression(target)
-                          ? target.name.text
-                          : undefined;
-                    if (written === undefined) continue;
-                    const writes = built.get(written) ?? [];
-                    writes.push(write);
-                    built.set(written, writes);
-                }
+                const visit = (node: ts.Node): void => {
+                    for (const write of writeSites(node)) {
+                        const target = write.target;
+                        const written = ts.isIdentifier(target)
+                            ? target.text
+                            : ts.isPropertyAccessExpression(target)
+                              ? target.name.text
+                              : undefined;
+                        if (written === undefined) continue;
+                        const writes = built.get(written) ?? [];
+                        writes.push(write);
+                        built.set(written, writes);
+                    }
+                    ts.forEachChild(node, visit);
+                };
+                visit(this.sourceFile(modulePath));
             }
             index = built;
             writerIndexes.set(this, index);
@@ -880,7 +878,7 @@ export class LoweringContext {
         installer: string,
     ): void {
         const owner = this.functionDeclaration(module, installer).declaration;
-        const writes = this.writersOf(name);
+        const writes = this.writersOf(name).map((write) => write.node);
         // By span, not node identity: a store may parse a module per read.
         const inOwner = (write: ts.Node): boolean =>
             write.getSourceFile().fileName === owner.getSourceFile().fileName &&
@@ -1746,7 +1744,7 @@ let sharedPinned: LoweringContext | undefined;
 /** `LoweringContext.writersOf`'s index, one per context's sources. */
 const writerIndexes = new WeakMap<
     LoweringContext,
-    ReadonlyMap<string, ts.BinaryExpression[]>
+    ReadonlyMap<string, WriteSite[]>
 >();
 
 /**

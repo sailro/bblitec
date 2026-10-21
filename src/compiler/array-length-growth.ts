@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { declarationOrigin, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression, outermostWrapper } from "./syntax.js";
+import { unwrapExpression, outermostWrapper, writeSites } from "./syntax.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -322,17 +322,11 @@ function assigns(
     const visit = (child: ts.Node): void => {
         if (found) return;
         if (
-            (ts.isBinaryExpression(child) &&
-                child.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                child.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                resolvedSymbol(checker, unwrapExpression(child.left)) ===
-                    symbol) ||
-            ((ts.isPostfixUnaryExpression(child) ||
-                ts.isPrefixUnaryExpression(child)) &&
-                (child.operator === ts.SyntaxKind.PlusPlusToken ||
-                    child.operator === ts.SyntaxKind.MinusMinusToken) &&
-                resolvedSymbol(checker, unwrapExpression(child.operand)) ===
-                    symbol)
+            writeSites(child).some(
+                ({ target }) =>
+                    ts.isIdentifier(target) &&
+                    resolvedSymbol(checker, target) === symbol,
+            )
         ) {
             found = true;
             return;

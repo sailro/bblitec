@@ -14676,3 +14676,47 @@ test("module records and tokens refuse what one object cannot represent", () => 
         /A write through `this` needs the object its literal creates stored where a binding names it\./,
     );
 });
+
+// Write sites: every write form counts where a proof depends on a binding
+// or an array staying unchanged.
+check(
+    "a loop bound by an array it reassigns keeps checked reads",
+    `
+    function sum(input: number[]): number {
+        let rows = input;
+        let total = 0;
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i]! < 0) rows = [];
+            total += rows[i] ?? 100;
+        }
+        return total;
+    }
+    if (sum([1, -1, 2]) !== 101) throw new Error("reassigned bound");
+    `,
+);
+check(
+    "a nested write through a local literal keeps it from folding",
+    `
+    function configured(): number {
+        const config = { limits: { count: 1 }, names: [] as string[] };
+        config.limits.count = 2;
+        config.names.push("late");
+        [config.limits.count] = [config.limits.count + config.names.length];
+        return config.limits.count;
+    }
+    if (configured() !== 3) throw new Error("stale literal");
+    `,
+);
+check(
+    "a counter its loop writes by destructuring bounds no growth",
+    `
+    const limit = 2;
+    const values: number[] = [];
+    for (let i = 0; i < limit; i++) {
+        [i] = [i + 3];
+        values[i] = i;
+    }
+    if (values.length !== 4 || values[3] !== 3)
+        throw new Error("counter written in its loop");
+    `,
+);

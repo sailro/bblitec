@@ -25,13 +25,7 @@ import {
     classMemberTable,
 } from "./class-members.js";
 import { EvaluationOrder } from "./evaluation-order.js";
-import {
-    assignmentTargets,
-    isAssignmentExpression,
-    isUpdateExpression,
-    mutatingCallTarget,
-    unwrapExpression,
-} from "./syntax.js";
+import { mutatingCallTarget, unwrapExpression, writeSites } from "./syntax.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
 export function moduleContainerSymbol(
@@ -168,11 +162,12 @@ export function collectReboundSymbols(
         if (symbol) rebound.add(symbol);
     };
     forEachAnalysisNode(sourceFile, (node) => {
-        if (isAssignmentExpression(node)) {
-            assignmentTargets(node.left).forEach(record);
-        } else if (countUpdateOperators && isUpdateExpression(node)) {
-            record(node.operand);
-        }
+        for (const site of writeSites(node))
+            if (
+                site.kind !== "delete" &&
+                (countUpdateOperators || site.kind !== "update")
+            )
+                record(site.target);
     });
     return rebound;
 }
@@ -351,12 +346,9 @@ function collectMutatedContainerSymbols(
                 visitMutableArgumentReferences(checker, node, index, record);
             });
         }
-        if (isAssignmentExpression(node)) {
-            assignmentTargets(node.left).forEach(recordThrough);
-        } else if (isUpdateExpression(node)) {
-            recordThrough(node.operand);
-        } else if (ts.isDeleteExpression(node)) {
-            recordThrough(node.expression);
+        const writes = writeSites(node);
+        if (writes.length > 0) {
+            for (const { target } of writes) recordThrough(target);
         } else {
             const target = mutatingCallTarget(node, (method) =>
                 receiverWritingMethods.has(method),
@@ -756,10 +748,7 @@ class ModuleInitializerPlanner {
                 called.body,
                 (node) =>
                     owner(node) !== called &&
-                    (isAssignmentExpression(node)
-                        ? assignmentTargets(node.left).some(writesLocal)
-                        : isUpdateExpression(node) &&
-                          writesLocal(node.operand)),
+                    writeSites(node).some(({ target }) => writesLocal(target)),
             ) !== undefined
         );
     }
@@ -1079,17 +1068,8 @@ class ModuleInitializerPlanner {
                             aliases.set(alias, origins);
                         }
                     }
-                    if (isAssignmentExpression(current)) {
-                        assignmentTargets(current.left).forEach((target) =>
-                            record(target),
-                        );
-                    }
-                    if (isUpdateExpression(current)) {
-                        record(current.operand);
-                    }
-                    if (ts.isDeleteExpression(current)) {
-                        record(current.expression);
-                    }
+                    for (const { target } of writeSites(current))
+                        record(target);
                     if (ts.isCallExpression(current)) {
                         const callee = current.expression;
                         if (

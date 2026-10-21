@@ -6,6 +6,7 @@ import { isStorageDemand } from "./storage-demand-planner.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import { writeSites } from "./syntax.js";
 
 type CaseSplitContext = Pick<
     LoweringServices,
@@ -187,14 +188,7 @@ function runtimeSelectors(
             ts.isTaggedTemplateExpression(node) ||
             ts.isAwaitExpression(node) ||
             ts.isYieldExpression(node) ||
-            ts.isDeleteExpression(node) ||
-            ((ts.isPrefixUnaryExpression(node) ||
-                ts.isPostfixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken)) ||
-            (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+            writeSites(node).length > 0
         ) {
             effects = true;
             return;

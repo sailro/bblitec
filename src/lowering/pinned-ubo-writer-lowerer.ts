@@ -40,7 +40,7 @@ import {
 } from "./pinned-option-defaults.js";
 
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import { isExpressionWrapper } from "../compiler/syntax.js";
+import { isExpressionWrapper, writeSites } from "../compiler/syntax.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -438,16 +438,8 @@ function guardedFieldByHas(condition: ts.Expression): string | undefined {
 function collectMutatedLocals(body: ts.Node): Set<string> {
     const mutated = new Set<string>();
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isBinaryExpression(node) &&
-            ts.isIdentifier(node.left) &&
-            (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.AsteriskEqualsToken)
-        ) {
-            mutated.add(node.left.text);
-        }
+        for (const { target } of writeSites(node))
+            if (ts.isIdentifier(target)) mutated.add(target.text);
         ts.forEachChild(node, visit);
     };
     visit(body);

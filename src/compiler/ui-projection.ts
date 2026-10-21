@@ -131,6 +131,8 @@ import {
     valueClassOfString,
     valueOperands,
     yieldedOperands,
+    writeSites,
+    writeSiteOf,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
@@ -1025,13 +1027,7 @@ export class UiProjection {
             return false;
         };
         const writes = (node: ts.Node): boolean => {
-            if (
-                (ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                    writesKey(node.left)) ||
-                (ts.isDeleteExpression(node) && writesKey(node.expression))
-            )
+            if (writeSites(node).some(({ target }) => writesKey(target)))
                 return true;
             if (ts.isCallExpression(node)) {
                 const callee = this.context.unwrap(node.expression);
@@ -6380,21 +6376,17 @@ export class UiProjection {
                 this.context.sourceFiles(),
                 new Set([field]),
                 this.context.options.nativeHostUi,
-                (node) => {
-                    const write = node.parent;
-                    return ts.isPropertyAccessExpression(node) &&
-                        node.name.text === field &&
-                        ts.isPropertyAccessExpression(node.expression) &&
-                        node.expression.name.text === "dataset" &&
-                        ((ts.isBinaryExpression(write) &&
-                            write.left === node &&
-                            write.operatorToken.kind ===
-                                ts.SyntaxKind.EqualsToken) ||
-                            (ts.isDeleteExpression(write) &&
-                                write.expression === node))
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    node.name.text === field &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "dataset" &&
+                    // A store or delete that does not read the field first.
+                    ["assign", "delete", "loop"].includes(
+                        writeSiteOf(node)?.kind ?? "",
+                    )
                         ? "self"
-                        : undefined;
-                },
+                        : undefined,
             );
             this.observedDatasetFields.set(field, observed);
         }

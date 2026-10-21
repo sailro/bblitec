@@ -16,15 +16,15 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     expressionMayRunCode,
     isAssignmentExpression,
     isOperandSelection,
-    isUpdateExpression,
     outermostWrapper,
     unwrapExpression,
     valueOperands,
     isExpressionWrapper,
+    writeSites,
+    writeSiteOf,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -605,7 +605,7 @@ function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
         ts.isVoidExpression(parent) ||
         ts.isTemplateSpan(parent) ||
         ts.isPrefixUnaryExpression(parent) ||
-        (isAssignmentExpression(parent) && parent.left === use) ||
+        writeSiteOf(use) !== undefined ||
         (ts.isVariableDeclaration(parent) && !ts.isIdentifier(parent.name)) ||
         (ts.isBinaryExpression(parent) &&
             !isAssignmentExpression(parent) &&
@@ -777,9 +777,7 @@ function receiverWrites(initializer: ts.Expression | undefined): string[] {
             (ts.isFunctionLike(node) && !ts.isArrowFunction(node))
         )
             return;
-        if (isAssignmentExpression(node))
-            assignmentTargets(node.left).forEach(written);
-        else if (isUpdateExpression(node)) written(node.operand);
+        for (const { target } of writeSites(node)) written(target);
         ts.forEachChild(node, visit);
     };
     for (const property of literal.properties) {

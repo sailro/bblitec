@@ -100,6 +100,7 @@ import {
     outermostWrapper,
     regularExpressionParts,
     isTypeAssertion,
+    writeSites,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -257,8 +258,7 @@ function containsEvaluatedCall(node: ts.Node): boolean {
     if (
         ts.isCallExpression(node) ||
         ts.isNewExpression(node) ||
-        isAssignmentExpression(node) ||
-        isUpdateExpression(node)
+        writeSites(node).length > 0
     ) {
         return true;
     }

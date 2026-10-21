@@ -4,10 +4,10 @@ import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { accessedPropertySymbol } from "./symbols.js";
 import {
-    isAssignmentExpression,
     propertyNameText,
     rootIdentifier,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import type { Value } from "./types.js";
@@ -136,9 +136,7 @@ export function requireStableRetainedDescriptor(
                             namesRoot,
                             undefined,
                             checker,
-                        ) ||
-                        (ts.isDeleteExpression(node) &&
-                            namesRoot(node.expression))
+                        )
                     )
                         return true;
                     if (
@@ -153,10 +151,13 @@ export function requireStableRetainedDescriptor(
                     )
                         return true;
                     if (
-                        isAssignmentExpression(node) &&
-                        references(node.right) &&
-                        containsAlias(node.right, scan) &&
-                        !ts.isIdentifier(node.left)
+                        writeSites(node).some(
+                            ({ target, from }) =>
+                                !ts.isIdentifier(target) &&
+                                from !== undefined &&
+                                references(from) &&
+                                containsAlias(from, scan),
+                        )
                     )
                         return true;
                     if (

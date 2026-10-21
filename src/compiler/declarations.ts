@@ -70,12 +70,11 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     isAssignmentExpression,
-    isUpdateExpression,
     isOperandSelection,
     propertyNameText,
     valueOperands,
+    writeSites,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -1839,32 +1838,16 @@ export class DeclarationLowerer {
             let unknownWrite = false;
             forEachAnalysisNode(scope, (node) => {
                 if (unknownWrite) return "skip";
-                if (
-                    isAssignmentExpression(node) &&
-                    assignmentTargets(node.left).some(
-                        (target) =>
-                            ts.isIdentifier(target) &&
-                            this.context.symbols.valueSymbol(target) === symbol,
-                    )
-                ) {
+                for (const { target, stored } of writeSites(node)) {
                     if (
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                        ts.isIdentifier(this.context.unwrap(node.left))
-                    ) {
-                        sources.push(node.right);
-                    } else {
-                        unknownWrite = true;
-                    }
-                } else if (
-                    isUpdateExpression(node) &&
-                    ts.isIdentifier(this.context.unwrap(node.operand)) &&
-                    this.context.symbols.valueSymbol(
-                        this.context.unwrap(node.operand) as ts.Identifier,
-                    ) === symbol
-                ) {
-                    unknownWrite = true;
+                        !ts.isIdentifier(target) ||
+                        this.context.symbols.valueSymbol(target) !== symbol
+                    )
+                        continue;
+                    // A stored value is a source; a computed one is unknown.
+                    if (stored) sources.push(stored);
+                    else unknownWrite = true;
                 }
-                return undefined;
             });
             if (unknownWrite) return undefined;
         }
@@ -1936,14 +1919,7 @@ export class DeclarationLowerer {
             ts.isIdentifier(node) &&
             this.context.symbols.valueSymbol(node) === symbol;
         const targets = (node: ts.Node): readonly ts.Expression[] =>
-            isAssignmentExpression(node)
-                ? assignmentTargets(node.left)
-                : isUpdateExpression(node)
-                  ? [this.context.unwrap(node.operand)]
-                  : (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
-                      !ts.isVariableDeclarationList(node.initializer)
-                    ? assignmentTargets(node.initializer)
-                    : [];
+            writeSites(node).map((site) => site.target);
         let writes = false;
         let lastWrite = declaration.end;
         let firstCapture = Infinity;
@@ -2004,13 +1980,7 @@ export class DeclarationLowerer {
             );
         };
         const writes = (node: ts.Node): boolean =>
-            isAssignmentExpression(node)
-                ? assignmentTargets(node.left).some(names)
-                : isUpdateExpression(node)
-                  ? names(node.operand)
-                  : (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
-                    !ts.isVariableDeclarationList(node.initializer) &&
-                    assignmentTargets(node.initializer).some(names);
+            writeSites(node).some(({ target }) => names(target));
         const visit = (node: ts.Node): boolean => {
             if (writes(node)) return true;
             if (ts.isFunctionLike(node)) return someAnalysisNode(node, writes);
@@ -2129,13 +2099,13 @@ export class DeclarationLowerer {
                         );
                     },
                     mutates: (node, scan) => {
-                        if (
-                            isAssignmentExpression(node) &&
-                            ts.isPropertyAccessExpression(node.left) &&
-                            callbacks.has(node.left.name.text) &&
-                            scan.namesAlias(node.left.expression)
-                        )
-                            assigned.add(node.left.name.text);
+                        for (const { target } of writeSites(node))
+                            if (
+                                ts.isPropertyAccessExpression(target) &&
+                                callbacks.has(target.name.text) &&
+                                scan.namesAlias(target.expression)
+                            )
+                                assigned.add(target.name.text);
                         if (ts.isCallExpression(node)) {
                             const called =
                                 this.context.checker.getResolvedSignature(
@@ -4357,18 +4327,6 @@ export class DeclarationLowerer {
                             return true;
                         }
                     }
-                    if (
-                        isUpdateExpression(node) &&
-                        ts.isElementAccessExpression(node.operand) &&
-                        scan.namesAlias(
-                            this.context.unwrap(node.operand.expression),
-                        )
-                    ) {
-                        // `arr[0]++` writes the element without a binary
-                        // assignment node; the runtime-index clause above
-                        // only catches non-static subscripts.
-                        return true;
-                    }
                     if (ts.isCallExpression(node)) {
                         if (
                             ts.isPropertyAccessExpression(node.expression) &&
@@ -4383,19 +4341,20 @@ export class DeclarationLowerer {
                             return true;
                         }
                     }
-                    return (
-                        isAssignmentExpression(node) &&
-                        assignmentTargets(node.left).some(
-                            (target) =>
-                                ((ts.isPropertyAccessExpression(target) ||
-                                    ts.isElementAccessExpression(target)) &&
-                                    scan.containsAlias(node.right)) ||
-                                (ts.isElementAccessExpression(target) &&
-                                    scan.namesAlias(
-                                        this.context.unwrap(target.expression),
-                                    )) ||
-                                scan.namesAlias(this.context.unwrap(target)),
-                        )
+                    return writeSites(node).some(
+                        ({ target, from }) =>
+                            // Rebinding an alias, or writing, stepping or
+                            // deleting one of its elements (`arr[0]++`).
+                            scan.namesAlias(target) ||
+                            (ts.isElementAccessExpression(target) &&
+                                scan.namesAlias(
+                                    this.context.unwrap(target.expression),
+                                )) ||
+                            // Storing an alias into another object.
+                            ((ts.isPropertyAccessExpression(target) ||
+                                ts.isElementAccessExpression(target)) &&
+                                from !== undefined &&
+                                scan.containsAlias(from)),
                     );
                 },
             },
@@ -4414,16 +4373,9 @@ export class DeclarationLowerer {
             forEachAnalysisNode(root, (node) => {
                 if (mutated) return "skip";
                 if (
-                    isAssignmentExpression(node) &&
-                    assignmentTargets(node.left).some(directlyIndexes)
-                ) {
-                    mutated = true;
-                    return "skip";
-                }
-                if (
-                    (ts.isPrefixUnaryExpression(node) ||
-                        ts.isPostfixUnaryExpression(node)) &&
-                    directlyIndexes(node.operand)
+                    writeSites(node).some(({ target }) =>
+                        directlyIndexes(target),
+                    )
                 ) {
                     mutated = true;
                     return "skip";
@@ -4644,49 +4596,20 @@ export class DeclarationLowerer {
                         if (type?.kind === "vector" || type?.kind === "product")
                             return true;
                     }
-                    if (
-                        ts.isDeleteExpression(node) &&
-                        isAlias(scan, node.expression)
-                    )
-                        return true;
-                    if (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                        ts.isIdentifier(node.left) &&
-                        scan.namesAlias(node.left)
-                    ) {
-                        // Rebinding an inferred object still needs
-                        // persistent reference storage even when no field
-                        // is written.
-                        return true;
-                    }
-                    if (
-                        isAssignmentExpression(node) &&
-                        assignmentTargets(node.left).some((target) =>
-                            isAlias(scan, target),
-                        )
-                    ) {
-                        return true;
-                    }
-                    if (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                        (ts.isPropertyAccessExpression(node.left) ||
-                            ts.isElementAccessExpression(node.left)) &&
-                        scan.containsAlias(node.right)
-                    ) {
+                    for (const { target, stored } of writeSites(node)) {
+                        // Rebinding an alias (which still needs persistent
+                        // reference storage) or writing, stepping or
+                        // deleting one of its members.
+                        if (isAlias(scan, target)) return true;
                         // Storing an object in another object/container
-                        // makes identity observable through the second
-                        // path.
-                        return true;
-                    }
-                    if (
-                        isUpdateExpression(node) &&
-                        (ts.isPropertyAccessExpression(node.operand) ||
-                            ts.isElementAccessExpression(node.operand)) &&
-                        isAlias(scan, node.operand)
-                    ) {
-                        return true;
+                        // makes identity observable through the second path.
+                        if (
+                            stored &&
+                            (ts.isPropertyAccessExpression(target) ||
+                                ts.isElementAccessExpression(target)) &&
+                            scan.containsAlias(stored)
+                        )
+                            return true;
                     }
                     if (
                         (ts.isCallExpression(node) ||

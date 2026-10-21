@@ -4,6 +4,7 @@ import {
     localSyncFunction,
     unwrapExpression,
     outermostWrapper,
+    writeSiteOf,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
@@ -150,13 +151,7 @@ function isFieldReadOrTest(identifier: ts.Identifier): boolean {
         // A method call may write its receiver; a write names the field.
         return !(
             (ts.isCallExpression(target) && target.expression === access) ||
-            (ts.isBinaryExpression(target) &&
-                target.left === access &&
-                target.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                target.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-            ts.isDeleteExpression(target) ||
-            ts.isPrefixUnaryExpression(target) ||
-            ts.isPostfixUnaryExpression(target)
+            writeSiteOf(parent) !== undefined
         );
     }
     // `x && ...` yields x only when it is falsy, so no reference escapes.

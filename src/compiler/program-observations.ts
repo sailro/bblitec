@@ -4,13 +4,13 @@ import { engineArgumentWritten } from "./parameter-effects.js";
 import { yieldsNewArray } from "./fresh-records.js";
 import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
-    assignmentTargets,
     isAssignmentExpression,
-    isUpdateExpression,
     propertyNameText,
     unwrapExpression,
     wrappedParent,
     isTypeAssertion,
+    writeSites,
+    writeSiteOf,
 } from "./syntax.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
@@ -144,10 +144,9 @@ function readsOnlyAsMember(access: ts.Expression): boolean {
             unwrapExpression(parent.expression) === access) ||
         (ts.isTaggedTemplateExpression(parent) &&
             unwrapExpression(parent.tag) === access) ||
-        (ts.isBinaryExpression(parent) &&
-            unwrapExpression(parent.left) === access &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
-        ts.isDeleteExpression(parent) ||
+        ["assign", "delete", "loop"].includes(
+            writeSiteOf(access)?.kind ?? "",
+        ) ||
         ts.isTypeOfExpression(parent)
     );
 }
@@ -430,13 +429,11 @@ function observe(program: ts.Program): ProgramObservations {
             if (name !== undefined) read(name, node, node.parent);
             else wholesaleReads.push(node.parent);
         }
+        for (const { target } of writeSites(node)) written(target);
         if (isAssignmentExpression(node)) {
-            for (const target of assignmentTargets(node.left)) written(target);
             if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
                 assignmentPatternNames(node.left, read);
-        } else if (isUpdateExpression(node)) written(node.operand);
-        else if (ts.isDeleteExpression(node)) written(node.expression);
-        else if (ts.isBinaryExpression(node)) {
+        } else if (ts.isBinaryExpression(node)) {
             const operator = node.operatorToken.kind;
             if (
                 (operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||

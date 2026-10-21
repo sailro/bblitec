@@ -94,11 +94,8 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
-    assignmentTargets,
-    isAssignmentExpression,
     isDeclaredInside,
     isOperandSelection,
-    isUpdateExpression,
     mutatingCallTarget,
     outermostWrapper,
     requiredParameterCount,
@@ -108,6 +105,7 @@ import {
     unwrapExpression,
     yieldedOperands,
     argumentAt,
+    writeSites,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -382,8 +380,7 @@ function dataArgumentMayRunCode(
                 ts.isCallExpression(node) ||
                 ts.isNewExpression(node) ||
                 ts.isElementAccessExpression(node) ||
-                isUpdateExpression(node) ||
-                isAssignmentExpression(node)
+                writeSites(node).length > 0
             ) {
                 return true;
             }
@@ -544,12 +541,8 @@ function writesThroughRoot(
     checker?: ts.TypeChecker,
     sourceFiles?: readonly ts.SourceFile[],
 ): boolean {
-    if (isAssignmentExpression(node)) {
-        return assignmentTargets(node.left).some(isTarget);
-    }
-    if (isUpdateExpression(node)) {
-        return isTarget(node.operand);
-    }
+    const writes = writeSites(node);
+    if (writes.length > 0) return writes.some(({ target }) => isTarget(target));
     if (
         checker &&
         sourceFiles &&
@@ -643,14 +636,13 @@ export function aliasedMutationScan(
             ) {
                 scan.addAlias(valueSymbol(node.name));
             }
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(node.left) &&
-                walk.aliasingInitializer(node.right, scan)
-            ) {
-                scan.addAlias(valueSymbol(node.left));
-            }
+            for (const { target, stored } of writeSites(node))
+                if (
+                    stored &&
+                    ts.isIdentifier(target) &&
+                    walk.aliasingInitializer(stored, scan)
+                )
+                    scan.addAlias(valueSymbol(target));
             return false;
         });
         if (mutated) return true;
@@ -1128,14 +1120,12 @@ function reassignedRecordFields(
         forEachAnalysisNode(
             declaration.body,
             (node) => {
-                if (isAssignmentExpression(node)) {
-                    for (const target of assignmentTargets(node.left))
-                        reassigns(target);
-                } else if (isUpdateExpression(node)) {
-                    reassigns(node.operand);
-                } else if (ts.isDeleteExpression(node)) {
-                    reassigns(node.expression);
-                } else if (ts.isPropertyAccessExpression(node)) {
+                const writes = writeSites(node);
+                for (const { target } of writes) reassigns(target);
+                if (
+                    writes.length === 0 &&
+                    ts.isPropertyAccessExpression(node)
+                ) {
                     for (const accessor of declaredSymbol(checker, node.name)
                         ?.declarations ?? []) {
                         if (
@@ -3108,12 +3098,8 @@ export class UserFunctionLowerer {
                 declaredSymbol(this.checker, target) === symbol
             );
         };
-        return !someAnalysisNode(
-            declaration.body,
-            (node) =>
-                (isAssignmentExpression(node) &&
-                    assignmentTargets(node.left).some(names)) ||
-                (isUpdateExpression(node) && names(node.operand)),
+        return !someAnalysisNode(declaration.body, (node) =>
+            writeSites(node).some(({ target }) => names(target)),
         );
     }
 
@@ -4356,47 +4342,14 @@ export class UserFunctionLowerer {
                         isHandleKind(value.kind) &&
                         symbol &&
                         entry.declaration.body &&
-                        !someAnalysisNode(entry.declaration.body, (node) => {
-                            const target = isAssignmentExpression(node)
-                                ? unwrapExpression(node.left)
-                                : isUpdateExpression(node)
-                                  ? unwrapExpression(node.operand)
-                                  : undefined;
-                            const rebinds = (
-                                target: ts.Expression,
-                            ): boolean => {
-                                target = unwrapExpression(target);
-                                if (ts.isIdentifier(target))
-                                    return (
-                                        declaredSymbol(this.checker, target) ===
-                                        symbol
-                                    );
-                                if (ts.isArrayLiteralExpression(target))
-                                    return target.elements.some(rebinds);
-                                if (ts.isObjectLiteralExpression(target))
-                                    return target.properties.some((property) =>
-                                        ts.isShorthandPropertyAssignment(
-                                            property,
-                                        )
-                                            ? rebinds(property.name)
-                                            : ts.isPropertyAssignment(property)
-                                              ? rebinds(property.initializer)
-                                              : ts.isSpreadAssignment(
-                                                    property,
-                                                ) &&
-                                                rebinds(property.expression),
-                                    );
-                                if (ts.isSpreadElement(target))
-                                    return rebinds(target.expression);
-                                return (
-                                    ts.isBinaryExpression(target) &&
-                                    target.operatorToken.kind ===
-                                        ts.SyntaxKind.EqualsToken &&
-                                    rebinds(target.left)
-                                );
-                            };
-                            return target !== undefined && rebinds(target);
-                        });
+                        !someAnalysisNode(entry.declaration.body, (node) =>
+                            writeSites(node).some(
+                                ({ target }) =>
+                                    ts.isIdentifier(target) &&
+                                    declaredSymbol(this.checker, target) ===
+                                        symbol,
+                            ),
+                        );
                     parameterBindings.push({
                         parameter,
                         value,

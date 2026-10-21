@@ -52,6 +52,7 @@ import {
     isUpdateExpression,
     iteratorMethodCall,
     unwrappedIdentifier,
+    writeSites,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -1780,14 +1781,9 @@ export class StatementLowerer {
             // leaving mixed browser/native conditions to the established
             // condition lowerer and its pinned static deductions.
             const noteWrites = (node: ts.Node): void => {
-                if (
-                    ts.isBinaryExpression(node) &&
-                    ASSIGNMENT_OPERATORS.has(node.operatorToken.kind)
-                ) {
-                    const left = context.unwrap(node.left);
-                    if (ts.isPropertyAccessExpression(left))
-                        context.noteErasedElementWrite(left.expression, node);
-                }
+                for (const { target } of writeSites(node))
+                    if (ts.isPropertyAccessExpression(target))
+                        context.noteErasedElementWrite(target.expression, node);
                 ts.forEachChild(node, noteWrites);
             };
             noteWrites(statement.thenStatement);
@@ -1917,6 +1913,8 @@ export class StatementLowerer {
         };
         const pure = (candidate: ts.Expression): boolean => {
             const value = context.unwrap(candidate);
+            // `++n`, `x ??= y`, `delete o.k`: a write is the effect itself.
+            if (writeSites(value).length > 0) return false;
             if (
                 ts.isIdentifier(value) ||
                 ts.isLiteralExpression(value) ||
@@ -1931,11 +1929,7 @@ export class StatementLowerer {
                 return pure(value.operand);
             }
             if (ts.isBinaryExpression(value)) {
-                return (
-                    !ASSIGNMENT_OPERATORS.has(value.operatorToken.kind) &&
-                    pure(value.left) &&
-                    pure(value.right)
-                );
+                return pure(value.left) && pure(value.right);
             }
             if (ts.isConditionalExpression(value)) {
                 return (

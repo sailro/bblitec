@@ -21,13 +21,11 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import {
-    assignmentTargets,
-    isAssignmentExpression,
-    isUpdateExpression,
     outermostWrapper,
     regularExpressionParts,
     rootIdentifier,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import {
     functionOfDeclaration,
@@ -554,35 +552,28 @@ function sourceGraph(
                     )
                         mutate(callee.expression);
                 }
-                if (isUpdateExpression(node)) {
-                    mutate(node.operand);
-                    writeBinding(node.operand, node);
-                }
-                if (!isAssignmentExpression(node)) return;
-                for (const written of assignmentTargets(node.left))
-                    writeBinding(written, node);
-                const target = unwrapExpression(node.left);
-                if (ts.isIdentifier(target)) {
-                    const symbol = resolvedSymbol(checker, target);
-                    if (!symbol) return;
-                    if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
-                        mutated.add(symbol);
-                    } else {
-                        const values = writes.get(symbol) ?? [];
-                        values.push(node.right);
-                        writes.set(symbol, values);
+                for (const { target, kind, stored } of writeSites(node)) {
+                    writeBinding(target, node);
+                    // Only a plain `=` stores a value this domain can read;
+                    // every other write leaves the binding's value unknown.
+                    const value = kind === "assign" ? stored : undefined;
+                    if (ts.isIdentifier(target)) {
+                        const symbol = resolvedSymbol(checker, target);
+                        if (!symbol) continue;
+                        if (value) {
+                            const values = writes.get(symbol) ?? [];
+                            values.push(value);
+                            writes.set(symbol, values);
+                        } else mutated.add(symbol);
+                        continue;
                     }
-                } else {
-                    const written =
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                            ? memberWritePath(target)
-                            : undefined;
+                    const written = value && memberWritePath(target);
                     const symbol =
                         written && resolvedSymbol(checker, written.root);
-                    if (written && symbol) {
+                    if (value && written && symbol) {
                         mutated.add(symbol);
                         const list = memberWrites.get(symbol) ?? [];
-                        list.push({ path: written.path, value: node.right });
+                        list.push({ path: written.path, value });
                         memberWrites.set(symbol, list);
                     } else mutate(target);
                 }

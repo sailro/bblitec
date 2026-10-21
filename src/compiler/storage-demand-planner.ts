@@ -2,14 +2,12 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { declaredSymbol } from "./symbols.js";
 import {
-    assignmentTargets,
     bindingNameIdentifiers,
     expressionMayRunCode,
-    isAssignmentExpression,
-    isUpdateExpression,
     rootIdentifier,
     statementDeclaredNames,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import { CompileError } from "./compile-error.js";
 import { AbsenceTagStorageRequired } from "./absence-tag-storage.js";
@@ -249,18 +247,7 @@ function rolledBackWrites(
                 node.name
             )
                 names.push(node.name);
-            const targets = isAssignmentExpression(node)
-                ? assignmentTargets(node.left)
-                : isUpdateExpression(node)
-                  ? [node.operand]
-                  : ts.isDeleteExpression(node)
-                    ? [node.expression]
-                    : (ts.isForInStatement(node) ||
-                            ts.isForOfStatement(node)) &&
-                        !ts.isVariableDeclarationList(node.initializer)
-                      ? assignmentTargets(node.initializer)
-                      : [];
-            for (const target of targets) {
+            for (const { target } of writeSites(node)) {
                 const root = rootIdentifier(target);
                 if (!root) return true;
                 names.push(root);

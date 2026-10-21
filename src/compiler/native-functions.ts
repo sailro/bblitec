@@ -8,10 +8,9 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import {
     expressionMayRunCode,
-    isAssignmentExpression,
-    isUpdateExpression,
     soleReturnedExpression,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
@@ -1444,13 +1443,6 @@ export class NativeFunctionLowerer {
                 (type.kind === "numberindex" || isTypedArrayType(type))
             );
         }
-        if (ts.isArrayLiteralExpression(node))
-            return node.elements.every(
-                (element) =>
-                    ts.isOmittedExpression(element) ||
-                    (!ts.isSpreadElement(element) &&
-                        this.writesLocalOrNumericStorage(element, locals)),
-            );
         return false;
     }
 
@@ -1533,18 +1525,17 @@ export class NativeFunctionLowerer {
                 }
                 if (
                     ts.isNewExpression(node) ||
-                    ts.isDeleteExpression(node) ||
                     ts.isAwaitExpression(node) ||
                     ts.isYieldExpression(node) ||
                     ts.isThrowStatement(node)
                 )
                     return true;
-                if (isAssignmentExpression(node))
-                    return !this.writesLocalOrNumericStorage(node.left, locals);
-                if (isUpdateExpression(node))
-                    return !this.writesLocalOrNumericStorage(
-                        node.operand,
-                        locals,
+                const writes = writeSites(node);
+                if (writes.length > 0)
+                    return writes.some(
+                        ({ target, kind }) =>
+                            kind === "delete" ||
+                            !this.writesLocalOrNumericStorage(target, locals),
                     );
                 if (ts.isPropertyAccessExpression(node)) {
                     if (

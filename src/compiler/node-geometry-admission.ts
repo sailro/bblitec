@@ -2,7 +2,7 @@ import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
-import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
+import { writeSites } from "./syntax.js";
 
 interface Context extends Pick<
     LoweringServices,
@@ -76,17 +76,7 @@ export function checkNodeGeometryMutation(
         );
     };
     const node = context.unwrap(expression);
-    const assignment = isAssignmentExpression(node);
-    const increment = isUpdateExpression(node);
-    const target = assignment
-        ? node.left
-        : increment
-          ? node.operand
-          : ts.isDeleteExpression(node)
-            ? node.expression
-            : undefined;
-    if (target) {
-        const left = context.unwrap(target);
+    for (const { target: left } of writeSites(node)) {
         if (
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
@@ -96,10 +86,10 @@ export function checkNodeGeometryMutation(
                 : ts.isStringLiteralLike(left.argumentExpression)
                   ? left.argumentExpression.text
                   : undefined;
+            // A dynamic key may name a transform.
             if (
                 importedVector(left.expression) ||
-                (name !== undefined &&
-                    transforms.has(name) &&
+                ((name === undefined || transforms.has(name)) &&
                     unprovenMesh(left.expression))
             ) {
                 context.admissions.noteNodeGeometryMutation(node);

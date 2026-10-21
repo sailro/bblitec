@@ -436,3 +436,56 @@ test("wrapper transparency is decided in syntax.ts", () => {
         ownMeaning,
     );
 });
+
+test("write sites are read through syntax.ts", () => {
+    // What a node writes (assignment and pattern leaves, compound, logical,
+    // update, delete, loop targets) is writeSites/writeSiteOf. The
+    // assignment-operator range belongs to syntax.ts; statements.ts reads
+    // it only to class non-assignment operators.
+    assert.deepEqual(
+        sourcePaths.filter((path) => {
+            const facts = sourceFacts(path);
+            return (
+                facts.members.has("FirstAssignment") ||
+                facts.members.has("LastAssignment")
+            );
+        }),
+        ["src/compiler/statements.ts", "src/compiler/syntax.ts"],
+    );
+    // These still test `delete`, `++` or `--` themselves, to lower those
+    // forms or match a pinned shape; each leaves the list as its lowering
+    // moves to one owner, and no other file may start.
+    const pending = [
+        "src/compiler.ts",
+        "src/compiler/array-length-growth.ts",
+        "src/compiler/bigint-values.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/integer-loops.ts",
+        "src/compiler/node-input-surface.ts",
+        "src/compiler/resource-loops.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/static-evaluator.ts",
+        "src/compiler/text-surface.ts",
+        "src/lowering/factory/material-factories.ts",
+        "src/lowering/gltf/material-object-lowerer.ts",
+        "src/lowering/gltf/orm-composition.ts",
+        "src/lowering/pbr-transmission-transaction.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/scene-lowerer.ts",
+    ];
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const facts = sourceFacts(path);
+                return (
+                    path !== "src/compiler/syntax.ts" &&
+                    (facts.calls.has("ts.isDeleteExpression") ||
+                        facts.members.has("PlusPlusToken") ||
+                        facts.members.has("MinusMinusToken"))
+                );
+            })
+            .sort(),
+        pending,
+    );
+});

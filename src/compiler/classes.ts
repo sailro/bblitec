@@ -36,6 +36,7 @@ import {
     isAssignmentOperator,
     sourceFunctionName,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import { nullability } from "./type-facts.js";
@@ -151,8 +152,7 @@ function isInertExpression(
         );
     if (ts.isPrefixUnaryExpression(expression))
         return (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken &&
+            writeSites(expression).length === 0 &&
             inert(expression.operand) &&
             primitive(expression.operand)
         );

@@ -20,12 +20,7 @@ import {
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
-import {
-    assignmentTargets,
-    isAssignmentExpression,
-    isUpdateExpression,
-    unwrapExpression,
-} from "./syntax.js";
+import { unwrapExpression, rootExpression, writeSites } from "./syntax.js";
 
 /**
  * JavaScript evaluates the operands of one expression left to right. The
@@ -225,24 +220,6 @@ function encloses(outer: ts.Node, inner: ts.Node): boolean {
 }
 
 /** The object an access chain starts from: `a` for `a.b[0].c`. */
-function accessRoot(expression: ts.Expression): ts.Expression {
-    let current = unwrapExpression(expression);
-    while (
-        ts.isPropertyAccessExpression(current) ||
-        ts.isElementAccessExpression(current)
-    )
-        current = unwrapExpression(current.expression);
-    return current;
-}
-
-/** The targets a `for (x of ...)` / `for (x in ...)` loop assigns. */
-function loopTargets(node: ts.Node): readonly ts.Expression[] {
-    return (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
-        !ts.isVariableDeclarationList(node.initializer)
-        ? assignmentTargets(node.initializer)
-        : [];
-}
-
 /** One analysis of the pinned program per resolver, shared by every scene. */
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
@@ -428,7 +405,7 @@ export class EvaluationOrder {
                             );
                             const root = libraryGlobal(
                                 this.checker,
-                                accessRoot(current),
+                                rootExpression(current),
                             );
                             effects =
                                 declaredInDomLibrary(symbol) ||
@@ -925,13 +902,7 @@ export class EvaluationOrder {
             opaque: false,
         };
         const visit = (current: ts.Node): "skip" | void => {
-            const targets = isAssignmentExpression(current)
-                ? assignmentTargets(current.left)
-                : isUpdateExpression(current)
-                  ? [current.operand]
-                  : ts.isDeleteExpression(current)
-                    ? [current.expression]
-                    : loopTargets(current);
+            const targets = writeSites(current).map((site) => site.target);
             if (targets.length > 0) {
                 targets.forEach((target) => this.write(access, target, unit));
             } else if (ts.isAwaitExpression(current)) {
@@ -1433,7 +1404,7 @@ export class EvaluationOrder {
         unit: Unit | undefined,
     ): boolean {
         if (!unit) return false;
-        const root = accessRoot(expression);
+        const root = rootExpression(expression);
         if (root.kind === ts.SyntaxKind.ThisKeyword)
             return (
                 ts.isConstructorDeclaration(unit) ||
@@ -1491,10 +1462,7 @@ export class EvaluationOrder {
                 if (assigned) found.add(assigned);
             };
             forEachAnalysisNode(file, (node) => {
-                if (isAssignmentExpression(node))
-                    assignmentTargets(node.left).forEach(record);
-                else if (isUpdateExpression(node)) record(node.operand);
-                else loopTargets(node).forEach(record);
+                for (const site of writeSites(node)) record(site.target);
             });
             written = found;
             this.written.set(file, written);

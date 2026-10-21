@@ -595,6 +595,147 @@ export function assignmentTargets(
 }
 
 /**
+ * How a write site writes its target: `=` (each leaf of a destructuring
+ * pattern included), a compound assignment that reads first (`+=`), a
+ * logical one that stores only on some runs (`??=`, `||=`, `&&=`), `++`/`--`,
+ * `delete`, or the target a for-of or for-in loop assigns each pass.
+ */
+export type WriteKind =
+    "assign" | "compound" | "logical" | "update" | "delete" | "loop";
+
+export interface WriteSite {
+    /** The written place past its wrappers: an identifier or an access. */
+    readonly target: ts.Expression;
+    readonly kind: WriteKind;
+    /** The expression or loop that writes. */
+    readonly node: ts.Node;
+    /**
+     * The whole value the target receives, for `=` and logical assignments
+     * to a single target. A pattern leaf receives a part of the value, and
+     * the other kinds compute what they store.
+     */
+    readonly stored?: ts.Expression;
+    /**
+     * Where the stored value comes from, whole or in part: the right side of
+     * `=` (a pattern leaf takes part of it) or of a logical assignment, or
+     * the collection a loop target takes each element of.
+     */
+    readonly from?: ts.Expression;
+}
+
+/**
+ * Whether a node sits inside a destructuring pattern: an array or object
+ * literal that is, through the patterns around it, the left side of `=` or
+ * the target of a for-of or for-in loop.
+ */
+function inDestructuringPattern(node: ts.Node): boolean {
+    let current = node;
+    for (;;) {
+        const parent = current.parent;
+        const container =
+            isExpressionWrapper(parent) ||
+            ts.isArrayLiteralExpression(parent) ||
+            ts.isObjectLiteralExpression(parent) ||
+            ts.isSpreadElement(parent) ||
+            ts.isSpreadAssignment(parent) ||
+            ts.isPropertyAssignment(parent) ||
+            ts.isShorthandPropertyAssignment(parent) ||
+            // A default inside an enclosing pattern: `[[x] = []] = values`.
+            (ts.isBinaryExpression(parent) &&
+                parent.left === current &&
+                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                (ts.isArrayLiteralExpression(parent.parent) ||
+                    ts.isPropertyAssignment(parent.parent)));
+        if (!container) break;
+        current = parent;
+    }
+    const consumer = current.parent;
+    return (
+        current !== node &&
+        (ts.isArrayLiteralExpression(current) ||
+            ts.isObjectLiteralExpression(current)) &&
+        ((ts.isBinaryExpression(consumer) &&
+            consumer.left === current &&
+            consumer.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+            ((ts.isForOfStatement(consumer) || ts.isForInStatement(consumer)) &&
+                consumer.initializer === current))
+    );
+}
+
+/** The places `node` itself writes; writes nested in its operands are their own sites. */
+export function writeSites(node: ts.Node): readonly WriteSite[] {
+    // `[a = 1] = values`: a pattern's default is read, not assigned.
+    if (isAssignmentExpression(node) && inDestructuringPattern(node)) return [];
+    if (isAssignmentExpression(node)) {
+        const operator = node.operatorToken.kind;
+        const left = unwrapExpression(node.left);
+        const from = node.right;
+        if (operator === ts.SyntaxKind.EqualsToken)
+            return ts.isObjectLiteralExpression(left) ||
+                ts.isArrayLiteralExpression(left)
+                ? assignmentTargets(left).map((target) => ({
+                      target,
+                      kind: "assign",
+                      node,
+                      from,
+                  }))
+                : [{ target: left, kind: "assign", node, stored: from, from }];
+        return isLogicalAssignmentOperator(operator)
+            ? [{ target: left, kind: "logical", node, stored: from, from }]
+            : [{ target: left, kind: "compound", node }];
+    }
+    if (isUpdateExpression(node))
+        return [
+            { target: unwrapExpression(node.operand), kind: "update", node },
+        ];
+    if (ts.isDeleteExpression(node))
+        return [
+            { target: unwrapExpression(node.expression), kind: "delete", node },
+        ];
+    if (
+        (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+        !ts.isVariableDeclarationList(node.initializer)
+    )
+        return assignmentTargets(node.initializer).map((target) => ({
+            target,
+            kind: "loop",
+            node,
+            from: node.expression,
+        }));
+    return [];
+}
+
+/**
+ * The write site that writes `expression` itself, past the wrappers and
+ * destructuring patterns around it, or undefined when it is only read.
+ */
+export function writeSiteOf(expression: ts.Expression): WriteSite | undefined {
+    const target = unwrapExpression(expression);
+    let current: ts.Node = expression;
+    for (;;) {
+        const parent: ts.Node = current.parent;
+        const pattern =
+            isExpressionWrapper(parent) ||
+            ts.isArrayLiteralExpression(parent) ||
+            ts.isObjectLiteralExpression(parent) ||
+            ts.isSpreadElement(parent) ||
+            ts.isSpreadAssignment(parent) ||
+            ts.isShorthandPropertyAssignment(parent) ||
+            (ts.isPropertyAssignment(parent) &&
+                parent.initializer === current) ||
+            // `[a = 1] = values`: the default's left is the pattern leaf.
+            (ts.isBinaryExpression(parent) &&
+                parent.left === current &&
+                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                (ts.isArrayLiteralExpression(parent.parent) ||
+                    ts.isPropertyAssignment(parent.parent)));
+        if (!pattern)
+            return writeSites(parent).find((site) => site.target === target);
+        current = parent;
+    }
+}
+
+/**
  * The identifiers whose values a stored expression holds as they are: the
  * expression itself, a member, element or spread of a literal it builds,
  * or an operand it yields ({@link yieldedOperands}). A value computed from

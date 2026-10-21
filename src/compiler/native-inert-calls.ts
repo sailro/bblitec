@@ -1,10 +1,10 @@
 import ts from "typescript";
 import {
-    isAssignmentOperator,
     localSyncFunction,
     requiredParameterCount,
     restParameterIndex,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import {
     accessedPropertySymbol,
@@ -160,10 +160,13 @@ class InertWalk {
         // label, `switch`, `try`) keeps the call on the ordinary lowering.
         if (ts.isStatement(node) && !inertStatementKinds.has(node.kind))
             return false;
+        // A write stays inert only into the call's own locals; `delete`
+        // and loop targets included.
+        if (writeSites(node).some(({ target }) => !this.isOwnLocal(target)))
+            return false;
         if (
             ts.isAwaitExpression(node) ||
             ts.isYieldExpression(node) ||
-            ts.isDeleteExpression(node) ||
             ts.isTaggedTemplateExpression(node) ||
             ts.isNonNullExpression(node) ||
             ts.isClassLike(node) ||
@@ -177,24 +180,6 @@ class InertWalk {
             if (!this.call(node)) return false;
         } else if (ts.isNewExpression(node)) {
             if (!this.construction(node)) return false;
-        } else if (ts.isBinaryExpression(node)) {
-            if (
-                isAssignmentOperator(node.operatorToken.kind) &&
-                !this.isOwnLocal(node.left)
-            ) {
-                return false;
-            }
-        } else if (
-            ts.isPrefixUnaryExpression(node) ||
-            ts.isPostfixUnaryExpression(node)
-        ) {
-            if (
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken) &&
-                !this.isOwnLocal(node.operand)
-            ) {
-                return false;
-            }
         } else if (ts.isForOfStatement(node)) {
             if (node.awaitModifier || !this.isArray(node.expression)) {
                 return false;

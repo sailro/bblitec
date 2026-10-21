@@ -85,6 +85,8 @@ import {
     soleReturnedExpression,
     isTypeAssertion,
     wrappersUnder,
+    rootExpression,
+    writeSites,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -1606,32 +1608,28 @@ export class StaticEvaluator {
         const namesBinding = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
             declaredSymbol(this.checker, node) === symbol;
-        const throughBinding = (node: ts.Node): boolean =>
-            (ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)) &&
-            namesBinding(node.expression);
+        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
+        const throughBinding = (expression: ts.Expression): boolean => {
+            const target = unwrapExpression(expression);
+            return (
+                (ts.isPropertyAccessExpression(target) ||
+                    ts.isElementAccessExpression(target)) &&
+                namesBinding(rootExpression(target))
+            );
+        };
 
         const written = someAnalysisNode(scope, (node) => {
-            const parent = node.parent;
-            if (throughBinding(node)) {
-                const assigned =
-                    isAssignmentExpression(parent) && parent.left === node;
-                const stepped = isUpdateExpression(parent);
-                const deleted = ts.isDeleteExpression(parent);
-                const called =
-                    ts.isCallExpression(parent) && parent.expression === node;
-                if (assigned || stepped || deleted || called) {
-                    return true;
-                }
-            }
-            if (
-                ts.isCallExpression(node) &&
-                node.arguments.some(namesBinding) &&
-                this.callReachesABody(node)
-            ) {
+            if (writeSites(node).some(({ target }) => throughBinding(target)))
                 return true;
-            }
-            return false;
+            if (!ts.isCallExpression(node)) return false;
+            if (throughBinding(node.expression)) return true;
+            return (
+                node.arguments.some(
+                    (argument) =>
+                        namesBinding(unwrapExpression(argument)) ||
+                        throughBinding(argument),
+                ) && this.callReachesABody(node)
+            );
         });
 
         return written;

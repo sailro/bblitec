@@ -212,7 +212,6 @@ import {
 import { isTrsVectorName } from "./assignments.js";
 import { mappedElement } from "./fresh-records.js";
 import {
-    isAssignmentExpression,
     isAssignmentOperator,
     expressionHasEffects,
     expressionMayRunCode,
@@ -227,9 +226,10 @@ import {
     outermostWrapper,
     propertyNameText,
     unwrapExpression,
-    isExpressionWrapper,
     isTypeAssertion,
     wrappersUnder,
+    writeSites,
+    writeSiteOf,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -317,29 +317,10 @@ function arrayLengthWrite(
     return `bbl::js::${grows ? "array_set_length" : "array_truncate"}(${array}, ${length});`;
 }
 
-/**
- * Whether `node` is written: an assignment, update or loop target, also
- * as a leaf of a destructuring pattern.
- */
+/** Whether `node` is assigned, updated or a loop target; `delete` keeps a length. */
 function isWriteTarget(node: ts.Expression): boolean {
-    let target: ts.Node = node;
-    while (
-        isExpressionWrapper(target.parent) ||
-        ts.isSpreadElement(target.parent) ||
-        ts.isSpreadAssignment(target.parent) ||
-        ts.isArrayLiteralExpression(target.parent) ||
-        ts.isObjectLiteralExpression(target.parent) ||
-        (ts.isPropertyAssignment(target.parent) &&
-            target.parent.initializer === target)
-    )
-        target = target.parent;
-    const parent = target.parent;
-    return (
-        (isAssignmentExpression(parent) && parent.left === target) ||
-        (isUpdateExpression(parent) && parent.operand === target) ||
-        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
-            parent.initializer === target)
-    );
+    const site = writeSiteOf(node);
+    return site !== undefined && site.kind !== "delete";
 }
 
 /**
@@ -916,8 +897,7 @@ export class DataLowerer {
                 ts.isCallExpression(node) ||
                 ts.isNewExpression(node) ||
                 ts.isAwaitExpression(node) ||
-                isUpdateExpression(node) ||
-                isAssignmentExpression(node),
+                writeSites(node).length > 0,
             {
                 skip: (node) =>
                     ts.isExpression(node) && this.assignedRights.has(node),
@@ -6870,7 +6850,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!this.isCanonicalIncrement(loop.incrementor, indexSymbol)) {
             return undefined;
         }
-        if (!this.loopBodyPreservesBounds(loop.statement, indexSymbol)) {
+        if (
+            !this.loopBodyPreservesBounds(
+                loop.statement,
+                indexSymbol,
+                bound.expression,
+            )
+        ) {
             return undefined;
         }
         return { indexSymbol, boundOwner: bound.expression };
@@ -6923,34 +6909,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private loopBodyPreservesBounds(
         body: ts.Statement,
         indexSymbol: ts.Symbol,
+        boundOwner: ts.Expression,
     ): boolean {
-        const safe = !someAnalysisNode(body, (node) => {
-            if (ts.isNewExpression(node)) {
-                return true;
-            }
-            if (ts.isCallExpression(node) && !this.isGlobalMathCall(node)) {
-                return true;
-            }
-            if (
-                isUpdateExpression(node) &&
-                this.isSameSymbolIdentifier(node.operand, indexSymbol)
-            ) {
-                return true;
-            }
-            if (isAssignmentExpression(node)) {
-                const target = this.context.unwrap(node.left);
-                if (
-                    this.isSameSymbolIdentifier(target, indexSymbol) ||
-                    (ts.isPropertyAccessExpression(target) &&
-                        target.name.text === "length")
-                ) {
-                    return true;
-                }
-            }
-            return false;
-        });
-
-        return safe;
+        // `rows = []`, `obj.rows = x` or `obj = y` replace the bounded array.
+        const boundPaths: ts.Expression[] = [];
+        for (let path: ts.Expression | undefined = boundOwner; path;) {
+            boundPaths.push(path);
+            const unwrapped = this.context.unwrap(path);
+            path = ts.isPropertyAccessExpression(unwrapped)
+                ? unwrapped.expression
+                : undefined;
+        }
+        const unsafeTarget = (target: ts.Expression): boolean =>
+            this.isSameSymbolIdentifier(target, indexSymbol) ||
+            boundPaths.some((path) => this.sameSimplePath(target, path)) ||
+            ((ts.isPropertyAccessExpression(target) ||
+                ts.isElementAccessExpression(target)) &&
+                ((ts.isPropertyAccessExpression(target) &&
+                    target.name.text === "length") ||
+                    // A setter runs code the loop cannot see.
+                    (
+                        accessedPropertySymbol(this.context.checker, target)
+                            ?.declarations ?? []
+                    ).some(ts.isSetAccessorDeclaration)));
+        return !someAnalysisNode(
+            body,
+            (node) =>
+                ts.isNewExpression(node) ||
+                (ts.isCallExpression(node) && !this.isGlobalMathCall(node)) ||
+                writeSites(node).some(({ target }) => unsafeTarget(target)),
+        );
     }
 
     /** A call through the global `Math` object, pure by declaration. */

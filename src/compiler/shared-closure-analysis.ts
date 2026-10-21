@@ -10,7 +10,12 @@ import {
     isSupportedFunction,
     type SupportedFunction,
 } from "./user-functions.js";
-import { choosesOperand, outermostWrapper, rootIdentifier } from "./syntax.js";
+import {
+    choosesOperand,
+    outermostWrapper,
+    rootIdentifier,
+    writeSites,
+} from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -509,15 +514,15 @@ export class SharedClosureAnalysis {
                     ["push", "unshift", "add", "set"].includes(callee.name.text)
                 );
             }
-            if (
-                ts.isBinaryExpression(parent) &&
-                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                parent.right === value
-            ) {
+            // `o.cb = fn` and `o.cb ??= fn` store the function whole.
+            const store = writeSites(parent).find(
+                ({ stored }) => stored === value,
+            );
+            if (store) {
                 // A property of the program's own data keeps the function;
                 // a library global's (`Math.random = () => ...`, which a
                 // bake moves to generation) does not.
-                const target = this.context.unwrap(parent.left);
+                const target = this.context.unwrap(store.target);
                 const root = rootIdentifier(target, (chain) =>
                     this.context.unwrap(chain),
                 );
@@ -528,7 +533,10 @@ export class SharedClosureAnalysis {
                     (!(
                         root && this.context.libraryGlobal(root) !== undefined
                     ) ||
-                        (isDeterministicRandomRead(this.context, parent.left) &&
+                        (isDeterministicRandomRead(
+                            this.context,
+                            store.target,
+                        ) &&
                             this.sourceUsesNativeParticleProvider()))
                 );
             }

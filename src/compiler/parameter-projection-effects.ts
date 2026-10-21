@@ -11,14 +11,13 @@ import {
     declaredSymbol,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     isAssignmentExpression,
     isOperandSelection,
-    isUpdateExpression,
     objectProperty,
     propertyNameText,
     unwrapExpression,
     valueOperands,
+    writeSites,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -795,15 +794,13 @@ function parameterProjection(
                         if (!capturesSelection) return "skip";
                         if (!inspectCaptures) return true;
                     }
-                    if (isAssignmentExpression(node)) {
+                    // A pattern default's value flows into its leaf too.
+                    const writes = writeSites(node);
+                    if (writes.length > 0 || isAssignmentExpression(node))
                         return (
-                            assignmentTargets(node.left).some(stores) ||
-                            uses(node.right)
+                            writes.some(({ target }) => stores(target)) ||
+                            (isAssignmentExpression(node) && uses(node.right))
                         );
-                    }
-                    if (isUpdateExpression(node)) return stores(node.operand);
-                    if (ts.isDeleteExpression(node))
-                        return stores(node.expression);
                     if (
                         (ts.isReturnStatement(node) ||
                             ts.isThrowStatement(node)) &&

@@ -58,6 +58,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedMathCall } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
+import { writeSites } from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -1302,22 +1303,11 @@ function configStepFunction(
                 );
             }
         } else if (
-            hasNode(statement, (node) => {
-                const target =
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-                        ? node.left
-                        : (ts.isPrefixUnaryExpression(node) ||
-                                ts.isPostfixUnaryExpression(node)) &&
-                            (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                                node.operator === ts.SyntaxKind.MinusMinusToken)
-                          ? node.operand
-                          : undefined;
-                return (
-                    target !== undefined && propertyPath(target)?.[0] === config
-                );
-            })
+            hasNode(statement, (node) =>
+                writeSites(node).some(
+                    ({ target }) => propertyPath(target)?.[0] === config,
+                ),
+            )
         ) {
             contractError(
                 statement,

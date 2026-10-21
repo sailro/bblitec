@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { returnsOnly } from "./fresh-records.js";
-import { localSyncFunction, unwrapExpression } from "./syntax.js";
+import { localSyncFunction, unwrapExpression, writeSites } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 
 interface CreationSegmentContext {
@@ -135,13 +135,7 @@ function suspendsOrAssigns(
         (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
     )
         return true;
-    if (
-        names &&
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        names(unwrapExpression(node.left))
-    )
+    if (names && writeSites(node).some(({ target }) => names(target)))
         return true;
     return (
         ts.forEachChild(node, (child) =>

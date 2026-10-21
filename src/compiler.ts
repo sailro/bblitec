@@ -288,6 +288,7 @@ import {
     stringLiteralText,
     unwrappedIdentifier,
     wrappedParent,
+    writeSites,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -2251,13 +2252,10 @@ class Compiler implements LoweringServices {
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (candidate) => {
                 if (found) return "skip";
-                if (
-                    ts.isBinaryExpression(candidate) &&
-                    candidate.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    this.unwrappedValueSymbol(candidate.left) === symbol
-                ) {
-                    const right = this.unwrap(candidate.right);
+                for (const { target, stored } of writeSites(candidate)) {
+                    if (!stored || this.unwrappedValueSymbol(target) !== symbol)
+                        continue;
+                    const right = this.unwrap(stored);
                     const callee = ts.isCallExpression(right)
                         ? unwrappedIdentifier(right.expression, (wrapped) =>
                               this.unwrap(wrapped),
