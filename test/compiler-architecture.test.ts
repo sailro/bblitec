@@ -275,7 +275,6 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/classes.ts",
         "src/compiler/compressed-json.ts",
         "src/compiler/conditions.ts",
-        "src/compiler/constructed-fields.ts",
         "src/compiler/data-lowering.ts",
         "src/compiler/data-methods.ts",
         "src/compiler/data-sinks/structures.ts",

@@ -7,6 +7,7 @@ import {
     writeSiteOf,
     lastWriter,
     objectLiteralMembers,
+    testsTruthinessOnly,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
@@ -143,16 +144,5 @@ function isFieldReadOrTest(identifier: ts.Identifier): boolean {
             writeSiteOf(parent) !== undefined
         );
     }
-    // `x && ...` yields x only when it is falsy, so no reference escapes.
-    return (
-        (ts.isPrefixUnaryExpression(parent) &&
-            parent.operator === ts.SyntaxKind.ExclamationToken) ||
-        ((ts.isIfStatement(parent) || ts.isWhileStatement(parent)) &&
-            parent.expression === use) ||
-        (ts.isConditionalExpression(parent) && parent.condition === use) ||
-        (ts.isBinaryExpression(parent) &&
-            parent.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken &&
-            parent.left === use)
-    );
+    return testsTruthinessOnly(use);
 }

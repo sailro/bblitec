@@ -460,6 +460,30 @@ export function equalityOperator(
     }
 }
 
+/**
+ * Whether the node around `use` (its outermost wrapper) reads only its
+ * truthiness, so no reference it holds goes further: `!use`, the test of an
+ * `if`, `while`, `do`, `for` or `?:`, or the left of `&&` (which yields
+ * `use` only when falsy, a primitive).
+ */
+export function testsTruthinessOnly(use: ts.Expression): boolean {
+    const parent = use.parent;
+    return (
+        (ts.isPrefixUnaryExpression(parent) &&
+            parent.operator === ts.SyntaxKind.ExclamationToken) ||
+        ((ts.isIfStatement(parent) ||
+            ts.isWhileStatement(parent) ||
+            ts.isDoStatement(parent)) &&
+            parent.expression === use) ||
+        (ts.isForStatement(parent) && parent.condition === use) ||
+        (ts.isConditionalExpression(parent) && parent.condition === use) ||
+        (ts.isBinaryExpression(parent) &&
+            parent.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken &&
+            parent.left === use)
+    );
+}
+
 /** Whether a binary operator token is `=` or one of its compound forms. */
 export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
     return (

@@ -60,10 +60,10 @@ function propertyCall(
     const call = unwrapExpression(expression);
     if (
         !ts.isCallExpression(call) ||
-        call.questionDotToken ||
+        // Any `?.` in the chain may skip the call (`a?.b.decode()` too).
+        ts.isOptionalChain(call) ||
         (call.typeArguments?.length ?? 0) !== 0 ||
         !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.questionDotToken ||
         call.expression.name.text !== property
     ) {
         return undefined;

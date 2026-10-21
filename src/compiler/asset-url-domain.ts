@@ -31,6 +31,7 @@ import {
     keyIndex,
     lastWriter,
     objectLiteralMembers,
+    testsTruthinessOnly,
 } from "./syntax.js";
 import {
     functionOfDeclaration,
@@ -219,13 +220,7 @@ function classifyRegistryArray(
     const parent = use.parent;
     if (ts.isForOfStatement(parent) && parent.expression === use) return true;
     if (ts.isSpreadElement(parent)) return true;
-    if (
-        (ts.isIfStatement(parent) && parent.expression === use) ||
-        (ts.isConditionalExpression(parent) && parent.condition === use) ||
-        (ts.isPrefixUnaryExpression(parent) &&
-            parent.operator === ts.SyntaxKind.ExclamationToken)
-    )
-        return true;
+    if (testsTruthinessOnly(use)) return true;
     if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
         const method = parent.name.text;
         if (method === "push") {

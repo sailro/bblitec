@@ -8,7 +8,10 @@ import {
     nullishLiteral,
     typeMayHoldNullish,
 } from "../src/compiler/symbols.js";
-import { equalityOperator } from "../src/compiler/syntax.js";
+import {
+    equalityOperator,
+    testsTruthinessOnly,
+} from "../src/compiler/syntax.js";
 
 function expressions(sourceFile: ts.SourceFile): readonly ts.Expression[] {
     return sourceFile.statements.flatMap((statement) =>
@@ -85,4 +88,45 @@ test("a nullish comparison names the tested side and its strictness", () => {
     const tested = comparisons[0]!.tested;
     assert.ok(typeMayHoldNullish(checker, tested, "null"));
     assert.ok(!typeMayHoldNullish(checker, tested, "undefined"));
+});
+
+test("a test of truthiness passes no reference on", () => {
+    const { sourceFile } = createCompilerProgram(
+        `
+        declare const o: object;
+        declare function use(value: unknown): void;
+        if (o) {}
+        while (o) {}
+        do {} while (o);
+        for (; o; ) {}
+        o ? 1 : 2;
+        !o;
+        o && 1;
+        o || 1;
+        use(o);
+    `,
+        "input.ts",
+    );
+    const uses: boolean[] = [];
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isIdentifier(node) &&
+            node.text === "o" &&
+            !ts.isVariableDeclaration(node.parent)
+        )
+            uses.push(testsTruthinessOnly(node));
+        ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    assert.deepEqual(uses, [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+    ]);
 });
