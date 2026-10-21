@@ -75,6 +75,7 @@ interface ConditionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "requireDefaultEngine"
+            | "sharedClosures"
             | "symbols"
             | "unwrap"
         > {}
@@ -95,8 +96,9 @@ export class ConditionLowerer {
 
     /**
      * The one binding an object-typed operand names: through `const`
-     * initializers and `??` whose left side is known absent. Undefined when
-     * the operand is anything else (a call, a member, a reassigned name).
+     * initializers and `??` whose left side is known absent, ending at a
+     * binding nothing reassigns. Undefined when the operand is anything else
+     * (a call, a member, a reassigned name).
      */
     private identityRoot(expression: ts.Expression): ts.Symbol | undefined {
         const type = this.context.checker.getTypeAtLocation(expression);
@@ -136,7 +138,13 @@ export class ConditionLowerer {
                 node = this.context.unwrap(declaration.initializer);
                 continue;
             }
-            return symbol;
+            // A binding is reassigned only in the file that declares it.
+            const name = declaration && ts.getNameOfDeclaration(declaration);
+            return name &&
+                ts.isIdentifier(name) &&
+                !this.context.sharedClosures.identifierIsRebound(name)
+                ? symbol
+                : undefined;
         }
     }
 

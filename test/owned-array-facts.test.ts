@@ -197,9 +197,11 @@ test("owned resource maps preserve per-element facts but decline mutated and esc
             compileSource(program(before!, callback!), options);
             refusals.push("generated");
         } catch (error) {
+            // A runtime glTF URL selects from its packaged URL domain,
+            // whose provenance rules refuse these sources too.
             refusals.push(
                 error instanceof CompileError &&
-                    /generation-known iteration count|static string/.test(
+                    /generation-known iteration count|static string|Packaged URL provenance/.test(
                         error.message,
                     )
                     ? "refused"
@@ -221,7 +223,7 @@ test("owned resource maps preserve per-element facts but decline mutated and esc
             ),
         (error: unknown) =>
             error instanceof CompileError &&
-            /generation-known iteration count|static string/.test(
+            /generation-known iteration count|static string|Packaged URL provenance/.test(
                 error.message,
             ),
     );

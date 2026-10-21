@@ -2,6 +2,8 @@ import ts from "typescript";
 import {
     isAssignmentOperator,
     localSyncFunction,
+    requiredParameterCount,
+    restParameterIndex,
     unwrapExpression,
 } from "./syntax.js";
 import {
@@ -35,6 +37,22 @@ const localCollectionConstructors = new Set([
     "WeakSet",
 ]);
 
+const inertStatementKinds: ReadonlySet<ts.SyntaxKind> = new Set([
+    ts.SyntaxKind.Block,
+    ts.SyntaxKind.EmptyStatement,
+    ts.SyntaxKind.VariableStatement,
+    ts.SyntaxKind.ExpressionStatement,
+    ts.SyntaxKind.IfStatement,
+    ts.SyntaxKind.ForStatement,
+    ts.SyntaxKind.ForOfStatement,
+    ts.SyntaxKind.WhileStatement,
+    ts.SyntaxKind.DoStatement,
+    ts.SyntaxKind.ReturnStatement,
+    ts.SyntaxKind.BreakStatement,
+    ts.SyntaxKind.ContinueStatement,
+    ts.SyntaxKind.FunctionDeclaration,
+]);
+
 interface NativeInertContext {
     readonly checker: ts.TypeChecker;
     readonly symbols: Pick<
@@ -65,13 +83,21 @@ export function isNativeInertCall(
     const root = localSyncFunction(
         context.symbols.valueSymbol(call.expression)?.valueDeclaration,
     );
-    if (root === undefined) return false;
+    // Too few arguments, or one no parameter receives, keeps the call on
+    // the ordinary lowering.
+    if (
+        root === undefined ||
+        call.arguments.length < requiredParameterCount(root.parameters) ||
+        (restParameterIndex(root) === undefined &&
+            call.arguments.length > root.parameters.length)
+    )
+        return false;
     let answers = inertFunctions.get(context.checker);
     if (!answers)
         inertFunctions.set(context.checker, (answers = new WeakMap()));
     let inert = answers.get(root);
     if (inert === undefined)
-        answers.set(root, (inert = new InertWalk(context, root).body(root)));
+        answers.set(root, (inert = InertWalk.erases(context, root)));
     return inert;
 }
 
@@ -99,14 +125,29 @@ function isPlainRead(expression: ts.Expression): boolean {
 }
 
 class InertWalk {
+    /** @unjournaled One proof's walk, over the program alone. */
     private readonly visited = new Set<LocalFunction>();
+    /** @unjournaled Whether the walk met an inert pinned export. */
+    private reachesInertExport = false;
 
-    public constructor(
+    /**
+     * Only a helper that reaches an inert pinned export is erased: erasing
+     * any other effect-free helper would also hide what its body refuses.
+     */
+    public static erases(
+        context: NativeInertContext,
+        root: LocalFunction,
+    ): boolean {
+        const walk = new InertWalk(context, root);
+        return walk.body(root) && walk.reachesInertExport;
+    }
+
+    private constructor(
         private readonly context: NativeInertContext,
         private readonly root: LocalFunction,
     ) {}
 
-    public body(fn: LocalFunction): boolean {
+    private body(fn: LocalFunction): boolean {
         // Recursion is coinductive: a closure already being proved is
         // assumed inert while its own body is checked.
         if (this.visited.has(fn)) return true;
@@ -115,15 +156,17 @@ class InertWalk {
     }
 
     private inert(node: ts.Node): boolean {
+        // Only the statements this walk models; any other (`debugger`, a
+        // label, `switch`, `try`) keeps the call on the ordinary lowering.
+        if (ts.isStatement(node) && !inertStatementKinds.has(node.kind))
+            return false;
         if (
             ts.isAwaitExpression(node) ||
             ts.isYieldExpression(node) ||
-            ts.isThrowStatement(node) ||
             ts.isDeleteExpression(node) ||
             ts.isTaggedTemplateExpression(node) ||
             ts.isNonNullExpression(node) ||
             ts.isClassLike(node) ||
-            ts.isForInStatement(node) ||
             // Both read every property through its accessor, if any.
             ts.isObjectBindingPattern(node) ||
             ts.isSpreadAssignment(node)
@@ -173,7 +216,11 @@ class InertWalk {
         const callee = unwrapExpression(call.expression);
         if (ts.isIdentifier(callee)) {
             const pinned = this.context.symbols.babylonImportName(callee);
-            if (pinned !== undefined) return inertPinnedExports.has(pinned);
+            if (pinned !== undefined) {
+                if (!inertPinnedExports.has(pinned)) return false;
+                this.reachesInertExport = true;
+                return true;
+            }
             const closure = localSyncFunction(
                 this.context.symbols.valueSymbol(callee)?.valueDeclaration,
             );

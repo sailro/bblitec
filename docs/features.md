@@ -53,9 +53,8 @@ Rules:
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
-- Closed helpers returning a boolean, number or string fold to their generation run. A module `let` assigned only by
-  unreachable functions keeps its initializer. Strict comparisons fold through `const` aliases, absent `??` lefts and
-  generation-known booleans.
+- A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
+  aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
   lists re-read a local `const` initializer whose names no visible write reaches.
 - A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
@@ -169,8 +168,8 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
 
 `KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
-the pinned extension's texture identities. Separate-image ORM composition refuses; source albedo reads with
-material extensions or `KHR_texture_transform` also refuse.
+the pinned extension's texture identities; material extensions run as the pin's own features. Separate-image ORM
+composition and source albedo reads with `KHR_texture_transform` refuse.
 
 ## Meshes and hierarchy
 

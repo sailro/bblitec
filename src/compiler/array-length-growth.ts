@@ -384,6 +384,7 @@ function exitsLoop(node: ts.Node): boolean {
  * A call whose program target has no body to read proves nothing.
  */
 class ReachedReferences {
+    /** @unjournaled One proof's walk, over the program alone. */
     private readonly visited = new Set<ts.Node>();
 
     public constructor(
@@ -525,6 +526,7 @@ class ReachedReferences {
         );
     }
 
+    /** @unjournaled The program's classes, collected once. */
     private classes?: ts.ClassLikeDeclaration[];
 
     private programClasses(): ts.ClassLikeDeclaration[] {

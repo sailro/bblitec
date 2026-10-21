@@ -136,9 +136,11 @@ function findNode(root: SceneNode, name: string): SceneNode | undefined {
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
+            // With runtime node slots the walk compiles and the node it
+            // returns reaches no supported consumer.
             assert.match(
                 error.message,
-                /Unsupported property value 'root.name'/,
+                /Unsupported property value 'root.name'|accepts a Mesh, TransformNode or imported root, received scene-node/,
             );
             return true;
         },

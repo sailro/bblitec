@@ -3841,9 +3841,9 @@ function emitMorphTargetsAssignment(
 
 /**
  * The family a material target is known to have: from its record, or, for a
- * runtime material, from the pin's props view the checker gives it
+ * runtime material, from the pin's PBR props view the checker gives it
  * (`isPbrMaterial(mat)` narrows to `PbrMaterialProps`). A view is no proof of
- * the record, so a write it admits must also hold on the other family.
+ * the record, so a write it admits must also hold on a Standard record.
  */
 function materialFamily(
     context: AssignmentContext,
@@ -3853,14 +3853,12 @@ function materialFamily(
     if (target.standardMaterial) return "standard";
     if (target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial)
         return "pbr";
+    // Only the PBR view: its writes land in record slots a Standard draw
+    // never reads, while a Standard view over a PBR record would not.
     const type = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(expression),
     );
-    return isPinnedType(type, ["PbrMaterialProps"])
-        ? "pbr"
-        : isPinnedType(type, ["StandardMaterialProps"])
-          ? "standard"
-          : undefined;
+    return isPinnedType(type, ["PbrMaterialProps"]) ? "pbr" : undefined;
 }
 
 /**

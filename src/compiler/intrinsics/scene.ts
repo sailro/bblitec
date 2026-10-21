@@ -88,7 +88,7 @@ export function compileSceneIntrinsic(
                 resource.kind !== "asset-entity" &&
                 !(
                     resource.kind === "asset-root" &&
-                    (resource.assetRootClone || resource.assetKind === "gltf")
+                    (resource.assetRootClone || resource.soleAssetEntity)
                 ) &&
                 resource.kind !== "mesh" &&
                 resource.kind !== "light" &&

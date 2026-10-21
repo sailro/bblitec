@@ -47,9 +47,11 @@ export class AdmissionRecorder {
         node: ts.Node;
         message: string;
     }> = emissionArray([]);
-    private readonly materialColorReads: Array<
-        "baseColorFactor" | "diffuseColor"
-    > = emissionArray([]);
+    /** Numeric material-color reads; `aliasFree` ones cannot write the color. */
+    private readonly materialColorReads: Array<{
+        property: "baseColorFactor" | "diffuseColor";
+        aliasFree: boolean;
+    }> = emissionArray([]);
     @journaled public accessor temporalSceneRegistration: ts.Node | undefined;
     public readonly temporalRegisteredScenes: Array<
         Value["sceneTopologyState"]
@@ -90,14 +92,18 @@ export class AdmissionRecorder {
                     "Node input bindings support one registered scene until per-scene binding snapshots are represented.",
                 );
         }
-        const colorAdmission = this.materialColorReads.includes("diffuseColor")
+        const colorAdmission = this.materialColorReads.some(
+            (read) => read.property === "diffuseColor",
+        )
             ? this.deferredAdmissionFailures.find(
                   (failure) => failure.capability === "diffuseColor",
               )
             : undefined;
         if (colorAdmission)
             this.context.fail(colorAdmission.node, colorAdmission.message);
-        if (this.materialColorReads.length) {
+        // A read that cannot write the array leaves every later group's
+        // snapshot equal to the record's color.
+        if (this.materialColorReads.some((read) => !read.aliasFree)) {
             const boundary = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "material-colors",
             );
@@ -314,8 +320,9 @@ export class AdmissionRecorder {
 
     public noteMaterialColorRead(
         property: "baseColorFactor" | "diffuseColor",
+        aliasFree = false,
     ): void {
-        this.materialColorReads.push(property);
+        this.materialColorReads.push({ property, aliasFree });
     }
 
     public noteLegacyDiffuseColorWrite(node: ts.Node): void {

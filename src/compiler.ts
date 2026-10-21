@@ -11,6 +11,7 @@ import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
+    hasScalarFacts,
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
@@ -58,7 +59,6 @@ import {
 import { sourceProfileScope } from "./compiler/source-profile.js";
 import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
-import { numberConstantValue } from "./compiler/number-intrinsics.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
 import { PageLoader } from "./compiler/page-loader.js";
@@ -326,11 +326,7 @@ import type {
     Value,
     ValueKind,
 } from "./compiler/types.js";
-import {
-    booleanValue,
-    isCompileTimeOnlyValue,
-    staticStringValue,
-} from "./compiler/types.js";
+import { isCompileTimeOnlyValue } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import { EvaluationOrder } from "./compiler/evaluation-order.js";
@@ -775,9 +771,15 @@ class Compiler implements LoweringServices {
     /** The handle-collection concept: every collection operation. */
     public readonly handleCollections: HandleCollections =
         new HandleCollections(this);
-    /** Runtime case split: the outcome each split test takes in the arm being compiled. */
+    /**
+     * Runtime case split: the outcome each split test takes in the arm being
+     * compiled. @unjournaled Set and cleared around one arm's compile.
+     */
     public readonly conditionOverrides = new Map<ts.Node, boolean>();
-    /** `stableLocalInitializer` answers, by declaration (`false`: none). */
+    /**
+     * `stableLocalInitializer` answers, by declaration (`false`: none).
+     * @unjournaled A function of the program's syntax.
+     */
     private readonly stableInitializers = new WeakMap<
         ts.VariableDeclaration,
         ts.Expression | false
@@ -1015,8 +1017,6 @@ class Compiler implements LoweringServices {
     /** @unjournaled Module constants generation cannot run, a function of the program. */
     private readonly unrunnableModuleConstants =
         new Set<ts.VariableDeclaration>();
-    /** @unjournaled Module-level helpers generation cannot run, a function of the program. */
-    private readonly unfoldableScalarHelpers = new Set<ts.Node>();
     @journaled public accessor hasMainEntry = false;
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
@@ -5232,12 +5232,17 @@ class Compiler implements LoweringServices {
                     Array.isArray(pair) && pair[0] === key,
             );
         if (!entry) return { kind: "json-null", cpp: "std::nullopt" };
-        return jsonToValue(
+        // A generation copy of an object entry would be a different identity
+        // from the native Map's own value; only scalars stand in.
+        const value = jsonToValue(
             this,
             executedConstantJsonPolicy,
             entry[1],
             identifier,
         );
+        return value.kind === "json-null" || hasScalarFacts(value)
+            ? value
+            : undefined;
     }
 
     /** The module-scope `const` declaration binding one name an identifier reads. */
@@ -5379,41 +5384,6 @@ class Compiler implements LoweringServices {
         if (typeof value === "string") return value;
         if (typeof value === "number") return String(value);
         return this.fail(call, `${label} returned ${typeof value}, not text.`);
-    }
-
-    public foldGenerationScalarCall(
-        call: ts.CallExpression,
-    ): Value | undefined {
-        // A module-level helper generation cannot run refuses the same way
-        // at every call: ask once.
-        const callee = this.unwrap(call.expression);
-        const declaration = ts.isIdentifier(callee)
-            ? tryResolveFunctionDeclaration(this.checker, callee)
-            : undefined;
-        const moduleLevel =
-            declaration !== undefined &&
-            ts.isFunctionDeclaration(declaration) &&
-            ts.isSourceFile(declaration.parent);
-        if (moduleLevel && this.unfoldableScalarHelpers.has(declaration))
-            return undefined;
-        let executed: { value: unknown } | undefined;
-        try {
-            executed = this.probeEmission(
-                () => this.runGenerationCall(call),
-                () => false,
-            );
-        } catch (error) {
-            if (!(error instanceof CompileError)) throw error;
-            if (moduleLevel) this.unfoldableScalarHelpers.add(declaration);
-            return undefined;
-        }
-        const value = executed?.value;
-        if (typeof value === "boolean") return booleanValue(String(value));
-        if (typeof value === "number" && Number.isFinite(value))
-            return { ...numberConstantValue(value), staticNumber: value };
-        if (typeof value === "string")
-            return staticStringValue(value, (text) => this.cppString(text));
-        return undefined;
     }
 
     /** Closed helpers share argument admission and execution for text and data. */

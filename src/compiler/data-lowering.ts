@@ -8353,7 +8353,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 call,
                 `${name}.from takes a source and an optional mapper; a thisArg refuses.`,
             );
-        const converted = this.typedArrayFromSource(kind, argumentAt(call, 0));
+        const converted = this.typedArrayFromArgument(kind, call);
         if (converted === undefined)
             this.context.fail(
                 argumentAt(call, 0),
@@ -8581,11 +8581,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "TypedArray.set expects a source and an optional offset.",
             );
         }
-        const source = this.typedArrayFromSource(
-            kind,
-            argumentAt(call, 0),
-            true,
-        );
+        const source = this.typedArrayFromArgument(kind, call, true);
         if (source === undefined) {
             this.context.fail(
                 argumentAt(call, 0),
@@ -10529,6 +10525,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /** A call's first argument as a typed-array source, under any `!` it wrote. */
+    private typedArrayFromArgument(
+        kind: TypedArrayKind,
+        call: ts.CallExpression,
+        keepKind = false,
+    ): string | undefined {
+        const argument = argumentAt(call, 0);
+        return this.typedArrayFromSource(
+            kind,
+            this.context.unwrap(argument),
+            keepKind,
+            hasNonNullAssertion(argument),
+        );
+    }
+
     /**
      * One numeric sequence converted into a typed array of `kind`, or
      * undefined where the expression is not a sequence at all -- which is
@@ -10548,10 +10559,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     private typedArrayFromSource(
         kind: TypedArrayKind,
-        expression: ts.Expression,
+        unwrapped: ts.Expression,
         keepKind = false,
+        assertedNonNull = false,
     ): string | undefined {
-        const unwrapped = this.context.unwrap(expression);
         const prefix = typedArrayStem(kind);
         if (ts.isArrayLiteralExpression(unwrapped)) {
             return this.typedArrayFromNumbers(
@@ -10583,11 +10594,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // narrowed it to, under any assertion the source wrote.
         const staticSource =
             compiled &&
-            this.narrowOptional(
-                compiled,
-                unwrapped,
-                hasNonNullAssertion(expression),
-            );
+            this.narrowOptional(compiled, unwrapped, assertedNonNull);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
@@ -14221,13 +14228,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (narrowed.kind === "scene-node")
                 return `std::holds_alternative<bbl::MeshHandle>(${narrowed.cpp})`;
         }
-        if (
+        // A native node is a mesh, a transform node or an asset root: each
+        // carries the pin's SceneNode members.
+        const nativeNode =
             operator === "in" &&
-            key.staticString === "thinInstances" &&
             ["mesh", "scene-node", "transform-node", "asset-root"].includes(
                 narrowed.kind,
-            )
-        ) {
+            );
+        if (
+            nativeNode &&
+            (key.staticString === "children" ||
+                key.staticString === "rotationQuaternion")
+        )
+            return "true";
+        if (nativeNode && key.staticString === "thinInstances") {
             this.context.reachFeature("scene:node-transforms", ownerNode);
             const engine = this.context.requireEngine(narrowed, ownerNode);
             return `bbl::scene_node_has_thin_instance_property(${engine}, ${narrowed.cpp})`;

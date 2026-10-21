@@ -339,6 +339,28 @@ export function isAssignmentExpression(
     );
 }
 
+/** How many arguments a call must pass: parameters without a default, `?` or rest. */
+export function requiredParameterCount(
+    parameters: readonly ts.ParameterDeclaration[],
+): number {
+    return parameters.filter(
+        (parameter) =>
+            !parameter.initializer &&
+            !parameter.questionToken &&
+            !parameter.dotDotDotToken,
+    ).length;
+}
+
+/** The index of a declaration's rest parameter, when it declares one. */
+export function restParameterIndex(
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+): number | undefined {
+    const index = declaration.parameters.findIndex(
+        (parameter) => parameter.dotDotDotToken !== undefined,
+    );
+    return index >= 0 ? index : undefined;
+}
+
 /** Writable leaves of a destructuring pattern; keys and defaults are reads. */
 export function assignmentTargets(
     expression: ts.Expression,

@@ -100,6 +100,8 @@ import {
     isUpdateExpression,
     mutatingCallTarget,
     outermostWrapper,
+    requiredParameterCount,
+    restParameterIndex,
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
@@ -407,16 +409,6 @@ export function borrowsReferenceParameter(
         ts.isIdentifier(parameter) &&
         !context.sharedClosures.identifierIsRebound(parameter)
     );
-}
-
-/** The index of a declaration's rest parameter, when it declares one. */
-function restParameterIndex(
-    declaration: SupportedFunction,
-): number | undefined {
-    const index = declaration.parameters.findIndex(
-        (parameter) => parameter.dotDotDotToken !== undefined,
-    );
-    return index >= 0 ? index : undefined;
 }
 
 const defaultBindingByChecker = new WeakMap<
@@ -1193,7 +1185,6 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "foldGenerationScalarCall"
             | "absenceTags"
             | "classLowerer"
             | "callbacks"
@@ -1307,6 +1298,20 @@ function nullFallbackTryShape(
 }
 
 export class UserFunctionLowerer {
+    /**
+     * Whether a recursive node parameter takes the runtime SceneNode slot.
+     * @unjournaled Set around one retried recursive group's compile.
+     */
+    private nodeSlots = false;
+    /**
+     * Per recursive group root, the argument kinds whose plain form refused,
+     * so later calls try node slots first.
+     * @unjournaled An attempt order only; both forms stay checked.
+     */
+    private readonly plainGroupRefusals = new WeakMap<
+        SupportedFunction,
+        Set<string>
+    >();
     /** @unjournaled Immutable source references; independent of emitted bindings and replay. */
     private readonly argumentsReferences = new WeakMap<
         SupportedFunction,
@@ -1821,13 +1826,56 @@ export class UserFunctionLowerer {
             if (asynchronous) return asynchronous;
             const recursiveGroup = this.recursiveGroup(ir.declaration);
             if (recursiveGroup) {
-                return this.lowerRecursiveGroup(
-                    context,
-                    ir,
-                    call,
-                    argumentValues,
-                    recursiveGroup,
-                );
+                const group = (): Value =>
+                    this.lowerRecursiveGroup(
+                        context,
+                        ir,
+                        call,
+                        argumentValues,
+                        recursiveGroup,
+                    );
+                // A walk the group lowers with its node arguments as they are
+                // keeps that form; one it refuses takes runtime node slots.
+                const slotted = (): Value => {
+                    this.nodeSlots = true;
+                    try {
+                        return context.probeEmission(group, () => true);
+                    } finally {
+                        this.nodeSlots = false;
+                    }
+                };
+                const shape = argumentValues
+                    .map((value) => value.kind)
+                    .join(",");
+                let refused = this.plainGroupRefusals.get(ir.declaration);
+                let slottedRefusal: CompileError | undefined;
+                if (!this.nodeSlots && refused?.has(shape)) {
+                    try {
+                        return slotted();
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                        slottedRefusal = error;
+                    }
+                }
+                try {
+                    return context.probeEmission(group, () => true);
+                } catch (error) {
+                    if (!(error instanceof CompileError) || this.nodeSlots)
+                        throw error;
+                    if (!refused)
+                        this.plainGroupRefusals.set(
+                            ir.declaration,
+                            (refused = new Set()),
+                        );
+                    refused.add(shape);
+                    // Both refuse: the first form's refusal names the walk.
+                    if (slottedRefusal) throw error;
+                    try {
+                        return slotted();
+                    } catch (retried) {
+                        throw retried instanceof CompileError ? error : retried;
+                    }
+                }
             }
             if (ir.needsLocalNative) {
                 return this.lowerRecursiveGroup(
@@ -1840,7 +1888,6 @@ export class UserFunctionLowerer {
             }
             return inBodyScope(
                 () =>
-                    this.foldedScalarCall(context, ir, call, argumentValues) ??
                     this.trySharedCall(context, ir, call, argumentValues) ??
                     this.lower(
                         context,
@@ -1851,51 +1898,6 @@ export class UserFunctionLowerer {
                     ),
             );
         });
-    }
-
-    /**
-     * A closed helper returning a primitive that generation runs: one run
-     * describes every call (the run refuses state the program may change),
-     * so the call is its result.
-     */
-    private foldedScalarCall(
-        context: UserFunctionContext,
-        ir: UserFunctionIr,
-        call: ts.Node,
-        argumentValues: readonly Value[],
-    ): Value | undefined {
-        // A runtime scalar argument has no value for generation to run on.
-        if (
-            !ts.isCallExpression(call) ||
-            argumentValues.some(
-                (value) =>
-                    (value.kind === "number" ||
-                        value.kind === "boolean" ||
-                        value.kind === "string") &&
-                    value.staticNumber === undefined &&
-                    value.staticBoolean === undefined &&
-                    value.staticString === undefined,
-            )
-        )
-            return undefined;
-        const signature = this.checker.getSignatureFromDeclaration(
-            ir.declaration,
-        );
-        const returned = signature
-            ? this.checker.getReturnTypeOfSignature(signature)
-            : undefined;
-        if (
-            !returned ||
-            (returned.flags &
-                (ts.TypeFlags.BooleanLike |
-                    ts.TypeFlags.NumberLike |
-                    ts.TypeFlags.StringLike)) ===
-                0 ||
-            returned.isUnion() !==
-                ((returned.flags & ts.TypeFlags.Boolean) !== 0)
-        )
-            return undefined;
-        return context.foldGenerationScalarCall(call);
     }
 
     /**
@@ -3060,20 +3062,10 @@ export class UserFunctionLowerer {
             (ts.isObjectLiteralExpression(node) && node.properties.length === 0)
         )
             return true;
-        if (
-            ts.isNewExpression(node) &&
-            ts.isIdentifier(node.expression) &&
-            ["Array", "Map", "Set"].includes(node.expression.text) &&
-            (node.arguments?.length ?? 0) === 0
-        ) {
-            const constructor = declaredSymbol(this.checker, node.expression);
-            return (
-                (constructor?.declarations?.length ?? 0) > 0 &&
-                constructor!.declarations!.every(
-                    (site) => site.getSourceFile().hasNoDefaultLib,
-                )
+        if (ts.isNewExpression(node) && (node.arguments?.length ?? 0) === 0)
+            return ["Array", "Map", "Set"].includes(
+                libraryGlobal(this.checker, node.expression) ?? "",
             );
-        }
         if (!ts.isIdentifier(node)) return false;
         const symbol = declaredSymbol(this.checker, node);
         const target = symbol && aliasTarget(this.checker, symbol);
@@ -3627,6 +3619,7 @@ export class UserFunctionLowerer {
                             ? rootArguments[index]
                             : undefined;
                     if (
+                        this.nodeSlots &&
                         mapped?.kind === "handle" &&
                         (mapped.handle === "scene-node" ||
                             mapped.handle === "transform-node") &&
@@ -5073,14 +5066,11 @@ export class UserFunctionLowerer {
         }
         if (
             ir.parameters.length > arguments_.length &&
-            ir.parameters
-                .slice(arguments_.length)
-                .some(
-                    ({ declaration: parameter }) =>
-                        !parameter.initializer &&
-                        !parameter.questionToken &&
-                        !parameter.dotDotDotToken,
-                )
+            requiredParameterCount(
+                ir.parameters
+                    .slice(arguments_.length)
+                    .map((parameter) => parameter.declaration),
+            ) > 0
         ) {
             context.fail(
                 declaration,
@@ -7369,12 +7359,7 @@ export class UserFunctionLowerer {
         const parameters =
             resolved?.getDeclaration()?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = parameters.filter(
-            (declaration) =>
-                !declaration.initializer &&
-                !declaration.questionToken &&
-                !declaration.dotDotDotToken,
-        ).length;
+        const minimum = requiredParameterCount(parameters);
         if (
             call.arguments.length < minimum &&
             !call.arguments.some(ts.isSpreadElement)

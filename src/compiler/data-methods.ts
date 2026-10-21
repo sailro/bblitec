@@ -404,6 +404,24 @@ function arrayOnlyRead(
     const declaration = symbol?.valueDeclaration;
     if (!symbol || !declaration || !ts.isVariableDeclaration(declaration))
         return false;
+    // The answer is the program's syntax alone.
+    let answer = onlyReadArrays.get(symbol);
+    if (answer === undefined)
+        onlyReadArrays.set(
+            symbol,
+            (answer = arrayUsesOnlyRead(context, symbol, declaration)),
+        );
+    return answer;
+}
+
+/** Per array binding, whether every use only reads it. */
+const onlyReadArrays = new WeakMap<ts.Symbol, boolean>();
+
+function arrayUsesOnlyRead(
+    context: Pick<DataLowerer["context"], "symbols" | "checker">,
+    symbol: ts.Symbol,
+    declaration: ts.VariableDeclaration,
+): boolean {
     const scope =
         ts.findAncestor(declaration.parent, ts.isFunctionLike) ??
         declaration.getSourceFile();
@@ -934,12 +952,15 @@ export function compileDataMethodCall(
             if (!ts.isIdentifier(resolved)) return undefined;
             const declaration =
                 lowerer.context.symbols.valueSymbol(resolved)?.valueDeclaration;
+            // A const binding's array keeps its initializer's elements only
+            // while nothing pushes into, splices or writes it.
             if (
                 !declaration ||
                 !ts.isVariableDeclaration(declaration) ||
                 !declaration.initializer ||
                 (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) ===
-                    0
+                    0 ||
+                !arrayOnlyRead(lowerer.context, resolved)
             )
                 return undefined;
             // A module constant the generation run evaluates stands for

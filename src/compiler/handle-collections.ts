@@ -14,7 +14,12 @@ import {
     DynamicBindingStorageRequired,
     demandedStorageType,
 } from "./dynamic-binding-storage.js";
-import { handleCppType, isHandleKind, type DataType } from "./data-types.js";
+import {
+    handleCppType,
+    isHandleKind,
+    isPinnedType,
+    type DataType,
+} from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
     resolveFunctionDeclaration,
@@ -31,7 +36,7 @@ import {
     identifierText,
     unwrapExpression as unwrapWalkExpression,
 } from "./syntax.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -1252,6 +1257,7 @@ export class HandleCollections {
                 kind: "asset-root",
                 cpp: `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
                 assetKind: "gltf",
+                soleAssetEntity: true,
                 engineCpp,
             };
         }
@@ -1265,12 +1271,14 @@ export class HandleCollections {
         // Only KHR_lights_punctual appends entities (load-gltf.ts seeds
         // `[root]`): without it the one entity is the root, read as
         // `entities[0]` reads it.
-        if (owner.asset && !this.appendsGltfEntities(owner.asset, unwrapped))
+        // A document generation cannot read keeps the entity walk.
+        if (owner.asset && this.soleGltfRoot(owner.asset, unwrapped))
             return {
                 ...containerIdentity(owner),
                 kind: "asset-root",
                 cpp: owner.cpp,
                 assetKind: "gltf",
+                soleAssetEntity: true,
                 engineCpp,
             };
         return {
@@ -1294,10 +1302,10 @@ export class HandleCollections {
                 "Reading entities as a list is lowered for a glTF container, whose entities are its synthetic root.",
             );
         const engineCpp = this.context.requireEngine(owner, expression);
-        if (owner.asset && this.appendsGltfEntities(owner.asset, expression))
+        if (owner.asset && !this.soleGltfRoot(owner.asset, expression))
             this.context.fail(
                 expression,
-                "A glTF container whose loader appends punctual lights has entities that are not scene nodes.",
+                "Reading container.entities as a list needs a glTF document without punctual lights: a loader that appends them has entities that are not scene nodes.",
             );
         const root = owner.asset
             ? owner.cpp
@@ -1335,6 +1343,17 @@ export class HandleCollections {
         ) {
             return undefined;
         }
+        // Only the pin's container is compiled here; any other owner's
+        // `entities` stays on the data path.
+        const ownerType = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(collection.expression),
+        );
+        if (
+            !(ownerType.isUnion() ? ownerType.types : [ownerType]).some(
+                (part) => isPinnedType(part, ["AssetContainer"]),
+            )
+        )
+            return undefined;
         const owner = this.context.compileValue(collection.expression);
         if (owner.kind !== "asset") {
             return undefined;
@@ -2714,6 +2733,24 @@ export class HandleCollections {
      * caller's own answer.
      */
     private readonly assetDocuments = new EmissionMap<string, JsonObject>();
+
+    /** Per document, whether its entities are its root alone. */
+    private readonly soleGltfRoots = new EmissionMap<string, boolean>();
+
+    /**
+     * Whether a glTF document's entities are its root alone: it declares no
+     * punctual lights. A document generation cannot read may append them.
+     */
+    private soleGltfRoot(asset: CompileAsset, node: ts.Node): boolean {
+        let sole = this.soleGltfRoots.get(asset.source);
+        if (sole === undefined) {
+            sole =
+                unlessRefused(() => !this.appendsGltfEntities(asset, node)) ===
+                true;
+            this.soleGltfRoots.set(asset.source, sole);
+        }
+        return sole;
+    }
 
     /** Whether a glTF document declares punctual lights, the loader's only appended entities. */
     private appendsGltfEntities(asset: CompileAsset, node: ts.Node): boolean {

@@ -163,7 +163,7 @@ test("shared material helpers retain tuple and conditional scalar facts", () => 
     );
 });
 
-test("shared glTF wrappers preserve contiguous load ordering and its refusal", () => {
+test("shared glTF wrappers preserve contiguous load ordering and profile interleaved loads", () => {
     const program = (
         calls: string,
     ) => `${imports} async function main(){ const engine=await createEngine({});
@@ -184,15 +184,12 @@ test("shared glTF wrappers preserve contiguous load ordering and its refusal", (
         ],
     );
     assert.equal(result.cpp.match(/bbl::load_gltf\(/g)?.length, 2);
-    assert.throws(
-        () =>
-            compileSource(
-                program(
-                    'await load("a.glb"); await load("b.glb"); await load("a.glb");',
-                ),
-            ),
-        /must be contiguous/,
+    const interleaved = compileSource(
+        program(
+            'await load("a.glb"); await load("b.glb"); await load("a.glb");',
+        ),
     );
+    assert.equal(interleaved.manifest.profiledGltfLoads, true);
 });
 
 const tools = optionalNativeFixtureTools(false);

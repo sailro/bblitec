@@ -13352,8 +13352,8 @@ test("names a scene-local shader material the reach order gives it", () => {
 
 test("declares a shader material's instance lanes from the mesh", () => {
     // The pin reads the MESH for both lanes -- `mesh.thinInstances` for the
-    // matrices and `!!ti.colors` for the colour -- so a mesh carrying no
-    // colour stream declares only the four matrix lanes.
+    // matrices and `!!ti.colors` for the colour. A colour lane the source
+    // never reads changes nothing it draws, so only a reading source takes it.
     const [plain] = compileSource(instancedShaderSource("")).manifest
         .customShaderPrograms;
     const [colored] = compileSource(
@@ -13361,11 +13361,20 @@ test("declares a shader material's instance lanes from the mesh", () => {
             "        setThinInstanceColors(box, new Float32Array(4));",
         ),
     ).manifest.customShaderPrograms;
+    const [reading] = compileSource(
+        instancedShaderSource(
+            "        setThinInstanceColors(box, new Float32Array(4));",
+        ).replace(
+            "out.position=",
+            "let tint=input.instanceColor;out.position=",
+        ),
+    ).manifest.customShaderPrograms;
 
     assert.equal(plain?.useThinInstances, true);
     assert.equal(plain?.useThinInstanceColors, undefined);
     assert.equal(colored?.useThinInstances, true);
-    assert.equal(colored?.useThinInstanceColors, true);
+    assert.equal(colored?.useThinInstanceColors, undefined);
+    assert.equal(reading?.useThinInstanceColors, true);
 });
 
 test("leaves a line material's own instanced form alone", () => {
@@ -14019,7 +14028,8 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
             `,
                 labDeployment,
             ),
-        /'in' is decided for compile-time records, dictionaries and structs/,
+        // The loop variable shadows the function: the "recursive" call names a node.
+        /Call 'assignMaterial' does not resolve to a supported Babylon intrinsic or local function declaration/,
     );
 
     assert.throws(
@@ -14096,7 +14106,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
             `,
                 labDeployment,
             ),
-        /'in' is decided for compile-time records, dictionaries and structs/,
+        /A recursive function was called with a different compile-time argument/,
     );
 });
 

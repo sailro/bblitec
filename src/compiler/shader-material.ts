@@ -1381,8 +1381,16 @@ export function shaderThinInstanceLanes(
                     : source.readsColor) &&
                 source.colorOption !== false;
             // A program whose source reads the lanes draws only with them:
-            // a mesh that may acquire its pool later draws it once it has.
+            // a mesh that may acquire its pool later draws it once it has,
+            // and on one that never has a pool its stage cannot compile.
             if (source?.readsLanes) {
+                if (mesh.thinInstances === undefined)
+                    fail(
+                        `Shader material '${variant}' is drawn on meshes that ` +
+                            "disagree about thin instances; its vertex source " +
+                            "reads the instance lanes, which a plain draw does " +
+                            "not declare.",
+                    );
                 const settled = lanes.get(variant);
                 if (settled !== undefined && settled !== colors)
                     fail(

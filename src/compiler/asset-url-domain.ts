@@ -21,6 +21,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import {
+    assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
     regularExpressionParts,
@@ -364,6 +365,20 @@ function calledFunction(
     call: ts.CallExpression,
 ): SupportedFunction | undefined {
     const declaration = checker.getResolvedSignature(call)?.declaration;
+    // A `const` binding typed by a function type resolves to that type; the
+    // call reaches the one function the binding holds.
+    if (declaration && ts.isFunctionTypeNode(declaration)) {
+        const callee = unwrapExpression(call.expression);
+        const symbol = ts.isIdentifier(callee)
+            ? resolvedSymbol(checker, callee)
+            : undefined;
+        const binding = symbol?.valueDeclaration;
+        return binding &&
+            ts.isVariableDeclaration(binding) &&
+            ts.getCombinedNodeFlags(binding) & ts.NodeFlags.Const
+            ? declaredFunction(symbol)
+            : undefined;
+    }
     return (
         declaration &&
         (ts.isArrowFunction(declaration) ||
@@ -511,6 +526,13 @@ function sourceGraph(
                     }
                     if (declaration) recordCall(declaration, node);
                     const callee = unwrapExpression(node.expression);
+                    // A call through a rebindable binding typed by a function
+                    // type resolves to that type: the function it held runs
+                    // unseen.
+                    const named = ts.isIdentifier(callee)
+                        ? declaredFunction(resolvedSymbol(checker, callee))
+                        : undefined;
+                    if (named && named !== declaration) escaped.add(named);
                     // `xs.push(v)` / `xs.unshift(v)` store elements: plain
                     // writes at the array's element path.
                     const receiver =
@@ -553,7 +575,8 @@ function sourceGraph(
                     writeBinding(node.operand, node);
                 }
                 if (!isAssignmentExpression(node)) return;
-                writeBinding(node.left, node);
+                for (const written of assignmentTargets(node.left))
+                    writeBinding(written, node);
                 const target = unwrapExpression(node.left);
                 if (ts.isIdentifier(target)) {
                     const symbol = resolvedSymbol(checker, target);
@@ -1425,10 +1448,11 @@ class AssetUrlDomain {
 }
 
 /**
- * Whether every assignment to `symbol` sits in a named function that no code
- * calls or reads: the binding then keeps its initializer for the whole run,
- * as a `const` would (`let profile = DEFAULT; export function setProfile(p)
- * { profile = p; }` in a program that never sets it).
+ * Whether `symbol` is assigned, and every assignment sits in a named
+ * function that no code calls or reads: the binding then keeps its
+ * initializer for the whole run, as a `const` would (`let profile = DEFAULT;
+ * export function setProfile(p) { profile = p; }` in a program that never
+ * sets it). A `let` nothing assigns stays a runtime binding.
  */
 export function writtenOnlyInDeadFunctions(
     checker: ts.TypeChecker,
@@ -1436,8 +1460,12 @@ export function writtenOnlyInDeadFunctions(
     symbol: ts.Symbol,
 ): boolean {
     const graph = sourceGraph(checker, sourceFiles);
-    return (graph.bindingWrites.get(symbol) ?? []).every((write) => {
-        const owner = ts.findAncestor(write.parent, ts.isFunctionLike);
-        return owner !== undefined && neverRuns(graph, owner);
-    });
+    const writes = graph.bindingWrites.get(symbol) ?? [];
+    return (
+        writes.length > 0 &&
+        writes.every((write) => {
+            const owner = ts.findAncestor(write.parent, ts.isFunctionLike);
+            return owner !== undefined && neverRuns(graph, owner);
+        })
+    );
 }

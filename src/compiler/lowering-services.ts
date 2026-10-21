@@ -273,8 +273,6 @@ export interface LoweringServices {
     propertyName(name: ts.PropertyName): string | undefined;
     compileStringLiteral(expression: ts.Expression): string;
     staticAssetUrlCandidates(): readonly string[];
-    /** A closed helper call generation runs to a primitive (`isProfile()`), as that constant. */
-    foldGenerationScalarCall(call: ts.CallExpression): Value | undefined;
     moduleRelativeAssetUrl(expression: ts.Expression): string | undefined;
     compileDynamicModuleRelativeAssetUrl(
         expression: ts.Expression,

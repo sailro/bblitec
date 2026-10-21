@@ -1880,13 +1880,11 @@ export function readProperty(
     ) {
         // Assignment probing asks the property table for the LHS shape too;
         // replacing that property does not read its previous array value.
-        // A read that cannot write the array through its alias leaves every
-        // later group's snapshot equal to the record's color.
-        if (
-            !simpleWriteTarget &&
-            !readsWithoutMutableAlias(context.checker, originalExpression)
-        ) {
-            context.admissions.noteMaterialColorRead(property);
+        if (!simpleWriteTarget) {
+            context.admissions.noteMaterialColorRead(
+                property,
+                readsWithoutMutableAlias(context.checker, originalExpression),
+            );
         }
     }
     // An engine handle names itself; anything else carries the engine it

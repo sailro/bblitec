@@ -112,7 +112,8 @@ void check_instance_layouts() {
     RenderItem colored=normal; colored.thin_binding=create_thin_material_binding(engine,{0},{2});
     assert(pool->count==0 && !thin.thin_binding->shader_has_color && colored.thin_binding->shader_has_color);
     check(thin,1,true); check(colored,2,true);
-    check(thin,0,false); check(thin,2,false); check(colored,1,false); check(normal,1,false);
+    // A colour pool the program has no lane for is never read.
+    check(thin,0,false); check(thin,2,false); check(colored,1,true); check(normal,1,false);
     // The captured empty owner and color selection survive later mesh/pool writes.
     check(normal,0,true);
     pool->colors=std::nullopt; engine.meshes[0].thin_instances.reset();

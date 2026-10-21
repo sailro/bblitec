@@ -5133,17 +5133,20 @@ export class ExpressionLowerer {
                 unwrapped,
             );
         }
+        // `container.entities[0]` is the asset root before the entity list
+        // the data path would read.
+        const assetRoot = this.context.probeEmission(() =>
+            this.context.handleCollections.assetRootElementAccess(unwrapped),
+        );
+        if (assetRoot) {
+            return assetRoot;
+        }
         const data = this.context.dataLowerer.compileDataPath(
             unwrapped,
             "read",
         );
         if (data) {
             return data;
-        }
-        const assetRoot =
-            this.context.handleCollections.assetRootElementAccess(unwrapped);
-        if (assetRoot) {
-            return assetRoot;
         }
         const collectionElement =
             this.context.handleCollections.collectionElementAccess(unwrapped);
