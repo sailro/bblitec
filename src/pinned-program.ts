@@ -11,6 +11,7 @@ import {
     isLibraryTyping,
     libraryTypingFile,
 } from "./typescript-library-files.js";
+import { namesMember } from "./compiler/syntax.js";
 
 /**
  * The sources a typed pinned program is built over: the store that reads
@@ -122,14 +123,8 @@ function scopedName(identifier: ts.Identifier): boolean {
     const parent = identifier.parent;
     return !(
         !parent ||
-        (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
-        (ts.isQualifiedName(parent) && parent.right === identifier) ||
-        (ts.isPropertyAssignment(parent) && parent.name === identifier) ||
-        (ts.isBindingElement(parent) && parent.propertyName === identifier) ||
-        ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
-            parent.propertyName === identifier) ||
+        namesMember(identifier) ||
         ts.isExportSpecifier(parent) ||
-        ts.isJsxAttribute(parent) ||
         ts.isTypePredicateNode(parent) ||
         ts.findAncestor(parent, ts.isImportTypeNode) !== undefined
     );

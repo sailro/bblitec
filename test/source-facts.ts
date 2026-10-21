@@ -11,6 +11,8 @@ interface SourceFacts {
     members: Set<string>;
     calls: Set<string>;
     constructs: Set<string>;
+    /** `parent.name === node`-style tests of the role a name plays in its parent. */
+    nameRoleTests: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -43,6 +45,7 @@ export function sourceFacts(path: string): SourceFacts {
         members: new Set(),
         calls: new Set(),
         constructs: new Set(),
+        nameRoleTests: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -84,6 +87,25 @@ export function sourceFacts(path: string): SourceFacts {
                     : facts.constructs
                 ).add(name);
         }
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            [node.left, node.right].some(
+                (side, index, sides) =>
+                    ts.isPropertyAccessExpression(side) &&
+                    ["name", "propertyName", "label"].includes(
+                        side.name.text,
+                    ) &&
+                    /(^|\.)parent$/.test(
+                        expressionName(side.expression) ?? "",
+                    ) &&
+                    ts.isIdentifier(sides[1 - index]!),
+            )
+        )
+            facts.nameRoleTests++;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

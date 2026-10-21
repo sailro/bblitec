@@ -64,8 +64,17 @@ test("value scans skip type annotations and member names, and stop at the first 
     assert.equal(
         someAnalysisNode(source, identifier("Hidden"), {
             types: "skip",
-            memberNames: "skip",
+            names: "references",
         }),
+        false,
+    );
+    // Only references: neither the declared name nor a key is one.
+    assert.equal(
+        someAnalysisNode(
+            parse("const value = { value: 1 }; use({ value: other });"),
+            identifier("value"),
+            { names: "references" },
+        ),
         false,
     );
     let calls = 0;

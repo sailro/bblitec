@@ -41,6 +41,7 @@ import {
     rootIdentifier,
     unwrapExpression,
     writeSites,
+    isValueReference,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -863,7 +864,11 @@ export function sharedFunctionHasCallEffects(
     return constructs || reachesOpaqueCallee(context, body);
 }
 
-/** A folded bound must not be invalidated by the loop or its called helpers. */
+/**
+ * A folded bound must not be invalidated by the loop or its called helpers.
+ * `bound` is an expression, or a binding's own declared name standing for
+ * that binding.
+ */
 export function loopBoundMayChange(
     context: Pick<ResourceLoopContext, "checker" | "symbols">,
     body: ts.Node,
@@ -879,13 +884,9 @@ export function loopBoundMayChange(
     const arrayContents = arrayLength || observation === "array-elements";
     const dependencies: ts.Identifier[] = [];
     const reads = (node: ts.Node): void => {
-        if (ts.isPropertyAccessExpression(node)) {
-            reads(node.expression);
-        } else if (ts.isIdentifier(node)) {
+        if (!ts.isIdentifier(node)) ts.forEachChild(node, reads);
+        else if (node === bound || isValueReference(node))
             dependencies.push(node);
-        } else {
-            ts.forEachChild(node, reads);
-        }
     };
     reads(bound);
     if (dependencies.length === 0) return false;

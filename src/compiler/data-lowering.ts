@@ -444,19 +444,8 @@ function lengthExtents(
             if (ts.isCallExpression(node) || ts.isNewExpression(node))
                 for (const argument of node.arguments ?? [])
                     forEachAnalysisNode(argument, unbounded);
-            if (
-                !ts.isIdentifier(node) ||
-                (ts.isVariableDeclaration(node.parent) &&
-                    node.parent.name === node) ||
-                ((ts.isParameter(node.parent) ||
-                    ts.isBindingElement(node.parent) ||
-                    ts.isFunctionDeclaration(node.parent) ||
-                    ts.isFunctionExpression(node.parent) ||
-                    ts.isClassLike(node.parent) ||
-                    ts.isClassExpression(node.parent)) &&
-                    node.parent.name === node)
-            )
-                return;
+            // The walk visits only references ({@link isValueReference}).
+            if (!ts.isIdentifier(node)) return;
             const symbol = symbols.valueSymbol(node);
             if (!symbol) return;
             const extent = referenceLengthExtent(checker, node);
@@ -474,7 +463,7 @@ function lengthExtents(
                 aliasSources.set(alias, (sources = new EmissionSet()));
             sources.add(symbol);
         },
-        { types: "skip", memberNames: "skip" },
+        { types: "skip", names: "references" },
     );
     for (let changed = true; changed;) {
         changed = false;

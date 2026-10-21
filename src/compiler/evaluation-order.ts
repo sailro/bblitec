@@ -423,7 +423,7 @@ export class EvaluationOrder {
                                 root === "self";
                         }
                     },
-                    { functions: "skip", types: "skip", memberNames: "skip" },
+                    { functions: "skip", types: "skip", names: "references" },
                 );
                 if (effects) return true;
             }
@@ -697,7 +697,7 @@ export class EvaluationOrder {
             forEachAnalysisNode(root, visit, {
                 functions: "skip",
                 types: "skip",
-                memberNames: "skip",
+                names: "references",
             }),
         );
         return answers;
@@ -935,7 +935,7 @@ export class EvaluationOrder {
             forEachAnalysisNode(root, visit, {
                 functions: "skip",
                 types: "skip",
-                memberNames: "skip",
+                names: "references",
             }),
         );
         return access;

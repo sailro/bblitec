@@ -281,7 +281,7 @@ function dependencyIdentifiers(
                     }
                 }
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
     };
     visitFunction(root);

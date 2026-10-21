@@ -774,6 +774,172 @@ function literalHeldIdentifiers(
     return [];
 }
 
+/** A declaration that binds its name in scope. */
+type BindingDeclaration =
+    | ts.VariableDeclaration
+    | ts.ParameterDeclaration
+    | ts.BindingElement
+    | ts.FunctionDeclaration
+    | ts.FunctionExpression
+    | ts.ClassDeclaration
+    | ts.ClassExpression
+    | ts.InterfaceDeclaration
+    | ts.TypeAliasDeclaration
+    | ts.TypeParameterDeclaration
+    | ts.EnumDeclaration
+    | ts.EnumMember
+    | ts.ModuleDeclaration
+    | ts.ImportSpecifier
+    | ts.ImportClause
+    | ts.NamespaceImport
+    | ts.ImportEqualsDeclaration;
+
+function isBindingDeclaration(node: ts.Node): node is BindingDeclaration {
+    return (
+        ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isBindingElement(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isTypeParameterDeclaration(node) ||
+        ts.isEnumDeclaration(node) ||
+        ts.isEnumMember(node) ||
+        ts.isModuleDeclaration(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isImportClause(node) ||
+        ts.isNamespaceImport(node) ||
+        ts.isImportEqualsDeclaration(node)
+    );
+}
+
+/** A declaration that names a member of an object, class, type or module. */
+type MemberDeclaration =
+    | ts.PropertyAssignment
+    | ts.PropertyDeclaration
+    | ts.PropertySignature
+    | ts.MethodDeclaration
+    | ts.MethodSignature
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration
+    | ts.NamespaceExport;
+
+function isMemberDeclaration(node: ts.Node): node is MemberDeclaration {
+    return (
+        ts.isPropertyAssignment(node) ||
+        ts.isPropertyDeclaration(node) ||
+        ts.isPropertySignature(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isMethodSignature(node) ||
+        ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node) ||
+        ts.isNamespaceExport(node)
+    );
+}
+
+/**
+ * The declaration `node` is the own name of: `x` in `const x`, `(x)`,
+ * `function x`, `{ x: 1 }` or `x(): T`. A shorthand `{ x }` reads `x`; it
+ * declares nothing.
+ */
+export function declarationNamed(
+    node: ts.Node,
+): BindingDeclaration | MemberDeclaration | undefined {
+    const parent = node.parent;
+    return parent &&
+        (isBindingDeclaration(parent) || isMemberDeclaration(parent)) &&
+        parent.name === node
+        ? parent
+        : undefined;
+}
+
+/**
+ * Whether an identifier names a member of what it is read from, not a
+ * binding in scope: `o.x`, `Q.X`, a property, method or accessor's own
+ * name, a pattern's `{ x: local }` key, an import's or export's
+ * module-side name, a JSX attribute.
+ */
+export function namesMember(identifier: ts.Identifier): boolean {
+    const parent = identifier.parent;
+    if (
+        (isMemberDeclaration(parent) ||
+            ts.isPropertyAccessExpression(parent) ||
+            ts.isJsxAttribute(parent)) &&
+        parent.name === identifier
+    )
+        return true;
+    if (ts.isQualifiedName(parent)) return parent.right === identifier;
+    if (ts.isBindingElement(parent) || ts.isImportSpecifier(parent))
+        return parent.propertyName === identifier;
+    // `export { local as name }` reads `local`; a re-export reads nothing here.
+    if (ts.isExportSpecifier(parent))
+        return (
+            (parent.propertyName ?? parent.name) !== identifier ||
+            parent.parent.parent.moduleSpecifier !== undefined
+        );
+    return false;
+}
+
+/**
+ * Whether an identifier reads or writes a binding when the code runs: not
+ * a declaration's own name ({@link declarationNamed}), a member name
+ * ({@link namesMember}), a label, `new.target`/`import.meta`'s second
+ * name, or a name in a type. A shorthand `{ x }` reads `x`, `export { x }`
+ * reads the local `x`, and a class's `extends` expression runs.
+ */
+export function isValueReference(identifier: ts.Identifier): boolean {
+    const parent = identifier.parent;
+    if (declarationNamed(identifier) || namesMember(identifier)) return false;
+    if (ts.isExportSpecifier(parent))
+        return !parent.isTypeOnly && !parent.parent.parent.isTypeOnly;
+    if (
+        ts.isMetaProperty(parent) ||
+        ((ts.isLabeledStatement(parent) ||
+            ts.isBreakStatement(parent) ||
+            ts.isContinueStatement(parent)) &&
+            parent.label === identifier)
+    )
+        return false;
+    return !inTypePosition(identifier);
+}
+
+/**
+ * The expression a use of a name reads or writes: the identifier itself
+ * ({@link isValueReference}), or the `o.name`/`o.#name` access it names.
+ * Undefined where it names no run-time value.
+ */
+export function referenceSite(
+    name: ts.Identifier | ts.PrivateIdentifier,
+): ts.Identifier | ts.PropertyAccessExpression | undefined {
+    const parent = name.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.name === name)
+        return inTypePosition(parent) ? undefined : parent;
+    return ts.isIdentifier(name) && isValueReference(name) ? name : undefined;
+}
+
+/** Whether a node sits in a type, which the code does not evaluate. */
+function inTypePosition(node: ts.Node): boolean {
+    for (let current = node; current.parent; current = current.parent) {
+        const parent = current.parent;
+        // `class C extends Base<T>`: the base expression runs, its arguments are types.
+        if (ts.isExpressionWithTypeArguments(parent)) {
+            const heritage = parent.parent;
+            return !(
+                parent.expression === current &&
+                ts.isHeritageClause(heritage) &&
+                heritage.token === ts.SyntaxKind.ExtendsKeyword &&
+                ts.isClassLike(heritage.parent)
+            );
+        }
+        if (ts.isTypeNode(parent)) return true;
+        if (ts.isStatement(parent) || ts.isSourceFile(parent)) return false;
+    }
+    return false;
+}
+
 /** A prefix or postfix `++`/`--`. */
 type UpdateExpression = (
     ts.PrefixUnaryExpression | ts.PostfixUnaryExpression

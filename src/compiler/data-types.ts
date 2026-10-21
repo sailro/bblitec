@@ -146,6 +146,7 @@ import {
     unwrapExpression,
     isTypeAssertion,
     wrappersUnder,
+    declarationNamed,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
@@ -2914,16 +2915,16 @@ export class DataTypeRegistry {
         node: ts.Node,
         property?: ts.Symbol,
     ): DataType | undefined {
+        const named = declarationNamed(node);
         const declaration =
             property?.declarations?.length === 1
                 ? property.declarations[0]
                 : ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)
                   ? node
-                  : node.parent &&
-                      (ts.isPropertySignature(node.parent) ||
-                          ts.isPropertyDeclaration(node.parent)) &&
-                      node.parent.name === node
-                    ? node.parent
+                  : named &&
+                      (ts.isPropertySignature(named) ||
+                          ts.isPropertyDeclaration(named))
+                    ? named
                     : undefined;
         return (
             declaration && this.storage.assertedHandleFields.get(declaration)
@@ -3035,10 +3036,11 @@ export class DataTypeRegistry {
         // calls pass (`NumericSlotStorageRequired`) wherever its declared
         // `ArrayLike<number>` position is typed; other types it locates keep
         // their storage.
+        const named = declarationNamed(node);
         const parameter = ts.isParameter(node)
             ? node
-            : ts.isParameter(node.parent) && node.parent.name === node
-              ? node.parent
+            : named && ts.isParameter(named)
+              ? named
               : undefined;
         const kinds = parameter && this.storage.numericSlots.get(parameter);
         return (

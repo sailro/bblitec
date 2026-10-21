@@ -445,10 +445,6 @@ export class SharedClosureAnalysis {
                 ? consumer.name
                 : undefined;
         };
-        const storeNamed = (identifier: ts.Identifier): void => {
-            const symbol = this.context.symbols.valueSymbol(identifier);
-            if (symbol) storedLocalFunctions.add(symbol);
-        };
         const isStoredLocal = (identifier: ts.Identifier): boolean => {
             const symbol = this.context.symbols.valueSymbol(identifier);
             return !!symbol && storedLocalFunctions.has(symbol);
@@ -632,41 +628,26 @@ export class SharedClosureAnalysis {
         // environment. Direct calls alone do not require that ownership,
         // except in an async body that awaits: its caller resumes first.
         const suspends = suspendsBeforeReturn(owner);
-        forEachAnalysisNode(owner, (node) => {
-            if (ts.isShorthandPropertyAssignment(node)) {
-                if (localFunctionNames.has(node.name.text)) {
-                    storeNamed(node.name);
-                    const symbol = this.context.symbols.valueSymbol(node.name);
-                    if (symbol && forwardedParameters.has(symbol))
-                        forwarded.add(symbol);
-                }
-            } else if (
-                ts.isIdentifier(node) &&
-                localFunctionNames.has(node.text)
-            ) {
-                const parent = node.parent;
-                const declared =
-                    (ts.isFunctionDeclaration(parent) ||
-                        ts.isVariableDeclaration(parent)) &&
-                    parent.name === node;
+        forEachAnalysisNode(
+            owner,
+            (node) => {
+                if (
+                    !ts.isIdentifier(node) ||
+                    !localFunctionNames.has(node.text)
+                )
+                    return;
                 const callee =
-                    ts.isCallExpression(parent) && parent.expression === node;
-                const member =
-                    ts.isPropertyAccessExpression(parent) &&
-                    parent.name === node;
-                if (!declared && !member && (!callee || suspends)) {
-                    const symbol = this.context.symbols.valueSymbol(node);
-                    if (symbol && !callee && localFunctions.has(symbol))
-                        storeNamed(node);
-                    if (
-                        symbol &&
-                        forwardedParameters.has(symbol) &&
-                        !(ts.isParameter(parent) && parent.name === node)
-                    )
-                        forwarded.add(symbol);
-                }
-            }
-        });
+                    ts.isCallExpression(node.parent) &&
+                    node.parent.expression === node;
+                if (callee && !suspends) return;
+                const symbol = this.context.symbols.valueSymbol(node);
+                if (!symbol) return;
+                if (!callee && localFunctions.has(symbol))
+                    storedLocalFunctions.add(symbol);
+                if (forwardedParameters.has(symbol)) forwarded.add(symbol);
+            },
+            { names: "references" },
+        );
         for (const symbol of storedLocalFunctions)
             localFunctions.get(symbol)?.forEach(addRoot);
         // A local function a root calls runs from that stored callback.

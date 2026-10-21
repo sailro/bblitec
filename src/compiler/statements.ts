@@ -53,6 +53,7 @@ import {
     iteratorMethodCall,
     unwrappedIdentifier,
     writeSites,
+    bindingNameIdentifiers,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -2965,19 +2966,10 @@ export class StatementLowerer {
                 : undefined;
         if (initializer && ts.isVariableDeclarationList(initializer))
             for (const declaration of initializer.declarations)
-                forEachAnalysisNode(declaration.name, (node) => {
-                    if (
-                        !ts.isIdentifier(node) ||
-                        (node !== declaration.name &&
-                            !(
-                                ts.isBindingElement(node.parent) &&
-                                node.parent.name === node
-                            ))
-                    )
-                        return;
-                    const symbol = context.symbols.valueSymbol(node);
+                for (const name of bindingNameIdentifiers(declaration.name)) {
+                    const symbol = context.symbols.valueSymbol(name);
                     if (symbol) bindings.add(symbol);
-                });
+                }
         return !this.hasStaticLoopExits(context, iteration.statement, bindings);
     }
 

@@ -360,7 +360,7 @@ export class StorageDemandPlanner {
                         this.lostDeclarations.has(symbol)
                     );
                 },
-                { types: "skip", memberNames: "skip" },
+                { types: "skip", names: "references" },
             );
             if (dependent) throw new PlanningDependency();
             for (const node of checked)

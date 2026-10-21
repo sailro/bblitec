@@ -1588,6 +1588,29 @@ test("bound-alias analysis type-checks only initializers rooted in tracked alias
     }
 });
 
+test("a binding's declared name bounds the loop by that binding", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        const items = [1, 2];
+        for (let i = 0; i < 2; i++) { items.push(i); }
+    `,
+        "input.ts",
+    );
+    const declaration = sourceFile.statements[0];
+    const loop = sourceFile.statements.find(ts.isForStatement);
+    assert.ok(declaration && ts.isVariableStatement(declaration) && loop);
+    const name = declaration.declarationList.declarations[0]?.name;
+    assert.ok(name && ts.isIdentifier(name));
+    assert.equal(
+        loopBoundMayChange(
+            { checker, symbols: new CompilerSymbols(checker) },
+            loop.statement,
+            name,
+        ),
+        true,
+    );
+});
+
 test("resource-loop generation is deterministic", () => {
     const source = scene(`
         for (let i = 0; i < 300; i++) createBox(engine, i + 1);

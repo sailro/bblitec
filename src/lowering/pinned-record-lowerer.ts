@@ -47,6 +47,7 @@ import {
     unwrapTypePreserving,
     wrappersUnder,
     isAssignmentExpression,
+    isValueReference,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -401,27 +402,6 @@ function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
         ts.isGetAccessorDeclaration(node) ||
         ts.isSetAccessorDeclaration(node) ||
         ts.isConstructorDeclaration(node)
-    );
-}
-
-/** Whether an identifier is the name a declaration binds, not a use. */
-function isDeclarationName(node: ts.Identifier): boolean {
-    const parent = node.parent;
-    return (
-        (ts.isVariableDeclaration(parent) ||
-            ts.isParameter(parent) ||
-            ts.isFunctionDeclaration(parent) ||
-            ts.isFunctionExpression(parent) ||
-            ts.isBindingElement(parent) ||
-            ts.isPropertyAssignment(parent) ||
-            ts.isMethodDeclaration(parent) ||
-            ts.isGetAccessorDeclaration(parent) ||
-            ts.isSetAccessorDeclaration(parent) ||
-            ts.isPropertyDeclaration(parent) ||
-            ts.isPropertySignature(parent) ||
-            ts.isClassDeclaration(parent) ||
-            ts.isInterfaceDeclaration(parent)) &&
-        parent.name === node
     );
 }
 
@@ -3505,14 +3485,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private findCaptures(): void {
         const root = this.entry.declaration;
         const visit = (node: ts.Node): void => {
-            if (
-                ts.isIdentifier(node) &&
-                !isDeclarationName(node) &&
-                !(
-                    ts.isPropertyAccessExpression(node.parent) &&
-                    node.parent.name === node
-                )
-            ) {
+            if (ts.isIdentifier(node) && isValueReference(node)) {
                 const symbol = declaredSymbol(this.checker, node);
                 const declaration =
                     symbol?.valueDeclaration ?? symbol?.declarations?.[0];

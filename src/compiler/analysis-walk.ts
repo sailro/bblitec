@@ -1,11 +1,13 @@
 import ts from "typescript";
+import { isValueReference } from "./syntax.js";
 
 interface AnalysisWalkPolicy {
     includeRoot?: boolean;
     functions?: "skip";
     loops?: "skip";
     types?: "skip";
-    memberNames?: "skip";
+    /** Visit an identifier only where it reads or writes a binding ({@link isValueReference}). */
+    names?: "references";
     skip?: (node: ts.Node) => boolean;
 }
 
@@ -49,6 +51,9 @@ export function findAnalysisNodeWithState<State>(
             (policy.functions === "skip" && ts.isFunctionLike(node)) ||
             (policy.loops === "skip" && ts.isIterationStatement(node, false)) ||
             (policy.types === "skip" && ts.isTypeNode(node)) ||
+            (policy.names === "references" &&
+                ts.isIdentifier(node) &&
+                !isValueReference(node)) ||
             policy.skip?.(node)
         )
             return undefined;
@@ -56,11 +61,6 @@ export function findAnalysisNodeWithState<State>(
         if (result === true) return node;
         if (result === "skip") return undefined;
         const next = childState(node, state);
-        if (
-            policy.memberNames === "skip" &&
-            ts.isPropertyAccessExpression(node)
-        )
-            return visit(node.expression, next);
         return ts.forEachChild(node, (child) => visit(child, next));
     };
     return policy.includeRoot === false

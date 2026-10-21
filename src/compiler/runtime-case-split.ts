@@ -6,7 +6,7 @@ import { isStorageDemand } from "./storage-demand-planner.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
-import { writeSites } from "./syntax.js";
+import { writeSites, isValueReference } from "./syntax.js";
 
 type CaseSplitContext = Pick<
     LoweringServices,
@@ -207,13 +207,8 @@ function runtimeSelectors(
     if (effects || conditions.size === 0) return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
     const roots = new Set<ts.Symbol>();
-    // A member name is no binding.
     const binding = (node: ts.Node): node is ts.Identifier =>
-        ts.isIdentifier(node) &&
-        !(
-            ts.isPropertyAccessExpression(node.parent) &&
-            node.parent.name === node
-        );
+        ts.isIdentifier(node) && isValueReference(node);
     const collect = (node: ts.Node): void => {
         if (binding(node)) {
             const symbol = declaredSymbol(context.checker, node);

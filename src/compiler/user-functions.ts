@@ -106,6 +106,7 @@ import {
     yieldedOperands,
     argumentAt,
     writeSites,
+    referenceSite,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -746,7 +747,7 @@ function readsSharedBinding(
     return someAnalysisNode(
         expression,
         (node) => ts.isIdentifier(node) && namesShared(node),
-        { memberNames: "skip" },
+        { names: "references" },
     );
 }
 
@@ -976,18 +977,11 @@ export function recursiveStorageEscapes(
             (node, nested) => {
                 if (ts.isIdentifier(node)) {
                     const parent = node.parent;
-                    const namesOwnDeclaration =
-                        (ts.isVariableDeclaration(parent) ||
-                            ts.isFunctionDeclaration(parent) ||
-                            ts.isFunctionExpression(parent) ||
-                            ts.isMethodDeclaration(parent) ||
-                            ts.isParameter(parent)) &&
-                        parent.name === node;
                     const directCallee =
                         !nested &&
                         ts.isCallExpression(parent) &&
                         parent.expression === node;
-                    if (namesOwnDeclaration || directCallee) return false;
+                    if (!referenceSite(node) || directCallee) return false;
                     const resolved = tryResolveFunctionDeclaration(
                         checker,
                         node,
@@ -1389,7 +1383,7 @@ export class UserFunctionLowerer {
                       ) !== undefined
                     : node.text === "arguments";
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
         return foreign ? undefined : argument;
     }
@@ -5995,7 +5989,7 @@ export class UserFunctionLowerer {
                             ?.length,
                     {
                         types: "skip",
-                        memberNames: "skip",
+                        names: "references",
                         skip: (node) =>
                             ts.isFunctionLike(node) &&
                             !ts.isArrowFunction(node),

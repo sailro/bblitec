@@ -26,6 +26,7 @@ import {
     rootIdentifier,
     unwrapExpression,
     writeSites,
+    referenceSite,
 } from "./syntax.js";
 import {
     functionOfDeclaration,
@@ -140,17 +141,16 @@ function declaredFunction(
     return undefined;
 }
 
-/** Whether a name only declares, re-exports or directly calls its function. */
+/**
+ * Whether a name only declares, re-exports or directly calls its function;
+ * `m.f` through a namespace import is the use its access makes.
+ */
 function directFunctionUse(node: ts.Identifier): boolean {
-    const parent = node.parent;
+    const site = referenceSite(node);
     return (
-        ((ts.isFunctionDeclaration(parent) ||
-            ts.isVariableDeclaration(parent)) &&
-            parent.name === node) ||
-        ts.isImportSpecifier(parent) ||
-        ts.isExportSpecifier(parent) ||
-        ts.isImportClause(parent) ||
-        (ts.isCallExpression(parent) && parent.expression === node)
+        site === undefined ||
+        ts.isExportSpecifier(node.parent) ||
+        (ts.isCallExpression(site.parent) && site.parent.expression === site)
     );
 }
 
@@ -244,7 +244,7 @@ function classifyRegistryArray(
             if (!closed) return;
             if (
                 ts.isIdentifier(child) &&
-                child !== parent.name &&
+                referenceSite(child) !== undefined &&
                 resolvedSymbol(checker, child) === alias
             ) {
                 closed = classifyRegistryArray(
@@ -298,7 +298,7 @@ function mapRegistry(
         if (!closed) return;
         if (
             ts.isIdentifier(child) &&
-            child !== declaration.name &&
+            referenceSite(child) !== undefined &&
             resolvedSymbol(checker, child) === symbol
         ) {
             const parent = child.parent;

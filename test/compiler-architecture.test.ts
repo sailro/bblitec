@@ -437,6 +437,26 @@ test("wrapper transparency is decided in syntax.ts", () => {
     );
 });
 
+test("name roles are read through syntax.ts", () => {
+    // Whether a name declares (declarationNamed), names a member
+    // (namesMember) or reads a binding (isValueReference, referenceSite)
+    // is syntax.ts's. The pending files test a shorthand `{ x }`'s value
+    // slot by hand; each leaves the list when object literal slots get
+    // their owner, and no other file may start.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).nameRoleTests > 0)
+            .sort(),
+        [
+            "src/compiler/absence-tag-storage.ts",
+            "src/compiler/numeric-slot-storage.ts",
+            "src/compiler/parameter-effects.ts",
+            "src/compiler/symbols.ts",
+            "src/compiler/syntax.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

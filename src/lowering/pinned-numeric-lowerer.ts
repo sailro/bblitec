@@ -48,6 +48,8 @@ import {
     isUpdateExpression,
     writeSites,
     writeSiteOf,
+    namesMember,
+    declarationNamed,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -146,19 +148,11 @@ function enclosingFunction(node: ts.Node): ts.Node {
     );
 }
 
-/** Every identifier naming `name` under `root`, as a value reference. */
+/** Every identifier naming the binding `name` under `root`: its declarations and uses. */
 function identifierReferences(root: ts.Node, name: string): ts.Identifier[] {
     const found: ts.Identifier[] = [];
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isIdentifier(node) &&
-            node.text === name &&
-            !(
-                ts.isPropertyAccessExpression(node.parent) &&
-                node.parent.name === node
-            ) &&
-            !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)
-        ) {
+        if (ts.isIdentifier(node) && node.text === name && !namesMember(node)) {
             found.push(node);
         }
         ts.forEachChild(node, visit);
@@ -2458,10 +2452,14 @@ export class PinnedNumericLowerer {
         }
         const owner = enclosingFunction(expression);
         const declared = identifierReferences(owner, right.text).find(
-            (reference) =>
-                ts.isVariableDeclaration(reference.parent) &&
-                reference.parent.name === reference &&
-                reference.pos < expression.pos,
+            (reference) => {
+                const named = declarationNamed(reference);
+                return (
+                    named !== undefined &&
+                    ts.isVariableDeclaration(named) &&
+                    reference.pos < expression.pos
+                );
+            },
         );
         const loopOutside = ts.findAncestor(expression.parent, (ancestor) => {
             if (ancestor === owner) return "quit";

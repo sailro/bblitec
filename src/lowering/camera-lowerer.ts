@@ -22,6 +22,7 @@ import {
     cameraControlPublication,
     lowerCameraControlLifecycle,
 } from "./camera-control-attachment.js";
+import { isValueReference } from "../compiler/syntax.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -576,10 +577,7 @@ ${invalidation}
                 if (
                     identifier.text !== name &&
                     declared.has(identifier.text) &&
-                    !(
-                        ts.isPropertyAccessExpression(identifier.parent) &&
-                        identifier.parent.name === identifier
-                    )
+                    isValueReference(identifier)
                 )
                     include(identifier.text);
         };

@@ -11,6 +11,7 @@ import {
     outermostWrapper,
     regularExpressionParts,
     unwrapExpression,
+    referenceSite,
 } from "./syntax.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
@@ -37,11 +38,13 @@ function constant(node: ts.Node): node is ts.VariableDeclaration & {
     );
 }
 
+/**
+ * A name that declares, imports or exports rather than uses: no
+ * {@link referenceSite}, so `m.re` through a namespace import stays a use.
+ */
 function declarationName(node: ts.Identifier): boolean {
     return (
-        (ts.isVariableDeclaration(node.parent) && node.parent.name === node) ||
-        ts.isImportSpecifier(node.parent) ||
-        ts.isExportSpecifier(node.parent)
+        referenceSite(node) === undefined || ts.isExportSpecifier(node.parent)
     );
 }
 

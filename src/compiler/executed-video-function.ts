@@ -25,6 +25,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { resolvedSymbol } from "./symbols.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { isValueReference } from "./syntax.js";
 
 /** The source shape a call site matched, before anything is executed. */
 export interface ExecutedVideoFunctionShape {
@@ -71,10 +72,7 @@ function methodReach(
                 reached = "a nested function";
             } else if (
                 ts.isIdentifier(node) &&
-                !(
-                    ts.isPropertyAccessExpression(node.parent) &&
-                    node.parent.name === node
-                ) &&
+                isValueReference(node) &&
                 !resolvedSymbol(checker, node)?.declarations?.some(
                     (declaration) =>
                         declaration.pos >= body.pos &&

@@ -25,6 +25,7 @@ import {
     isExpressionWrapper,
     writeSites,
     writeSiteOf,
+    referenceSite,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -741,17 +742,14 @@ function bindingReferences(
         }
         return [...names].flatMap((name) =>
             (byName.get(name) ?? []).flatMap((identifier) => {
-                const parent = identifier.parent;
+                const site = referenceSite(identifier);
                 // A namespace import reads a module binding as `m.name`.
-                const member =
-                    ts.isPropertyAccessExpression(parent) &&
-                    parent.name === identifier;
-                return identifier !== declared &&
-                    !ts.isImportSpecifier(parent) &&
-                    !ts.isExportSpecifier(parent) &&
-                    (!member || moduleBinding) &&
+                return site &&
+                    identifier !== declared &&
+                    !ts.isExportSpecifier(identifier.parent) &&
+                    (site === identifier || moduleBinding) &&
                     resolvedSymbol(context.checker, identifier) === symbol
-                    ? [member ? parent : identifier]
+                    ? [site]
                     : [];
             }),
         );

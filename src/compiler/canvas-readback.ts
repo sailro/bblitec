@@ -108,7 +108,7 @@ function checkClosedInputs(
                     );
                 }
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
     }
 }

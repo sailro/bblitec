@@ -652,7 +652,7 @@ export class BindingScopes {
                         functions.add(body);
                 }
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
         const reads = {
             names,

@@ -46,7 +46,7 @@ import {
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
-import { rootIdentifier, argumentAt } from "./syntax.js";
+import { rootIdentifier, argumentAt, isValueReference } from "./syntax.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = [
@@ -280,13 +280,7 @@ export function sameFileClosure(
                 rejected = true;
                 return;
             }
-            if (!ts.isIdentifier(node)) return;
-            if (
-                ts.isPropertyAccessExpression(node.parent) &&
-                node.parent.name === node
-            ) {
-                return;
-            }
+            if (!ts.isIdentifier(node) || !isValueReference(node)) return;
             const pinned = symbols.babylonImportName(node);
             if (pinned !== undefined) {
                 if (!acceptPinned(pinned, node)) rejected = true;

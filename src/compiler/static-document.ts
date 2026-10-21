@@ -84,7 +84,7 @@ export function staticDocumentText(
                             (child) =>
                                 ts.isIdentifier(child) &&
                                 symbolAt(child) === symbol,
-                            { types: "skip", memberNames: "skip" },
+                            { types: "skip", names: "references" },
                         );
                     const statements = (statement: ts.Statement): boolean => {
                         if (

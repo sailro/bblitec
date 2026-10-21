@@ -2646,7 +2646,7 @@ export class NativeFunctionLowerer {
                     }
                     return false;
                 },
-                skipMemberNames ? { memberNames: "skip" } : {},
+                skipMemberNames ? { names: "references" } : {},
             );
         active.delete(declaration);
         return captured;

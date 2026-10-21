@@ -8,7 +8,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { libraryGlobal, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression, outermostWrapper } from "./syntax.js";
+import { outermostWrapper, referenceSite, unwrapExpression } from "./syntax.js";
 
 type Activation = ts.SignatureDeclaration;
 
@@ -209,20 +209,9 @@ export class PendingActivations {
         let activation: Activation | undefined;
         let site: ts.Node = reference;
         if (ts.isIdentifier(reference)) {
-            const parent = reference.parent;
-            if (
-                ts.isImportSpecifier(parent) ||
-                ts.isExportSpecifier(parent) ||
-                ts.isImportClause(parent) ||
-                ((ts.isFunctionDeclaration(parent) ||
-                    ts.isFunctionExpression(parent) ||
-                    ts.isMethodDeclaration(parent) ||
-                    ts.isVariableDeclaration(parent) ||
-                    ts.isPropertyAssignment(parent) ||
-                    ts.isPropertyDeclaration(parent)) &&
-                    parent.name === reference)
-            )
-                return false;
+            // An export names the function; it does not call it.
+            const used = referenceSite(reference);
+            if (!used || ts.isExportSpecifier(reference.parent)) return false;
             const declaration = resolvedSymbol(
                 this.checker,
                 reference,
@@ -241,11 +230,7 @@ export class PendingActivations {
                     : initializer && ts.isFunctionLike(initializer)
                       ? initializer
                       : undefined;
-            if (
-                ts.isPropertyAccessExpression(parent) &&
-                parent.name === reference
-            )
-                site = parent;
+            site = used;
         } else {
             activation = reference;
             const parent = reference.parent;

@@ -289,6 +289,7 @@ import {
     unwrappedIdentifier,
     wrappedParent,
     writeSites,
+    isValueReference,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -1870,7 +1871,7 @@ class Compiler implements LoweringServices {
         const isEntryReference = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
             this.symbols.valueSymbol(node)?.valueDeclaration === entry;
-        const policy = { types: "skip", memberNames: "skip" } as const;
+        const policy = { types: "skip", names: "references" } as const;
         if (
             statements.some((statement) =>
                 someAnalysisNode(statement, isEntryReference, policy),
@@ -5837,14 +5838,8 @@ class Compiler implements LoweringServices {
                     this.evaluator.resolveStaticLiteral(node) === node)
             )
                 return false;
-            if (ts.isIdentifier(node)) {
-                const parent = node.parent;
-                const memberName =
-                    (ts.isPropertyAccessExpression(parent) &&
-                        parent.name === node) ||
-                    (ts.isPropertyAssignment(parent) && parent.name === node);
-                return memberName || stableName(node);
-            }
+            if (ts.isIdentifier(node))
+                return !isValueReference(node) || stableName(node);
             return !ts.forEachChild(node, (child) => !stable(child));
         };
         const initializer =

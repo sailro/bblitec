@@ -1,6 +1,12 @@
 import ts from "typescript";
 import { declarationOrigin, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression, outermostWrapper, writeSites } from "./syntax.js";
+import {
+    outermostWrapper,
+    referenceSite,
+    unwrapExpression,
+    writeSiteOf,
+    writeSites,
+} from "./syntax.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -143,7 +149,8 @@ function identityEscapes(
             resolvedSymbol(checker, node) === symbol &&
             node !== declaration.name
         ) {
-            escapes = !enclosedReference(node);
+            const site = referenceSite(node);
+            escapes = site !== undefined && !enclosedReference(site);
             return;
         }
         ts.forEachChild(node, visit);
@@ -153,14 +160,8 @@ function identityEscapes(
 }
 
 /** A reference that reads or stores through the binding without sharing it. */
-function enclosedReference(
-    name: ts.Identifier | ts.PrivateIdentifier,
-): boolean {
-    const reference = outermostWrapper(
-        ts.isPropertyAccessExpression(name.parent) && name.parent.name === name
-            ? name.parent
-            : name,
-    );
+function enclosedReference(site: ts.Expression): boolean {
+    const reference = outermostWrapper(site);
     const parent = reference.parent;
     if (
         ts.isPropertyAccessExpression(parent) &&
@@ -172,15 +173,13 @@ function enclosedReference(
                 ts.isCallExpression(parent.parent) &&
                 parent.parent.expression === parent)
         );
+    const write = writeSiteOf(reference);
     return (
         (ts.isElementAccessExpression(parent) &&
             parent.expression === reference) ||
         (ts.isForOfStatement(parent) && parent.expression === reference) ||
         ts.isSpreadElement(parent) ||
-        (ts.isBinaryExpression(parent) &&
-            parent.left === reference &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            freshArray(parent.right))
+        (write?.kind === "assign" && freshArray(write.stored))
     );
 }
 
