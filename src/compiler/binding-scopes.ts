@@ -1428,6 +1428,7 @@ export class BindingScopes {
                             member.staticNumber !== undefined ||
                             member.staticBoolean !== undefined,
                     ),
+                true,
             );
         }
         if (value.kind === "void") {
@@ -2914,6 +2915,7 @@ export class BindingScopes {
         node?: ts.Expression,
         materialized = new Map<object, Value>(),
         isUnchangedField?: (path: readonly string[], member: Value) => boolean,
+        snapshotScalarData = false,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -3038,6 +3040,7 @@ export class BindingScopes {
                     isUnchangedField &&
                         ((path, member) =>
                             isUnchangedField([name, ...path], member)),
+                    snapshotScalarData,
                 );
                 continue;
             }
@@ -3172,6 +3175,46 @@ export class BindingScopes {
                     cpp: `(*${cppName})`,
                     sharedStorageCpp: cppName,
                     dataType: { kind: "string" },
+                    sharedRecordScalar: true,
+                };
+                continue;
+            }
+            // Any other runtime scalar a record parameter holds (an optional
+            // string a `??` built) is the one it was built with: later
+            // readers, a closure among them, read that snapshot, not the
+            // builder's temporary. A class field keeps its own storage,
+            // which its writes update; a reference names one object either
+            // way.
+            const scalar =
+                property.dataType?.kind === "optional"
+                    ? property.dataType.inner
+                    : property.dataType;
+            if (
+                snapshotScalarData &&
+                !classFields &&
+                property.kind === "data" &&
+                property.dataType &&
+                (scalar?.kind === "string" ||
+                    scalar?.kind === "number" ||
+                    scalar?.kind === "boolean") &&
+                property.cpp.length > 0 &&
+                !property.nativeBinding &&
+                !this.context.hasStableNativeBinding(property)
+            ) {
+                const cppType = this.context.dataTypes.cppType(
+                    property.dataType,
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: cppName,
+                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
+                    attributes: "[[maybe_unused]] ",
+                });
+                properties[name] = {
+                    ...property,
+                    cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
                     sharedRecordScalar: true,
                 };
                 continue;

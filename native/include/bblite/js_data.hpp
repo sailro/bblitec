@@ -5139,6 +5139,30 @@ template <typename T> inline void array_set_length(Array<T>& values, double coun
     values.resize(array_length_value(count));
 }
 
+// A length write the following fill loop makes unobservable: the loop
+// writes every slot from `start` before anything reads one, so the new
+// slots only need a value to hold. Slots between the old end and a later
+// `start` would stay holes, which this storage cannot represent.
+template <typename T> inline void array_grow_filled(Array<T>& values, double count, double start) {
+    const auto size = array_length_value(count);
+    if (size > values.size() && !(start <= static_cast<double>(values.size()))) [[unlikely]] {
+        throw std::runtime_error("Array length growth leaves holes before its fill loop.");
+    }
+    values.resize(size);
+}
+
+// An accessor's getter returns the array by handle: the copy shares the
+// storage the length write must change, as the getter's object does.
+template <typename T> inline void array_truncate(Array<T>&& values, double count) {
+    array_truncate(values, count);
+}
+template <typename T> inline void array_set_length(Array<T>&& values, double count) {
+    array_set_length(values, count);
+}
+template <typename T> inline void array_grow_filled(Array<T>&& values, double count, double start) {
+    array_grow_filled(values, count, start);
+}
+
 template <typename T> [[nodiscard]] inline bool array_has_index(const T& values, double index) {
     // Range-check against a constant before conversion so NaN, infinities,
     // negatives and values past any container never reach the cast; the
@@ -5311,6 +5335,12 @@ template <typename T>
         throw_index_error(site, "write", index, values.size());
     }
     return array_index_write(values, static_cast<std::size_t>(index));
+}
+// An accessor's array handle shares the storage the element write changes.
+template <typename T>
+[[nodiscard]] inline T& array_index_write_checked(Array<T>&& values, double index,
+                                                  const char* site) {
+    return array_index_write_checked(values, index, site);
 }
 
 // JavaScript `%` (remainder keeps the dividend sign, like std::fmod).

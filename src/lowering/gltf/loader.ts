@@ -45,6 +45,7 @@ import { gltfMatrixReaderCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
 import { pinnedHeader } from "../pinned-header.js";
+import type { GltfContainerProfile } from "../resource-profiles.js";
 
 /**
  * What a scene's assets and reached features decide about the emitted
@@ -128,6 +129,8 @@ export interface GltfLoaderOptions {
      * bake. Every other scene emits a loader with none of it.
      */
     boneControl?: boolean;
+    /** Containers load in a generation-unknown order (`GltfContainerProfile`). */
+    containerProfiles?: readonly GltfContainerProfile[];
 }
 
 export class GltfLowerer {

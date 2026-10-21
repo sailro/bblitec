@@ -182,6 +182,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],
+    "mesh:world-matrix-provider": [],
     "mesh:plane": [],
     "mesh:sphere": [],
     "mesh:thin-instances": [],
@@ -335,6 +336,7 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:task-material-override": [],
     "frame-graph:task-build": [],
     "frame-graph:task-disposal": [],
+    "frame-graph:task-method-slots": [],
     "frame-graph:live-task-add": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.

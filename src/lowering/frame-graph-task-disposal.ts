@@ -138,7 +138,10 @@ void dispose_render_task(Engine& engine, TaskHandle handle) {
  * `dispose_render_target` (the swapchain's is kept); the cleared pipeline
  * makes the next execute throw the pin's #37 until a record restores it.
  */
-export function lowerEffectTaskDisposal(context: LoweringContext): string {
+export function lowerEffectTaskDisposal(
+    context: LoweringContext,
+    methodSlots = false,
+): string {
     const method = (name: string) =>
         context.propertyFunction(effectModule, "createEffectRenderTask", name, {
             unique: true,
@@ -157,13 +160,31 @@ export function lowerEffectTaskDisposal(context: LoweringContext): string {
     );
     const execute = method("execute");
     const code = pinnedErrorCode(context, execute);
+    const own = methodSlots
+        ? "static void dispose_effect_render_task_default"
+        : "void dispose_effect_render_task";
     return `// ${context.provenance(effectModule, "createEffectRenderTask dispose")}
-void dispose_effect_render_task(Engine& engine, TaskHandle handle) {
+${own}(Engine& engine, TaskHandle handle) {
     FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
     if (task.kind != FrameTaskKind::effect) throw std::runtime_error("EffectRenderTask.dispose requires an effect task.");
     dispose_render_target(engine, task.effect.target);
     // \`_pipeline = null\`: execute throws #${code} until the next record.
     task.disposed = true;
 }
-`;
+${
+    methodSlots
+        ? `
+// \`task.dispose()\`: the method scene code put there, else the pin's own.
+void dispose_effect_render_task(Engine& engine, TaskHandle handle) {
+    FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
+    if (task.dispose_override) {
+        const auto method = task.dispose_override;
+        method();
+        return;
+    }
+    dispose_effect_render_task_default(engine, handle);
+}
+`
+        : ""
+}`;
 }

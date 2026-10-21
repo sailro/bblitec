@@ -26,6 +26,7 @@ import {
     tracedEdgeCondition,
     recordTraceConditions,
     type DataTypeCppContext,
+    erasedFieldWidens,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
 export {
@@ -1074,6 +1075,14 @@ function structFieldName(name: ts.MemberName): string {
     return ts.isPrivateIdentifier(name)
         ? `private_${name.text.slice(1)}`
         : name.text;
+}
+
+/** Whether an erased field's settled handle storage holds a use of `storage`. */
+function erasedFieldHolds(known: DataType, storage: DataType): boolean {
+    return (
+        dataTypesEqual(known, storage) ||
+        (known.kind === "optional" && dataTypesEqual(known.inner, storage))
+    );
 }
 
 /**
@@ -2780,8 +2789,107 @@ export class DataTypeRegistry {
             property?.declarations?.length === 1
                 ? property.declarations[0]
                 : undefined;
+        if (declaration)
+            this.requireWrittenHandleFieldStorage(
+                declaration,
+                target,
+                expression,
+            );
+    }
+
+    /**
+     * The key storage of a `const m = new Map<unknown, V>()` whose only uses
+     * look keys up (`get`, `set`, `has`, `delete`) with one native handle
+     * type, present or optional: those handles are every key it can hold.
+     */
+    private erasedMapKeyStorage(node: ts.Node): DataType | undefined {
+        const symbol = ts.isIdentifier(node)
+            ? resolvedSymbol(this.checker, node)
+            : ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+              ? resolvedSymbol(this.checker, node.name)
+              : ts.isNewExpression(node) &&
+                  ts.isVariableDeclaration(node.parent) &&
+                  ts.isIdentifier(node.parent.name)
+                ? resolvedSymbol(this.checker, node.parent.name)
+                : undefined;
+        const declaration = symbol?.valueDeclaration;
         if (
             !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            !declaration.initializer ||
+            !ts.isNewExpression(unwrapExpression(declaration.initializer))
+        )
+            return undefined;
+        const keys: ts.Expression[] = [];
+        let closed = true;
+        const visit = (child: ts.Node): void => {
+            if (!closed) return;
+            if (
+                ts.isIdentifier(child) &&
+                child !== declaration.name &&
+                resolvedSymbol(this.checker, child) === symbol
+            ) {
+                const access = child.parent;
+                const call = access.parent;
+                if (
+                    ts.isPropertyAccessExpression(access) &&
+                    access.expression === child &&
+                    ["get", "set", "has", "delete"].includes(
+                        access.name.text,
+                    ) &&
+                    ts.isCallExpression(call) &&
+                    call.expression === access &&
+                    call.arguments[0]
+                )
+                    keys.push(call.arguments[0]);
+                else if (
+                    !ts.isPropertyAccessExpression(access) ||
+                    access.expression !== child ||
+                    !["size", "clear"].includes(access.name.text)
+                )
+                    closed = false;
+                return;
+            }
+            ts.forEachChild(child, visit);
+        };
+        visit(declaration.parent.parent.parent);
+        if (!closed || keys.length === 0) return undefined;
+        const present = (type: DataType | undefined): DataType | undefined =>
+            type?.kind === "optional" ? type.inner : type;
+        const types = keys.map((key) =>
+            this.fromStoredTsType(this.checker.getTypeAtLocation(key), key),
+        );
+        const handle = present(types[0]);
+        if (
+            handle?.kind !== "handle" ||
+            !types.every((type) => {
+                const inner = present(type);
+                return inner !== undefined && dataTypesEqual(inner, handle);
+            })
+        )
+            return undefined;
+        return types.some((type) => type?.kind === "optional")
+            ? { kind: "optional", inner: handle }
+            : handle;
+    }
+
+    /**
+     * A native handle written to an erased (`unknown`) record field settles
+     * that field's layout as an assertion would: the field keeps the handle.
+     */
+    public requireWrittenHandleFieldStorage(
+        declaration: ts.Declaration,
+        target: DataType,
+        node: ts.Node,
+    ): void {
+        const present =
+            target.kind === "optional" || target.kind === "tagged"
+                ? target.inner
+                : target;
+        if (
+            present.kind !== "handle" ||
             (!ts.isPropertySignature(declaration) &&
                 !ts.isPropertyDeclaration(declaration)) ||
             (this.checker.getTypeAtLocation(declaration).flags &
@@ -2791,12 +2899,12 @@ export class DataTypeRegistry {
             return;
         const storage = this.engineOwnedStorage(target);
         const known = this.storage.assertedHandleFields.get(declaration);
-        if (!known)
+        if (!known || erasedFieldWidens(known, storage))
             throw new AssertedHandleFieldStorageRequired(declaration, storage);
-        if (!dataTypesEqual(known, storage))
+        if (!erasedFieldHolds(known, storage))
             this.fail(
-                expression,
-                "An erased field has incompatible native handle assertions.",
+                node,
+                "An erased field holds incompatible native handles.",
             );
     }
 
@@ -2921,7 +3029,27 @@ export class DataTypeRegistry {
                 this.recordDemand(type, node),
             );
         }
-        return mapped;
+        // A method parameter a demand retyped stores the numeric arrays its
+        // calls pass (`NumericSlotStorageRequired`) wherever its declared
+        // `ArrayLike<number>` position is typed; other types it locates keep
+        // their storage.
+        const parameter = ts.isParameter(node)
+            ? node
+            : ts.isParameter(node.parent) && node.parent.name === node
+              ? node.parent
+              : undefined;
+        const kinds = parameter && this.storage.numericSlots.get(parameter);
+        return (
+            (mapped &&
+                kinds &&
+                withNumericSlotStorage(
+                    this.checker,
+                    type,
+                    mapped,
+                    numericSlotStorage(kinds),
+                )) ||
+            mapped
+        );
     }
 
     /**
@@ -4300,7 +4428,12 @@ export class DataTypeRegistry {
                 const [keyType, valueType] =
                     this.checker.getTypeArguments(reference);
                 if (!keyType || !valueType) return undefined;
-                const key = this.fromStoredTsType(keyType, node);
+                const key =
+                    (keyType.flags & ts.TypeFlags.Unknown) !== 0 &&
+                    symbolName === "Map"
+                        ? (this.erasedMapKeyStorage(node) ??
+                          this.fromStoredTsType(keyType, node))
+                        : this.fromStoredTsType(keyType, node);
                 const value: DataType | undefined =
                     symbolName === "WeakMap" &&
                     (valueType.flags & ts.TypeFlags.NonPrimitive) !== 0

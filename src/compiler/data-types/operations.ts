@@ -216,3 +216,8 @@ function children<K extends DataKind>(
 ): readonly DataType[] {
     return kinds[type.kind].children(type, fields, signatures);
 }
+
+/** Whether a nullable handle use widens an erased field a present one settled. */
+export function erasedFieldWidens(known: DataType, storage: DataType): boolean {
+    return storage.kind === "optional" && dataTypesEqual(storage.inner, known);
+}

@@ -102,6 +102,8 @@ interface SceneCoreOptions {
     clipPlane?: boolean;
     /** The scene reaches `enableMirroredMeshes`. */
     mirroredMeshes?: boolean;
+    /** A mesh parent can be an IWorldMatrixProvider record. */
+    worldMatrixProviders?: boolean;
     parenting?: boolean;
     visibility?: boolean;
     geometryAccess?: boolean;
@@ -129,6 +131,8 @@ interface SceneCoreOptions {
     liveTaskAdd?: boolean;
     /** A render or effect task may be disposed. */
     taskDisposal?: boolean;
+    /** Scene code replaces an effect task's `record` / `dispose`. */
+    taskMethodSlots?: boolean;
     /** The program reads a deformed vertex (`computeDeformedPositionToRef`). */
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
@@ -1065,10 +1069,10 @@ void set_mesh_transform_parent(
     if (
         record.transform_parent.value == parent.value &&
         record.parent.value >= engine.meshes.size() &&
-        !record.parent_world) {
+        !record.parent_world${options.worldMatrixProviders ? " &&\n        !record.provider_world" : ""}) {
         return;
     }
-    unregister_from_parents(engine, record, mesh);
+    unregister_from_parents(engine, record, mesh);${options.worldMatrixProviders ? "\n    clear_mesh_world_matrix_provider(record);" : ""}
     record.parent = MeshHandle{};
     record.transform_parent = parent;
     if (parent.value == invalid_handle) {
@@ -1382,6 +1386,42 @@ void reparent_transform_node(
 `;
     }
 
+    /**
+     * world-matrix-state.ts's parent setter over an IWorldMatrixProvider: the
+     * object is no node of either table, so the record keeps the program's
+     * reads of its two properties and the frame polls the version
+     * (`refresh_world_matrix_providers`), as the pin polls a foreign parent.
+     */
+    private worldMatrixProviderSource(): string {
+        return `
+// ${this.context.provenance("src/scene/world-matrix-state.ts", "createWorldMatrixState")}
+void set_mesh_world_matrix_provider(
+    Engine& engine,
+    MeshHandle mesh,
+    const void* identity,
+    std::function<std::array<float, 16>()> world,
+    std::function<double()> version) {
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+    // The pin's setter returns on an unchanged parent before anything else.
+    if (record.provider_world && record.provider_identity == identity) return;
+    unregister_from_parents(engine, record, mesh);
+    record.parent = MeshHandle{};
+    record.transform_parent = TransformNodeHandle{};
+    record.parent_world.reset();
+    record.provider_world = std::move(world);
+    record.provider_version = std::move(version);
+    record.provider_identity = identity;
+    record.provider_seen_version.reset();
+    record.provider_world_snapshot.reset();
+    mark_mesh_dirty(engine, mesh);
+    if (std::find(engine.provider_meshes.begin(), engine.provider_meshes.end(), mesh) ==
+        engine.provider_meshes.end()) {
+        engine.provider_meshes.push_back(mesh);
+    }
+}
+`;
+    }
+
     private parentingSource(
         options: SceneCoreOptions,
         parentMatrixHelpers: string,
@@ -1598,7 +1638,7 @@ void set_mesh_transform_parent(
     }
     require_acyclic_mesh_parent(engine, mesh, parent);
     require_live_mesh_parent(${recordAt("engine.meshes", "parent")});
-    unregister_from_parents(engine, record, mesh);
+    unregister_from_parents(engine, record, mesh);${options.worldMatrixProviders ? "\n    clear_mesh_world_matrix_provider(record);" : ""}
     record.transform_parent = TransformNodeHandle{};
     record.parent = parent;
     mark_mesh_dirty(engine, mesh);
@@ -1627,7 +1667,7 @@ void push_mesh_child(
     }
     ${recordAt("engine.meshes", "mesh")}.children.emplace_back(child);
 }
-
+${options.worldMatrixProviders ? this.worldMatrixProviderSource() : ""}
 // ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
 void set_mesh_parent(
     Engine& engine,
@@ -1641,9 +1681,9 @@ void set_mesh_parent(
         upstream::mesh_world_matrix(engine, child_record);
     const bool link_changed =
         child_record.parent != parent ||
-        child_record.transform_parent.value < engine.transform_nodes.size();
+        child_record.transform_parent.value < engine.transform_nodes.size()${options.worldMatrixProviders ? " ||\n        static_cast<bool>(child_record.provider_world)" : ""};
     if (link_changed) {
-        unlink_parent(engine, child, child_record);
+        unlink_parent(engine, child, child_record);${options.worldMatrixProviders ? "\n        clear_mesh_world_matrix_provider(child_record);" : ""}
         child_record.transform_parent = TransformNodeHandle{};
         child_record.parent = parent;
         link_parent(engine, child, parent);
@@ -1670,9 +1710,9 @@ void set_mesh_parent(
         upstream::mesh_world_matrix(engine, child_record);
     const bool link_changed =
         child_record.transform_parent.value != parent.value ||
-        child_record.parent.value < engine.meshes.size();
+        child_record.parent.value < engine.meshes.size()${options.worldMatrixProviders ? " ||\n        static_cast<bool>(child_record.provider_world)" : ""};
     if (link_changed) {
-        unlink_parent(engine, child, child_record);
+        unlink_parent(engine, child, child_record);${options.worldMatrixProviders ? "\n        clear_mesh_world_matrix_provider(child_record);" : ""}
         child_record.parent = MeshHandle{};
         child_record.transform_parent = parent;
         link_parent(engine, child, parent);
@@ -1819,6 +1859,10 @@ void remove_hierarchy_instance(Engine& engine, HierarchyInstancePoolHandle handl
     }
 
     private geometryAccessSource(options: SceneCoreOptions): string {
+        // A node-carrying import's tree is unparented until addToScene.
+        const unlinkedImports =
+            options.sceneNodeTransforms === true &&
+            options.transformNodes === true;
         return options.geometryAccess
             ? `
 ${lowerMeshGeometryAccess(this.context)}
@@ -1861,14 +1905,31 @@ js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asse
 js::Array<double> mesh_world_matrix_array(
     const Engine& engine,
     MeshHandle mesh) {
-    const std::array<float, 16> world =
-        upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh")});
+    const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};${
+        unlinkedImports
+            ? `
+    if (imported_hierarchy_unlinked(engine, record.import_owner)) {
+        const std::array<float, 16> local = upstream::trs_matrix(record);
+        return js::Array<double>(local.begin(), local.end());
+    }`
+            : ""
+    }
+    const std::array<float, 16> world = upstream::mesh_world_matrix(engine, record);
     return js::Array<double>(world.begin(), world.end());
 }
 
 js::F32Array transform_node_world_matrix_view(
     const Engine& engine,
-    TransformNodeHandle node) {
+    TransformNodeHandle node) {${
+        unlinkedImports
+            ? `
+    const TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
+    if (imported_hierarchy_unlinked(engine, record.import_owner)) {
+        if (!record.matrix_cache) record.matrix_cache = std::make_shared<TransformNodeMatrixCache>();
+        return upstream::transform_node_local_view(record, *record.matrix_cache);
+    }`
+            : ""
+    }
     return upstream::transform_node_world_view(engine, node);
 }
 
@@ -2397,7 +2458,12 @@ void add_asset_meshes(Scene& scene, const AssetRecord& record) {
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
     AssetRecord& record =
-        asset_record(*scene.engine, asset.value);
+        asset_record(*scene.engine, asset.value);${
+            nodeHierarchy
+                ? `
+    record.hierarchy_linked = true;`
+                : ""
+        }
 ${lowerAssetSceneAttachment(this.context)}
     if (record.animation_seek) {
         scene.animation_seekers.push_back(record.animation_seek);
@@ -2428,7 +2494,12 @@ ${lowerAssetSceneAttachment(this.context)}
 
     private assetMembershipSource(options: SceneCoreOptions): string {
         return `void add_asset_entities(Scene& scene, AssetHandle asset) {
-    require_scene_engine(scene);
+    require_scene_engine(scene);${
+        options.sceneNodeTransforms === true && options.transformNodes === true
+            ? `
+    asset_record(*scene.engine, asset.value).hierarchy_linked = true;`
+            : ""
+    }
     const AssetRecord& record =
         asset_record(*scene.engine, asset.value);
     add_asset_meshes(scene, record);
@@ -2783,6 +2854,16 @@ ${
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
     for (const auto task_handle : scene.frame_passes()) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+${
+    options.taskMethodSlots
+        ? `        // The build records every task: one scene code wrapped runs its record.
+        if (task.kind == FrameTaskKind::effect && task.record_override) {
+            record_effect_task(*scene.engine, task_handle);
+            continue;
+        }
+`
+        : ""
+}\
         if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
 ${this.renderTaskRecordSource(options)}
     }
@@ -2919,7 +3000,7 @@ ${
 
 ${
     options.taskBuild
-        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false)}
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false, options.taskMethodSlots ?? false)}
 `
         : ""
 }${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${

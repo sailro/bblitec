@@ -549,7 +549,7 @@ test("mutable class method counts do not become fixed construction ordinals", ()
             burst(count: number): void {
                 for (let i = 0; i < count; i++) {
                     count--;
-                    loadGltf(engine, "https://example.invalid/model.glb");
+                    loadGltf(this.engine, "https://example.invalid/model.glb");
                 }
             }
         }
@@ -851,16 +851,14 @@ test("unknown-cardinality material construction uses PBR profiles", () => {
         assert.match(result.cpp, /\.composition_profile = 0u/);
         assert.ok(result.manifest.runtimeMaterialProfiles?.length);
     }
-    assert.throws(
-        () =>
-            compileSource(
-                scene(`
+    // A later glTF load composes its document once and announces its rows.
+    const loaded = compileSource(
+        scene(`
         for (let i = 0; i < Math.random() * 20; i++) createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
         loadGltf(engine, "https://example.invalid/model.glb");
     `),
-            ),
-        /generation-known physical material slot for a later glTF load/,
     );
+    assert.equal(loaded.manifest.profiledGltfLoads, true);
 });
 
 test("mixed runtime mesh identities use the unknown-mesh PBR composition path", () => {
@@ -1220,20 +1218,17 @@ test("a nested data loop keeps its native break under a static resource loop", (
     assert.equal(result.manifest.sceneMeshes.length, 3);
 });
 
-test("runtime-dependent exits cannot silently corrupt resource composition counts", () => {
+test("runtime-dependent exits profile glTF loads instead of counting them", () => {
     for (const control of ["break", "continue"]) {
-        assert.throws(
-            () =>
-                compileSource(
-                    scene(`
+        const loads = compileSource(
+            scene(`
             for (let i = 0; i < 300; i++) {
                 if (Math.random() < 0.5) ${control};
                 loadGltf(engine, "https://example.invalid/model.glb");
             }
         `),
-                ),
-            /Runtime resource construction requires a generation-known iteration count/,
         );
+        assert.equal(loads.manifest.profiledGltfLoads, true);
     }
 });
 
@@ -1266,24 +1261,23 @@ test("returns and labeled exits retain an explicit resource specialization bound
     );
 });
 
-test("runtime-dependent helper exits cannot disguise variable construction counts", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                scene(
-                    `
+test("runtime-dependent helper exits before glTF loads profile the loads", () => {
+    // A load the runtime return skips moves no other ordinal: each loaded
+    // document announces its own rows.
+    const result = compileSource(
+        scene(
+            `
         for (let i = 0; i < 300; i++) maybeSpawn(engine);
     `,
-                    `
+            `
         function maybeSpawn(engine: EngineContext): void {
             if (Math.random() < 0.5) return;
             loadGltf(engine, "https://example.invalid/model.glb");
         }
     `,
-                ),
-            ),
-        /resource-construction helper's early return requires a generation-known condition/,
+        ),
     );
+    assert.equal(result.manifest.profiledGltfLoads, true);
 });
 
 test("nullable pool helpers can return before native thin-instance updates", () => {
@@ -1353,25 +1347,22 @@ test("a helper can return after unconditional construction and before runtime mu
     assert.equal(result.cpp.match(/\.position\.x =/g)?.length, 1);
 });
 
-test("a helper exit still refuses construction hidden in a nested call", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                scene(
-                    `
+test("a helper exit before a glTF load hidden in a nested call profiles the load", () => {
+    const result = compileSource(
+        scene(
+            `
         for (let i = 0; i < 4; i++) maybeSpawn(engine);
     `,
-                    `
+            `
         function spawn(engine: EngineContext): void { loadGltf(engine, "https://example.invalid/model.glb"); }
         function maybeSpawn(engine: EngineContext): void {
             if (Math.random() < 0.5) return;
             spawn(engine);
         }
     `,
-                ),
-            ),
-        /resource-construction helper's early return requires a generation-known condition/,
+        ),
     );
+    assert.equal(result.manifest.profiledGltfLoads, true);
 });
 
 test("materializes large generation-known record members for native instance updates", () => {

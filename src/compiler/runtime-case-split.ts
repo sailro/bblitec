@@ -1,0 +1,335 @@
+import ts from "typescript";
+import { CompileError } from "./compile-error.js";
+import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { isStorageDemand } from "./storage-demand-planner.js";
+import { typeCanCarryReference } from "./type-facts.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
+import type { Value } from "./types.js";
+
+type CaseSplitContext = Pick<
+    LoweringServices,
+    | "allocateTemporaryCppName"
+    | "checker"
+    | "conditionOverrides"
+    | "conditions"
+    | "dataLowerer"
+    | "dataTypes"
+    | "decreaseIndent"
+    | "emit"
+    | "emitDiscardedValue"
+    | "enterRuntimeControlFlow"
+    | "evaluationOrder"
+    | "increaseIndent"
+    | "leaveRuntimeControlFlow"
+    | "probeEmission"
+>;
+
+/** At most this many distinct runtime tests split one call (2^n arms). */
+const MAX_SELECTORS = 4;
+/** More tests than this are not probed for the ones the call depends on. */
+const MAX_CANDIDATE_SELECTORS = 8;
+
+/**
+ * Compiles a local function call whose arguments pick between values with a
+ * runtime test (`f({...(c ? a : {})})`) once per outcome when the single
+ * compilation refuses: a callee that specializes on its argument (a shader
+ * composed from options) then sees each outcome as a constant. The test is
+ * read once, before the call, which is where JavaScript reads it unless an
+ * argument evaluated earlier could change it; so every test is free of
+ * writes, no argument assigns or constructs, and an argument's calls go to
+ * module-level functions that receive none of the bindings the tests read
+ * (such a function reaches a local binding only through its arguments).
+ * With more than two tests, the call splits only on those whose staying a
+ * runtime test, with every other test fixed, still refuses.
+ */
+export function compileWithRuntimeCaseSplit(
+    context: CaseSplitContext,
+    call: ts.CallExpression,
+    compile: () => Value | undefined,
+): Value | undefined {
+    const candidates = runtimeSelectors(context, call);
+    if (candidates === undefined) return compile();
+    try {
+        return context.probeEmission(compile, () => true);
+    } catch (error) {
+        // A storage demand is the unsplit call asking for dynamic storage
+        // the runtime test forced; per outcome it may not be needed, so it
+        // stands only when the split fails too.
+        if (!refusesPerOutcome(error)) throw error;
+        const selectors = dependedSelectors(context, candidates, compile);
+        if (selectors === undefined) throw error;
+        const split = context.probeEmission(
+            () => {
+                try {
+                    return splitCall(context, call, selectors, compile);
+                } catch (inner) {
+                    // An arm's own storage demand restarts generation with
+                    // it satisfied, after which the split can succeed.
+                    if (inner instanceof CompileError) return undefined;
+                    throw inner;
+                }
+            },
+            (result) => result !== undefined,
+        );
+        if (split) return split;
+        throw error;
+    }
+}
+
+/** A refusal, or a storage or realm restart one outcome may not need. */
+function refusesPerOutcome(error: unknown): boolean {
+    return (
+        error instanceof CompileError ||
+        isStorageDemand(error) ||
+        error instanceof ApplicationRealmRequired
+    );
+}
+
+/** One runtime test: the node read once, and every node spelling it. */
+interface Selector {
+    test: ts.Expression;
+    nodes: readonly ts.Expression[];
+}
+
+/** Compiles `compile` with each selector forced to its outcome (`undefined` leaves it runtime). */
+function withOutcomes<T>(
+    context: CaseSplitContext,
+    selectors: readonly Selector[],
+    outcomes: readonly (boolean | undefined)[],
+    compile: () => T,
+): T {
+    selectors.forEach((selector, index) => {
+        const outcome = outcomes[index];
+        if (outcome === undefined) return;
+        for (const node of selector.nodes)
+            context.conditionOverrides.set(node, outcome);
+    });
+    try {
+        return compile();
+    } finally {
+        for (const selector of selectors)
+            for (const node of selector.nodes)
+                context.conditionOverrides.delete(node);
+    }
+}
+
+/**
+ * The selectors the call depends on: all of them when few, else each one
+ * that, left a runtime test while every other is false, still refuses.
+ */
+function dependedSelectors(
+    context: CaseSplitContext,
+    candidates: readonly Selector[],
+    compile: () => Value | undefined,
+): readonly Selector[] | undefined {
+    if (candidates.length <= 2) return candidates;
+    const refuses = (outcomes: readonly (boolean | undefined)[]): boolean => {
+        try {
+            context.probeEmission(
+                () => withOutcomes(context, candidates, outcomes, compile),
+                () => false,
+            );
+            return false;
+        } catch (error) {
+            if (refusesPerOutcome(error)) return true;
+            throw error;
+        }
+    };
+    const depended = candidates.filter((_, index) =>
+        refuses(
+            candidates.map((_, other) => (other === index ? undefined : false)),
+        ),
+    );
+    return depended.length > 0 && depended.length <= MAX_SELECTORS
+        ? depended
+        : undefined;
+}
+
+/** A function declared at a module's top level, directly or through an import. */
+function moduleLevelCallee(
+    checker: ts.TypeChecker,
+    callee: ts.Expression,
+): boolean {
+    if (!ts.isIdentifier(callee)) return false;
+    const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
+    if (!declaration) return false;
+    if (ts.isFunctionDeclaration(declaration))
+        return ts.isSourceFile(declaration.parent);
+    return (
+        ts.isVariableDeclaration(declaration) &&
+        !!declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer)) &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        ts.isSourceFile(declaration.parent.parent.parent)
+    );
+}
+
+function runtimeSelectors(
+    context: CaseSplitContext,
+    call: ts.CallExpression,
+): Selector[] | undefined {
+    const conditions = new Map<string, ts.Expression>();
+    const sameTests = new Map<string, ts.Expression[]>();
+    const calls: ts.CallExpression[] = [];
+    let effects = false;
+    const visit = (node: ts.Node): void => {
+        if (effects || ts.isFunctionLike(node)) return;
+        if (ts.isCallExpression(node)) {
+            if (!moduleLevelCallee(context.checker, node.expression)) {
+                effects = true;
+                return;
+            }
+            calls.push(node);
+        } else if (
+            ts.isNewExpression(node) ||
+            ts.isTaggedTemplateExpression(node) ||
+            ts.isAwaitExpression(node) ||
+            ts.isYieldExpression(node) ||
+            ts.isDeleteExpression(node) ||
+            ((ts.isPrefixUnaryExpression(node) ||
+                ts.isPostfixUnaryExpression(node)) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                    node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+            (ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+        ) {
+            effects = true;
+            return;
+        }
+        if (ts.isConditionalExpression(node)) {
+            const text = node.condition.getText();
+            if (!conditions.has(text)) conditions.set(text, node.condition);
+            sameTests.set(text, [
+                ...(sameTests.get(text) ?? []),
+                node.condition,
+            ]);
+        }
+        ts.forEachChild(node, visit);
+    };
+    call.arguments.forEach(visit);
+    if (effects || conditions.size === 0) return undefined;
+    // The bindings the tests read; no call in the arguments may receive one.
+    const roots = new Set<ts.Symbol>();
+    // A member name is no binding.
+    const binding = (node: ts.Node): node is ts.Identifier =>
+        ts.isIdentifier(node) &&
+        !(
+            ts.isPropertyAccessExpression(node.parent) &&
+            node.parent.name === node
+        );
+    const collect = (node: ts.Node): void => {
+        if (binding(node)) {
+            const symbol = declaredSymbol(context.checker, node);
+            if (symbol) roots.add(symbol);
+        }
+        ts.forEachChild(node, collect);
+    };
+    for (const condition of conditions.values()) {
+        if (context.evaluationOrder.writesStorage(condition)) return undefined;
+        collect(condition);
+    }
+    const receivesRoot = (node: ts.Node): boolean =>
+        (binding(node) &&
+            roots.has(declaredSymbol(context.checker, node)!) &&
+            // A member read hands over its value, not the binding.
+            !(
+                ts.isPropertyAccessExpression(node.parent) &&
+                node.parent.expression === node &&
+                !typeCanCarryReference(
+                    context.checker.getTypeAtLocation(node.parent),
+                )
+            )) ||
+        (ts.forEachChild(node, receivesRoot) ?? false);
+    if (calls.some((inner) => inner.arguments.some(receivesRoot)))
+        return undefined;
+    const runtime = [...conditions.values()].filter((condition) => {
+        const folded = context.probeEmission(
+            () => context.conditions.compileCondition(condition),
+            () => false,
+        );
+        return folded !== "true" && folded !== "false";
+    });
+    return runtime.length > 0 && runtime.length <= MAX_CANDIDATE_SELECTORS
+        ? runtime.map((test) => ({
+              test,
+              nodes: sameTests.get(test.getText()) ?? [test],
+          }))
+        : undefined;
+}
+
+function splitCall(
+    context: CaseSplitContext,
+    call: ts.CallExpression,
+    selectors: readonly Selector[],
+    compile: () => Value | undefined,
+): Value | undefined {
+    const tests = selectors.map(({ test: selector }) => {
+        const name = context.allocateTemporaryCppName("case_test");
+        context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name,
+            initializer: context.conditions.compileCondition(selector),
+        });
+        return name;
+    });
+    const resultTsType = context.checker.getTypeAtLocation(call);
+    const resultType =
+        (resultTsType.flags & ts.TypeFlags.Void) !== 0
+            ? undefined
+            : context.dataTypes.fromTsType(resultTsType, call);
+    if (
+        resultType === undefined &&
+        (resultTsType.flags & ts.TypeFlags.Void) === 0
+    )
+        return undefined;
+    const result = resultType && {
+        name: context.allocateTemporaryCppName("case_result"),
+        type: resultType,
+    };
+    if (result)
+        context.emit({
+            kind: "declaration",
+            type: context.dataTypes.cppType(result.type),
+            name: result.name,
+            initializer: "",
+            initialization: "default",
+        });
+    const arm = (outcomes: readonly boolean[]): void => {
+        const value = withOutcomes(context, selectors, outcomes, compile);
+        if (!value) throw new CompileError("", 0, 0, "unanswered");
+        if (result)
+            context.emit({
+                kind: "expression",
+                code: `${result.name} = ${context.dataLowerer.compileKnownValueForSink(value, result.type, call)};`,
+            });
+        else context.emitDiscardedValue(value);
+    };
+    const branch = (depth: number, outcomes: boolean[]): void => {
+        if (depth === selectors.length) {
+            arm(outcomes);
+            return;
+        }
+        context.emit({ kind: "open", code: `if (${tests[depth]}) {` });
+        context.increaseIndent();
+        branch(depth + 1, [...outcomes, true]);
+        context.decreaseIndent();
+        context.emit({ kind: "branch", code: "} else {" });
+        context.increaseIndent();
+        branch(depth + 1, [...outcomes, false]);
+        context.decreaseIndent();
+        context.emit({ kind: "close", code: "}" });
+    };
+    context.enterRuntimeControlFlow();
+    try {
+        branch(0, []);
+    } finally {
+        context.leaveRuntimeControlFlow();
+    }
+    return result
+        ? context.dataLowerer.leafValue(result.name, result.type)
+        : { kind: "void", cpp: "" };
+}

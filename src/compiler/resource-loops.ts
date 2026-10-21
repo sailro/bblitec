@@ -140,6 +140,25 @@ function nativePlatformRead(
         libraryGlobal(context.checker, owner) === "navigator"
     )
         return true;
+    // The clock: `performance`, however a global object names it, and its
+    // `now`/`timeOrigin` are native reads that keep no DOM fact.
+    const performance = (type: ts.Type): boolean =>
+        type.getSymbol()?.name === "Performance" &&
+        declaredInDomLibrary(type.getSymbol());
+    if (
+        performance(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(node),
+            ),
+        ) ||
+        ((node.name.text === "now" || node.name.text === "timeOrigin") &&
+            performance(
+                context.checker.getNonNullableType(
+                    context.checker.getTypeAtLocation(owner),
+                ),
+            ))
+    )
+        return true;
     const type = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(owner),
     );
@@ -607,8 +626,13 @@ function reachesSpecializingEffect(
         }
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
+        // A native platform read's call (the clock) writes nothing.
         if (
             preservesDomFacts &&
+            !(
+                ts.isCallExpression(node) &&
+                nativePlatformRead(context, unwrapExpression(node.expression))
+            ) &&
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)

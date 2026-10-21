@@ -859,6 +859,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/enable-mirrored-meshes.ts",
         consumers: CMAKE,
     },
+    "mesh:world-matrix-provider": {
+        provenance: "src/scene/world-matrix-state.ts#pollForeignParent",
+        consumers: CMAKE,
+    },
     "mesh:transform-node": {
         provenance: "src/scene/transform-node.ts",
         consumers: CMAKE,
@@ -1569,6 +1573,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
             "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-method-slots": {
+        provenance:
+            "src/frame-graph/frame-graph.ts recordTask (task.record()) + " +
+            "EffectRenderTask.dispose read and replaced by scene code",
         consumers: CMAKE,
     },
     "frame-graph:task-disposal": {

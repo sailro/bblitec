@@ -19,7 +19,10 @@ import {
 import { nodeParticleManifest } from "./intrinsics/particle.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { SceneMaterialRecorder } from "./scene-materials.js";
-import { shaderThinInstanceLanes } from "./shader-material.js";
+import {
+    shaderThinInstanceLanes,
+    sourceInstanceLanes,
+} from "./shader-material.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
 import type {
     ClusteredContainerState,
@@ -68,6 +71,12 @@ interface SceneManifestContext extends Pick<
 /** The generation-owned construction ordinals a resource checkpoint compares. */
 export interface ResourceConstructionState {
     readonly counters: readonly number[];
+    /**
+     * glTF containers: packaged files are deduplicated inputs, not runtime
+     * allocation ordinals (closed-directory discovery can happen inside a
+     * loop), and profiled loads announce their rows by document.
+     */
+    readonly gltfContainers: number;
     readonly lightIdentities: readonly NonNullable<Value["lightIdentity"]>[];
 }
 
@@ -231,6 +240,9 @@ export class SceneManifestRecorder {
     @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     @journaled private accessor runtimeMeshProfileCount = 0;
+    @journaled private accessor profiledGltfLoads = false;
+    /** The scene mesh profile each mesh-producing call last produced. */
+    private readonly meshCreations = new EmissionMap<ts.Node, number>();
     private readonly runtimeShaderProfiles = new EmissionSet<number>();
     private readonly runtimeNodeProfiles = new EmissionSet<number>();
     @journaled private accessor reachedPlainSpriteLayer = false;
@@ -308,6 +320,9 @@ export class SceneManifestRecorder {
                           ...this.runtimeMaterialProfiles,
                       ],
                   }
+                : {}),
+            ...(this.profiledGltfLoads
+                ? { profiledGltfLoads: true as const }
                 : {}),
             sceneMeshes: this.sceneMeshes,
             sceneLightKinds: this.sceneLights.map(({ kind }) => kind),
@@ -407,6 +422,31 @@ export class SceneManifestRecorder {
                     ...(mesh.shaderVariants ?? []),
                 ])
                     knownLayouts.set(variant, mesh);
+            const unknownMeshes = this.sceneMeshes.filter(
+                (_, index) =>
+                    this.unknownMaterialMeshProfiles.has(undefined) ||
+                    this.unknownMaterialMeshProfiles.has(index),
+            );
+            // A program no known assignment lays out can reach a mesh only
+            // through an unknown one. When every such mesh has the same
+            // instance lanes for it, that is its only drawable layout.
+            for (const program of this.reachedShaderPrograms) {
+                if (
+                    knownLayouts.has(program.name) ||
+                    unknownMeshes.some(
+                        (mesh) => mesh.thinInstances === "possible",
+                    )
+                )
+                    continue;
+                const lanes = new Set(
+                    unknownMeshes.map(
+                        (mesh) =>
+                            `${mesh.thinInstances}:${program.thinInstanceColorOption === false || mesh.thinInstanceColors === true}`,
+                    ),
+                );
+                if (lanes.size === 1)
+                    knownLayouts.set(program.name, unknownMeshes[0]!);
+            }
             for (const program of this.reachedShaderPrograms)
                 writable(program).runtimeInstanceLayoutCheck = true;
             for (const [index, mesh] of this.sceneMeshes.entries()) {
@@ -415,7 +455,17 @@ export class SceneManifestRecorder {
                     this.unknownMaterialMeshProfiles.has(index)
                 ) {
                     const variants = this.reachedShaderPrograms
-                        .filter(({ name, thinInstanceColorOption }) => {
+                        .filter((program) => {
+                            const { name, thinInstanceColorOption } = program;
+                            // A program reading the instance lanes draws on
+                            // any mesh that holds, or may acquire, its pool.
+                            const required = sourceInstanceLanes(program);
+                            if (required && !knownLayouts.has(name))
+                                return (
+                                    mesh.thinInstances !== undefined &&
+                                    (!required.colors ||
+                                        mesh.thinInstanceColors === true)
+                                );
                             const known = knownLayouts.get(name);
                             if (known !== undefined) {
                                 return (
@@ -499,9 +549,6 @@ export class SceneManifestRecorder {
                 this.sceneMeshes.length - this.runtimeMeshProfileCount,
                 this.sceneMaterials.count - this.runtimeMaterialProfiles.size,
                 this.shadowGenerators.length,
-                // Packaged files are deduplicated inputs, not runtime allocation
-                // ordinals. Closed-directory discovery can happen inside a loop.
-                this.currentGltfAssetCount(),
                 this.reachedShaderPrograms.length -
                     this.runtimeShaderProfiles.size,
                 this.reachedNodeMaterials.length -
@@ -520,6 +567,7 @@ export class SceneManifestRecorder {
                 this.reachedNodeParticles.sets.length,
                 this.reachedNodeParticles.billboards.length,
             ],
+            gltfContainers: this.currentGltfAssetCount(),
             lightIdentities: this.sceneLights.map(({ identity }) => identity),
         };
     }
@@ -578,6 +626,19 @@ export class SceneManifestRecorder {
                 this.sceneMaterials.recordSceneMaterialSlot();
             }
         }
+    }
+
+    public recordMeshCreation(call: ts.Node, sceneMeshIndex: number): void {
+        this.meshCreations.set(call, sceneMeshIndex);
+    }
+
+    public meshCreationProfile(call: ts.Node): number | undefined {
+        return this.meshCreations.get(call);
+    }
+
+    /** glTF containers take native profiles instead of creation order (see the manifest field). */
+    public recordProfiledGltfLoads(): void {
+        this.profiledGltfLoads = true;
     }
 
     /** Whether a runtime-profiled construction already took a material row. */
@@ -1350,13 +1411,21 @@ export class SceneManifestRecorder {
         this.mutableToneMappingEnabled = true;
     }
 
-    /** Records the exact mesh on which a thin-instance pool exists. */
-    public recordThinInstanceMesh(sceneMeshIndex: number | undefined): void {
+    /**
+     * Records the exact mesh on which a thin-instance pool exists. A pool a
+     * callback attaches is "possible" unless it is attached in the segment
+     * that created the mesh, before any frame could draw it.
+     */
+    public recordThinInstanceMesh(
+        sceneMeshIndex: number | undefined,
+        withCreation = false,
+    ): void {
         if (sceneMeshIndex === undefined) return;
         const mesh = this.sceneMeshes[sceneMeshIndex];
         if (!mesh) return;
         if (
             this.context.isRuntimeCallback() &&
+            !withCreation &&
             mesh.thinInstances !== "always"
         ) {
             writable(mesh).thinInstances = "possible";

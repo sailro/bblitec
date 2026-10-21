@@ -1385,11 +1385,29 @@ function compileSetShaderTexture(
             argumentAt(call, 1),
             "Shader texture names require a string.",
         );
-    const texture = context.bindings.pinValueToTemporary(
+    let texture = context.bindings.pinValueToTemporary(
         context.compileValue(argumentAt(call, 2)),
         "shader_texture",
         call,
     );
+    // A texture read where the checker admits `undefined` (an unchecked
+    // keyed read) is bound when present; the pin cannot bind an absent one.
+    if (
+        texture.kind === "data" &&
+        texture.dataType?.kind === "optional" &&
+        texture.dataType.inner.kind === "handle" &&
+        texture.dataType.inner.handle === "texture"
+    ) {
+        context.emit({
+            kind: "expression",
+            code: `if (!${texture.cpp}.has_value()) throw std::runtime_error("setShaderTexture requires a texture.");`,
+        });
+        texture = context.dataLowerer.narrowOptional(
+            texture,
+            argumentAt(call, 2),
+            true,
+        );
+    }
     const engine = context.requireEngine(material, call);
     const dynamic = !material.shaderVariant || name.staticString === undefined;
     const slot = dynamic

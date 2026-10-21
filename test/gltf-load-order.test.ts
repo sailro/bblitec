@@ -35,9 +35,9 @@ test("preserves contiguous repeated glTF container order", () => {
     assert.equal(result.cpp.match(/bbl::load_gltf\(/g)?.length, 4);
 });
 
-test("refuses an interleaved repeated glTF source", () => {
-    assert.throws(
-        () => compileLoads(["a.glb", "b.glb", "a.glb"]),
-        /a\.glb.*loaded again after a different glTF source.*must be contiguous/s,
-    );
+test("profiles an interleaved repeated glTF source", () => {
+    // Each document composes once and every load announces its rows by path.
+    const result = compileLoads(["a.glb", "b.glb", "a.glb"]);
+    assert.equal(result.manifest.profiledGltfLoads, true);
+    assert.equal(result.cpp.match(/bbl::load_gltf\(/g)?.length, 3);
 });

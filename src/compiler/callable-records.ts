@@ -121,5 +121,11 @@ export function callableRecordValue(
         kind: "expression",
         code: `${cpp}->${callMember} = ${lowerer.compileKnownValueForSink(value, call, node)};`,
     });
-    return { ...lowerer.leafValue(cpp, type), freshData: true };
+    // A closure that reads the record later (a static list's element) captures it.
+    const binding = lowerer.context.registerNativeConstBinding(cpp);
+    return {
+        ...lowerer.leafValue(cpp, type),
+        freshData: true,
+        nativeCaptures: [binding],
+    };
 }

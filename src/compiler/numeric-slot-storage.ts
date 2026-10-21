@@ -27,6 +27,7 @@ export type NumericSlotKind = TypedArrayKind | "array" | "view";
  */
 export type NumericSlotDeclaration =
     | ts.VariableDeclaration
+    | ts.ParameterDeclaration
     | ts.PropertySignature
     | ts.PropertyDeclaration
     | ts.MethodSignature;
@@ -137,11 +138,21 @@ function arrayLikeAt(
     return current !== undefined && isNumberArrayLike(checker, current);
 }
 
-/** A program's own declaration whose storage a demand can retype ({@link isRetypableDeclaration}). */
+/**
+ * A program's own declaration whose storage a demand can retype
+ * ({@link isRetypableDeclaration}). A method's parameter is one: a method on
+ * a stored instance runs one native body, where a function's call inlines
+ * over the argument it is given.
+ */
 function isNumericSlotDeclaration(
     declaration: ts.Declaration | undefined,
 ): declaration is NumericSlotDeclaration {
-    return isRetypableDeclaration(declaration) && !ts.isParameter(declaration);
+    return (
+        isRetypableDeclaration(declaration) &&
+        (!ts.isParameter(declaration) ||
+            (ts.isMethodDeclaration(declaration.parent) &&
+                declaration.dotDotDotToken === undefined))
+    );
 }
 
 /** The declaration of the one property `name` of the type an object literal is stored as. */
@@ -179,6 +190,16 @@ function storageDeclaration(
         );
     if (ts.isVariableDeclaration(parent) && parent.initializer === node)
         return parent;
+    if (
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.expression !== node
+    ) {
+        const index = parent.arguments?.indexOf(node as ts.Expression) ?? -1;
+        const callee = checker.getResolvedSignature(parent)?.declaration;
+        return index >= 0 && callee && !ts.isJSDocSignature(callee)
+            ? callee.parameters[index]
+            : undefined;
+    }
     if (
         ts.isBinaryExpression(parent) &&
         parent.right === node &&

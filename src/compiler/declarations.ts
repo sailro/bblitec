@@ -2,6 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
+import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,
@@ -109,6 +110,7 @@ import {
 import {
     engineCallMutatesArgument,
     parameterIsMutated,
+    parameterMutatedPaths,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
 
@@ -158,6 +160,8 @@ interface DeclarationContext
         > {
     /** The engine the entry created, once it has. */
     readonly defaultEngineCpp: string | undefined;
+    /** How many runtime control-flow constructs enclose the current emission. */
+    readonly runtimeControlFlowDepth: number;
     /** Declarations a storage demand retyped, by declaration. */
     readonly dynamicBindings: ReadonlyMap<
         ts.VariableDeclaration,
@@ -239,6 +243,29 @@ export function initializerNamesBinding(
 
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
+
+    /**
+     * A module `let` only never-run functions assign keeps its initializer
+     * for the whole run, as a `const` would.
+     */
+    private neverReassigned(declaration: ts.VariableDeclaration): boolean {
+        const statement = declaration.parent.parent;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableStatement(statement) ||
+            !ts.isSourceFile(statement.parent)
+        )
+            return false;
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        return (
+            symbol !== undefined &&
+            writtenOnlyInDeadFunctions(
+                this.context.checker,
+                this.context.sourceFiles(),
+                symbol,
+            )
+        );
+    }
 
     private bindOptionalResource(
         name: ts.Identifier,
@@ -797,7 +824,8 @@ export class DeclarationLowerer {
         if (
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0 &&
+            !this.neverReassigned(declaration)
         ) {
             const symbol = this.context.symbols.valueSymbol(declaration.name);
             if (symbol) {
@@ -1530,7 +1558,11 @@ export class DeclarationLowerer {
                             ? { sharedStorageCpp: cppName }
                             : {}),
                         ...(orderedText
-                            ? { orderedTextDeclaration: declaration }
+                            ? {
+                                  orderedTextDeclaration: declaration,
+                                  orderedTextControlDepth:
+                                      this.context.runtimeControlFlowDepth,
+                              }
                             : {}),
                         ...(narrowed.dataType.kind === "string" &&
                         narrowed.staticString !== undefined &&
@@ -1754,7 +1786,11 @@ export class DeclarationLowerer {
             nativeBinding: true,
         };
         // The local reads its own storage, not a counted loop's counter.
-        if (orderedText) writable(stored).orderedTextDeclaration = declaration;
+        if (orderedText) {
+            writable(stored).orderedTextDeclaration = declaration;
+            writable(stored).orderedTextControlDepth =
+                this.context.runtimeControlFlowDepth;
+        }
         delete writable(stored).integerCounterCpp;
         if (!sharedBinding) delete writable(stored).sharedStorageCpp;
         if (value.kind === "animation-clip") {
@@ -1764,7 +1800,8 @@ export class DeclarationLowerer {
         if (
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0 &&
+            !this.neverReassigned(declaration)
         ) {
             // Rebound locals read their current native storage. Text keeps
             // its initialization fact only when no reached path replaces it.
@@ -2887,6 +2924,31 @@ export class DeclarationLowerer {
         );
     }
 
+    /**
+     * An object literal with spreads whose every key generation knows
+     * (`{ a, ...(flag ? { b } : {}) }` with a settled `flag`): the record it
+     * builds, so the demanded storage keeps that record's static facts.
+     */
+    private spreadRecordSnapshot(
+        literal: ts.ObjectLiteralExpression,
+    ): Value | undefined {
+        const plain = (result: Value): boolean =>
+            result.kind === "record" &&
+            result.recordProperties !== undefined &&
+            !result.recordMethods &&
+            !result.recordGetters &&
+            !result.recordSetters;
+        const value = this.context.probeEmission(
+            () => this.context.compileValue(literal),
+            plain,
+        );
+        // An accepted probe already committed its emission.
+        if (plain(value)) return value;
+        return value.kind === "record" && value.recordProperties
+            ? this.context.compileValue(literal)
+            : undefined;
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -2959,7 +3021,16 @@ export class DeclarationLowerer {
                             property.name.text !== "__proto__",
                     )
                         ? this.context.compileValue(literal)
-                        : undefined;
+                        : (type.kind === "union" || type.kind === "struct") &&
+                            !resourceRecordSnapshot &&
+                            !sharedClosureStorage &&
+                            !this.context.sharedClosures.identifierIsRebound(
+                                name,
+                            ) &&
+                            ts.isObjectLiteralExpression(literal) &&
+                            literal.properties.some(ts.isSpreadAssignment)
+                          ? this.spreadRecordSnapshot(literal)
+                          : undefined;
                 const snapshot =
                     arraySnapshot ??
                     resourceRecordSnapshot ??
@@ -3798,6 +3869,26 @@ export class DeclarationLowerer {
                   initializerSnapshot?.recordProperties ??
                   {})),
         };
+        // A spread literal's struct keeps the composed record's static
+        // members too (`{ tint: true, ...(flag ? { a } : {}) }`): a const
+        // object nothing writes reads them as generation knows them.
+        if (
+            spreadRecordProperties &&
+            initializerSnapshot?.kind === "record" &&
+            ts.isIdentifier(name) &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            !this.inferredObjectIsMutated(name)
+        )
+            for (const [key, member] of Object.entries(
+                initializerSnapshot.recordProperties ?? {},
+            ))
+                if (
+                    staticRecordProperties[key] === undefined &&
+                    (member.staticString !== undefined ||
+                        member.staticNumber !== undefined ||
+                        member.staticBoolean !== undefined)
+                )
+                    staticRecordProperties[key] = member;
         if (readonlyResourceCall && initializerSnapshot)
             Object.assign(
                 staticRecordProperties,
@@ -4358,6 +4449,135 @@ export class DeclarationLowerer {
     }
 
     /**
+     * Whether the object literal `identifier` is initialized with may hold
+     * `key`: written in it, or brought by a spread whose keys are unknown or
+     * include it. True for any binding not initialized by a literal.
+     */
+    private literalMayHold(identifier: ts.Identifier, key: string): boolean {
+        const declaration =
+            this.context.symbols.valueSymbol(identifier)?.valueDeclaration;
+        const literal =
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+                ? this.context.unwrap(declaration.initializer)
+                : undefined;
+        if (!literal || !ts.isObjectLiteralExpression(literal)) return true;
+        const holds = (object: ts.ObjectLiteralExpression): boolean =>
+            object.properties.some((property) => {
+                if (ts.isSpreadAssignment(property)) {
+                    const spread = this.context.unwrap(property.expression);
+                    if (ts.isObjectLiteralExpression(spread))
+                        return holds(spread);
+                    if (ts.isConditionalExpression(spread)) {
+                        const arms = [spread.whenTrue, spread.whenFalse].map(
+                            (arm) => this.context.unwrap(arm),
+                        );
+                        return arms.some(
+                            (arm) =>
+                                !ts.isObjectLiteralExpression(arm) ||
+                                holds(arm),
+                        );
+                    }
+                    return true;
+                }
+                const name = property.name;
+                return (
+                    name === undefined ||
+                    ts.isComputedPropertyName(name) ||
+                    propertyNameText(name) === key
+                );
+            });
+        return holds(literal);
+    }
+
+    /**
+     * Whether handing `argument` to `called` can change a member of the object
+     * literal `identifier` names. Passed itself, the callee's writes reach the
+     * members its paths start at; passed as a copy (`{ ...it, extra }`), they
+     * reach only the members the copy shares with it, never the copy's own
+     * slots. Writes into an engine resource a member names change no member.
+     */
+    private argumentMutatesLiteral(
+        identifier: ts.Identifier,
+        argument: ts.Expression,
+        called: SupportedFunction,
+        parameter: ts.Identifier,
+    ): boolean {
+        const own = this.context.symbols.valueSymbol(identifier);
+        const node = this.context.unwrap(argument);
+        const names = (expression: ts.Expression): boolean => {
+            const unwrapped = this.context.unwrap(expression);
+            return (
+                ts.isIdentifier(unwrapped) &&
+                this.context.symbols.valueSymbol(unwrapped) === own
+            );
+        };
+        const direct = names(node);
+        const copy =
+            !direct &&
+            ts.isObjectLiteralExpression(node) &&
+            node.properties.some(
+                (property) =>
+                    ts.isSpreadAssignment(property) &&
+                    names(property.expression),
+            ) &&
+            node.properties.every(
+                (property) =>
+                    !ts.isSpreadAssignment(property) ||
+                    names(property.expression) ||
+                    !someAnalysisNode(property.expression, (child) =>
+                        ts.isIdentifier(child) ? names(child) : false,
+                    ),
+            );
+        if (!direct && !copy)
+            return parameterIsMutated(this.context.checker, called, parameter);
+        const definedByCopy = (key: string): boolean =>
+            copy &&
+            ts.isObjectLiteralExpression(node) &&
+            node.properties.some(
+                (property) =>
+                    !ts.isSpreadAssignment(property) &&
+                    property.name !== undefined &&
+                    !ts.isComputedPropertyName(property.name) &&
+                    propertyNameText(property.name) === key,
+            );
+        return parameterMutatedPaths(
+            this.context.checker,
+            called,
+            parameter,
+        ).some((path) =>
+            path.length === 0
+                ? direct
+                : !definedByCopy(path[0]!) &&
+                  this.literalMayHold(identifier, path[0]!) &&
+                  !this.memberIsResource(identifier, path[0]!),
+        );
+    }
+
+    /**
+     * Whether the binding's `key` member is an engine resource: a write the
+     * engine makes to that object (a scene registering a listener) changes
+     * no member of this object.
+     */
+    private memberIsResource(identifier: ts.Identifier, key: string): boolean {
+        const member = this.context.checker
+            .getTypeAtLocation(identifier)
+            .getProperty(key);
+        if (!member) return false;
+        const type = this.context.dataTypes.fromTsType(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeOfSymbolAtLocation(
+                    member,
+                    identifier,
+                ),
+            ),
+            identifier,
+        );
+        return type?.kind === "handle";
+    }
+
+    /**
      * Whether an inferred plain object needs native storage.
      *
      * Compile-time records are ideal for immutable options, but they cannot
@@ -4531,8 +4751,9 @@ export class DeclarationLowerer {
                                 scan.containsAlias(argument) &&
                                 parameter !== undefined &&
                                 ts.isIdentifier(parameter) &&
-                                parameterIsMutated(
-                                    this.context.checker,
+                                this.argumentMutatesLiteral(
+                                    identifier,
+                                    argument,
                                     called,
                                     parameter,
                                 )

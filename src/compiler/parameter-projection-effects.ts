@@ -281,7 +281,7 @@ export function parameterProjectionIsReadOnly(
 
 function callProjection(
     checker: ts.TypeChecker,
-    call: ts.CallExpression,
+    call: ts.CallExpression | ts.NewExpression,
     index: number,
     path: Path,
     active: Set<ts.FunctionLikeDeclaration>,
@@ -759,6 +759,30 @@ function parameterProjection(
             )
         );
     };
+    /** An argument carrying the selection the callee's proof cannot keep. */
+    const argumentsAffectSelection = (
+        node: ts.CallExpression | ts.NewExpression,
+    ): boolean =>
+        (node.arguments ?? []).some((argument, argumentIndex) =>
+            flow(argument).some((value) =>
+                selected.some(
+                    (entry) =>
+                        mayAffectSelection(value.from, entry) &&
+                        !callProjection(
+                            checker,
+                            node,
+                            argumentIndex,
+                            [
+                                ...value.at,
+                                ...(value.from.length < entry.path.length
+                                    ? entry.path.slice(value.from.length)
+                                    : []),
+                            ],
+                            active,
+                        ),
+                ),
+            ),
+        );
     const unsafe =
         changed ||
         (!ts.isBlock(declaration.body) && uses(declaration.body)) ||
@@ -827,12 +851,15 @@ function parameterProjection(
                         )
                             return true;
                     }
+                    // Independent fields reach a constructor as they reach a
+                    // call: only an argument the selection flows into needs
+                    // the constructor's own proof.
                     if (ts.isNewExpression(node))
-                        return (
-                            node.arguments?.some(
-                                (argument) => flow(argument).length > 0,
-                            ) ?? false
-                        );
+                        return independentFields || identityPaths
+                            ? argumentsAffectSelection(node)
+                            : (node.arguments?.some(
+                                  (argument) => flow(argument).length > 0,
+                              ) ?? false);
                     if (!ts.isCallExpression(node)) return false;
                     const owner = receiver(node);
                     if (!owner && uses(node.expression)) return true;
@@ -873,29 +900,7 @@ function parameterProjection(
                         )
                             return true;
                     }
-                    return node.arguments.some((argument, argumentIndex) =>
-                        flow(argument).some((value) => {
-                            return selected.some(
-                                (entry) =>
-                                    mayAffectSelection(value.from, entry) &&
-                                    !callProjection(
-                                        checker,
-                                        node,
-                                        argumentIndex,
-                                        [
-                                            ...value.at,
-                                            ...(value.from.length <
-                                            entry.path.length
-                                                ? entry.path.slice(
-                                                      value.from.length,
-                                                  )
-                                                : []),
-                                        ],
-                                        active,
-                                    ),
-                            );
-                        }),
-                    );
+                    return argumentsAffectSelection(node);
                 },
                 { types: "skip" },
             ),

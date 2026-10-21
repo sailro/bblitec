@@ -161,15 +161,18 @@ test("awaited fixed-array maps retain per-input asset slots and URL specializati
             /ui_primary_canvas\(bbl::pal::window_document_engine\(\), "renderCanvas"\)/,
         );
     }
-    assert.throws(
-        () =>
-            compile(
-                'paths.filter(() => Math.random() > 0.5).map(() => load(engine, "./first.glb"))',
-            ),
-        /generation-known iteration count for glTF load order/,
-    );
-    assert.throws(
-        () => compile("paths.map(named)", false),
-        /generation-known iteration count for glTF load order/,
-    );
+    // Runtime-counted loads profile their document instead of ordering it.
+    for (const [input, immediate] of [
+        [
+            'paths.filter(() => Math.random() > 0.5).map(() => load(engine, "./first.glb"))',
+            true,
+        ],
+        ["paths.map(named)", false],
+    ] as const) {
+        assert.equal(
+            compile(input, immediate).manifest.profiledGltfLoads,
+            true,
+            input,
+        );
+    }
 });

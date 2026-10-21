@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import type { DataType } from "./data-types/model.js";
+import { erasedFieldWidens } from "./data-types/operations.js";
 import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
@@ -135,14 +136,19 @@ export class ReplayStorage {
                 return addNew(this.absenceTags, request.declaration);
             case "engine-owner":
                 return addNew(this.engineOwners, request.declaration);
-            case "asserted-handle-field":
-                if (this.assertedHandleFields.has(request.declaration))
+            case "asserted-handle-field": {
+                // A nullable use widens a field a present one settled.
+                const known = this.assertedHandleFields.get(
+                    request.declaration,
+                );
+                if (known && !erasedFieldWidens(known, request.storage))
                     return false;
                 this.assertedHandleFields.set(
                     request.declaration,
                     request.storage,
                 );
                 return true;
+            }
             case "completion": {
                 const known = this.completions.get(request.signatureSite);
                 if (known === "undefined" || known === request.proof)

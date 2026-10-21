@@ -533,6 +533,8 @@ export interface AssignmentContext
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"
+            | "isRuntimeCallback"
+            | "symbols"
             | "isInRuntimeControlFlow"
             | "checker"
             | "program"
@@ -2363,6 +2365,10 @@ function requireSimpleAssignment(
 }
 
 import ts from "typescript";
+import {
+    isEffectTaskMethodName,
+    reachEffectTaskMethod,
+} from "./effect-task-methods.js";
 import { argumentAt, expressionHasEffects } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";
@@ -2403,7 +2409,10 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
+import { optionalPresentCpp, optionalValueCpp } from "./values/model.js";
 import { recordAt } from "./record-access.js";
+import { isPinnedType } from "./data-types.js";
+import { creationInSegment } from "./creation-segments.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
 interface TargetPropertyAssignment {
@@ -2562,6 +2571,28 @@ function emitTargetPropertyAssignment(
         context.emit({
             kind: "expression",
             code: `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.${field} = ${value};`,
+        });
+        return true;
+    }
+    if (
+        target.kind === "task" &&
+        target.effectTask &&
+        isEffectTaskMethodName(property)
+    ) {
+        requireSimpleAssignment(
+            context,
+            expression,
+            `EffectRenderTask.${property}`,
+        );
+        reachEffectTaskMethod(context, property === "dispose", expression);
+        const method = context.dataLowerer.compileForSink(expression.right, {
+            kind: "function",
+            parameters: [],
+            identity: true,
+        });
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_effect_task_method(${context.requireEngine(target, expression)}, ${target.cpp}, ${property === "dispose"}, ${method});`,
         });
         return true;
     }
@@ -2777,12 +2808,7 @@ function emitTargetPropertyAssignment(
     );
     if (recordField) {
         if (recordField.kind === "material") {
-            const family = target.standardMaterial
-                ? "standard"
-                : target.scenePbrMaterialIndex !== undefined ||
-                    target.assetPbrMaterial
-                  ? "pbr"
-                  : undefined;
+            const family = materialFamily(context, target, left.expression);
             if (
                 !family ||
                 (recordField.materialFamily !== "standard-or-pbr" &&
@@ -3317,10 +3343,19 @@ function emitShadowCasterMaterialAssignment(
     const { expression, target } = state;
     if (target.kind !== "material") return false;
     requireSimpleAssignment(context, expression, "material shadow caster");
+    // Registration composes the caster views, so the write must precede it;
+    // a loop that builds a runtime number of materials before then pairs
+    // each with its caster by the same program variants.
+    // A material written in the step that created it has no caster view
+    // yet: views are made on its first shadow draw, after this write.
+    const owner = ts.isPropertyAccessExpression(expression.left)
+        ? expression.left.expression
+        : undefined;
     if (
-        context.hasRegisteredScene() ||
-        context.engineLifecycle.engineHasStarted() ||
-        context.isRuntimeResourceConstruction()
+        (context.hasRegisteredScene() ||
+            context.engineLifecycle.engineHasStarted() ||
+            context.isRuntimeCallback()) &&
+        !(owner && creationInSegment(context, owner, expression))
     )
         context.fail(
             expression,
@@ -3541,10 +3576,17 @@ function emitMaterialAssignment(
         context.expectKind(material, "material", expression.right);
         context.expectSameEngine(target, material, expression);
         // Node materials inspect attributes through uniform lanes. Loaded PBR
-        // materials compose the bounded optional-stream feature product;
-        // other families still require a fixed attribute profile.
+        // materials compose the bounded optional-stream feature product. A
+        // scene shader program reads its declared streams, and the pin
+        // uploads a zero uv buffer for a mesh given none, so a run-time uv
+        // stream alone leaves its draw unchanged. Other families still
+        // require a fixed attribute profile.
+        const sceneShader =
+            material.sceneShaderVariant !== undefined ||
+            (material.possibleSceneShaderVariants?.length ?? 0) > 0;
         if (
-            target.runtimeMeshStreams === true &&
+            target.runtimeMeshStreams !== undefined &&
+            !(target.runtimeMeshStreams === "uv" && sceneShader) &&
             material.nodeMaterialIndex === undefined &&
             material.assetPbrMaterial !== true
         ) {
@@ -3797,6 +3839,99 @@ function emitMorphTargetsAssignment(
     return false;
 }
 
+/**
+ * The family a material target is known to have: from its record, or, for a
+ * runtime material, from the pin's PBR props view the checker gives it
+ * (`isPbrMaterial(mat)` narrows to `PbrMaterialProps`). A view is no proof of
+ * the record, so a write it admits must also hold on a Standard record.
+ */
+function materialFamily(
+    context: AssignmentContext,
+    target: Value,
+    expression: ts.Expression,
+): "pbr" | "standard" | undefined {
+    if (target.standardMaterial) return "standard";
+    if (target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial)
+        return "pbr";
+    // Only the PBR view: its writes land in record slots a Standard draw
+    // never reads, while a Standard view over a PBR record would not.
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(expression),
+    );
+    return isPinnedType(type, ["PbrMaterialProps"]) ? "pbr" : undefined;
+}
+
+/**
+ * `pbr.baseColorTexture = texture` before scene registration. Every PBR
+ * variant binds the base-color slot (an absent texture binds the factor's
+ * fallback texel), so the swap composes nothing; registration binds the
+ * record's slot.
+ */
+function emitBaseColorTextureAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind !== "material" || property !== "baseColorTexture")
+        return false;
+    requireSimpleAssignment(context, expression, "PBR baseColorTexture");
+    if (
+        context.hasRegisteredScene() ||
+        context.engineLifecycle.engineHasStarted()
+    ) {
+        context.fail(
+            expression,
+            "PBR baseColorTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
+        );
+    }
+    if (materialFamily(context, target, left.expression) !== "pbr")
+        context.fail(left, "baseColorTexture requires a known PBR material.");
+    const texture = context.compileValue(expression.right);
+    context.expectKind(texture, "texture", expression.right);
+    context.expectSameEngine(target, texture, expression);
+    // The setter is the PBR factory's own (createPbrMaterial's texture props).
+    context.reachFeature("material:pbr", expression);
+    // A texture stored as data is the `StoredTexture` variant; a pixels
+    // texture there throws rather than binding a slot this setter cannot fill.
+    const stored =
+        texture.dataType?.kind === "handle" &&
+        texture.dataType.handle === "texture" &&
+        texture.textureStorage === undefined &&
+        !texture.textureFile;
+    const file =
+        texture.textureStorage === "solid"
+            ? `bbl::solid_texture_file(${texture.cpp})`
+            : texture.textureFile || texture.textureStorage === "file"
+              ? texture.cpp
+              : stored
+                ? `std::get<bbl::FileTexture>(${texture.cpp})`
+                : context.fail(
+                      expression.right,
+                      `PBR baseColorTexture replacement takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
+                  );
+    const engine = context.requireEngine(target, expression);
+    if (target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial) {
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_material_base_color_file(${engine}, ${target.cpp}, ${file});`,
+        });
+        return true;
+    }
+    // A Standard record behind a PBR view ignores the prop, as upstream.
+    const material = context.allocateTemporaryCppName("pbr_view_material");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: material,
+        initializer: target.cpp,
+    });
+    context.emit({
+        kind: "expression",
+        code: `if (!${recordAt(`${engine}.materials`, material)}.standard_material) bbl::set_material_base_color_file(${engine}, ${material}, ${file});`,
+    });
+    return true;
+}
+
 function emitOrmTextureAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -3996,6 +4131,75 @@ function emitDiffuseTextureAssignment(
     return false;
 }
 
+/**
+ * `mesh.parent = provider`, where the provider is an object that is no node
+ * (the pin's IWorldMatrixProvider): world-matrix-state.ts composes the mesh
+ * under `provider.worldMatrix` and polls `provider.worldMatrixVersion`. The
+ * record keeps the program's own reads of both properties, so a getter runs
+ * as the pin runs it; only a shared record can be read again later.
+ */
+function emitWorldMatrixProviderParent(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+    provider: Value,
+): void {
+    const { expression, target } = state;
+    const optional = provider.dataType?.kind === "optional";
+    const dataType =
+        provider.dataType?.kind === "optional"
+            ? provider.dataType.inner
+            : provider.dataType;
+    const fields =
+        dataType?.kind === "struct" &&
+        context.dataTypes.isReferenceStruct(dataType.name)
+            ? {
+                  world: context.dataTypes.findStructField(
+                      dataType.name,
+                      "worldMatrix",
+                      expression.right,
+                  ),
+                  version: context.dataTypes.findStructField(
+                      dataType.name,
+                      "worldMatrixVersion",
+                      expression.right,
+                  ),
+              }
+            : undefined;
+    if (!fields?.world || !fields.version) {
+        context.fail(
+            expression.right,
+            "A mesh parent that is no node must be a shared record with worldMatrix and worldMatrixVersion (an IWorldMatrixProvider).",
+        );
+    }
+    // A nullable provider that holds none leaves the mesh unparented, as
+    // `mesh.parent = null` does.
+    const slot = context.allocateTemporaryCppName("world_provider_slot");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: slot,
+        initializer: provider.cpp,
+    });
+    const held = context.allocateTemporaryCppName("world_provider");
+    const read = (field: NonNullable<typeof fields.world>): string =>
+        `${held}->${field.name}${field.accessor ? ".get()" : ""}`;
+    const engine = context.requireEngine(target, expression);
+    context.reachFeature("mesh:parenting", expression);
+    context.reachFeature("mesh:world-matrix-provider", expression);
+    context.reachFeature("mesh:transform-node", expression);
+    context.emit({
+        kind: "expression",
+        code:
+            `if (${optional ? optionalPresentCpp(slot) : `static_cast<bool>(${slot})`}) { ` +
+            `const auto ${held} = ${optional ? optionalValueCpp(slot) : slot}; ` +
+            `bbl::set_mesh_world_matrix_provider(${engine}, ${target.cpp}, ` +
+            `static_cast<const void*>(${held}.get()), ` +
+            `[${held}]() { return bbl::provider_world_matrix(${read(fields.world)}); }, ` +
+            `[${held}]() { return static_cast<double>(${read(fields.version)}); }); ` +
+            `} else { bbl::set_mesh_transform_parent(${engine}, ${target.cpp}, bbl::TransformNodeHandle{}); }`,
+    });
+}
+
 function emitParentAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -4030,6 +4234,10 @@ function emitParentAssignment(
         // have, not a call site it declines.
         const nullParent = parent.kind === "json-null";
         const meshParent = mesh && parent.kind === "mesh";
+        if (mesh && parent.kind === "data") {
+            emitWorldMatrixProviderParent(context, state, parent);
+            return true;
+        }
         if (!meshParent && !nullParent) {
             context.expectKind(parent, "transform-node", expression.right);
         }
@@ -4095,6 +4303,7 @@ const targetPropertyHandlers2 = new EmissionMap<
     (context: AssignmentContext, state: TargetPropertyAssignment) => boolean
 >([
     ["ormTexture", emitOrmTextureAssignment],
+    ["baseColorTexture", emitBaseColorTextureAssignment],
     ["occlusionTexture", emitOcclusionTextureAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],
     ["parent", emitParentAssignment],

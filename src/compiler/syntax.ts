@@ -339,6 +339,28 @@ export function isAssignmentExpression(
     );
 }
 
+/** How many arguments a call must pass: parameters without a default, `?` or rest. */
+export function requiredParameterCount(
+    parameters: readonly ts.ParameterDeclaration[],
+): number {
+    return parameters.filter(
+        (parameter) =>
+            !parameter.initializer &&
+            !parameter.questionToken &&
+            !parameter.dotDotDotToken,
+    ).length;
+}
+
+/** The index of a declaration's rest parameter, when it declares one. */
+export function restParameterIndex(
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+): number | undefined {
+    const index = declaration.parameters.findIndex(
+        (parameter) => parameter.dotDotDotToken !== undefined,
+    );
+    return index >= 0 ? index : undefined;
+}
+
 /** Writable leaves of a destructuring pattern; keys and defaults are reads. */
 export function assignmentTargets(
     expression: ts.Expression,
@@ -612,5 +634,36 @@ export function soleReturnedExpression(
         statement &&
         ts.isReturnStatement(statement)
         ? statement.expression
+        : undefined;
+}
+
+/**
+ * The synchronous, non-generator source function a declaration names: a
+ * function declaration, or a `const` bound to a function literal.
+ */
+export function localSyncFunction(
+    declaration: ts.Declaration | undefined,
+):
+    | ts.FunctionDeclaration
+    | ts.ArrowFunction
+    | ts.FunctionExpression
+    | undefined {
+    if (!declaration || declaration.getSourceFile().isDeclarationFile)
+        return undefined;
+    const fn =
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+            ? unwrapExpression(declaration.initializer)
+            : declaration;
+    return (ts.isFunctionDeclaration(fn) ||
+        ts.isArrowFunction(fn) ||
+        ts.isFunctionExpression(fn)) &&
+        fn.body !== undefined &&
+        !fn.asteriskToken &&
+        !fn.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        )
+        ? fn
         : undefined;
 }

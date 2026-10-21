@@ -5,6 +5,7 @@
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
+import { isNullable } from "./type-facts.js";
 import {
     compileClassInstanceOf,
     conditionComparison,
@@ -26,6 +27,8 @@ import {
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isAssignmentExpression, unwrapExpression } from "./syntax.js";
+import { recordAt } from "./record-access.js";
+import { declaredIn, resolvedSymbol } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -49,6 +52,7 @@ interface ConditionContext
             | "allocateTemporaryCppName"
             | "captureEmittedLines"
             | "castNumber"
+            | "conditionOverrides"
             | "compileBoolean"
             | "compileNumber"
             | "cppString"
@@ -71,6 +75,7 @@ interface ConditionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "requireDefaultEngine"
+            | "sharedClosures"
             | "symbols"
             | "unwrap"
         > {}
@@ -88,6 +93,101 @@ const COLLECTION_CLASSES: ReadonlyMap<
 
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
+
+    /**
+     * The one binding an object-typed operand names: through `const`
+     * initializers and `??` whose left side is known absent, ending at a
+     * binding nothing reassigns. Undefined when the operand is anything else
+     * (a call, a member, a reassigned name).
+     */
+    private identityRoot(expression: ts.Expression): ts.Symbol | undefined {
+        const type = this.context.checker.getTypeAtLocation(expression);
+        if (
+            (this.context.checker.getNonNullableType(type).flags &
+                ts.TypeFlags.Object) ===
+            0
+        )
+            return undefined;
+        let node = this.context.unwrap(expression);
+        const seen = new Set<ts.Symbol>();
+        for (;;) {
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                const left = node.left;
+                const absent = this.context.probeEmission(
+                    () => this.context.compileValue(left).kind === "json-null",
+                    () => false,
+                );
+                if (!absent) return undefined;
+                node = this.context.unwrap(node.right);
+                continue;
+            }
+            if (!ts.isIdentifier(node)) return undefined;
+            const symbol = this.context.symbols.valueSymbol(node);
+            if (!symbol || seen.has(symbol)) return symbol;
+            seen.add(symbol);
+            const declaration = symbol.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const
+            ) {
+                node = this.context.unwrap(declaration.initializer);
+                continue;
+            }
+            // A binding is reassigned only in the file that declares it.
+            const name = declaration && ts.getNameOfDeclaration(declaration);
+            return name &&
+                ts.isIdentifier(name) &&
+                !this.context.sharedClosures.identifierIsRebound(name)
+                ? symbol
+                : undefined;
+        }
+    }
+
+    /**
+     * `mesh.skeleton` / `mesh.morphTargets` tested on a native mesh. The
+     * pin's loader sets them for a skinned node with joint and weight
+     * streams and for a primitive with morph targets, and an attachment
+     * sets them in scene code; the record keeps which of those it got.
+     * Only the test is lowered: no other read of either member is.
+     */
+    private meshDeformationPresence(
+        expression: ts.Expression,
+    ): string | undefined {
+        if (
+            !ts.isPropertyAccessExpression(expression) ||
+            expression.questionDotToken
+        )
+            return undefined;
+        const property = expression.name.text;
+        if (property !== "skeleton" && property !== "morphTargets")
+            return undefined;
+        const member = resolvedSymbol(this.context.checker, expression);
+        const owner = member?.declarations?.[0]?.parent;
+        if (
+            !declaredIn(member, "babylon") ||
+            !owner ||
+            !ts.isInterfaceDeclaration(owner) ||
+            owner.name.text !== "Mesh"
+        )
+            return undefined;
+        const mesh = this.context.compileValue(expression.expression);
+        if (mesh.kind !== "mesh")
+            return this.context.fail(
+                expression,
+                `A '${property}' presence test requires a native mesh.`,
+            );
+        const engine =
+            mesh.engineCpp ?? this.context.requireDefaultEngine(expression);
+        const record = recordAt(`${engine}.meshes`, mesh.cpp);
+        return property === "skeleton"
+            ? `${record}.skeleton_attached`
+            : `(${record}.morph_targets_attached || ${record}.scene_morph_targets)`;
+    }
 
     /**
      * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
@@ -135,6 +235,10 @@ export class ConditionLowerer {
      * where generation settles it.
      */
     public compileCondition(expression: ts.Expression): string {
+        const forced =
+            this.context.conditionOverrides.get(expression) ??
+            this.context.conditionOverrides.get(unwrapExpression(expression));
+        if (forced !== undefined) return forced ? "true" : "false";
         const assigned = this.context.dataLowerer.assignedCondition(
             expression,
             () => this.compileCondition(expression),
@@ -336,6 +440,8 @@ export class ConditionLowerer {
         }
         const domInstance = compileDomInstanceOf(this.context, unwrapped);
         if (domInstance !== undefined) return domInstance;
+        const deformation = this.meshDeformationPresence(unwrapped);
+        if (deformation !== undefined) return deformation;
         if (
             ts.isPrefixUnaryExpression(unwrapped) &&
             unwrapped.operator === ts.SyntaxKind.ExclamationToken
@@ -472,16 +578,43 @@ export class ConditionLowerer {
                     : (BUFFER_VIEW_KINDS.get(global) ??
                       TYPED_ARRAY_KINDS.get(global));
                 if (expected) {
-                    const value = this.context.compileValue(unwrapped.left);
+                    let value = this.context.compileValue(unwrapped.left);
+                    // An optional view is an instance only when present.
+                    // Where the checker has narrowed the operand to its
+                    // value the presence is settled; otherwise it guards
+                    // the test of the held view.
+                    let present: string | undefined;
+                    let carrier = value.dataType;
+                    if (carrier?.kind === "optional") {
+                        if (
+                            isNullable(
+                                this.context.checker.getTypeAtLocation(
+                                    unwrapped.left,
+                                ),
+                            )
+                        ) {
+                            value = this.context.bindings.pinValueToTemporary(
+                                value,
+                                "instance_operand",
+                                unwrapped.left,
+                            );
+                            present = optionalPresentCpp(value.cpp);
+                        }
+                        value = {
+                            ...value,
+                            cpp: optionalValueCpp(value.cpp),
+                        };
+                        carrier = carrier.inner;
+                    }
                     // The member a value holds answers the test: a union by
                     // its variant index, any other type by its own kind. An
                     // ArrayBufferView may be any view class.
-                    const union = value.dataType?.kind === "union";
+                    const union = carrier?.kind === "union";
                     const members =
-                        value.dataType?.kind === "union"
-                            ? value.dataType.members
-                            : value.dataType
-                              ? [value.dataType]
+                        carrier?.kind === "union"
+                            ? carrier.members
+                            : carrier
+                              ? [carrier]
                               : [];
                     if (
                         expected !== "arraybuffer" &&
@@ -499,16 +632,23 @@ export class ConditionLowerer {
                             ? (buffer: string): string =>
                                   `${shared ? "" : "!"}${buffer}.shared()`
                             : undefined;
-                    if (members.length)
-                        return index < 0
-                            ? "false"
-                            : union
-                              ? brand
-                                  ? `([](const auto& candidate) { return candidate.index() == ${index} && ${brand(`std::get<${index}>(candidate)`)}; }(${value.cpp}))`
-                                  : `((${value.cpp}).index() == ${index})`
-                              : brand
-                                ? brand(`(${value.cpp})`)
-                                : "true";
+                    if (members.length) {
+                        const test =
+                            index < 0
+                                ? "false"
+                                : union
+                                  ? brand
+                                      ? `([](const auto& candidate) { return candidate.index() == ${index} && ${brand(`std::get<${index}>(candidate)`)}; }(${value.cpp}))`
+                                      : `((${value.cpp}).index() == ${index})`
+                                  : brand
+                                    ? brand(`(${value.cpp})`)
+                                    : "true";
+                        return present === undefined || test === "false"
+                            ? test
+                            : test === "true"
+                              ? present
+                              : `(${present} && ${test})`;
+                    }
                 }
             }
             // Engine-handle identity first: `group === sadPose` is
@@ -579,6 +719,19 @@ export class ConditionLowerer {
                     unwrapped.operatorToken,
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
+            }
+            // `base !== pkg` where `const base = extra ?? pkg` and `extra` is
+            // known absent: both name one object, whatever storage holds it.
+            if (
+                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
+            ) {
+                const left = this.identityRoot(unwrapped.left);
+                if (left && left === this.identityRoot(unwrapped.right))
+                    return comparison.kind ===
+                        ts.SyntaxKind.EqualsEqualsEqualsToken
+                        ? "true"
+                        : "false";
             }
             let leftValue = this.context.compileValue(unwrapped.left);
             if (

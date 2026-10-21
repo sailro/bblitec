@@ -37,6 +37,7 @@ import {
 import { rootIdentifier, statementDeclaredNames } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
+import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
@@ -419,7 +420,22 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         }
         if (
             ts.isVariableStatement(statement) &&
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            (statement.declarationList.flags & ts.NodeFlags.Const) === 0 &&
+            // A `let` only never-run functions assign keeps its initializer.
+            !(
+                this.context.sourceFiles &&
+                statementDeclaredNames(statement).every((name) => {
+                    const symbol = declaredSymbol(this.context.checker, name);
+                    return (
+                        symbol !== undefined &&
+                        writtenOnlyInDeadFunctions(
+                            this.context.checker,
+                            this.context.sourceFiles!,
+                            symbol,
+                        )
+                    );
+                })
+            )
         ) {
             this.context.fail(
                 statement,

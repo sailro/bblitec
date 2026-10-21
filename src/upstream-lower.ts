@@ -141,7 +141,10 @@ import { pinnedQuaternionHeader } from "./lowering/pinned-euler-proxy.js";
 import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
-import type { MeshProfileTable } from "./lowering/resource-profiles.js";
+import type {
+    GltfContainerProfile,
+    MeshProfileTable,
+} from "./lowering/resource-profiles.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
     NodeParticleLowerer,
@@ -630,6 +633,8 @@ export interface UpstreamEmitOptions {
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
     meshProfiles?: MeshProfileTable;
+    /** Each glTF document's profile bases when its loads are profiled. */
+    gltfContainerProfiles?: readonly GltfContainerProfile[];
     /**
      * Whether those bits carry the pin's own skeleton bit anywhere, so a
      * composed skeleton stage exists and the palette rides its per-bone
@@ -1328,6 +1333,9 @@ ${lowerThinInstanceSync(context)}
                 transformNodes: features.includes("mesh:transform-node"),
                 sceneNodeTransforms: features.includes("scene:node-transforms"),
                 mirroredMeshes: features.includes("mesh:mirrored"),
+                worldMatrixProviders: features.includes(
+                    "mesh:world-matrix-provider",
+                ),
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
                 nodeMaterials: nodeVariantList.length > 0,
@@ -1342,6 +1350,9 @@ ${lowerThinInstanceSync(context)}
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
+                taskMethodSlots: features.includes(
+                    "frame-graph:task-method-slots",
+                ),
                 deformedPosition: features.includes("mesh:deformed-position"),
                 csmStaticCache: features.includes("shadow:csm-static-cache"),
             }),
@@ -1551,6 +1562,7 @@ ${lowerThinInstanceSync(context)}
             disposal: features.includes("effect:wrapper-disposal"),
             taskBuild: features.includes("frame-graph:task-build"),
             taskDisposal: features.includes("frame-graph:task-disposal"),
+            taskMethodSlots: features.includes("frame-graph:task-method-slots"),
         });
         this.emitLoaderSplat(
             features,
@@ -2350,6 +2362,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     cpuTangents: features.includes("loader:gltf-cpu-tangents"),
                     cpuGeometry: features.includes("mesh:geometry-access"),
                     boneControl: features.includes("loader:gltf-bone-control"),
+                    ...(options.gltfContainerProfiles
+                        ? { containerProfiles: options.gltfContainerProfiles }
+                        : {}),
                 }),
                 generated,
             );
@@ -2984,6 +2999,9 @@ ${wgsl}`,
                     punctualLights: options.punctualLights,
                     nodeVisibility: options.nodeVisibility,
                     mirroredMeshes: features.includes("mesh:mirrored"),
+                    worldMatrixProviders: features.includes(
+                        "mesh:world-matrix-provider",
+                    ),
                     transformNodes: features.includes("mesh:transform-node"),
                     // Whether a geometry task's draw list admits the node
                     // family. Keyed on the composed views rather than on

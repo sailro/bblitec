@@ -53,6 +53,13 @@ Rules:
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
+- A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
+  aliases, absent `??` lefts and generation-known booleans.
+- Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
+  lists re-read a local `const` initializer whose names no visible write reaches.
+- A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
+  merges the results into native storage.
+- Recursive groups evaluate a caller-independent default once at the root; other defaults refuse.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
@@ -88,7 +95,8 @@ Rules:
 - Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets,
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
-  unknown keys and percent-encoded bodies refuse.
+  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries, member and `push`
+  writes and array callback parameters.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. Request objects, teeing and Headers iteration refuse.
 - Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
@@ -156,9 +164,12 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
 texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
+`loadGltf` with a runtime URL, in runtime control flow or repeated out of order profiles its documents: each composes
+once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
+
 `KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
-the pinned extension's texture identities. Separate-image ORM composition refuses; source albedo reads with
-material extensions or `KHR_texture_transform` also refuse.
+the pinned extension's texture identities; material extensions run as the pin's own features. Separate-image ORM
+composition and source albedo reads with `KHR_texture_transform` refuse.
 
 ## Meshes and hierarchy
 
@@ -168,6 +179,8 @@ material extensions or `KHR_texture_transform` also refuse.
 - `updateMeshGeometry`/`updateMeshGeometryCapacity`: owned, unshared, packed Float32/Uint32 geometry; imported geometry
   updates refuse. Device recovery re-uploads CPU arrays and drops GPU-only writes.
 - Thin-instance pools with compute tasks or geometry-output tasks refuse. Device recovery fails explicitly when thin-instance GPU buffers remain owned; recovery registration is admitted.
+- Mesh `parent` also accepts an `IWorldMatrixProvider` record, polled each frame; `mesh.skeleton`/`morphTargets`
+  presence reads loader facts; `container.entities` is a node list (a runtime document checks its sole root).
 - Meshes parent to meshes or transform nodes; transform nodes only to transform nodes. Scene writes to imported nodes load
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
 - Transform-node `worldMatrix` retains the pin's local/world buffer identity and lazy subtree invalidation,
@@ -184,6 +197,8 @@ material extensions or `KHR_texture_transform` also refuse.
   retained position/diffuse/direction tuples are mutable; `markClusteredLightContainerDirty` publishes edits.
   Populate lights and scene meshes before attaching the container; capacity and point/spot layout stay fixed.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
+  PBR field writes accept a material narrowed by `isPbrMaterial`; `baseColorTexture` replacement takes a loaded, solid
+  or stored file texture before scene registration.
   `createPbrMaterial()` accepts omitted options and uses the pinned texture/factor defaults.
 - Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
   `diffuseColor` after `enableMaterialTracking` (re-read each frame).
@@ -301,6 +316,7 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
   cannot be removed.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
+  An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.

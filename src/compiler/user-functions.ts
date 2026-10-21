@@ -85,6 +85,7 @@ import {
     type PositiveIntegerContext,
 } from "./option-helpers.js";
 import {
+    aliasTarget,
     CompilerSymbols,
     declaredSymbol,
     declaredInDefaultLibrary,
@@ -95,9 +96,12 @@ import {
 import {
     assignmentTargets,
     isAssignmentExpression,
+    isDeclaredInside,
     isUpdateExpression,
     mutatingCallTarget,
     outermostWrapper,
+    requiredParameterCount,
+    restParameterIndex,
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
@@ -405,16 +409,6 @@ export function borrowsReferenceParameter(
         ts.isIdentifier(parameter) &&
         !context.sharedClosures.identifierIsRebound(parameter)
     );
-}
-
-/** The index of a declaration's rest parameter, when it declares one. */
-function restParameterIndex(
-    declaration: SupportedFunction,
-): number | undefined {
-    const index = declaration.parameters.findIndex(
-        (parameter) => parameter.dotDotDotToken !== undefined,
-    );
-    return index >= 0 ? index : undefined;
 }
 
 const defaultBindingByChecker = new WeakMap<
@@ -1304,6 +1298,20 @@ function nullFallbackTryShape(
 }
 
 export class UserFunctionLowerer {
+    /**
+     * Whether a recursive node parameter takes the runtime SceneNode slot.
+     * @unjournaled Set around one retried recursive group's compile.
+     */
+    private nodeSlots = false;
+    /**
+     * Per recursive group root, the argument kinds whose plain form refused,
+     * so later calls try node slots first.
+     * @unjournaled An attempt order only; both forms stay checked.
+     */
+    private readonly plainGroupRefusals = new WeakMap<
+        SupportedFunction,
+        Set<string>
+    >();
     /** @unjournaled Immutable source references; independent of emitted bindings and replay. */
     private readonly argumentsReferences = new WeakMap<
         SupportedFunction,
@@ -1818,13 +1826,56 @@ export class UserFunctionLowerer {
             if (asynchronous) return asynchronous;
             const recursiveGroup = this.recursiveGroup(ir.declaration);
             if (recursiveGroup) {
-                return this.lowerRecursiveGroup(
-                    context,
-                    ir,
-                    call,
-                    argumentValues,
-                    recursiveGroup,
-                );
+                const group = (): Value =>
+                    this.lowerRecursiveGroup(
+                        context,
+                        ir,
+                        call,
+                        argumentValues,
+                        recursiveGroup,
+                    );
+                // A walk the group lowers with its node arguments as they are
+                // keeps that form; one it refuses takes runtime node slots.
+                const slotted = (): Value => {
+                    this.nodeSlots = true;
+                    try {
+                        return context.probeEmission(group, () => true);
+                    } finally {
+                        this.nodeSlots = false;
+                    }
+                };
+                const shape = argumentValues
+                    .map((value) => value.kind)
+                    .join(",");
+                let refused = this.plainGroupRefusals.get(ir.declaration);
+                let slottedRefusal: CompileError | undefined;
+                if (!this.nodeSlots && refused?.has(shape)) {
+                    try {
+                        return slotted();
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                        slottedRefusal = error;
+                    }
+                }
+                try {
+                    return context.probeEmission(group, () => true);
+                } catch (error) {
+                    if (!(error instanceof CompileError) || this.nodeSlots)
+                        throw error;
+                    if (!refused)
+                        this.plainGroupRefusals.set(
+                            ir.declaration,
+                            (refused = new Set()),
+                        );
+                    refused.add(shape);
+                    // Both refuse: the first form's refusal names the walk.
+                    if (slottedRefusal) throw error;
+                    try {
+                        return slotted();
+                    } catch (retried) {
+                        throw retried instanceof CompileError ? error : retried;
+                    }
+                }
             }
             if (ir.needsLocalNative) {
                 return this.lowerRecursiveGroup(
@@ -2796,6 +2847,7 @@ export class UserFunctionLowerer {
             if (
                 existing &&
                 !evaluatedArguments &&
+                !this.passesOwnParameter(declaration, parameter, argument) &&
                 !this.sameCapturedValue(existing, value)
             ) {
                 context.fail(
@@ -2855,7 +2907,11 @@ export class UserFunctionLowerer {
             : undefined;
         const struct =
             argument.dataType?.kind === "struct" ? argument.dataType : type;
-        const fields = context.dataTypes.structFields(struct.name, call);
+        const fields = context.dataTypes.structFields(
+            struct.name,
+            call,
+            "accessors",
+        );
         const member = context.dataTypes.isReferenceStruct(struct.name)
             ? "->"
             : ".";
@@ -2885,7 +2941,9 @@ export class UserFunctionLowerer {
             )
                 throw new SharedCallRequiresInline();
             const field = fields.find((field) => field.sourceName === key);
-            if (!reassigned || !field) {
+            // An accessor-backed slot stores no value a refreshed fact
+            // could read; the record keeps no facts across the call.
+            if (!reassigned || !field || field.accessor) {
                 context.bindings.invalidateRecordProperties(argument);
                 return;
             }
@@ -2959,6 +3017,102 @@ export class UserFunctionLowerer {
             });
         }
         return varies;
+    }
+
+    /** Whether a recursive call of the group supplies argument `index` itself. */
+    private recursionPassesArgument(
+        declarations: readonly SupportedFunction[],
+        root: SupportedFunction,
+        index: number,
+    ): boolean {
+        return declarations.some(
+            (declaration) =>
+                declaration.body !== undefined &&
+                someAnalysisNode(
+                    declaration.body,
+                    (node) =>
+                        ts.isCallExpression(node) &&
+                        ts.isIdentifier(node.expression) &&
+                        node.arguments[index] !== undefined &&
+                        tryResolveFunctionDeclaration(
+                            this.checker,
+                            node.expression,
+                        ) === root,
+                ),
+        );
+    }
+
+    /**
+     * A parameter default a caller can evaluate as the callee would: a
+     * literal, a fresh empty container, or a constant declared outside the
+     * function.
+     */
+    private callerIndependentDefault(
+        initializer: ts.Expression,
+        declaration: SupportedFunction,
+    ): boolean {
+        const node = unwrapExpression(initializer);
+        if (
+            ts.isNumericLiteral(node) ||
+            ts.isStringLiteralLike(node) ||
+            node.kind === ts.SyntaxKind.TrueKeyword ||
+            node.kind === ts.SyntaxKind.FalseKeyword ||
+            node.kind === ts.SyntaxKind.NullKeyword ||
+            (ts.isArrayLiteralExpression(node) && node.elements.length === 0) ||
+            (ts.isObjectLiteralExpression(node) && node.properties.length === 0)
+        )
+            return true;
+        if (ts.isNewExpression(node) && (node.arguments?.length ?? 0) === 0)
+            return ["Array", "Map", "Set"].includes(
+                libraryGlobal(this.checker, node.expression) ?? "",
+            );
+        if (!ts.isIdentifier(node)) return false;
+        const symbol = declaredSymbol(this.checker, node);
+        const target = symbol && aliasTarget(this.checker, symbol);
+        const constant = target?.valueDeclaration;
+        return (
+            constant !== undefined &&
+            !isDeclaredInside(constant, declaration) &&
+            ts.isVariableDeclaration(constant) &&
+            ts.isVariableDeclarationList(constant.parent) &&
+            (constant.parent.flags & ts.NodeFlags.Const) !== 0
+        );
+    }
+
+    /**
+     * A recursive call that hands a parameter on as itself: the body never
+     * rebinds it, so it is the captured value the call was entered with.
+     */
+    private passesOwnParameter(
+        declaration: SupportedFunction,
+        parameter: ts.ParameterDeclaration,
+        argument: ts.Expression | undefined,
+    ): boolean {
+        const passed = argument && unwrapExpression(argument);
+        if (
+            !passed ||
+            !ts.isIdentifier(passed) ||
+            !ts.isIdentifier(parameter.name) ||
+            !declaration.body
+        )
+            return false;
+        const symbol = declaredSymbol(this.checker, parameter.name);
+        if (!symbol || declaredSymbol(this.checker, passed) !== symbol)
+            return false;
+        const names = (node: ts.Expression): boolean => {
+            const target = unwrapExpression(node);
+            return (
+                ts.isIdentifier(target) &&
+                declaredSymbol(this.checker, target) === symbol
+            );
+        };
+        return !someAnalysisNode(
+            declaration.body,
+            (node) =>
+                (isAssignmentExpression(node) &&
+                    assignmentTargets(node.left).some(names)) ||
+                (isUpdateExpression(node) && names(node.operand)),
+        );
     }
 
     private sameCapturedValue(left: Value, right: Value): boolean {
@@ -3457,6 +3611,32 @@ export class UserFunctionLowerer {
                         );
                     const inner =
                         mapped?.kind === "optional" ? mapped.inner : mapped;
+                    // A node parameter its recursion hands other nodes (a
+                    // hierarchy walk over `children`) holds runtime handles:
+                    // the SceneNode slot every node kind converts to.
+                    const rootArgument =
+                        declaration === root.declaration
+                            ? rootArguments[index]
+                            : undefined;
+                    if (
+                        this.nodeSlots &&
+                        mapped?.kind === "handle" &&
+                        (mapped.handle === "scene-node" ||
+                            mapped.handle === "transform-node") &&
+                        rootArgument &&
+                        recursive &&
+                        this.recursiveArgumentVaries(
+                            declarations,
+                            root.declaration,
+                            parameter.name,
+                            index,
+                            rootArgument,
+                        )
+                    )
+                        return {
+                            kind: "handle",
+                            handle: "scene-node",
+                        } as const;
                     const platformHandle =
                         inner?.kind === "handle" &&
                         (inner.handle === "gamepad" ||
@@ -3528,13 +3708,105 @@ export class UserFunctionLowerer {
                     (argument.kind === "json-null" &&
                         argument.cpp === "std::nullopt"))
             ) {
-                // Keep omission until the callee binds its parameters: defaults
-                // can read earlier parameters and must run on every invocation.
-                rootEntry.parameterTypes[index] = undefined;
-                rootEntry.captured[index] = argument ?? {
+                // A default the recursion overrides (`walk(child, world)` under
+                // `walk(root)`) or hands on as itself (`walk(child, into)`)
+                // is a runtime parameter: the entry passes the default it
+                // evaluated once, as the recursive calls pass theirs, when it
+                // reads nothing of the callee. A captured parameter that the
+                // recursion only hands on captures that one evaluation.
+                const absent = argument ?? {
                     kind: "json-null",
                     cpp: "std::nullopt",
                 };
+                const independent =
+                    recursive &&
+                    this.callerIndependentDefault(
+                        parameter.declaration.initializer,
+                        root.declaration,
+                    );
+                const passes =
+                    recursive &&
+                    this.recursionPassesArgument(
+                        declarations,
+                        root.declaration,
+                        index,
+                    );
+                let variesAnswer: boolean | undefined;
+                const varies = (): boolean =>
+                    (variesAnswer ??= this.recursiveArgumentVaries(
+                        declarations,
+                        root.declaration,
+                        parameter.name,
+                        index,
+                        absent,
+                    ));
+                if (
+                    independent &&
+                    !rootEntry.parameterTypes[index] &&
+                    passes &&
+                    !varies()
+                ) {
+                    // Native storage of the declared type: the recursion
+                    // grows the one object every frame captures.
+                    const declared = context.dataTypes.fromTsType(
+                        this.checker.getTypeAtLocation(parameter.declaration),
+                        parameter.declaration,
+                    );
+                    const initializer = parameter.declaration.initializer;
+                    const supplied = declared
+                        ? context.bindings.pinValueToTemporary(
+                              context.dataLowerer.leafValue(
+                                  context.dataLowerer.compileForSink(
+                                      initializer,
+                                      declared,
+                                  ),
+                                  declared,
+                              ),
+                              "recursive_default",
+                              initializer,
+                          )
+                        : context.compileValue(initializer);
+                    rootArguments = rootArguments.map((value, position) =>
+                        position === index ? supplied : value,
+                    );
+                    rootEntry.captured[index] = supplied;
+                    return;
+                }
+                if (
+                    independent &&
+                    rootEntry.parameterTypes[index] &&
+                    (passes || varies())
+                ) {
+                    const supplied = context.compileValue(
+                        parameter.declaration.initializer,
+                    );
+                    rootArguments = rootArguments.map((value, position) =>
+                        position === index ? supplied : value,
+                    );
+                    // As the mapping above keeps a typed view an
+                    // ArrayLike<number> parameter is supplied with.
+                    const declared = rootEntry.parameterTypes[index];
+                    if (
+                        declared?.kind === "span" &&
+                        declared.element.kind === "number" &&
+                        supplied.dataType &&
+                        (isTypedArrayType(supplied.dataType) ||
+                            supplied.dataType.kind === "numberindex")
+                    )
+                        rootEntry.parameterTypes[index] = supplied.dataType;
+                    return;
+                }
+                // Keep omission until the callee binds its parameters: defaults
+                // can read earlier parameters and must run on every invocation.
+                // A recursive call that hands the parameter on passes the
+                // root's evaluated default, which omission would re-evaluate.
+                if (passes)
+                    context.fail(
+                        parameter.declaration,
+                        "A recursive call hands on a parameter whose default reads the callee; the root's one evaluation is not represented.",
+                    );
+                rootEntry.parameterTypes[index] = undefined;
+                rootEntry.captured[index] = absent;
                 return;
             }
             const represented = argument
@@ -4794,14 +5066,11 @@ export class UserFunctionLowerer {
         }
         if (
             ir.parameters.length > arguments_.length &&
-            ir.parameters
-                .slice(arguments_.length)
-                .some(
-                    ({ declaration: parameter }) =>
-                        !parameter.initializer &&
-                        !parameter.questionToken &&
-                        !parameter.dotDotDotToken,
-                )
+            requiredParameterCount(
+                ir.parameters
+                    .slice(arguments_.length)
+                    .map((parameter) => parameter.declaration),
+            ) > 0
         ) {
             context.fail(
                 declaration,
@@ -7090,12 +7359,7 @@ export class UserFunctionLowerer {
         const parameters =
             resolved?.getDeclaration()?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = parameters.filter(
-            (declaration) =>
-                !declaration.initializer &&
-                !declaration.questionToken &&
-                !declaration.dotDotDotToken,
-        ).length;
+        const minimum = requiredParameterCount(parameters);
         if (
             call.arguments.length < minimum &&
             !call.arguments.some(ts.isSpreadElement)

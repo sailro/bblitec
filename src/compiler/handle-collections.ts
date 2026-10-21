@@ -14,7 +14,12 @@ import {
     DynamicBindingStorageRequired,
     demandedStorageType,
 } from "./dynamic-binding-storage.js";
-import { handleCppType, isHandleKind } from "./data-types.js";
+import {
+    handleCppType,
+    isHandleKind,
+    isPinnedType,
+    type DataType,
+} from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
     resolveFunctionDeclaration,
@@ -31,7 +36,7 @@ import {
     identifierText,
     unwrapExpression as unwrapWalkExpression,
 } from "./syntax.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -49,7 +54,12 @@ import {
     instantiatedPrimitiveRecords,
     isGaussianSplatPrimitive,
 } from "../gltf-document.js";
-import { asRecords, asString, type JsonObject } from "../json-fields.js";
+import {
+    asRecords,
+    asString,
+    isRecord,
+    type JsonObject,
+} from "../json-fields.js";
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
 // The same reader the material arms key their skinned mesh features by, so
@@ -1092,6 +1102,43 @@ export class HandleCollections {
     }
 
     /**
+     * `node?.children ?? []`: a present node's live child list is never
+     * nullish, so the list is the result. An owner whose read may miss
+     * carries presence the list cannot, and is left to the general rule.
+     */
+    private nullishNodeChildren(left: ts.Expression): Value | undefined {
+        const unwrapped = this.context.unwrap(left);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            unwrapped.name.text !== "children"
+        )
+            return undefined;
+        const ownerType = this.context.dataTypes.fromTsType(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(unwrapped.expression),
+            ),
+            unwrapped.expression,
+        );
+        if (
+            ownerType?.kind !== "handle" ||
+            !["mesh", "transform-node", "scene-node", "asset-root"].includes(
+                ownerType.handle,
+            )
+        )
+            return undefined;
+        const value = this.context.compileValue(unwrapped);
+        if (
+            value.kind !== "handle-collection" ||
+            presenceFlagCpp(value) !== undefined
+        )
+            this.context.fail(
+                left,
+                "'node.children ?? []' requires a node the read always finds.",
+            );
+        return value;
+    }
+
+    /**
      * `<lhs> ?? []` where the left operand is an engine handle collection:
      * the collection as a compile-time value.
      *
@@ -1116,7 +1163,7 @@ export class HandleCollections {
         }
         const resolved = this.resolveExpressionTarget(expression.left);
         if (!resolved) {
-            return undefined;
+            return this.nullishNodeChildren(expression.left);
         }
         const { target, owner } = resolved;
         const asset =
@@ -1200,16 +1247,79 @@ export class HandleCollections {
         if (owner.kind !== "asset") {
             return undefined;
         }
+        if ((owner.asset?.kind ?? owner.assetKind) === undefined) {
+            // A container read back from runtime storage names no load.
+            // Its entities are its root alone exactly when it is a glTF
+            // load that appended no punctual light, which the read checks.
+            const engineCpp = this.context.requireEngine(owner, unwrapped);
+            return {
+                ...containerIdentity(owner),
+                kind: "asset-root",
+                cpp: `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
+                assetKind: "gltf",
+                soleAssetEntity: true,
+                engineCpp,
+            };
+        }
         if ((owner.asset?.kind ?? owner.assetKind) !== "gltf") {
             this.context.fail(
                 unwrapped,
                 "Iterating entities to use each one is lowered for a glTF container, whose entities are one root node; another container's roots are not. Collecting the renderables under them is lowered for either.",
             );
         }
+        const engineCpp = this.context.requireEngine(owner, unwrapped);
+        // Only KHR_lights_punctual appends entities (load-gltf.ts seeds
+        // `[root]`): without it the one entity is the root, read as
+        // `entities[0]` reads it.
+        // A document generation cannot read keeps the entity walk.
+        if (owner.asset && this.soleGltfRoot(owner.asset, unwrapped))
+            return {
+                ...containerIdentity(owner),
+                kind: "asset-root",
+                cpp: owner.cpp,
+                assetKind: "gltf",
+                soleAssetEntity: true,
+                engineCpp,
+            };
         return {
             ...containerIdentity(owner),
             kind: "asset-entity",
-            engineCpp: this.context.requireEngine(owner, unwrapped),
+            engineCpp,
+        };
+    }
+
+    /**
+     * `container.entities` as a list of scene nodes. A glTF load seeds it
+     * with its synthetic root, and only punctual lights append to it; a
+     * light is no scene node here, so the list is the root alone, which a
+     * container whose document is chosen at run time checks as it reads.
+     */
+    public assetEntitiesValue(owner: Value, expression: ts.Expression): Value {
+        const assetKind = owner.asset?.kind ?? owner.assetKind;
+        if (assetKind !== undefined && assetKind !== "gltf")
+            this.context.fail(
+                expression,
+                "Reading entities as a list is lowered for a glTF container, whose entities are its synthetic root.",
+            );
+        const engineCpp = this.context.requireEngine(owner, expression);
+        if (owner.asset && !this.soleGltfRoot(owner.asset, expression))
+            this.context.fail(
+                expression,
+                "Reading container.entities as a list needs a glTF document without punctual lights: a loader that appends them has entities that are not scene nodes.",
+            );
+        const root = owner.asset
+            ? owner.cpp
+            : `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`;
+        this.context.reachFeature("scene:node-transforms", expression);
+        return {
+            kind: "data",
+            engineCpp,
+            cpp: `bbl::js::Array<bbl::SceneNodeHandle>{bbl::SceneNodeHandle(${root})}`,
+            dataType: {
+                kind: "vector",
+                element: { kind: "handle", handle: "scene-node" },
+            },
+            freshData: true,
         };
     }
 
@@ -1233,6 +1343,17 @@ export class HandleCollections {
         ) {
             return undefined;
         }
+        // Only the pin's container is compiled here; any other owner's
+        // `entities` stays on the data path.
+        const ownerType = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(collection.expression),
+        );
+        if (
+            !(ownerType.isUnion() ? ownerType.types : [ownerType]).some(
+                (part) => isPinnedType(part, ["AssetContainer"]),
+            )
+        )
+            return undefined;
         const owner = this.context.compileValue(collection.expression);
         if (owner.kind !== "asset") {
             return undefined;
@@ -1770,6 +1891,70 @@ export class HandleCollections {
             );
         }
         return this.runtimeFind(target, predicate);
+    }
+
+    /**
+     * `<collection>.filter(<arrow>)` over a collection of engine handles:
+     * the pin's fresh array of the members the test keeps, in collection
+     * order, built by one loaded loop.
+     */
+    public compileFilter(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (callee.name.text !== "filter") return undefined;
+        const target = this.iterationTarget(callee.expression);
+        const handle = target?.elementKind;
+        if (!target || !handle || !isHandleKind(handle)) return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const predicate = this.context.unwrap(argumentAt(call, 0));
+        const parameter =
+            ts.isArrowFunction(predicate) &&
+            predicate.parameters.length === 1 &&
+            !ts.isBlock(predicate.body)
+                ? predicate.parameters[0]!.name
+                : undefined;
+        if (!parameter || !ts.isIdentifier(parameter)) {
+            return this.context.fail(
+                call.arguments[0] ?? call,
+                "filter takes an arrow whose one parameter is the element and whose body is the test.",
+            );
+        }
+        const dataType: DataType<"vector"> = {
+            kind: "vector",
+            element: { kind: "handle", handle },
+        };
+        const result = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_kept`,
+        );
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(dataType),
+            name: result,
+            initializer: "",
+            initialization: "default",
+        });
+        emitHandleCollectionLoop(this.context, target, parameter, (context) => {
+            const item = context.bindings.lookup(parameter).cpp;
+            const test = context.conditions.compileCondition(
+                (predicate as ts.ArrowFunction).body as ts.Expression,
+            );
+            context.emit({ kind: "open", code: `if (${test}) {` });
+            context.increaseIndent();
+            context.emit({
+                kind: "expression",
+                code: `${result}.push_back(${item});`,
+            });
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        });
+        return {
+            kind: "data",
+            cpp: result,
+            dataType,
+            engineCpp: target.engineCpp,
+            freshData: true,
+        };
     }
 
     /** The glTF loader always inserts its synthetic SceneNode before feature entities. */
@@ -2548,6 +2733,37 @@ export class HandleCollections {
      * caller's own answer.
      */
     private readonly assetDocuments = new EmissionMap<string, JsonObject>();
+
+    /** Per document, whether its entities are its root alone. */
+    private readonly soleGltfRoots = new EmissionMap<string, boolean>();
+
+    /**
+     * Whether a glTF document's entities are its root alone: it declares no
+     * punctual lights. A document generation cannot read may append them.
+     */
+    private soleGltfRoot(asset: CompileAsset, node: ts.Node): boolean {
+        let sole = this.soleGltfRoots.get(asset.source);
+        if (sole === undefined) {
+            sole =
+                unlessRefused(() => !this.appendsGltfEntities(asset, node)) ===
+                true;
+            this.soleGltfRoots.set(asset.source, sole);
+        }
+        return sole;
+    }
+
+    /** Whether a glTF document declares punctual lights, the loader's only appended entities. */
+    private appendsGltfEntities(asset: CompileAsset, node: ts.Node): boolean {
+        const extensions = this.readAssetDocument(asset, node).extensions;
+        const lights = isRecord(extensions)
+            ? extensions.KHR_lights_punctual
+            : undefined;
+        return (
+            isRecord(lights) &&
+            Array.isArray(lights.lights) &&
+            lights.lights.length > 0
+        );
+    }
 
     /**
      * The materialized document's JSON, from GLB, JSON glTF or `.babylon`

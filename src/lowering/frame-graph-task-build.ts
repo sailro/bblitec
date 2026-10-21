@@ -21,6 +21,7 @@ export function lowerFrameGraphTaskBuild(
     context: LoweringContext,
     renderTaskRecord: string,
     effectTasks: boolean,
+    taskMethodSlots = false,
 ): string {
     const { file, declaration: build } = context.functionDeclaration(
         graphModule,
@@ -126,9 +127,16 @@ export function lowerFrameGraphTaskBuild(
                     ...(effectTasks
                         ? [
                               `${indent}} else if (task.kind == FrameTaskKind::effect) {`,
-                              `${indent}    require_effect_bind_group(engine, task.effect.effect);`,
-                              // The record restores the pipeline dispose cleared.
-                              `${indent}    task.disposed = false;`,
+                              ...(taskMethodSlots
+                                  ? [
+                                        // `task.record()`: one scene code put there, else the pin's.
+                                        `${indent}    record_effect_task(engine, handle);`,
+                                    ]
+                                  : [
+                                        `${indent}    require_effect_bind_group(engine, task.effect.effect);`,
+                                        // The record restores the pipeline dispose cleared.
+                                        `${indent}    task.disposed = false;`,
+                                    ]),
                           ]
                         : []),
                     `${indent}} else {`,

@@ -355,6 +355,15 @@ export interface LoweringServices {
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeControlFlow(): boolean;
+    /** Conditions a runtime case split settles inside one of its arms. */
+    readonly conditionOverrides: Map<ts.Node, boolean>;
+    executedInitializerElements(
+        identifier: ts.Identifier,
+    ): readonly Value[] | undefined;
+    executedModuleConstantMapEntry(
+        expression: ts.Expression,
+        key: string | number,
+    ): Value | undefined;
     enterRuntimeIteration(body?: ts.Node): void;
     leaveRuntimeIteration(): void;
     isInRuntimeIteration(): boolean;

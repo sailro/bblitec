@@ -21,20 +21,31 @@ interface TextureCarrier {
 }
 interface MaterialProbe {
     baseColorTexture: TextureCarrier;
+    emissiveTexture?: TextureCarrier;
 }
 interface IdentityPayload {
     materials: number[];
     fallbackTexels: Record<number, number[]>;
+    /** Each material's emissive texture identity, or -1; absent with none. */
+    emissive?: number[];
 }
 
-/** Execute the pin's cache, sampler and material construction with inert GPU transport. */
+interface PinnedGltfFeature {
+    id: string;
+    applyMaterial?: unknown;
+}
+
+/**
+ * Execute the pin's cache, sampler and material construction with inert GPU
+ * transport. Material extensions run as the pin's own triggered features;
+ * a texture wrapper would give each use its own object, which is not
+ * represented.
+ */
 export async function gltfSourceAlbedoIdentities(
     document: JsonObject,
 ): Promise<IdentityPayload> {
     const unsupported = asStrings(document.extensionsUsed).find(
-        (extension) =>
-            extension.startsWith("KHR_materials_") ||
-            extension === "KHR_texture_transform",
+        (extension) => extension === "KHR_texture_transform",
     );
     if (unsupported)
         throw new Error(
@@ -137,13 +148,23 @@ export function resolveImage(_json, _bin, index) {
         }),
         { _device: device },
     );
-    const { runGltfMaterialFeatures } = await importPinnedModule<{
-        runGltfMaterialFeatures: (
-            material: unknown,
-            features: unknown[],
-            context: unknown,
-        ) => Promise<unknown>;
-    }>("loader-gltf/gltf-feature-registry.js");
+    const { loadGltfFeatures, runGltfMaterialFeatures } =
+        await importPinnedModule<{
+            loadGltfFeatures: (
+                json: JsonObject,
+            ) => Promise<PinnedGltfFeature[]>;
+            runGltfMaterialFeatures: (
+                material: unknown,
+                features: unknown[],
+                context: unknown,
+            ) => Promise<unknown>;
+        }>("loader-gltf/gltf-feature-registry.js");
+    // The observed basisu feature stands in for the pin's own instance.
+    const materialFeatures = (await loadGltfFeatures(sourceDocument)).filter(
+        (feature) =>
+            feature.applyMaterial !== undefined &&
+            feature.id !== "KHR_texture_basisu",
+    );
     const definitions = asRecords(sourceDocument.materials);
     // Include the pin's implicit default material as the last association.
     const indices = [...definitions.map((_, index) => index), -1];
@@ -175,7 +196,7 @@ export function resolveImage(_json, _bin, index) {
         _json: probeDocument,
         _binChunk: bin,
         _baseUrl: "",
-        _matExts: features,
+        _matExts: [...features, ...materialFeatures],
         _runMatExts: runGltfMaterialFeatures,
         _wrapTex: identityTexWrap,
     });
@@ -202,7 +223,23 @@ export function resolveImage(_json, _bin, index) {
         }
         return identity;
     });
-    return { materials: associations, fallbackTexels };
+    // An emissive texture shares the albedo identity space: the pin's cache
+    // hands one Texture2D to every slot that samples the same image.
+    const emissive = built.map(({ material }) => {
+        const source = material.emissiveTexture;
+        if (!source) return -1;
+        let identity = identities.get(source);
+        if (identity === undefined) {
+            identity = identities.size;
+            identities.set(source, identity);
+        }
+        return identity;
+    });
+    return {
+        materials: associations,
+        fallbackTexels,
+        ...(emissive.some((identity) => identity >= 0) ? { emissive } : {}),
+    };
 }
 
 export async function packageSourceAlbedoIdentities(

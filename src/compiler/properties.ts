@@ -14,7 +14,12 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { presentMembers } from "./type-facts.js";
 import ts from "typescript";
+import {
+    isEffectTaskMethodName,
+    reachEffectTaskMethod,
+} from "./effect-task-methods.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     compositeScalarAccessors,
@@ -88,6 +93,7 @@ import { readSplatStreamProperty } from "./splat-stream-surface.js";
 import {
     contextCanvas,
     optionalPresentCpp,
+    optionalValueCpp,
     presenceFlagCpp,
     valueForKind,
     type Feature,
@@ -1192,6 +1198,20 @@ export const propertyRules: readonly PropertyRule[] = [
         optionalFound: (ownerCpp, engineCpp) =>
             `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::base_color)`,
     },
+    {
+        // A loaded material's emissive Texture2D, in the albedo's identity space.
+        owner: "material",
+        property: "emissiveTexture",
+        value: "texture",
+        textureStorage: "stored",
+        helper: "bbl::material_source_texture",
+        feature: "material:source-texture-read",
+        helperTakesEngine: true,
+        helperArgument: "bbl::MaterialTextureSlot::emissive",
+        dataType: { kind: "handle", handle: "texture" },
+        optionalFound: (ownerCpp, engineCpp) =>
+            `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::emissive)`,
+    },
     ...(
         [
             ["baseColorFactor", "base_color_factor"],
@@ -1720,6 +1740,7 @@ export interface PropertyContext extends Pick<
     | "sceneManifest"
     | "dataValue"
     | "noteImpureRead"
+    | "checker"
 > {}
 
 /**
@@ -1737,6 +1758,41 @@ export function readCallableProperty(
     if (!rule || !("dataType" in rule) || rule.dataType?.kind !== "function")
         return undefined;
     return readProperty(context, owner, property, expression);
+}
+
+/**
+ * Whether an array read's value reaches no writable alias: it is indexed
+ * on the spot, or typed readonly where it flows (an assertion or the
+ * contextual type of its use).
+ */
+function readsWithoutMutableAlias(
+    checker: ts.TypeChecker,
+    read: ts.Node,
+): boolean {
+    let use = read;
+    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const parent = use.parent;
+    if (
+        ts.isElementAccessExpression(parent) &&
+        parent.expression === use &&
+        !(ts.isBinaryExpression(parent.parent) && parent.parent.left === parent)
+    )
+        return true;
+    const readonly = (type: ts.Type | undefined): boolean => {
+        if (!type) return false;
+        const parts = presentMembers(type);
+        return (
+            parts.length > 0 &&
+            parts.every((part) =>
+                checker.isTupleType(part)
+                    ? (part as ts.TupleTypeReference).target.readonly
+                    : part.getSymbol()?.getName() === "ReadonlyArray",
+            )
+        );
+    };
+    if (ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent))
+        return readonly(checker.getTypeFromTypeNode(parent.type));
+    return ts.isExpression(use) && readonly(checker.getContextualType(use));
 }
 
 export function readProperty(
@@ -1825,7 +1881,10 @@ export function readProperty(
         // Assignment probing asks the property table for the LHS shape too;
         // replacing that property does not read its previous array value.
         if (!simpleWriteTarget) {
-            context.admissions.noteMaterialColorRead(property);
+            context.admissions.noteMaterialColorRead(
+                property,
+                readsWithoutMutableAlias(context.checker, originalExpression),
+            );
         }
     }
     // An engine handle names itself; anything else carries the engine it
@@ -3402,7 +3461,11 @@ export class PropertyAccessLowerer {
                     ? declaredTsType.types
                     : [declaredTsType];
                 const optionalProperty = this.context.checker
-                    .getTypeAtLocation(expression.expression)
+                    .getNonNullableType(
+                        this.context.checker.getTypeAtLocation(
+                            expression.expression,
+                        ),
+                    )
                     .getProperty(property);
                 if (
                     declared?.kind === "optional" ||
@@ -3460,6 +3523,11 @@ export class PropertyAccessLowerer {
                 );
             if (collection) return collection;
         }
+        if (owner.kind === "asset" && property === "entities")
+            return this.context.handleCollections.assetEntitiesValue(
+                owner,
+                expression,
+            );
         if (owner.kind === "scene" && property === "surface") {
             if (!owner.scenePrimarySurface)
                 this.context.fail(
@@ -3492,6 +3560,48 @@ export class PropertyAccessLowerer {
                 ? this.propertyWithOwnerPresence(owner, resolved, expression)
                 : resolved;
         }
+        // A link of an optional chain through a handle stored in data reads
+        // the handle only while it is present; the chain is absent otherwise.
+        if (
+            owner.kind === "data" &&
+            owner.dataType?.kind === "optional" &&
+            owner.dataType.inner.kind === "handle" &&
+            ts.isOptionalChain(expression)
+        ) {
+            const held = this.context.bindings.pinValueToTemporary(
+                owner,
+                "chain_owner",
+                expression.expression,
+            );
+            const present = optionalPresentCpp(held.cpp);
+            const handle = this.context.dataLowerer.leafValue(
+                optionalValueCpp(held.cpp),
+                owner.dataType.inner,
+            );
+            const read = this.readOwnerProperty(handle, expression);
+            if (read) {
+                const valuePresent = presenceFlagCpp(read);
+                const { nativeLvalue: _lvalue, ...value } = read;
+                return {
+                    ...value,
+                    cpp: `(${present} ? ${read.cpp} : std::remove_cvref_t<decltype(${read.cpp})>{})`,
+                    optionalFoundCpp:
+                        valuePresent === undefined
+                            ? present
+                            : `(${present} && ${valuePresent})`,
+                };
+            }
+        }
+        // A handle stored as optional data the checker proves present.
+        const presentHandle = ts.isOptionalChain(expression)
+            ? undefined
+            : this.context.dataLowerer.presentStoredHandle(
+                  owner,
+                  expression.expression,
+              );
+        const presentRead =
+            presentHandle && this.readOwnerProperty(presentHandle, expression);
+        if (presentRead) return presentRead;
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,
@@ -4139,6 +4249,12 @@ export class PropertyAccessLowerer {
                 ),
             };
         }
+        if (
+            owner.kind === "task" &&
+            owner.effectTask &&
+            isEffectTaskMethodName(expression.name.text)
+        )
+            return this.effectTaskMethod(owner, expression);
         if (owner.kind === "task" && owner.geometryTask) {
             return this.readGeometryTaskProperty(
                 owner,
@@ -4182,6 +4298,24 @@ export class PropertyAccessLowerer {
             };
         }
         return undefined;
+    }
+
+    /**
+     * An effect task's `record` / `dispose` read as a function: the one
+     * scene code put there, else the pin's own method on this task. The
+     * frame graph calls whichever the slot holds when it records the task.
+     */
+    private effectTaskMethod(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value {
+        const dispose = expression.name.text === "dispose";
+        reachEffectTaskMethod(this.context, dispose, expression);
+        return {
+            kind: "data",
+            cpp: `bbl::effect_task_method(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${dispose})`,
+            dataType: { kind: "function", parameters: [], identity: true },
+        };
     }
 
     /**

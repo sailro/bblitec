@@ -282,8 +282,26 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
         join(directory, "mutable.ts"),
         'export let selected = "/clips/voice_01.bin";',
     );
+    const program = (body: string): string => `
+            const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+            function moduleUrl(path:string,source:string):string{const value=new URL(path,source);return value.href;}
+            const unrelated=moduleUrl("/clips/voice_01.bin",import.meta.url);
+            ${body}
+            async function load(value:string):Promise<Response>{return fetch(value);}
+            void load(url);
+        `;
+    // A plain member write joins the domain it may select from.
+    const written = compileSource(
+        program(
+            `const entries=[{url:"/clips/voice_01.bin"}]; entries[0].url="/clips/voice_02.bin"; const url=entries[Math.floor(Math.random())].url;`,
+        ),
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.deepEqual(
+        written.manifest.assets.map((asset) => asset.source).sort(),
+        ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
+    );
     const cases = [
-        `const entries=[{url:"/clips/voice_01.bin"}]; entries[0].url="/clips/voice_02.bin"; const url=entries[Math.floor(Math.random())].url;`,
         `const entries=[{url:"/clips/voice_01.bin"}]; const alias=entries; alias.push({url:"/clips/voice_02.bin"}); const url=entries[Math.floor(Math.random()*2)].url;`,
         `const entries=[{url:"/clips/voice_01.bin"}]; function edit(bank:{url:string}[]):void{bank[0].url="/clips/voice_02.bin";} edit(entries); const url=entries[Math.floor(Math.random())].url;`,
         `const record={nested:{url:"/clips/voice_01.bin"}}; const alias=record.nested; alias.url="/clips/voice_02.bin"; const url=record.nested.url;`,
@@ -297,17 +315,10 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
     for (const body of cases) {
         assert.throws(
             () =>
-                compileSource(
-                    `
-            const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
-            function moduleUrl(path:string,source:string):string{const value=new URL(path,source);return value.href;}
-            const unrelated=moduleUrl("/clips/voice_01.bin",import.meta.url);
-            ${body}
-            async function load(value:string):Promise<Response>{return fetch(value);}
-            void load(url);
-        `,
-                    { fileName: join(directory, "entry.ts"), publicDir },
-                ),
+                compileSource(program(body), {
+                    fileName: join(directory, "entry.ts"),
+                    publicDir,
+                }),
             /fetch URL .*lost its static value|Expected a compile-time string|Packaged URL provenance/,
         );
     }

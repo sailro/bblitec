@@ -22,6 +22,7 @@ import {
 import { gltfIblBrdfLutCpp, gltfIblPreparationCpp } from "../gltf/ibl.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { gltfContainerProfilesCpp } from "../resource-profiles.js";
 /**
  * The generated glTF loader.
  *
@@ -230,6 +231,7 @@ export function gltfLoaderCpp(
         gltfCameras = false,
         boneControl = false,
         compressedImages = false,
+        containerProfiles,
     } = options;
     // An animated punctual light follows its source node through the
     // pinned light-world direction writer.
@@ -320,6 +322,20 @@ ${
             texture.height = texture.data.rgba_height = 1;
         }
         ${recordAt("engine.materials", "handle")}.source_albedo_texture = std::move(texture);
+    };
+    const auto* source_emissive = optional(source_albedo, "emissive");
+    if (source_emissive && source_emissive->as_array().size() != material_json.size() + 1) {
+        throw std::runtime_error("Invalid glTF emissive association count.");
+    }
+    const auto retain_source_emissive = [&](MaterialHandle handle, std::size_t material_index) {
+        if (!source_emissive) return;
+        const auto association = source_emissive->as_array().at(material_index).as_number();
+        if (association < 0.0) return;
+        auto [identity, inserted] = source_texture_identities.try_emplace(gltf_checked_index(association), 0);
+        if (inserted) identity->second = engine.next_file_texture_identity++;
+        auto texture = material_texture(engine, handle, MaterialTextureSlot::emissive);
+        texture.identity = identity->second;
+        ${recordAt("engine.materials", "handle")}.source_emissive_texture = std::move(texture);
     };`
         : ""
 }
@@ -343,7 +359,12 @@ ${animationPointer ? "            source_physical_properties.emplace_back();" : 
                 source_material_index < base_color_definitions.size() && base_color_definitions[source_material_index],
                 material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context,
                 decode_gltf_bitmap, false, ${animationPointer ? "&source_physical_properties.back()" : "nullptr"}, base_color_module, &file.materials);
-${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
+${
+    sourceTextureReads
+        ? `            retain_source_albedo(handle, source_material_index);
+            retain_source_emissive(handle, source_material_index);`
+        : ""
+}
             materials.push_back(handle);
     }
 ${
@@ -381,7 +402,17 @@ ${
         }
     }
 
-    const auto parents = build_gltf_parents(document);
+${
+    containerProfiles
+        ? `    // Containers load in a generation-unknown order, so each material
+    // names its document's composed slot instead of its handle's.
+    const std::uint32_t material_profile = gltf_container_profile(file.path).materials;
+    for (std::size_t index = 0; index < materials.size(); ++index)
+        ${recordAt("engine.materials", "materials[index]")}.pbr_composition_profile =
+            material_profile + static_cast<std::uint32_t>(index);
+`
+        : ""
+}    const auto parents = build_gltf_parents(document);
     validate_gltf_parents(parents);
 
     AssetRecord asset;
@@ -602,7 +633,7 @@ ${nodeTransforms ? gltfNodeHierarchyCpp() : ""}`,
                       ]
                     : []),
             ],
-            code: `    // gltf-feature-gpu-instancing builds one matrix array per node and
+            code: `${containerProfiles ? "    const std::uint32_t mesh_profile = gltf_container_profile(file.path).meshes;\n" : ""}    // gltf-feature-gpu-instancing builds one matrix array per node and
     // passes that same array to each of the node's mesh primitives.
     std::unordered_map<std::size_t, js::F32Array> node_instance_matrices;
 ${options.cpuGeometry ? "    GltfCpuStreamCache cpu_stream_cache;" : ""}
@@ -735,7 +766,10 @@ ${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(
             record.parent_world.reset();`
                     : ""
             }
-            const MeshHandle mesh_handle =
+            // mesh.skeleton / mesh.morphTargets upstream, as plain facts.
+            record.skeleton_attached = planned_skin != nullptr;
+            record.morph_targets_attached = planned_morph != nullptr;
+${containerProfiles ? "            store_next_mesh_with_profile(engine, mesh_profile + static_cast<std::uint32_t>(gltf_mesh_counter));\n" : ""}            const MeshHandle mesh_handle =
                 store_mesh_record(engine, std::move(record));
             if (instance_matrices) {
                 set_thin_instances(engine, mesh_handle, *instance_matrices, static_cast<double>(instance_matrices->size()) / 16.0);
@@ -919,7 +953,20 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${
                 : ""
         }
     compose_gltf_scene_setup(asset, {${lowered.assetSceneSetupOrder.join(", ")}});
-    asset.has_synthetic_root = true;
+    asset.has_synthetic_root = true;${
+        nodeTransforms
+            ? `
+    {
+        // The tree stays unparented until addToScene (\`hierarchy_linked\`).
+        const AssetHandle owner{static_cast<std::uint32_t>(engine.assets.size())};
+        for (const MeshHandle mesh : asset.meshes)
+            if (MeshRecord* record = current_mesh_record(engine, mesh)) record->import_owner = owner;
+        ${recordAt("engine.transform_nodes", "asset.root_node")}.import_owner = owner;
+        for (const TransformNodeHandle& node : asset.nodes)
+            if (node.value != invalid_handle) ${recordAt("engine.transform_nodes", "node")}.import_owner = owner;
+    }`
+            : ""
+    }
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};`,
     ]);
@@ -1784,6 +1831,7 @@ void prepare_gltf_products(GltfSource& file) {
 ${gltfIblPreparationCpp()}
 }
 
+${containerProfiles ? gltfContainerProfilesCpp(containerProfiles) : ""}
 ${load.definitions}
 
 } // namespace

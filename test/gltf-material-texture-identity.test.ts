@@ -90,15 +90,14 @@ test("packaging refuses metadata collisions and unrepresented extension producer
             /already carries/,
         );
     }
-    for (const extension of [
-        "KHR_texture_transform",
-        "KHR_materials_pbrSpecularGlossiness",
-    ]) {
-        await assert.rejects(
-            gltfSourceAlbedoIdentities({ extensionsUsed: [extension] }),
-            /does not yet represent/,
-        );
-    }
+    // Material extensions run as the pin's own features; a texture wrapper
+    // would give each use its own object.
+    await assert.rejects(
+        gltfSourceAlbedoIdentities({
+            extensionsUsed: ["KHR_texture_transform"],
+        }),
+        /does not yet represent/,
+    );
     const document: JsonObject = {
         materials: [{}],
         extensionsUsed: ["KHR_lights_punctual"],

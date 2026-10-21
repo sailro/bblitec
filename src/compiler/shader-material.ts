@@ -1175,6 +1175,19 @@ export function compileShaderUniformComponents(
             context.compileNumber(element),
         );
     }
+    // `[...lanes]` copies one array-like: the writer reads the same lanes
+    // (and checks the same length) from the copy as from the source.
+    if (
+        ts.isArrayLiteralExpression(resolved) &&
+        resolved.elements.length === 1 &&
+        ts.isSpreadElement(resolved.elements[0]!)
+    )
+        return compileShaderUniformComponents(
+            context,
+            resolved.elements[0].expression,
+            uniform,
+            lengthCheck,
+        );
     // `[...rgb, 1]`: each element in order, a numeric tuple spread as its
     // lanes.
     if (
@@ -1308,6 +1321,19 @@ function staticNumber(
 }
 
 /**
+ * The instance lanes a program's own vertex source reads. The pin appends
+ * `world0`..`world3` (and `instanceColor` with a colour pool) to the vertex
+ * input only for a thin-instanced draw, so a source reading them compiles,
+ * in the browser too, only for such a draw.
+ */
+export function sourceInstanceLanes(
+    program: Pick<CompiledShaderProgram, "vertexSource">,
+): { colors: boolean } | undefined {
+    if (!/\.\s*world[0-3]\b/.test(program.vertexSource)) return undefined;
+    return { colors: /\.\s*instanceColor\b/.test(program.vertexSource) };
+}
+
+/**
  * Which scene-local shader programs draw instanced, and which of those also
  * bind the per-instance colour stream.
  *
@@ -1322,14 +1348,23 @@ export function shaderThinInstanceLanes(
     programs: readonly CompiledShaderProgram[],
     fail: (message: string) => never,
 ): ReadonlyMap<string, boolean> {
-    const lanes = new EmissionMap<string, boolean>();
-    const seen = new EmissionMap<string, SceneMeshManifest>();
-    const colorOptions = new Map(
+    // The pin appends the colour lane for a coloured pool whether or not the
+    // source reads it, but a lane the source never reads changes nothing it
+    // draws (native draws accept the unused pool). `getFinalColor` is the
+    // one reader that follows the pool.
+    const sources = new Map(
         programs.map((program) => [
             program.name,
-            program.thinInstanceColorOption,
+            {
+                readsLanes: sourceInstanceLanes(program) !== undefined,
+                followsPool: /\bgetFinalColor\b/.test(program.vertexSource),
+                readsColor: /\.\s*instanceColor\b/.test(program.vertexSource),
+                colorOption: program.thinInstanceColorOption,
+            },
         ]),
     );
+    const lanes = new EmissionMap<string, boolean>();
+    const seen = new EmissionMap<string, SceneMeshManifest>();
     for (const mesh of meshes) {
         if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length)
             continue;
@@ -1338,9 +1373,35 @@ export function shaderThinInstanceLanes(
             ...(mesh.shaderVariants ?? []),
         ]);
         for (const variant of variants) {
+            const source = sources.get(variant);
             const colors =
-                mesh.thinInstanceColors === true &&
-                colorOptions.get(variant) !== false;
+                source !== undefined &&
+                (source.followsPool
+                    ? mesh.thinInstanceColors === true
+                    : source.readsColor) &&
+                source.colorOption !== false;
+            // A program whose source reads the lanes draws only with them:
+            // a mesh that may acquire its pool later draws it once it has,
+            // and on one that never has a pool its stage cannot compile.
+            if (source?.readsLanes) {
+                if (mesh.thinInstances === undefined)
+                    fail(
+                        `Shader material '${variant}' is drawn on meshes that ` +
+                            "disagree about thin instances; its vertex source " +
+                            "reads the instance lanes, which a plain draw does " +
+                            "not declare.",
+                    );
+                const settled = lanes.get(variant);
+                if (settled !== undefined && settled !== colors)
+                    fail(
+                        `Shader material '${variant}' is drawn on meshes that ` +
+                            "disagree about thin-instance colours; the lanes are " +
+                            "declared in the prelude the stage compiles against, " +
+                            "so one baked variant cannot serve both.",
+                    );
+                lanes.set(variant, colors);
+                continue;
+            }
             if (mesh.thinInstances === "possible") {
                 fail(
                     `Shader material '${variant}' is on a mesh that may acquire ` +

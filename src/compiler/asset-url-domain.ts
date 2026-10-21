@@ -16,8 +16,12 @@ import {
     isObjectIdentityFunction,
     objectIdentityCallArgument,
 } from "./static-evaluator.js";
-import { receiverWritingMethods } from "./receiver-methods.js";
 import {
+    readOnlyDataMethods,
+    receiverWritingMethods,
+} from "./receiver-methods.js";
+import {
+    assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
     regularExpressionParts,
@@ -56,13 +60,293 @@ const candidateLimit = 256;
  */
 const nothing: readonly string[] = Object.freeze([]);
 
+/** A named function no code calls or reads: it never runs, so it binds nothing. */
+function neverRuns(
+    graph: SourceGraph,
+    owner: ts.SignatureDeclaration,
+): boolean {
+    return (
+        (ts.isFunctionDeclaration(owner) ||
+            ((ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+                ts.isVariableDeclaration(owner.parent) &&
+                owner.parent.initializer === owner)) &&
+        (graph.calls.get(owner) ?? []).length === 0 &&
+        !graph.escaped.has(owner)
+    );
+}
+
 interface SourceGraph {
     readonly calls: ReadonlyMap<
         SupportedFunction,
         readonly ts.CallExpression[]
     >;
     readonly writes: ReadonlyMap<ts.Symbol, readonly ts.Expression[]>;
+    /** Every assignment or update of a binding itself, by the binding. */
+    readonly bindingWrites: ReadonlyMap<ts.Symbol, readonly ts.Node[]>;
     readonly mutated: ReadonlySet<ts.Symbol>;
+    /**
+     * Plain `x.a[i].b = v` writes into a binding's object graph, by the
+     * binding: the path the write reaches and the value it stores.
+     */
+    readonly memberWrites: ReadonlyMap<ts.Symbol, readonly MemberWrite[]>;
+    /** Mutated bindings some write other than a recorded member write reaches. */
+    readonly otherwiseMutated: ReadonlySet<ts.Symbol>;
+    /** Local Maps whose every value the source writes visibly. */
+    readonly registries: ReadonlyMap<ts.Symbol, MapRegistry>;
+    /** Functions some code reads as a value, so calls may reach them unseen. */
+    readonly escaped: ReadonlySet<SupportedFunction>;
+}
+
+interface MemberWrite {
+    readonly path: Projection;
+    readonly value: ts.Expression;
+}
+
+/** The path `target` writes below its root binding, when every key is plain. */
+function memberWritePath(
+    target: ts.Expression,
+): { root: ts.Identifier; path: Projection } | undefined {
+    const path: (string | typeof element)[] = [];
+    let node = unwrapExpression(target);
+    while (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+    ) {
+        if (ts.isPropertyAccessExpression(node)) path.unshift(node.name.text);
+        else {
+            const key = unwrapExpression(node.argumentExpression);
+            path.unshift(ts.isStringLiteralLike(key) ? key.text : element);
+        }
+        node = unwrapExpression(node.expression);
+    }
+    return ts.isIdentifier(node) && path.length > 0
+        ? { root: node, path }
+        : undefined;
+}
+
+/** The function a name declares: a declaration, or a `const` bound to one. */
+function declaredFunction(
+    symbol: ts.Symbol | undefined,
+): SupportedFunction | undefined {
+    const declaration = symbol?.valueDeclaration;
+    if (!declaration) return undefined;
+    if (ts.isFunctionDeclaration(declaration)) return declaration;
+    if (
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+    )
+        return declaration.initializer;
+    return undefined;
+}
+
+/** Whether a name only declares, re-exports or directly calls its function. */
+function directFunctionUse(node: ts.Identifier): boolean {
+    const parent = node.parent;
+    return (
+        ((ts.isFunctionDeclaration(parent) ||
+            ts.isVariableDeclaration(parent)) &&
+            parent.name === node) ||
+        ts.isImportSpecifier(parent) ||
+        ts.isExportSpecifier(parent) ||
+        ts.isImportClause(parent) ||
+        (ts.isCallExpression(parent) && parent.expression === node)
+    );
+}
+
+/**
+ * A `const m = new Map()` no other code reaches: its values are the
+ * `m.set(k, v)` arguments, and the elements of array values also include
+ * what `m.get(k).push(...)` appends. A Map passed, returned or stored
+ * elsewhere, or an array value written any other way, has no registry.
+ */
+interface MapRegistry {
+    readonly values: readonly ts.Expression[];
+    readonly pushed: readonly ts.Expression[];
+}
+
+/** Array methods whose callback's first parameter is each element. */
+const arrayIterationMethods = new Set([
+    "map",
+    "forEach",
+    "filter",
+    "find",
+    "findIndex",
+    "findLast",
+    "findLastIndex",
+    "some",
+    "every",
+    "flatMap",
+]);
+/** Methods that read a Map or shrink it; `set` and `get` are classified. */
+const mapReads = new Set([
+    "has",
+    "size",
+    "keys",
+    "values",
+    "entries",
+    "forEach",
+    "delete",
+    "clear",
+]);
+
+function isLibraryMap(checker: ts.TypeChecker, node: ts.Node): boolean {
+    const symbol = checker.getNonNullableType(
+        checker.getTypeAtLocation(node),
+    ).symbol;
+    return symbol?.name === "Map" && declaredInDefaultLibrary(symbol);
+}
+
+/** The node an expression's value flows into, past wrappers that keep it. */
+function valueUse(node: ts.Node): ts.Node {
+    let use = node;
+    while (
+        ts.isParenthesizedExpression(use.parent) ||
+        ts.isNonNullExpression(use.parent) ||
+        ts.isAsExpression(use.parent) ||
+        ts.isSatisfiesExpression(use.parent)
+    )
+        use = use.parent;
+    return use;
+}
+
+/**
+ * Classifies how an array a registry's `get` returned is used: reads keep
+ * it closed and `push` arguments join its elements. False when it escapes.
+ */
+function classifyRegistryArray(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+    pushed: ts.Expression[],
+    depth = 0,
+): boolean {
+    const use = valueUse(node);
+    const parent = use.parent;
+    if (
+        ts.isBinaryExpression(parent) &&
+        parent.left === use &&
+        parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    )
+        return classifyRegistryArray(checker, parent, pushed, depth);
+    if (ts.isForOfStatement(parent) && parent.expression === use) return true;
+    if (ts.isSpreadElement(parent)) return true;
+    if (
+        (ts.isIfStatement(parent) && parent.expression === use) ||
+        (ts.isConditionalExpression(parent) && parent.condition === use) ||
+        (ts.isPrefixUnaryExpression(parent) &&
+            parent.operator === ts.SyntaxKind.ExclamationToken)
+    )
+        return true;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
+        const method = parent.name.text;
+        if (method === "push") {
+            const call = parent.parent;
+            if (!ts.isCallExpression(call) || call.expression !== parent)
+                return false;
+            pushed.push(...call.arguments);
+            return true;
+        }
+        return method === "length" || readOnlyDataMethods.has(method);
+    }
+    if (
+        depth === 0 &&
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === use &&
+        ts.isIdentifier(parent.name) &&
+        parent.parent.flags & ts.NodeFlags.Const
+    ) {
+        const alias = resolvedSymbol(checker, parent.name);
+        if (!alias) return false;
+        let closed = true;
+        const scope = parent.parent.parent.parent;
+        const visit = (child: ts.Node): void => {
+            if (!closed) return;
+            if (
+                ts.isIdentifier(child) &&
+                child !== parent.name &&
+                resolvedSymbol(checker, child) === alias
+            ) {
+                closed = classifyRegistryArray(
+                    checker,
+                    child,
+                    pushed,
+                    depth + 1,
+                );
+                return;
+            }
+            ts.forEachChild(child, visit);
+        };
+        visit(scope);
+        return closed;
+    }
+    return false;
+}
+
+/** The registry `declaration` declares, when every reference keeps it closed. */
+function mapRegistry(
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+): MapRegistry | undefined {
+    if (
+        !ts.isIdentifier(declaration.name) ||
+        !(declaration.parent.flags & ts.NodeFlags.Const) ||
+        !declaration.initializer
+    )
+        return undefined;
+    const initializer = unwrapExpression(declaration.initializer);
+    if (
+        !ts.isNewExpression(initializer) ||
+        (initializer.arguments?.length ?? 0) !== 0 ||
+        !isLibraryMap(checker, declaration.name)
+    )
+        return undefined;
+    const statement = declaration.parent.parent;
+    if (
+        ts.isVariableStatement(statement) &&
+        statement.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        )
+    )
+        return undefined;
+    const symbol = resolvedSymbol(checker, declaration.name);
+    if (!symbol) return undefined;
+    const values: ts.Expression[] = [];
+    const pushed: ts.Expression[] = [];
+    let closed = true;
+    const visit = (child: ts.Node): void => {
+        if (!closed) return;
+        if (
+            ts.isIdentifier(child) &&
+            child !== declaration.name &&
+            resolvedSymbol(checker, child) === symbol
+        ) {
+            const parent = child.parent;
+            if (
+                !ts.isPropertyAccessExpression(parent) ||
+                parent.expression !== child
+            ) {
+                closed = false;
+                return;
+            }
+            const method = parent.name.text;
+            const call = parent.parent;
+            const called =
+                ts.isCallExpression(call) && call.expression === parent;
+            if (method === "set" && called && call.arguments.length === 2) {
+                // `set` returns the Map itself; a chained or stored result
+                // is another reference this walk does not follow.
+                values.push(call.arguments[1]!);
+                closed = ts.isExpressionStatement(valueUse(call).parent);
+            } else if (method === "get" && called)
+                closed = classifyRegistryArray(checker, call, pushed);
+            else closed = mapReads.has(method);
+            return;
+        }
+        ts.forEachChild(child, visit);
+    };
+    visit(declaration.parent.parent.parent);
+    return closed ? { values, pushed } : undefined;
 }
 
 // Source facts outlive emission attempts, but never retain a lowering context.
@@ -81,6 +365,20 @@ function calledFunction(
     call: ts.CallExpression,
 ): SupportedFunction | undefined {
     const declaration = checker.getResolvedSignature(call)?.declaration;
+    // A `const` binding typed by a function type resolves to that type; the
+    // call reaches the one function the binding holds.
+    if (declaration && ts.isFunctionTypeNode(declaration)) {
+        const callee = unwrapExpression(call.expression);
+        const symbol = ts.isIdentifier(callee)
+            ? resolvedSymbol(checker, callee)
+            : undefined;
+        const binding = symbol?.valueDeclaration;
+        return binding &&
+            ts.isVariableDeclaration(binding) &&
+            ts.getCombinedNodeFlags(binding) & ts.NodeFlags.Const
+            ? declaredFunction(symbol)
+            : undefined;
+    }
     return (
         declaration &&
         (ts.isArrowFunction(declaration) ||
@@ -99,12 +397,25 @@ function sourceGraph(
     if (cached) return cached;
 
     const calls = new Map<SupportedFunction, ts.CallExpression[]>();
+    const registries = new Map<ts.Symbol, MapRegistry>();
+    const memberWrites = new Map<ts.Symbol, MemberWrite[]>();
+    const otherwiseMutated = new Set<ts.Symbol>();
+    const escaped = new Set<SupportedFunction>();
     // An object literal's methods implement the members of the type it is
     // written as (`return { show() {} }` from a function typed `Toast`):
     // calls through that type's member reach them.
     const implementations = new Map<ts.Node, SupportedFunction[]>();
     const memberCalls: [ts.Node, ts.CallExpression][] = [];
     const writes = new Map<ts.Symbol, ts.Expression[]>();
+    const bindingWrites = new Map<ts.Symbol, ts.Node[]>();
+    const writeBinding = (target: ts.Expression, write: ts.Node): void => {
+        const name = unwrapExpression(target);
+        const symbol = ts.isIdentifier(name) && resolvedSymbol(checker, name);
+        if (!symbol) return;
+        const list = bindingWrites.get(symbol) ?? [];
+        list.push(write);
+        bindingWrites.set(symbol, list);
+    };
     const mutated = new Set<ts.Symbol>();
     const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
     const alias = (target: ts.Node, source: ts.Expression): void => {
@@ -127,7 +438,10 @@ function sourceGraph(
     const mutate = (expression: ts.Expression): void => {
         const root = rootIdentifier(expression);
         const symbol = root && resolvedSymbol(checker, root);
-        if (symbol) mutated.add(symbol);
+        if (symbol) {
+            mutated.add(symbol);
+            otherwiseMutated.add(symbol);
+        }
     };
     const recordCall = (
         declaration: SupportedFunction,
@@ -145,12 +459,23 @@ function sourceGraph(
         forEachAnalysisNode(
             source,
             (node) => {
+                if (ts.isIdentifier(node) && !directFunctionUse(node)) {
+                    const used = declaredFunction(
+                        resolvedSymbol(checker, node),
+                    );
+                    if (used) escaped.add(used);
+                }
                 if (
                     ts.isVariableDeclaration(node) &&
                     ts.isIdentifier(node.name) &&
                     node.initializer
-                )
+                ) {
                     alias(node.name, node.initializer);
+                    const registry = mapRegistry(checker, node);
+                    const symbol =
+                        registry && resolvedSymbol(checker, node.name);
+                    if (registry && symbol) registries.set(symbol, registry);
+                }
                 if (ts.isObjectLiteralExpression(node)) {
                     const type = checker.getContextualType(node);
                     for (const property of node.properties) {
@@ -201,14 +526,57 @@ function sourceGraph(
                     }
                     if (declaration) recordCall(declaration, node);
                     const callee = unwrapExpression(node.expression);
+                    // A call through a rebindable binding typed by a function
+                    // type resolves to that type: the function it held runs
+                    // unseen.
+                    const named = ts.isIdentifier(callee)
+                        ? declaredFunction(resolvedSymbol(checker, callee))
+                        : undefined;
+                    if (named && named !== declaration) escaped.add(named);
+                    // `xs.push(v)` / `xs.unshift(v)` store elements: plain
+                    // writes at the array's element path.
+                    const receiver =
+                        ts.isPropertyAccessExpression(callee) &&
+                        (callee.name.text === "push" ||
+                            callee.name.text === "unshift")
+                            ? unwrapExpression(callee.expression)
+                            : undefined;
+                    const stored = receiver
+                        ? ts.isIdentifier(receiver)
+                            ? { root: receiver, path: [] as Projection }
+                            : memberWritePath(receiver)
+                        : undefined;
+                    const storedSymbol =
+                        stored && resolvedSymbol(checker, stored.root);
                     if (
+                        stored &&
+                        storedSymbol &&
+                        checker.isArrayType(
+                            checker.getTypeAtLocation(receiver!),
+                        ) &&
+                        !node.arguments.some(ts.isSpreadElement)
+                    ) {
+                        mutated.add(storedSymbol);
+                        const list = memberWrites.get(storedSymbol) ?? [];
+                        for (const value of node.arguments)
+                            list.push({
+                                path: [...stored.path, element],
+                                value,
+                            });
+                        memberWrites.set(storedSymbol, list);
+                    } else if (
                         ts.isPropertyAccessExpression(callee) &&
                         receiverWritingMethods.has(callee.name.text)
                     )
                         mutate(callee.expression);
                 }
-                if (isUpdateExpression(node)) mutate(node.operand);
+                if (isUpdateExpression(node)) {
+                    mutate(node.operand);
+                    writeBinding(node.operand, node);
+                }
                 if (!isAssignmentExpression(node)) return;
+                for (const written of assignmentTargets(node.left))
+                    writeBinding(written, node);
                 const target = unwrapExpression(node.left);
                 if (ts.isIdentifier(target)) {
                     const symbol = resolvedSymbol(checker, target);
@@ -221,7 +589,18 @@ function sourceGraph(
                         writes.set(symbol, values);
                     }
                 } else {
-                    mutate(target);
+                    const written =
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                            ? memberWritePath(target)
+                            : undefined;
+                    const symbol =
+                        written && resolvedSymbol(checker, written.root);
+                    if (written && symbol) {
+                        mutated.add(symbol);
+                        const list = memberWrites.get(symbol) ?? [];
+                        list.push({ path: written.path, value: node.right });
+                        memberWrites.set(symbol, list);
+                    } else mutate(target);
                 }
             },
             { types: "skip" },
@@ -233,12 +612,27 @@ function sourceGraph(
     const pending = [...mutated];
     for (let index = 0; index < pending.length; index++) {
         for (const target of aliases.get(pending[index]!) ?? []) {
+            // A write through an alias is not one of the target's own.
+            otherwiseMutated.add(target);
             if (mutated.has(target)) continue;
             mutated.add(target);
             pending.push(target);
         }
     }
-    const graph: SourceGraph = { calls, writes, mutated };
+    // An alias's own member writes reach its targets too.
+    for (const symbol of memberWrites.keys())
+        for (const target of aliases.get(symbol) ?? [])
+            otherwiseMutated.add(target);
+    const graph: SourceGraph = {
+        calls,
+        writes,
+        bindingWrites,
+        mutated,
+        memberWrites,
+        otherwiseMutated,
+        registries,
+        escaped,
+    };
     sourceGraphs.set(checker, graph);
     return graph;
 }
@@ -307,6 +701,8 @@ class AssetUrlDomain {
      * literal then contributes nothing. Operands of string operations reset it.
      */
     private nullish = false;
+    /** @unjournaled The projection length where `??` replaces the value read. */
+    private nullishDepth = 0;
     /** @unjournaled An optional member can produce undefined instead of throwing. */
     private optionalProjection = false;
     /** @unjournaled Bindings the enclosing conditional tests truthy: never "". */
@@ -395,11 +791,14 @@ class AssetUrlDomain {
         environment: Environment,
     ): Domain {
         const nullish = this.nullish;
+        const nullishDepth = this.nullishDepth;
         this.nullish = true;
+        this.nullishDepth = projection.length;
         try {
             return this.read(expression, projection, environment);
         } finally {
             this.nullish = nullish;
+            this.nullishDepth = nullishDepth;
         }
     }
 
@@ -472,66 +871,130 @@ class AssetUrlDomain {
         projection: Projection,
         environment: Environment,
     ): Domain {
-        {
-            if (this.graph.mutated.has(symbol)) {
-                const type = this.context.checker.getTypeAtLocation(node);
-                // Native browser objects (including the existing module URL
-                // helper's URL) retain their separate admission mechanism.
-                return isLibraryObject(this.context.checker, type)
-                    ? undefined
-                    : [];
-            }
-            const origin = environment.get(symbol);
-            if (origin)
-                return this.read(
-                    origin.expression,
-                    [...origin.projection, ...projection],
-                    origin.environment,
+        const memberWrites = this.graph.memberWrites.get(symbol);
+        if (
+            this.graph.mutated.has(symbol) &&
+            memberWrites &&
+            !this.graph.otherwiseMutated.has(symbol)
+        ) {
+            // Plain member writes: the value read is the binding's own,
+            // or one a write stored on the path the read reaches.
+            const reaches = (path: Projection): boolean =>
+                path.length <= projection.length &&
+                path.every(
+                    (key, index) =>
+                        key === projection[index] ||
+                        key === element ||
+                        projection[index] === element,
                 );
-            const declaration =
-                symbol.valueDeclaration ?? symbol.declarations?.[0];
-            if (declaration && ts.isVariableDeclaration(declaration)) {
-                if (
-                    declaration.getSourceFile() !== node.getSourceFile() &&
-                    !(declaration.parent.flags & ts.NodeFlags.Const)
-                )
-                    return [];
-                if (declaration.initializer) {
-                    const writes = this.graph.writes.get(symbol) ?? [];
-                    return this.union(
-                        [declaration.initializer, ...writes].map((value) =>
-                            this.read(value, projection, environment),
+            return this.union([
+                this.unwrittenIdentifier(node, symbol, projection, environment),
+                ...memberWrites
+                    .filter((write) => reaches(write.path))
+                    .map((write) =>
+                        this.read(
+                            write.value,
+                            projection.slice(write.path.length),
+                            environment,
                         ),
-                    );
-                }
-                const loop = declaration.parent.parent;
-                if (ts.isForOfStatement(loop))
+                    ),
+            ]);
+        }
+        if (this.graph.mutated.has(symbol)) {
+            const type = this.context.checker.getTypeAtLocation(node);
+            // Native browser objects (including the existing module URL
+            // helper's URL) retain their separate admission mechanism.
+            return isLibraryObject(this.context.checker, type) ? undefined : [];
+        }
+        return this.unwrittenIdentifier(node, symbol, projection, environment);
+    }
+
+    /** A binding's value as its declaration and calls give it. */
+    private unwrittenIdentifier(
+        node: ts.Identifier,
+        symbol: ts.Symbol,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
+        const origin = environment.get(symbol);
+        if (origin)
+            return this.read(
+                origin.expression,
+                [...origin.projection, ...projection],
+                origin.environment,
+            );
+        const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+        if (declaration && ts.isVariableDeclaration(declaration)) {
+            if (
+                declaration.getSourceFile() !== node.getSourceFile() &&
+                !(declaration.parent.flags & ts.NodeFlags.Const)
+            )
+                return [];
+            if (declaration.initializer) {
+                const writes = this.graph.writes.get(symbol) ?? [];
+                return this.union(
+                    [declaration.initializer, ...writes].map((value) =>
+                        this.read(value, projection, environment),
+                    ),
+                );
+            }
+            const loop = declaration.parent.parent;
+            if (ts.isForOfStatement(loop))
+                return this.read(
+                    loop.expression,
+                    [element, ...projection],
+                    environment,
+                );
+        }
+        if (declaration && ts.isParameter(declaration)) {
+            const owner =
+                ts.isArrowFunction(declaration.parent) ||
+                ts.isFunctionExpression(declaration.parent) ||
+                ts.isMethodDeclaration(declaration.parent)
+                    ? declaration.parent
+                    : functionOfDeclaration(declaration.parent);
+            if (!owner) return undefined;
+            const index = owner.parameters.indexOf(declaration);
+            // An array iteration callback's first parameter is each
+            // element of the array it iterates.
+            const iteration = owner.parent;
+            const callee =
+                ts.isCallExpression(iteration) &&
+                iteration.arguments[0] === owner
+                    ? unwrapExpression(iteration.expression)
+                    : undefined;
+            if (
+                index === 0 &&
+                (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+                callee &&
+                ts.isPropertyAccessExpression(callee)
+            ) {
+                const receiverType = this.context.checker.getTypeAtLocation(
+                    callee.expression,
+                );
+                if (
+                    (this.context.checker.isArrayType(receiverType) ||
+                        this.context.checker.isTupleType(receiverType)) &&
+                    arrayIterationMethods.has(callee.name.text)
+                )
                     return this.read(
-                        loop.expression,
+                        callee.expression,
                         [element, ...projection],
                         environment,
                     );
             }
-            if (declaration && ts.isParameter(declaration)) {
-                const owner =
-                    ts.isArrowFunction(declaration.parent) ||
-                    ts.isFunctionExpression(declaration.parent) ||
-                    ts.isMethodDeclaration(declaration.parent)
-                        ? declaration.parent
-                        : functionOfDeclaration(declaration.parent);
-                if (!owner) return undefined;
-                const index = owner.parameters.indexOf(declaration);
-                return this.union(
-                    (this.graph.calls.get(owner) ?? []).map((call) => {
-                        const argument =
-                            call.arguments[index] ?? declaration.initializer;
-                        if (argument)
-                            return this.read(argument, projection, environment);
-                        // An omitted argument is undefined.
-                        return this.nullish ? nothing : undefined;
-                    }),
-                );
-            }
+            // A method may be reached through any receiver.
+            if (neverRuns(this.graph, owner)) return nothing;
+            return this.union(
+                (this.graph.calls.get(owner) ?? []).map((call) => {
+                    const argument =
+                        call.arguments[index] ?? declaration.initializer;
+                    if (argument)
+                        return this.read(argument, projection, environment);
+                    // An omitted argument is undefined.
+                    return this.nullish ? nothing : undefined;
+                }),
+            );
         }
         return undefined;
     }
@@ -583,7 +1046,7 @@ class AssetUrlDomain {
                 return undefined;
             }
             // A record without the member reads undefined.
-            return this.nullish && projection.length === 1
+            return this.nullish && projection.length === this.nullishDepth + 1
                 ? nothing
                 : undefined;
         }
@@ -607,13 +1070,23 @@ class AssetUrlDomain {
                 ),
             );
         if (ts.isArrayLiteralExpression(node) && projection[0] === element)
-            return this.union(
-                node.elements.map((value) =>
-                    ts.isSpreadElement(value)
-                        ? this.read(value.expression, projection, environment)
-                        : this.read(value, projection.slice(1), environment),
-                ),
-            );
+            return node.elements.length === 0
+                ? nothing
+                : this.union(
+                      node.elements.map((value) =>
+                          ts.isSpreadElement(value)
+                              ? this.read(
+                                    value.expression,
+                                    projection,
+                                    environment,
+                                )
+                              : this.read(
+                                    value,
+                                    projection.slice(1),
+                                    environment,
+                                ),
+                      ),
+                  );
         if (ts.isCallExpression(node))
             return this.call(node, projection, environment);
         if (projection.length) return undefined;
@@ -705,6 +1178,15 @@ class AssetUrlDomain {
         const callee = unwrapExpression(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
         const method = callee.name.text;
+        if (
+            method === "get" &&
+            isLibraryMap(this.context.checker, callee.expression)
+        )
+            return this.registryValue(
+                callee.expression,
+                projection,
+                environment,
+            );
         // Object.freeze returns its argument.
         const frozen =
             method === "freeze"
@@ -805,7 +1287,39 @@ class AssetUrlDomain {
         return [];
     }
 
+    /**
+     * A closed Map registry's `get`: one of the values it set or, for array
+     * values, the elements pushed onto them. A missing key reads undefined,
+     * which only a member read (it throws) or `??` (it replaces) rules out.
+     */
+    private registryValue(
+        receiver: ts.Expression,
+        projection: Projection,
+        environment: Environment,
+    ): Domain {
+        const root = unwrapExpression(receiver);
+        const symbol =
+            ts.isIdentifier(root) && resolvedSymbol(this.context.checker, root);
+        const registry = symbol ? this.graph.registries.get(symbol) : undefined;
+        if (!registry || (!projection.length && !this.nullish))
+            return undefined;
+        const domains = registry.values.map((value) =>
+            this.read(value, projection, environment),
+        );
+        if (registry.pushed.length) {
+            if (projection[0] !== element) return undefined;
+            domains.push(
+                ...registry.pushed.map((value) =>
+                    this.read(value, projection.slice(1), environment),
+                ),
+            );
+        }
+        return domains.length ? this.union(domains) : nothing;
+    }
+
     private concatenate(parts: readonly Domain[]): Domain {
+        // A part no value reaches means the string is never built.
+        if (parts.includes(nothing)) return nothing;
         if (parts.some((part) => part?.length === 0)) return [];
         let patterns: (string | undefined)[][] = [[]];
         for (const part of parts) {
@@ -931,4 +1445,27 @@ class AssetUrlDomain {
                 ),
         );
     }
+}
+
+/**
+ * Whether `symbol` is assigned, and every assignment sits in a named
+ * function that no code calls or reads: the binding then keeps its
+ * initializer for the whole run, as a `const` would (`let profile = DEFAULT;
+ * export function setProfile(p) { profile = p; }` in a program that never
+ * sets it). A `let` nothing assigns stays a runtime binding.
+ */
+export function writtenOnlyInDeadFunctions(
+    checker: ts.TypeChecker,
+    sourceFiles: readonly ts.SourceFile[],
+    symbol: ts.Symbol,
+): boolean {
+    const graph = sourceGraph(checker, sourceFiles);
+    const writes = graph.bindingWrites.get(symbol) ?? [];
+    return (
+        writes.length > 0 &&
+        writes.every((write) => {
+            const owner = ts.findAncestor(write.parent, ts.isFunctionLike);
+            return owner !== undefined && neverRuns(graph, owner);
+        })
+    );
 }

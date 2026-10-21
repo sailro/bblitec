@@ -11,6 +11,7 @@ import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
+    hasScalarFacts,
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
@@ -263,10 +264,14 @@ import {
     callArgumentIsReadOnly,
     libraryArgumentIsReadOnly,
     parameterIsReadOnly,
+    parameterWrittenSlots,
 } from "./compiler/parameter-effects.js";
 import { recordComponents } from "./compiler/record-components.js";
 import { recordFieldIsWritten } from "./compiler/record-observations.js";
-import { visitMutableArgumentReferences } from "./compiler/parameter-projection-effects.js";
+import {
+    parameterProjectionIsReadOnly,
+    visitMutableArgumentReferences,
+} from "./compiler/parameter-projection-effects.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
@@ -275,6 +280,7 @@ import {
     identifierText,
     isAssignmentExpression,
     isDeclaredInside,
+    literalMember,
     isUpdateExpression,
     objectProperty,
     propertyNameText,
@@ -283,7 +289,8 @@ import {
     unwrappedIdentifier,
     wrappedParent,
 } from "./compiler/syntax.js";
-import { CompileError } from "./compiler/compile-error.js";
+import { CompileError, unlessRefused } from "./compiler/compile-error.js";
+import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
 import { mutatingArrayMethods } from "./compiler/receiver-methods.js";
 import {
     ClosureCaptures,
@@ -372,8 +379,10 @@ interface ResourceConstructionCheckpoint {
 function resourceConstructionStatesEqual(
     left: ResourceConstructionState,
     right: ResourceConstructionState,
+    containers = true,
 ): boolean {
     return (
+        (!containers || left.gltfContainers === right.gltfContainers) &&
         left.counters.length === right.counters.length &&
         left.counters.every(
             (value, index) => value === right.counters[index],
@@ -762,6 +771,19 @@ class Compiler implements LoweringServices {
     /** The handle-collection concept: every collection operation. */
     public readonly handleCollections: HandleCollections =
         new HandleCollections(this);
+    /**
+     * Runtime case split: the outcome each split test takes in the arm being
+     * compiled. @unjournaled Set and cleared around one arm's compile.
+     */
+    public readonly conditionOverrides = new Map<ts.Node, boolean>();
+    /**
+     * `stableLocalInitializer` answers, by declaration (`false`: none).
+     * @unjournaled A function of the program's syntax.
+     */
+    private readonly stableInitializers = new WeakMap<
+        ts.VariableDeclaration,
+        ts.Expression | false
+    >();
     /** The scene composition records this compilation projects into its manifest. */
     public readonly sceneManifest: SceneManifestRecorder =
         new SceneManifestRecorder(this);
@@ -2418,6 +2440,25 @@ class Compiler implements LoweringServices {
             emitPropertyAssignment(this, expression);
             return;
         }
+        // An effect task's `record` / `dispose` replaces the method its
+        // frame graph calls; the read of either is a copy, not a slot.
+        if (
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(left) &&
+            isEffectTaskMethodName(left.name.text) &&
+            this.probeEmission(
+                () => {
+                    const owner = this.compileValue(left.expression);
+                    return owner.kind === "task" && owner.effectTask
+                        ? true
+                        : undefined;
+                },
+                () => false,
+            )
+        ) {
+            emitPropertyAssignment(this, expression);
+            return;
+        }
         if (this.dataLowerer.emitAssignment(expression)) {
             return;
         }
@@ -2587,10 +2628,14 @@ class Compiler implements LoweringServices {
                 binding.orderedTextDeclaration === declaration &&
                 declaration !== undefined
             ) {
-                const text = this.isInRuntimeControlFlow()
-                    ? undefined
-                    : (sourceValue?.staticString ??
-                      retainedStaticText(this, source));
+                // Only control flow entered since the declaration can skip
+                // this write; an enclosing loop re-declares the local.
+                const text =
+                    this.runtimeControlFlowDepth >
+                    (binding.orderedTextControlDepth ?? 0)
+                        ? undefined
+                        : (sourceValue?.staticString ??
+                          retainedStaticText(this, source));
                 if (text === undefined) delete writable(binding).staticString;
                 else writable(binding).staticString = text;
             }
@@ -3459,24 +3504,17 @@ class Compiler implements LoweringServices {
                 `Node material construction requires setup before scene registration; live group rebuilding is not represented (${this.frameCallbackDepth > 0 ? "callback" : this.engineLifecycle.engineStartMark !== undefined ? "engine started" : "scene registered"}).`,
             );
         }
-        if (
-            this.sceneManifest.hasRuntimeMaterialProfiles() &&
-            importedName === "loadGltf"
-        ) {
-            this.fail(
-                call,
-                "Runtime material construction leaves no generation-known physical material slot for a later glTF load.",
-            );
-        }
+        // A load after a runtime-profiled material, or one that runs a
+        // generation-unknown number of times, has no creation-order place
+        // among the composed rows, so every container announces its own.
         if (
             importedName === "loadGltf" &&
-            this.isRuntimeResourceConstruction() &&
-            (this.frameCallbackDepth > 0 || this.isInRuntimeControlFlow())
+            (this.sceneManifest.hasRuntimeMaterialProfiles() ||
+                (this.isRuntimeResourceConstruction() &&
+                    (this.frameCallbackDepth > 0 ||
+                        this.isInRuntimeControlFlow())))
         ) {
-            this.fail(
-                call,
-                "Runtime resource construction requires a generation-known iteration count for glTF load order.",
-            );
+            this.sceneManifest.recordProfiledGltfLoads();
         }
         const profile =
             runtimeProfileConstructionIntrinsics.has(importedName) &&
@@ -3799,12 +3837,79 @@ class Compiler implements LoweringServices {
     public expectStaticArrayElements(
         expression: ts.Expression,
     ): ts.Expression[] {
+        const projected = this.projectedStaticElements(expression);
+        if (projected) return projected;
         return this.expectStaticArrayLiteral(expression).elements.flatMap(
             (element) =>
                 ts.isSpreadElement(element)
                     ? this.expectStaticArrayElements(element.expression)
                     : [element],
         );
+    }
+
+    /**
+     * `xs.map(([, name]) => name)` (or `(x) => x.name`, `(x) => x`) over a
+     * static array literal: each result is the source element's own node
+     * the callback only selects, so the list stays static syntax.
+     */
+    private projectedStaticElements(
+        expression: ts.Expression,
+    ): ts.Expression[] | undefined {
+        const call = this.unwrap(expression);
+        if (
+            !ts.isCallExpression(call) ||
+            call.arguments.length !== 1 ||
+            !ts.isPropertyAccessExpression(call.expression) ||
+            call.expression.name.text !== "map"
+        )
+            return undefined;
+        const callback = this.unwrap(argumentAt(call, 0));
+        if (
+            !ts.isArrowFunction(callback) ||
+            callback.parameters.length !== 1 ||
+            ts.isBlock(callback.body)
+        )
+            return undefined;
+        const source = call.expression.expression;
+        const receiver = this.probeEmission(
+            () => this.expectStaticArrayElements(source),
+            () => false,
+        );
+        const parameter = callback.parameters[0]!.name;
+        const body = this.unwrap(callback.body);
+        const select = (element: ts.Expression): ts.Expression | undefined => {
+            if (ts.isIdentifier(parameter)) {
+                if (ts.isIdentifier(body) && body.text === parameter.text)
+                    return element;
+                if (
+                    ts.isPropertyAccessExpression(body) &&
+                    ts.isIdentifier(body.expression) &&
+                    body.expression.text === parameter.text
+                ) {
+                    const record = this.resolveStaticLiteral(element);
+                    return ts.isObjectLiteralExpression(record)
+                        ? this.objectProperty(record, body.name.text)
+                        : undefined;
+                }
+                return undefined;
+            }
+            if (!ts.isArrayBindingPattern(parameter) || !ts.isIdentifier(body))
+                return undefined;
+            const index = parameter.elements.findIndex(
+                (binding) =>
+                    ts.isBindingElement(binding) &&
+                    !binding.dotDotDotToken &&
+                    ts.isIdentifier(binding.name) &&
+                    binding.name.text === body.text,
+            );
+            return index >= 0
+                ? literalMember(this.resolveStaticLiteral(element), index)
+                : undefined;
+        };
+        const elements = receiver.map(select);
+        return elements.every((element) => element !== undefined)
+            ? elements
+            : undefined;
     }
 
     public referenceSearch(): string {
@@ -5087,6 +5192,59 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    /**
+     * `<module constant Map>.get(<key>)` read from the generation run of
+     * the constant: undefined when the constant is not an executed Map or
+     * something writes through it, absent when the Map lacks the key.
+     */
+    public executedModuleConstantMapEntry(
+        expression: ts.Expression,
+        key: string | number,
+    ): Value | undefined {
+        const identifier = this.unwrap(expression);
+        if (!ts.isIdentifier(identifier)) return undefined;
+        const constant = this.moduleConstantDeclaration(identifier);
+        if (!constant || this.moduleConstantIsWritten(identifier))
+            return undefined;
+        // A Map is no plain data, but its entry list is: run the argument
+        // `new Map(entries)` was built from and look the key up there.
+        const initializer = this.unwrap(constant.declaration.initializer!);
+        const source =
+            ts.isNewExpression(initializer) &&
+            this.libraryGlobal(initializer.expression) === "Map" &&
+            initializer.arguments?.length === 1
+                ? this.unwrap(initializer.arguments[0]!)
+                : undefined;
+        if (!source || !ts.isCallExpression(source)) return undefined;
+        const entries = unlessRefused(() =>
+            this.runGenerationFunction(
+                source,
+                [],
+                `Entries of module Map '${identifier.text}'`,
+            ),
+        );
+        if (!Array.isArray(entries)) return undefined;
+        // A later entry for a key replaces an earlier one, as Map does.
+        const entry = [...(entries as unknown[])]
+            .reverse()
+            .find(
+                (pair): pair is [unknown, unknown] =>
+                    Array.isArray(pair) && pair[0] === key,
+            );
+        if (!entry) return { kind: "json-null", cpp: "std::nullopt" };
+        // A generation copy of an object entry would be a different identity
+        // from the native Map's own value; only scalars stand in.
+        const value = jsonToValue(
+            this,
+            executedConstantJsonPolicy,
+            entry[1],
+            identifier,
+        );
+        return value.kind === "json-null" || hasScalarFacts(value)
+            ? value
+            : undefined;
+    }
+
     /** The module-scope `const` declaration binding one name an identifier reads. */
     private moduleConstantDeclaration(
         identifier: ts.Identifier,
@@ -5276,13 +5434,23 @@ class Compiler implements LoweringServices {
         const args: Array<ExecutedArgument | undefined> = [];
         // Omitted arguments stay omitted: the closed function evaluates its
         // own defaults in parameter order and observes the authored arity.
-        for (const argument of call.arguments) {
+        for (const [index, argument] of call.arguments.entries()) {
             const value = ts.isSpreadElement(argument)
                 ? undefined
                 : this.generationArgument(
                       this.alwaysUsedParameterDefault(argument) ?? argument,
                   );
             if (value === undefined) return undefined;
+            // A snapshot of retained data crosses as a copy, so the helper
+            // must only read it: a write would miss the native object.
+            const parameter = declaration.parameters[index]?.name;
+            if (
+                value.snapshot &&
+                (!parameter ||
+                    !ts.isIdentifier(parameter) ||
+                    !parameterIsReadOnly(this.checker, declaration, parameter))
+            )
+                return undefined;
             args.push(value.value);
         }
         const label = `Builder '${callee.text}'`;
@@ -5362,7 +5530,7 @@ class Compiler implements LoweringServices {
     /** Retained objects stay native; only fresh, lossless literal data may cross realms. */
     private generationArgument(
         expression: ts.Expression,
-    ): { value: ExecutedArgument | undefined } | undefined {
+    ): { value: ExecutedArgument | undefined; snapshot?: true } | undefined {
         const node = this.unwrap(expression);
         if (node.kind === ts.SyntaxKind.NullKeyword) return { value: null };
         if (ts.isArrayLiteralExpression(node)) {
@@ -5425,7 +5593,53 @@ class Compiler implements LoweringServices {
             carried.staticString ??
             carried.staticBoolean ??
             carried.staticNumber;
-        return value === undefined ? undefined : { value };
+        if (value !== undefined) return { value };
+        // A complete static snapshot of retained data (a record or array
+        // whose current contents generation knows) crosses as its copy.
+        const snapshot = this.currentStaticLiteral(carried, node);
+        return snapshot !== undefined &&
+            snapshot !== null &&
+            typeof snapshot === "object"
+            ? { value: snapshot as ExecutedArgument, snapshot: true }
+            : undefined;
+    }
+
+    /**
+     * The elements a const local's closed-helper initializer produces at
+     * generation (`const icons = plan(opts.icons)`); undefined when the
+     * call cannot run there or its result is no array.
+     */
+    public executedInitializerElements(
+        identifier: ts.Identifier,
+    ): readonly Value[] | undefined {
+        const declaration =
+            this.symbols.valueSymbol(identifier)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer ||
+            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+        )
+            return undefined;
+        const call = this.unwrap(declaration.initializer);
+        if (!ts.isCallExpression(call) || call.questionDotToken)
+            return undefined;
+        const executed = unlessRefused(() =>
+            this.probeEmission(
+                () => this.runGenerationCall(call)?.value,
+                () => false,
+            ),
+        );
+        return Array.isArray(executed)
+            ? executed.map((element: unknown) =>
+                  jsonToValue(
+                      this,
+                      executedConstantJsonPolicy,
+                      element,
+                      identifier,
+                  ),
+              )
+            : undefined;
     }
 
     public resolveStaticExpression(
@@ -5553,6 +5767,96 @@ class Compiler implements LoweringServices {
         return Object.fromEntries(entries);
     }
 
+    /**
+     * A local `const` whose values generation does not all fold: its
+     * initializer, re-read where a static descriptor list needs syntax.
+     * Only when the re-read sees what the declaration saw: nothing writes
+     * through the binding, a call in it returns a literal, and its names are
+     * functions, consts nothing writes through, or parameter members their
+     * function only reads.
+     */
+    private stableLocalInitializer(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined {
+        const declaration =
+            this.symbols.valueSymbol(identifier)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer ||
+            ts.isSourceFile(declaration.parent.parent.parent)
+        )
+            return undefined;
+        const known = this.stableInitializers.get(declaration);
+        if (known !== undefined) return known || undefined;
+        const constant = (named: ts.VariableDeclaration): boolean =>
+            (ts.getCombinedNodeFlags(named) & ts.NodeFlags.Const) !== 0 &&
+            !this.evaluator.isWrittenThrough(named);
+        const stableName = (name: ts.Identifier): boolean => {
+            const named = this.symbols.valueSymbol(name)?.valueDeclaration;
+            if (!named) return false;
+            if (ts.isFunctionDeclaration(named)) return true;
+            if (ts.isVariableDeclaration(named)) return constant(named);
+            if (
+                !ts.isParameter(named) ||
+                !ts.isIdentifier(named.name) ||
+                !ts.isFunctionLike(named.parent) ||
+                !("body" in named.parent)
+            )
+                return false;
+            const binding = named.name;
+            const path: string[] = [];
+            for (
+                let node: ts.Node = name;
+                ts.isPropertyAccessExpression(node.parent) &&
+                node.parent.expression === node;
+                node = node.parent
+            )
+                path.push(node.parent.name.text);
+            // A one-key read sees only the slot; a deeper one sees inside it.
+            if (path.length === 1) {
+                const written = parameterWrittenSlots(
+                    this.checker,
+                    named.parent,
+                    binding,
+                );
+                return !written.has("") && !written.has(path[0]!);
+            }
+            return parameterProjectionIsReadOnly(
+                this.checker,
+                named.parent,
+                named.parent.parameters.indexOf(named),
+                path,
+            );
+        };
+        const stable = (node: ts.Node): boolean => {
+            if (ts.isFunctionLike(node)) return false;
+            if (ts.isTypeNode(node)) return true;
+            // A parameterless literal-returning helper re-runs to the same literal.
+            if (
+                ts.isCallExpression(node) &&
+                (node.arguments.length > 0 ||
+                    this.evaluator.resolveStaticLiteral(node) === node)
+            )
+                return false;
+            if (ts.isIdentifier(node)) {
+                const parent = node.parent;
+                const memberName =
+                    (ts.isPropertyAccessExpression(parent) &&
+                        parent.name === node) ||
+                    (ts.isPropertyAssignment(parent) && parent.name === node);
+                return memberName || stableName(node);
+            }
+            return !ts.forEachChild(node, (child) => !stable(child));
+        };
+        const initializer =
+            constant(declaration) && stable(declaration.initializer)
+                ? declaration.initializer
+                : undefined;
+        this.stableInitializers.set(declaration, initializer ?? false);
+        return initializer;
+    }
+
     /** Required descriptors may read closed helpers or unwritten module constants. */
     public resolveStaticLiteral(expression: ts.Expression): ts.Expression {
         const resolved =
@@ -5572,6 +5876,11 @@ class Compiler implements LoweringServices {
         ) {
             const carried = this.compileValue(resolved);
             value = this.currentStaticLiteral(carried, resolved);
+            const local =
+                value === undefined && ts.isIdentifier(resolved)
+                    ? this.stableLocalInitializer(resolved)
+                    : undefined;
+            if (local) return this.resolveStaticLiteral(local);
             const constant =
                 value === undefined && ts.isIdentifier(resolved)
                     ? this.moduleConstantDeclaration(resolved)
@@ -7441,6 +7750,8 @@ class Compiler implements LoweringServices {
                     after.counters[index]! -
                     before.state.counters[index]!;
             }
+            state.gltfContainers +=
+                after.gltfContainers - before.state.gltfContainers;
             state.lightIdentities = [
                 ...state.lightIdentities.filter((value) => !removed.has(value)),
                 ...added,
@@ -7464,6 +7775,18 @@ class Compiler implements LoweringServices {
         this.resourceConstructionCheckpoints.delete(guard.checkpoint);
         const state = this.sceneManifest.constructionState();
         if (!resourceConstructionStatesEqual(state, guard.checkpoint.state)) {
+            // A profiled glTF container announces its rows by document, so a
+            // load the runtime return skips moves no other construction's ordinal.
+            if (
+                resourceConstructionStatesEqual(
+                    state,
+                    guard.checkpoint.state,
+                    false,
+                )
+            ) {
+                this.sceneManifest.recordProfiledGltfLoads();
+                return;
+            }
             this.fail(
                 guard.condition,
                 "A resource-construction helper's early return requires a " +

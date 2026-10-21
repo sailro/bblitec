@@ -1,3 +1,4 @@
+import { filledLengthGrowth } from "./array-length-growth.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     hasScalarFacts,
@@ -59,6 +60,7 @@ import {
 import { requireObservedPromise } from "./promise-observations.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
+    contextualProperty,
     absenceKind,
     admitsUndefined,
     arrayElementType,
@@ -293,15 +295,21 @@ function withFallbackAbsence(left: Value): Value {
 }
 
 /**
- * `xs.length = n`. Only an array whose element type can never be absent may
- * grow: its new slots default, and no read can mistake one for a hole. Every
- * other array keeps the dense-array refusal; a length of zero only shrinks.
+ * `xs.length = n`. An array whose element type can never be absent may grow:
+ * its new slots default, and no read can mistake one for a hole. Any other
+ * array grows only ahead of the fill loop that writes every new slot before
+ * a read (`filledLengthGrowth`), checked at run time to start no later than
+ * the old end; otherwise it keeps the dense-array refusal, and a length of
+ * zero only shrinks.
  */
 function arrayLengthWrite(
     array: string,
     length: string,
     elementIsAlwaysPresent: boolean,
+    fillStart: string | undefined,
 ): string {
+    if (fillStart !== undefined && !elementIsAlwaysPresent)
+        return `bbl::js::array_grow_filled(${array}, ${length}, ${fillStart});`;
     const grows = elementIsAlwaysPresent && length !== "0.0";
     return `bbl::js::${grows ? "array_set_length" : "array_truncate"}(${array}, ${length});`;
 }
@@ -587,6 +595,9 @@ interface DataLoweringContext extends Pick<
     | "sceneManifest"
     | "propertyAccess"
     | "resolveStaticExpression"
+    | "executedModuleConstantElements"
+    | "executedModuleConstantMapEntry"
+    | "executedInitializerElements"
     | "unwrap"
     | "emit"
     | "probeEmission"
@@ -729,6 +740,14 @@ function assertsType(expression: ts.Expression): boolean {
     )
         current = current.expression;
     return ts.isAsExpression(current) || ts.isTypeAssertionExpression(current);
+}
+
+/** A type the checker's flow narrowed to exclude null and undefined. */
+function provenPresent(type: ts.Type): boolean {
+    return (
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+        !isNullable(type)
+    );
 }
 
 export class DataLowerer {
@@ -4111,6 +4130,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         ["vector", "span", "tuple"].includes(inner.kind) &&
                         this.context.checker.isArrayType(
                             this.context.checker.getTypeAtLocation(expression),
+                        )) ||
+                    // A typed array the checker's flow proves present
+                    // (`if (!indices) continue;`) under a wider view type.
+                    (expectedType === undefined &&
+                        ([...TYPED_ARRAY_KINDS.values()].some(
+                            (kind) => kind === inner.kind,
+                        ) ||
+                            // A stored node handle the checker narrows to
+                            // its concrete family (`TransformNode`).
+                            inner.kind === "handle") &&
+                        provenPresent(
+                            this.context.checker.getTypeAtLocation(expression),
                         ))))
         ) {
             return this.narrowOptional(
@@ -7432,6 +7463,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /** A node handle stored as optional data that the checker proves present. */
+    public presentStoredHandle(
+        value: Value,
+        expression: ts.Expression,
+    ): Value | undefined {
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "optional" ||
+            value.dataType.inner.kind !== "handle"
+        )
+            return undefined;
+        const narrowed = this.narrowOptional(value, expression);
+        return narrowed === value
+            ? undefined
+            : this.leafValue(narrowed.cpp, value.dataType.inner);
+    }
+
     public leafValue(cpp: string, dataType: DataType): Value {
         if (dataType.kind === "module-namespace")
             return this.context.moduleNamespaces.value(dataType, cpp);
@@ -8305,10 +8353,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 call,
                 `${name}.from takes a source and an optional mapper; a thisArg refuses.`,
             );
-        const converted = this.typedArrayFromSource(
-            kind,
-            this.context.unwrap(argumentAt(call, 0)),
-        );
+        const converted = this.typedArrayFromArgument(kind, call);
         if (converted === undefined)
             this.context.fail(
                 argumentAt(call, 0),
@@ -8536,11 +8581,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "TypedArray.set expects a source and an optional offset.",
             );
         }
-        const source = this.typedArrayFromSource(
-            kind,
-            this.context.unwrap(argumentAt(call, 0)),
-            true,
-        );
+        const source = this.typedArrayFromArgument(kind, call, true);
         if (source === undefined) {
             this.context.fail(
                 argumentAt(call, 0),
@@ -9963,6 +10004,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (mapped?.kind === "vector") {
             return mapped.element;
         }
+        // `new Array(n)` types as any[]: the declaration it initializes,
+        // directly or through `.fill(...)`, names the element.
+        const filled =
+            ts.isPropertyAccessExpression(expression.parent) &&
+            expression.parent.expression === expression &&
+            expression.parent.name.text === "fill" &&
+            ts.isCallExpression(expression.parent.parent)
+                ? expression.parent.parent
+                : expression;
+        const contextual = this.context.checker.getContextualType(filled);
+        const declared = contextual
+            ? this.context.dataTypes.fromTsType(contextual, filled)
+            : undefined;
+        if (declared?.kind === "vector") return declared.element;
         if (filledElement) return filledElement;
         this.context.fail(
             expression,
@@ -10470,6 +10525,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /** A call's first argument as a typed-array source, under any `!` it wrote. */
+    private typedArrayFromArgument(
+        kind: TypedArrayKind,
+        call: ts.CallExpression,
+        keepKind = false,
+    ): string | undefined {
+        const argument = argumentAt(call, 0);
+        return this.typedArrayFromSource(
+            kind,
+            this.context.unwrap(argument),
+            keepKind,
+            hasNonNullAssertion(argument),
+        );
+    }
+
     /**
      * One numeric sequence converted into a typed array of `kind`, or
      * undefined where the expression is not a sequence at all -- which is
@@ -10491,6 +10561,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         kind: TypedArrayKind,
         unwrapped: ts.Expression,
         keepKind = false,
+        assertedNonNull = false,
     ): string | undefined {
         const prefix = typedArrayStem(kind);
         if (ts.isArrayLiteralExpression(unwrapped)) {
@@ -10522,7 +10593,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // A guarded optional or union reads as the member the checker
         // narrowed it to, under any assertion the source wrote.
         const staticSource =
-            compiled && this.narrowOptional(compiled, unwrapped);
+            compiled &&
+            this.narrowOptional(compiled, unwrapped, assertedNonNull);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
             return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
@@ -11451,12 +11523,51 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.requireRecordBinding(node);
             this.requireEnumMapBinding(node, dataType);
         }
+        if (dataType.kind === "json") this.requireErasedHandleField(node);
         this.context.fail(
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
                 `(valueType=${JSON.stringify(value.dataType)}, nativeParameters=${JSON.stringify(value.nativeCallbackParameterTypes)}, nativeReturn=${JSON.stringify(value.nativeCallbackReturnType)}, cpp=${value.cpp.length > 0}).`,
             isJsonValue(value) ? "dynamic-storage-required" : "unsupported",
         );
+    }
+
+    /**
+     * A native handle an object literal writes to an `unknown` field: the
+     * field's declaration takes handle storage (a storage demand).
+     */
+    private requireErasedHandleField(node: ts.Node): void {
+        if (!ts.isExpression(node)) return;
+        const property = node.parent;
+        if (
+            !ts.isPropertyAssignment(property) ||
+            property.initializer !== node ||
+            !ts.isObjectLiteralExpression(property.parent)
+        )
+            return;
+        const name = this.context.propertyName(property.name);
+        const field =
+            name !== undefined
+                ? contextualProperty(
+                      this.context.checker,
+                      property.parent,
+                      name,
+                  )
+                : undefined;
+        const declaration =
+            field?.declarations?.length === 1
+                ? field.declarations[0]
+                : undefined;
+        const written = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(node),
+            node,
+        );
+        if (declaration && written)
+            this.context.dataTypes.requireWrittenHandleFieldStorage(
+                declaration,
+                written,
+                node,
+            );
     }
 
     /** A guarded numeric tuple, including a document array copied by spread. */
@@ -12035,6 +12146,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return value;
         }
         this.requireDocumentDictionaryConversion(value, dataType, source);
+        // A live engine collection stored as an array is the snapshot an
+        // array copy of it takes: its handles in their current order.
+        if (
+            value.kind === "handle-collection" &&
+            value.handleCollection &&
+            dataType.kind === "vector" &&
+            dataType.element.kind === "handle" &&
+            dataType.element.handle === value.handleCollection.elementKind
+        ) {
+            const element = this.context.dataTypes.cppType(dataType.element);
+            return {
+                kind: "data",
+                cpp:
+                    `([&] { bbl::js::Array<${element}> copy; ` +
+                    `for (auto&& item : ${value.handleCollection.containerCpp}) copy.push_back(${element}(item)); ` +
+                    `return copy; }())`,
+                dataType,
+                freshData: true,
+            };
+        }
         // An array of another element type converts its elements as it is
         // stored (`valueVector`), which decides whether that copy is exact.
         if (
@@ -14097,13 +14228,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (narrowed.kind === "scene-node")
                 return `std::holds_alternative<bbl::MeshHandle>(${narrowed.cpp})`;
         }
-        if (
+        // A native node is a mesh, a transform node or an asset root: each
+        // carries the pin's SceneNode members.
+        const nativeNode =
             operator === "in" &&
-            key.staticString === "thinInstances" &&
             ["mesh", "scene-node", "transform-node", "asset-root"].includes(
                 narrowed.kind,
-            )
-        ) {
+            );
+        if (
+            nativeNode &&
+            (key.staticString === "children" ||
+                key.staticString === "rotationQuaternion")
+        )
+            return "true";
+        if (nativeNode && key.staticString === "thinInstances") {
             this.context.reachFeature("scene:node-transforms", ownerNode);
             const engine = this.context.requireEngine(narrowed, ownerNode);
             return `bbl::scene_node_has_thin_instance_property(${engine}, ${narrowed.cpp})`;
@@ -15656,6 +15794,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             .getTypeAtLocation(left.expression)
                             .getNumberIndexType();
                         const absent = elementType && nullability(elementType);
+                        const alwaysPresent =
+                            narrowed.dataType.element.kind === "struct" &&
+                            absent !== undefined &&
+                            !absent.null &&
+                            !absent.undefined;
+                        const fill = alwaysPresent
+                            ? undefined
+                            : filledLengthGrowth(
+                                  this.context.program,
+                                  this.context.checker,
+                                  expression,
+                              );
                         this.context.emit(
                             (this.invalidateAliases(narrowed.cpp),
                             arrayLengthWrite(
@@ -15664,10 +15814,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                     expression.right,
                                     "double",
                                 ),
-                                narrowed.dataType.element.kind === "struct" &&
-                                    absent !== undefined &&
-                                    !absent.null &&
-                                    !absent.undefined,
+                                alwaysPresent,
+                                fill &&
+                                    this.context.compileNumber(
+                                        fill.start,
+                                        "double",
+                                    ),
                             )),
                         );
                         return true;

@@ -124,13 +124,13 @@ test("erased asynchronous records refuse unrepresented descriptors and thenable 
             compileSource(
                 `queueMicrotask(()=>{});interface Envelope{wrapper:{payload:unknown};}async function wrap():Promise<Envelope>{return {wrapper:{get payload(){return 1;}}};}void wrap();`,
             ),
-        /no owned representation/,
+        /no owned (asynchronous )?representation/,
     );
     assert.throws(
         () =>
             compileSource(
                 `queueMicrotask(()=>{});async function wrap():Promise<{wrapper?:{payload:unknown}}>{return {};}void wrap();`,
             ),
-        /no owned representation/,
+        /no owned (asynchronous )?representation/,
     );
 });

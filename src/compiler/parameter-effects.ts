@@ -1451,6 +1451,31 @@ function argumentWritesNothing(
 
 const visiblyWrittenMemo = new PredicateMemo(false);
 
+/** The uses of a parameter binding that write where the program can see it. */
+function visibleWrites(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): ParameterUse[] {
+    return parameterEffects(checker, fn, binding).uses.filter((use) => {
+        switch (use.kind) {
+            case "write":
+            case "rebind":
+                return true;
+            case "method":
+                return !readOnlyDataMethods.has(use.method);
+            // What a callee does with a value an earlier call computed
+            // from the parameter is that earlier callee's question.
+            case "stored":
+                return !use.derived;
+            case "argument":
+                return !use.derived && argumentVisiblyWritten(checker, use);
+            default:
+                return false;
+        }
+    });
+}
+
 /**
  * Whether a call writes through a parameter binding where the program can
  * see it: a write, deletion, rebinding or mutating method, a store of the
@@ -1463,24 +1488,54 @@ export function parameterIsMutated(
     fn: EffectFunction,
     binding: ts.Identifier,
 ): boolean {
-    return visiblyWrittenMemo.answer(checker, binding, () =>
-        parameterEffects(checker, fn, binding).uses.some((use) => {
-            switch (use.kind) {
-                case "write":
-                case "rebind":
-                    return true;
-                case "method":
-                    return !readOnlyDataMethods.has(use.method);
-                // What a callee does with a value an earlier call computed
-                // from the parameter is that earlier callee's question.
-                case "stored":
-                    return !use.derived;
-                case "argument":
-                    return !use.derived && argumentVisiblyWritten(checker, use);
-                default:
-                    return false;
-            }
-        }),
+    return visiblyWrittenMemo.answer(
+        checker,
+        binding,
+        () => visibleWrites(checker, fn, binding).length > 0,
+    );
+}
+
+/**
+ * The paths below a parameter that its visible writes reach (`[]` for the
+ * object itself, `["state"]` for `param.state.reset()`): what
+ * {@link parameterIsMutated} answers, kept per use so a caller can see which
+ * members of the object it passes those writes can touch.
+ */
+export function parameterMutatedPaths(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): readonly EffectPath[] {
+    return visibleWrites(checker, fn, binding).map((use) =>
+        use.kind === "write" || use.kind === "rebind" || use.derived
+            ? []
+            : use.path,
+    );
+}
+
+/**
+ * The first keys of the parameter slots a write can reach (`""` for the
+ * object itself): a write through `param.a`, or through a value computed
+ * from it, cannot replace `param.b`'s slot, whatever the values alias.
+ */
+export function parameterWrittenSlots(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): ReadonlySet<string> {
+    return new Set(
+        parameterEffects(checker, fn, binding)
+            .uses.filter(
+                (use) =>
+                    use.kind === "write" ||
+                    use.kind === "rebind" ||
+                    use.kind === "stored" ||
+                    (use.kind === "method" &&
+                        !readOnlyDataMethods.has(use.method)) ||
+                    (use.kind === "argument" &&
+                        argumentVisiblyWritten(checker, use)),
+            )
+            .map((use) => (use.kind === "rebind" ? "" : (use.path[0] ?? ""))),
     );
 }
 
