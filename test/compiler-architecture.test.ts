@@ -716,6 +716,17 @@ test("enum constants are read through symbols.ts", () => {
     );
 });
 
+test("jumps bind their targets through syntax.ts", () => {
+    // jumpBinding (the language's rule), jumpsTo and labeledBody: a case's
+    // final break ends it only when it jumps to that switch.
+    for (const name of ["jumpBinding", "jumpsTo", "labeledBody"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

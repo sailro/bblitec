@@ -1,4 +1,8 @@
-import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
+import {
+    someAnalysisNode,
+    forEachAnalysisNode,
+    findAnalysisNode,
+} from "./analysis-walk.js";
 import {
     emissionArray,
     EmissionMap,
@@ -58,6 +62,10 @@ import {
     equalityOperator,
     containsSuspension,
     isSuspensionPoint,
+    jumpBinding,
+    jumpsTo,
+    isDeclaredInside,
+    labeledBody,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -484,43 +492,7 @@ function jumpTarget(
     };
 }
 
-/**
- * The construct a jump binds by the language's rule: a bare return its
- * function, a labeled jump its labeled statement, a continue the nearest
- * loop and a break the nearest loop or switch.
- */
-function jumpBinding(
-    statement: ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
-): ts.Node | undefined {
-    if (ts.isReturnStatement(statement))
-        return ts.findAncestor(statement.parent, ts.isFunctionLike);
-    for (
-        let parent: ts.Node | undefined = statement.parent;
-        parent && !ts.isFunctionLike(parent);
-        parent = parent.parent
-    ) {
-        if (statement.label) {
-            if (
-                ts.isLabeledStatement(parent) &&
-                parent.label.text === statement.label.text
-            )
-                return parent;
-        } else if (
-            ts.isIterationStatement(parent, false) ||
-            (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
-        )
-            return parent;
-    }
-    return undefined;
-}
-
 /** The statement a label names, through any further labels on it. */
-function labeledBody(statement: ts.LabeledStatement): ts.Statement {
-    let body = statement.statement;
-    while (ts.isLabeledStatement(body)) body = body.statement;
-    return body;
-}
-
 export class StatementLowerer {
     /**
      * Whether a native return leaves a completion-aware cleanup of its own
@@ -1589,6 +1561,7 @@ export class StatementLowerer {
     ): void {
         // The callers hand one clause that completes (or is the last, which
         // completes the switch by finishing); fallthrough is lowered apart.
+        const owner = clause.parent.parent;
         const statements = [...clause.statements];
         let last = statements.at(-1);
         // A braced case body (`case x: { ... break; }`) gives its locals a
@@ -1597,19 +1570,45 @@ export class StatementLowerer {
         // before applying the same terminal-break rule.
         if (last && ts.isBlock(last)) {
             const blockLast = last.statements.at(-1);
-            if (blockLast && ts.isBreakStatement(blockLast)) {
+            if (
+                blockLast &&
+                ts.isBreakStatement(blockLast) &&
+                jumpsTo(blockLast, owner)
+            ) {
                 statements.pop();
                 statements.push(...last.statements.slice(0, -1));
                 last = statements.at(-1);
             }
         }
-        if (last && ts.isBreakStatement(last)) statements.pop();
+        // Only a break to this switch ends the case: `break outer` leaves the
+        // loop around it.
+        if (last && ts.isBreakStatement(last) && jumpsTo(last, owner))
+            statements.pop();
         const nestedBreak = statements
-            .map((statement) => this.findSwitchBoundBreak(statement))
+            .map((statement) =>
+                findAnalysisNode(
+                    statement,
+                    (node) => ts.isBreakStatement(node) && jumpsTo(node, owner),
+                    { functions: "skip" },
+                ),
+            )
             .find((candidate) => candidate !== undefined);
         if (nestedBreak) {
+            // A continue binds a loop; one the case does not contain crosses
+            // the switch.
             const nestedContinue = statements
-                .map((statement) => this.findSwitchBoundContinue(statement))
+                .map((statement) =>
+                    findAnalysisNode(
+                        statement,
+                        (node) =>
+                            ts.isContinueStatement(node) &&
+                            !isDeclaredInside(
+                                jumpBinding(node) ?? owner,
+                                owner,
+                            ),
+                        { functions: "skip" },
+                    ),
+                )
                 .find((candidate) => candidate !== undefined);
             if (nestedContinue) {
                 context.fail(
@@ -1623,7 +1622,7 @@ export class StatementLowerer {
         // so an early case `break` still skips the rest of that case
         // without escaping an enclosing loop.
         const wrapper = nestedBreak
-            ? writable(this.targetOf(clause.parent.parent))
+            ? writable(this.targetOf(owner))
             : undefined;
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
@@ -1724,25 +1723,6 @@ export class StatementLowerer {
      * Finds a break that would bind to this switch (not to a nested loop or
      * nested switch). The if/else lowering cannot express those.
      */
-    private findSwitchBoundBreak(statement: ts.Statement): ts.Node | undefined {
-        // An unqualified break under a nested switch binds to that switch,
-        // which the shared walk expresses by not counting it there.
-        return enclosingLoopControl(statement, {
-            continues: false,
-            labeled: false,
-        });
-    }
-
-    /** A continue that crosses the switch and binds to an enclosing loop. */
-    private findSwitchBoundContinue(
-        statement: ts.Statement,
-    ): ts.Node | undefined {
-        return enclosingLoopControl(statement, {
-            breaks: false,
-            labeled: false,
-        });
-    }
-
     private emitIf(
         context: StatementLoweringContext,
         statement: ts.IfStatement,
@@ -2756,13 +2736,9 @@ export class StatementLowerer {
                         !someAnalysisNode(
                             statement.statement,
                             (node) => {
-                                if (!ts.isContinueStatement(node)) return false;
-                                const target = jumpBinding(node);
                                 return (
-                                    target === statement ||
-                                    (target !== undefined &&
-                                        ts.isLabeledStatement(target) &&
-                                        labeledBody(target) === statement)
+                                    ts.isContinueStatement(node) &&
+                                    jumpsTo(node, statement)
                                 );
                             },
                             { functions: "skip" },

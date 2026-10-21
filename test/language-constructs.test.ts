@@ -14921,3 +14921,30 @@ check(
     if (D[0] !== "B" || D[k] !== "B" || D[1] !== "C") throw new Error("reverse " + D[0]);
     `,
 );
+check(
+    "a case's final break to an enclosing loop leaves the loop",
+    `
+    let hits = 0;
+    outer: for (let i = 0; i < 3; i++) {
+        switch (i) {
+            case 1: hits += 10; break outer;
+        }
+        hits++;
+    }
+    let braced = 0;
+    outer2: for (let i = 0; i < 3; i++) {
+        switch (i) {
+            case 1: { braced += 10; break outer2; }
+        }
+        braced++;
+    }
+    let own = 0;
+    for (let i = 0; i < 3; i++) {
+        sw: switch (i) {
+            case 1: own += 10; break sw;
+        }
+        own++;
+    }
+    if (hits !== 11 || braced !== 11 || own !== 13) throw new Error(hits + ":" + braced + ":" + own);
+    `,
+);

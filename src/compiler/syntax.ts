@@ -1687,6 +1687,60 @@ export function localSyncFunction(
 }
 
 /**
+ * The construct a jump binds by the language's rule: a bare return its
+ * function, a labeled jump its labeled statement, a continue the nearest
+ * loop and a break the nearest loop or switch.
+ */
+export function jumpBinding(
+    statement: ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
+): ts.Node | undefined {
+    if (ts.isReturnStatement(statement))
+        return ts.findAncestor(statement.parent, ts.isFunctionLike);
+    for (
+        let parent: ts.Node | undefined = statement.parent;
+        parent && !ts.isFunctionLike(parent);
+        parent = parent.parent
+    ) {
+        if (statement.label) {
+            if (
+                ts.isLabeledStatement(parent) &&
+                parent.label.text === statement.label.text
+            )
+                return parent;
+        } else if (
+            ts.isIterationStatement(parent, false) ||
+            (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
+        )
+            return parent;
+    }
+    return undefined;
+}
+
+/** The statement a label names, through further labels (`a: b: for`). */
+export function labeledBody(statement: ts.LabeledStatement): ts.Statement {
+    let body = statement.statement;
+    while (ts.isLabeledStatement(body)) body = body.statement;
+    return body;
+}
+
+/**
+ * Whether a break or continue jumps to `target`, a loop or switch: it binds
+ * it, or a label it binds names it.
+ */
+export function jumpsTo(
+    jump: ts.BreakStatement | ts.ContinueStatement,
+    target: ts.Statement,
+): boolean {
+    const binding = jumpBinding(jump);
+    return (
+        binding === target ||
+        (binding !== undefined &&
+            ts.isLabeledStatement(binding) &&
+            labeledBody(binding) === target)
+    );
+}
+
+/**
  * What calling a function-like starts: its body at once (`plain`), or a
  * promise, an iterator or an async iterator that runs it.
  */
