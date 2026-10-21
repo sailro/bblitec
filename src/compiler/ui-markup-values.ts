@@ -44,8 +44,7 @@ export function uiMarkupValueShape(
     const nested = new Set([...active, node]);
     const shape = (value: ts.Expression): UiMarkupShape =>
         uiMarkupValueShape(value, context, nested);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-        return [node.text];
+    if (ts.isStringLiteralLike(node)) return [node.text];
     if (ts.isTemplateExpression(node))
         return join([
             node.head.text,

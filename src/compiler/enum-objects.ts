@@ -8,7 +8,7 @@ import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { enumMemberConstant, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, propertyKey } from "./syntax.js";
 import type { Value } from "./types.js";
 
 type EnumObjectContext = Pick<
@@ -47,18 +47,13 @@ function enumMembers(
         .flatMap((declaration) => declaration.members)
         .map((member) => {
             const value = context.checker.getConstantValue(member);
-            if (
-                value === undefined ||
-                !(
-                    ts.isIdentifier(member.name) ||
-                    ts.isStringLiteral(member.name)
-                )
-            )
+            const name = propertyKey(member.name);
+            if (value === undefined || name === undefined)
                 return context.fail(
                     node,
                     `Enum member '${member.name.getText()}' has no constant value, so its enum object has no static layout.`,
                 );
-            return { name: member.name.text, value };
+            return { name, value };
         });
 }
 

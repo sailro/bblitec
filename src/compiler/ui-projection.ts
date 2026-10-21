@@ -133,6 +133,7 @@ import {
     yieldedOperands,
     writeSites,
     writeSiteOf,
+    accessKey,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
@@ -1015,16 +1016,15 @@ export class UiProjection {
         };
         const writesKey = (target: ts.Expression): boolean => {
             const value = this.context.unwrap(target);
-            if (ts.isPropertyAccessExpression(value))
-                return isDataset(value.expression) && value.name.text === key;
             if (
-                ts.isElementAccessExpression(value) &&
-                isDataset(value.expression)
-            ) {
-                const name = this.context.unwrap(value.argumentExpression);
-                return !ts.isStringLiteralLike(name) || name.text === key;
-            }
-            return false;
+                (!ts.isPropertyAccessExpression(value) &&
+                    !ts.isElementAccessExpression(value)) ||
+                !isDataset(value.expression)
+            )
+                return false;
+            // A key only the run time knows may be this one.
+            const name = accessKey(value);
+            return name === undefined || name === key;
         };
         const writes = (node: ts.Node): boolean => {
             if (writeSites(node).some(({ target }) => writesKey(target)))
@@ -1309,8 +1309,7 @@ export class UiProjection {
                 callee.name.text === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
-            (ts.isStringLiteral(value.arguments[0]) ||
-                ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
+            ts.isStringLiteralLike(value.arguments[0]);
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
@@ -4327,11 +4326,7 @@ export class UiProjection {
         this.uiMarkupPrefetched = true;
         const candidates: string[] = [];
         const visit = (node: ts.Node): void => {
-            if (
-                (ts.isStringLiteral(node) ||
-                    ts.isNoSubstitutionTemplateLiteral(node)) &&
-                /<[A-Za-z!/]/.test(node.text)
-            )
+            if (ts.isStringLiteralLike(node) && /<[A-Za-z!/]/.test(node.text))
                 candidates.push(node.text);
             else if (
                 ts.isBinaryExpression(node) &&
@@ -6474,13 +6469,11 @@ export class UiProjection {
     public lookupElementId(call: ts.CallExpression): string | undefined {
         const callee = this.context.unwrap(call.expression);
         const argument = this.context.unwrap(argumentAt(call, 0));
-        const text =
-            ts.isStringLiteral(argument) ||
-            ts.isNoSubstitutionTemplateLiteral(argument)
-                ? argument.text
-                : ts.isIdentifier(argument)
-                  ? this.context.bindings.lookupOptional(argument)?.staticString
-                  : undefined;
+        const text = ts.isStringLiteralLike(argument)
+            ? argument.text
+            : ts.isIdentifier(argument)
+              ? this.context.bindings.lookupOptional(argument)?.staticString
+              : undefined;
         return ts.isPropertyAccessExpression(callee) && text !== undefined
             ? documentLookupId(callee.name.text, text)
             : undefined;
@@ -6522,8 +6515,7 @@ export class UiProjection {
                     const tag = node.arguments[0];
                     if (
                         tag &&
-                        (ts.isStringLiteral(tag) ||
-                            ts.isNoSubstitutionTemplateLiteral(tag)) &&
+                        ts.isStringLiteralLike(tag) &&
                         tag.text.toLowerCase() !== "canvas"
                     ) {
                         reached = true;

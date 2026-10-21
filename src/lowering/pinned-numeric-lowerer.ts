@@ -3044,10 +3044,7 @@ export class PinnedNumericLowerer {
      */
     protected stringExpression(expression: ts.Expression): string {
         const node = unwrapExpression(expression);
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
+        if (ts.isStringLiteralLike(node)) {
             return `std::string(${stringLiteral(node.text)})`;
         }
         const bound = this.binding(node);

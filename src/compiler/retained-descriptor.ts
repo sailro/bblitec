@@ -4,7 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { accessedPropertySymbol } from "./symbols.js";
 import {
-    propertyNameText,
+    propertyKey,
     rootIdentifier,
     unwrapExpression,
     writeSites,
@@ -256,7 +256,7 @@ export function requireStableRetainedDescriptor(
                     !ts.isShorthandPropertyAssignment(property)
                 )
                     fail(property);
-                const name = propertyNameText(property.name);
+                const name = propertyKey(property.name);
                 const member =
                     name === undefined ? undefined : properties[name];
                 if (!name || !member) fail(property);

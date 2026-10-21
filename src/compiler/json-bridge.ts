@@ -15,7 +15,7 @@ import { authoredErrorValue } from "./error-values.js";
 // `JSON.parse` and by reads that descend into one, and it converts at a
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral } from "./symbols.js";
 
@@ -381,11 +381,7 @@ function representedReadType(
     if (parent?.kind === "map") return parent.value;
     if (parent?.kind === "vector" || parent?.kind === "span")
         return parent.element;
-    const key = ts.isPropertyAccessExpression(source)
-        ? source.name.text
-        : ts.isStringLiteral(source.argumentExpression)
-          ? source.argumentExpression.text
-          : undefined;
+    const key = accessKey(source);
     return parent?.kind === "struct" && key !== undefined
         ? context.dataTypes.findStructField(parent.name, key, source)?.type
         : parent?.kind === "json"

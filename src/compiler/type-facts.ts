@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { declaredSymbol } from "./symbols.js";
-import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
+import { propertyKey, unwrapExpression, wrappedParent } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
@@ -186,7 +186,7 @@ export function presentLiteralKeys(
             !ts.isShorthandPropertyAssignment(property)
         )
             continue;
-        const key = propertyNameText(property.name);
+        const key = propertyKey(property.name);
         if (key === undefined) continue;
         const absent = nullability(
             checker.getTypeAtLocation(

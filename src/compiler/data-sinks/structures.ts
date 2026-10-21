@@ -42,10 +42,7 @@ function expressionEnum(
     if (resolved !== unwrapped) {
         return lowerer.compileForSink(resolved, dataType);
     }
-    if (
-        ts.isStringLiteral(unwrapped) ||
-        ts.isNoSubstitutionTemplateLiteral(unwrapped)
-    ) {
+    if (ts.isStringLiteralLike(unwrapped)) {
         return lowerer.context.dataTypes.enumMemberCpp(
             dataType,
             unwrapped.text,

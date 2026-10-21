@@ -2620,10 +2620,7 @@ export class HandleCollections {
         const resolved = this.context.unwrap(
             this.context.resolveStaticExpression(expression),
         );
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {

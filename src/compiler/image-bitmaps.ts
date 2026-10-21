@@ -3,6 +3,7 @@ import type { WebPlatformCallContext } from "./abort-signals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import { propertyKey } from "./syntax.js";
 
 /**
  * Run-time image decoding (`bblite/pal_image_bitmap.hpp`): `createImageBitmap`
@@ -70,12 +71,9 @@ export function compileImageBitmapCall(
         );
     const values: string[] = ["std::nullopt", "std::nullopt", "std::nullopt"];
     for (const property of options.properties) {
-        const name =
-            ts.isPropertyAssignment(property) &&
-            (ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name))
-                ? property.name.text
-                : undefined;
+        const name = ts.isPropertyAssignment(property)
+            ? propertyKey(property.name)
+            : undefined;
         const index = name ? OPTION_FIELDS.get(name) : undefined;
         if (!name || index === undefined || !ts.isPropertyAssignment(property))
             return context.fail(

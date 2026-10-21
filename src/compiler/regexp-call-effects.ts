@@ -6,6 +6,7 @@ import {
     declaredIn,
     libraryGlobal,
     resolvedSymbol,
+    staticAccessKey,
 } from "./symbols.js";
 import {
     outermostWrapper,
@@ -122,16 +123,9 @@ function facts(
                     !ts.isElementAccessExpression(node)
                 )
                     return;
-                const key = ts.isElementAccessExpression(node)
-                    ? checker.getTypeAtLocation(node.argumentExpression)
-                    : undefined;
                 const member =
                     accessedPropertySymbol(checker, node)?.name ??
-                    (ts.isPropertyAccessExpression(node)
-                        ? node.name.text
-                        : key?.isStringLiteral()
-                          ? key.value
-                          : undefined);
+                    staticAccessKey(checker, node);
                 if (
                     member === "__proto__" ||
                     member === "prototype" ||

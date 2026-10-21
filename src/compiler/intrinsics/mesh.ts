@@ -6,7 +6,7 @@ import {
 } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, propertyKey } from "../syntax.js";
 import { compileBakedMesh } from "../baked-mesh.js";
 
 import { isStringValue, valueForKind, type Value } from "../types.js";
@@ -2723,11 +2723,9 @@ function compileCreateMorphTargets(
     const target = context.expectObjectLiteral(targets.elements[0]!);
     for (const property of target.properties) {
         const name =
-            (ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)) &&
-            (ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name))
-                ? property.name.text
+            ts.isPropertyAssignment(property) ||
+            ts.isShorthandPropertyAssignment(property)
+                ? propertyKey(property.name)
                 : undefined;
         if (name !== "positions" && name !== "normals") {
             context.fail(

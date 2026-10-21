@@ -11,7 +11,11 @@ import {
     writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import {
+    declaredSymbol,
+    resolvedSymbol,
+    staticPropertyKey,
+} from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -2149,12 +2153,23 @@ export class ClassLowerer {
      * overriding it: once per override, on the stored tag. Undefined when
      * the getter is the one every candidate reads.
      */
+    /** A dispatched member's key, as the class member table records it. */
+    private memberKey(name: ts.PropertyName): string {
+        return (
+            staticPropertyKey(this.context.checker, name) ??
+            this.context.fail(
+                name,
+                "A dispatched class member's key must be known at generation.",
+            )
+        );
+    }
+
     public dispatchGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
         read: (receiver: Value, accessor: ts.GetAccessorDeclaration) => Value,
     ): Value | undefined {
-        const name = accessor.name.getText();
+        const name = this.memberKey(accessor.name);
         const node = accessor.name;
         const signature =
             this.context.checker.getSignatureFromDeclaration(accessor);
@@ -2647,7 +2662,7 @@ export class ClassLowerer {
         const argumentValue =
             evaluatedArgument ??
             this.compileClassArguments(setter, [value], "setter")[0]!;
-        const name = setter.name.getText();
+        const name = this.memberKey(setter.name);
         const dispatched = this.dispatch(
             instance,
             (table) => classAccessors(table).setters[name],
@@ -2909,7 +2924,7 @@ export class ClassLowerer {
     ): ts.ClassLikeDeclaration[] {
         const stored = this.context.dataTypes.classStruct(structName);
         const hierarchy = this.context.dataTypes.classHierarchy;
-        const name = method.name.getText();
+        const name = this.memberKey(method.name);
         return stored
             ? hierarchy
                   .concreteClasses(stored.declaration)

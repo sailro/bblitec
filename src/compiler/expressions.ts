@@ -334,6 +334,7 @@ export interface ExpressionContext
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
             | "propertyName"
+            | "compilePropertyKey"
             | "namesLocalFunction"
             | "cppString"
             | "browserErasure"
@@ -1511,10 +1512,7 @@ export class ExpressionLowerer {
                 );
             return this.compileRegExp(pattern, flags, unwrapped, "literals");
         }
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             const value = this.context.compileStringLiteral(unwrapped);
             return {
                 kind: "string",
@@ -6496,7 +6494,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isGetAccessorDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6510,7 +6508,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isSetAccessorDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6524,7 +6522,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isMethodDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6535,7 +6533,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isPropertyAssignment(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,

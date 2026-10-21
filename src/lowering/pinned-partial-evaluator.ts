@@ -513,10 +513,7 @@ export class PartialEvaluator<V, B> {
         const adapted = this.model.expression?.(node, frame, this);
         if (adapted !== undefined) return adapted;
         if (ts.isNumericLiteral(node)) return this.model.raw(Number(node.text));
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
+        if (ts.isStringLiteralLike(node)) {
             return this.model.raw(node.text);
         }
         if (ts.isTemplateExpression(node)) {

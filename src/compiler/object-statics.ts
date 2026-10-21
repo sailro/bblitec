@@ -1,7 +1,7 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyNameText } from "./syntax.js";
+import { argumentAt, propertyKey } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -1156,7 +1156,7 @@ function propertyDefinition(
             return refuse(
                 "needs literal descriptors without spreads or descriptor accessors.",
             );
-        const name = propertyNameText(property.name);
+        const name = propertyKey(property.name);
         if (name === undefined || names.has(name))
             return refuse("needs distinct, non-computed descriptor members.");
         names.add(name);
@@ -1477,7 +1477,7 @@ function compileObjectDefineProperties(
     const definitions: PropertyDefinition[] = [];
     const keys = new Set<string>();
     for (const property of descriptors.properties) {
-        const key = property.name && propertyNameText(property.name);
+        const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
             key === undefined ||

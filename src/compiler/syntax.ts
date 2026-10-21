@@ -958,15 +958,96 @@ export function isUpdateExpression(node: ts.Node): node is UpdateExpression {
 }
 
 /**
- * The text a literal property name spells, or undefined for a computed
- * one — a computed key has no generation-time name to look up.
+ * The property key a literal converts to (ToPropertyKey): a string or a
+ * template without substitutions as written, a number or bigint as its
+ * decimal text (`0x10` -> "16", `1n` -> "1", `-1` -> "-1"), `true`,
+ * `false` or `null` as its word. Undefined for any other expression: only
+ * the run time knows its key.
  */
-export function propertyNameText(name: ts.PropertyName): string | undefined {
-    return ts.isIdentifier(name) ||
-        ts.isStringLiteral(name) ||
-        ts.isNumericLiteral(name)
-        ? name.text
+export function literalKey(expression: ts.Expression): string | undefined {
+    const literal = unwrapExpression(expression);
+    // The scanner already spells a numeric literal canonically.
+    if (ts.isStringLiteralLike(literal) || ts.isNumericLiteral(literal))
+        return literal.text;
+    if (ts.isBigIntLiteral(literal))
+        return BigInt(literal.text.slice(0, -1)).toString();
+    if (
+        ts.isPrefixUnaryExpression(literal) &&
+        literal.operator === ts.SyntaxKind.MinusToken
+    ) {
+        const operand = unwrapExpression(literal.operand);
+        if (ts.isNumericLiteral(operand)) return String(-Number(operand.text));
+        if (ts.isBigIntLiteral(operand))
+            return (-BigInt(operand.text.slice(0, -1))).toString();
+        return undefined;
+    }
+    switch (literal.kind) {
+        case ts.SyntaxKind.TrueKeyword:
+            return "true";
+        case ts.SyntaxKind.FalseKeyword:
+            return "false";
+        case ts.SyntaxKind.NullKeyword:
+            return "null";
+        default:
+            return undefined;
+    }
+}
+
+/**
+ * The key a property name declares when the syntax alone decides it: an
+ * identifier's or private name's text (`#x` keeps its `#`), a literal's
+ * key ({@link literalKey}), or a computed key that is such a literal.
+ * Undefined for any other computed key.
+ */
+export function propertyKey(name: ts.PropertyName): string | undefined {
+    if (ts.isComputedPropertyName(name)) return literalKey(name.expression);
+    if (ts.isBigIntLiteral(name)) return literalKey(name);
+    return name.text;
+}
+
+/**
+ * The key an alias analysis records where only the run time knows it: it
+ * may be every key, so it matches each one. A literal `"*"` key matching
+ * everything too only over-approximates.
+ */
+export const ANY_KEY = "*";
+
+/** A key for an alias analysis: `key`, or {@link ANY_KEY} where it is unknown. */
+export function aliasKey(key: string | undefined): string {
+    return key ?? ANY_KEY;
+}
+
+/**
+ * The array index a key names: its canonical non-negative integer
+ * (`"2"` -> 2; `"02"`, `"-1"`, `"1.5"` name no index).
+ */
+export function keyIndex(key: string | undefined): number | undefined {
+    const value = Number(key);
+    return key !== undefined &&
+        key !== "" &&
+        String(value) === key &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+        ? value
         : undefined;
+}
+
+/** Whether two alias keys may name the same property. */
+export function keysMayMatch(left: string, right: string): boolean {
+    return left === right || left === ANY_KEY || right === ANY_KEY;
+}
+
+/**
+ * The key an access reads when the syntax alone decides it: `o.x` -> "x",
+ * `o.#x` -> "#x", `o[k]` -> k's {@link literalKey}. Undefined for a key
+ * only the run time knows.
+ */
+export function accessKey(
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
+    return ts.isPropertyAccessExpression(access)
+        ? access.name.text
+        : literalKey(access.argumentExpression);
 }
 
 /**
@@ -982,9 +1063,7 @@ export function propertyNameText(name: ts.PropertyName): string | undefined {
 export function objectProperty(
     object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
-    propertyName: (
-        name: ts.PropertyName,
-    ) => string | undefined = propertyNameText,
+    propertyName: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): ts.Expression | undefined {
     let found: ts.Expression | undefined;
     for (const property of "properties" in object
@@ -1034,7 +1113,7 @@ export function literalMember(
         const name =
             property.name === undefined
                 ? undefined
-                : propertyNameText(property.name);
+                : propertyKey(property.name);
         if (ts.isSpreadAssignment(property) || name === undefined)
             found = undefined;
         else if (name === key)

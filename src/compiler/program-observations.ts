@@ -5,12 +5,13 @@ import { yieldsNewArray } from "./fresh-records.js";
 import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
     isAssignmentExpression,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     wrappedParent,
     isTypeAssertion,
     writeSites,
     writeSiteOf,
+    accessKey,
 } from "./syntax.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
@@ -170,7 +171,7 @@ function assignmentPatternNames(
         if (ts.isShorthandPropertyAssignment(property))
             names(property.name.text, property);
         else if (ts.isPropertyAssignment(property)) {
-            const name = propertyNameText(property.name);
+            const name = propertyKey(property.name);
             if (name !== undefined) names(name, property);
             assignmentPatternNames(property.initializer, names);
         }
@@ -311,17 +312,17 @@ function observe(program: ts.Program): ProgramObservations {
                 property: unwrapped.name.text,
             });
         else if (ts.isElementAccessExpression(unwrapped)) {
-            const key = unwrapExpression(unwrapped.argumentExpression);
+            // A number-typed key indexes; it names no record property.
+            const argument = unwrapExpression(unwrapped.argumentExpression);
             if (
-                !ts.isStringLiteralLike(key) &&
-                (typeOf(key).flags & ts.TypeFlags.NumberLike) !== 0
+                !ts.isStringLiteralLike(argument) &&
+                (typeOf(argument).flags & ts.TypeFlags.NumberLike) !== 0
             )
                 return;
+            const property = accessKey(unwrapped);
             add(writes, typeOf(unwrapped.expression), {
                 node: unwrapped,
-                ...(ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                    ? { property: key.text }
-                    : {}),
+                ...(property === undefined ? {} : { property }),
             });
         }
     };
@@ -405,16 +406,15 @@ function observe(program: ts.Program): ProgramObservations {
                         add(writes, type, { node });
                 });
         }
-        if (ts.isPropertyAccessExpression(node)) {
-            if (!readsOnlyAsMember(node))
-                read(node.name.text, node, node.expression);
-        } else if (ts.isElementAccessExpression(node)) {
-            const key = node.argumentExpression;
-            if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
-                if (!readsOnlyAsMember(node))
-                    read(key.text, node, node.expression);
-            } else if (!readsOnlyAsMember(node))
-                wholesaleReads.push(node.expression);
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        ) {
+            const key = accessKey(node);
+            if (readsOnlyAsMember(node)) {
+                // Read as a member of the access around it.
+            } else if (key !== undefined) read(key, node, node.expression);
+            else wholesaleReads.push(node.expression);
         } else if (
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)
@@ -422,7 +422,7 @@ function observe(program: ts.Program): ProgramObservations {
             const name = node.dotDotDotToken
                 ? undefined
                 : node.propertyName
-                  ? propertyNameText(node.propertyName)
+                  ? propertyKey(node.propertyName)
                   : ts.isIdentifier(node.name)
                     ? node.name.text
                     : undefined;

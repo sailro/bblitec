@@ -72,7 +72,7 @@ import {
 import {
     isAssignmentExpression,
     isOperandSelection,
-    propertyNameText,
+    propertyKey,
     valueOperands,
     writeSites,
 } from "./syntax.js";
@@ -4415,7 +4415,7 @@ export class DeclarationLowerer {
                 return (
                     name === undefined ||
                     ts.isComputedPropertyName(name) ||
-                    propertyNameText(name) === key
+                    propertyKey(name) === key
                 );
             });
         return holds(literal);
@@ -4470,7 +4470,7 @@ export class DeclarationLowerer {
                     !ts.isSpreadAssignment(property) &&
                     property.name !== undefined &&
                     !ts.isComputedPropertyName(property.name) &&
-                    propertyNameText(property.name) === key,
+                    propertyKey(property.name) === key,
             );
         return parameterMutatedPaths(
             this.context.checker,
@@ -5540,7 +5540,7 @@ export class DeclarationLowerer {
                 element,
                 "A nested binding requires a property key.",
             );
-        let property = propertyNameText(propertyName);
+        let property = propertyKey(propertyName);
         if (ts.isComputedPropertyName(propertyName)) {
             const expression = this.context.unwrap(propertyName.expression);
             if (ts.isStringLiteralLike(expression)) property = expression.text;

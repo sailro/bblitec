@@ -2,7 +2,7 @@ import ts from "typescript";
 import { encodePinnedErrorContracts } from "./pinned-error.js";
 import {
     isExpressionWrapper,
-    propertyNameText,
+    propertyKey,
     unwrapExpression as unwrapSyntaxWrappers,
     writeSites,
     type WriteSite,
@@ -100,7 +100,7 @@ export function findNodes<T extends ts.Node>(
 
 /** The name a property is declared under, where it is a plain name or literal. */
 export function propertyName(name: ts.PropertyName): string | undefined {
-    return propertyNameText(name);
+    return propertyKey(name);
 }
 
 /** The expression under every `as`, `<T>`, `(...)`, `!` and `satisfies` the pin wraps it in. */
@@ -904,12 +904,9 @@ export class LoweringContext {
         const file = literal.getSourceFile();
         const members = new Map<string, number>();
         for (const member of literal.properties) {
-            const name =
-                ts.isPropertyAssignment(member) &&
-                (ts.isIdentifier(member.name) ||
-                    ts.isStringLiteral(member.name))
-                    ? member.name.text
-                    : undefined;
+            const name = ts.isPropertyAssignment(member)
+                ? propertyKey(member.name)
+                : undefined;
             if (name === undefined || !ts.isPropertyAssignment(member))
                 return this.contractError(
                     member,
@@ -1322,10 +1319,7 @@ export class LoweringContext {
 
     public stringValue(expression: ts.Expression, file: ts.SourceFile): string {
         const unwrapped = this.unwrapExpression(expression);
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isTemplateExpression(unwrapped)) {
@@ -1335,8 +1329,7 @@ export class LoweringContext {
                     .map((span) => {
                         const value = this.unwrapExpression(span.expression);
                         return (
-                            (ts.isStringLiteral(value) ||
-                            ts.isNoSubstitutionTemplateLiteral(value)
+                            (ts.isStringLiteralLike(value)
                                 ? value.text
                                 : String(this.numericValue(value, file))) +
                             span.literal.text
@@ -1699,10 +1692,7 @@ export class LoweringContext {
         if (ts.isNumericLiteral(node)) {
             return `number:${Number(node.text)}`;
         }
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
+        if (ts.isStringLiteralLike(node)) {
             return `string:${node.text}`;
         }
         return ts.SyntaxKind[node.kind];
@@ -1717,10 +1707,7 @@ export class LoweringContext {
         if (ts.isNumericLiteral(node)) {
             return `number:${Number(node.text)}`;
         }
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
+        if (ts.isStringLiteralLike(node)) {
             return `string:${node.text}`;
         }
         const children = node

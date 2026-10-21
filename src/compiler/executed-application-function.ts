@@ -38,6 +38,7 @@ import {
     rootIdentifier,
     statementDeclaredNames,
     isValueReference,
+    propertyKey,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
@@ -695,13 +696,12 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             return text;
         }
         if (ts.isFunctionDeclaration(target)) return `(${text})`;
-        if (
+        const key =
             ts.isMethodDeclaration(target) &&
-            ts.isObjectLiteralExpression(target.parent) &&
-            (ts.isIdentifier(target.name) || ts.isStringLiteral(target.name))
-        ) {
-            return `({ ${text} })[${JSON.stringify(target.name.text)}]`;
-        }
+            ts.isObjectLiteralExpression(target.parent)
+                ? propertyKey(target.name)
+                : undefined;
+        if (key !== undefined) return `({ ${text} })[${JSON.stringify(key)}]`;
         return this.context.fail(
             target,
             `${this.label} is a ${syntaxKindName(target.kind)}, which generation does not execute alone.`,

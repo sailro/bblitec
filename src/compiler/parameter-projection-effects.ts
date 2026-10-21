@@ -14,10 +14,14 @@ import {
     isAssignmentExpression,
     isOperandSelection,
     objectProperty,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     valueOperands,
     writeSites,
+    ANY_KEY,
+    accessKey,
+    aliasKey,
+    keysMayMatch,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { isSupportedFunction } from "./user-functions.js";
@@ -31,20 +35,16 @@ interface Projection {
     readonly from: Path;
 }
 
-function compatible(left: string, right: string): boolean {
-    return left === right || left === "*" || right === "*";
-}
-
 function overlaps(left: Path, right: Path): boolean {
     return left
         .slice(0, right.length)
-        .every((key, i) => compatible(key, right[i]!));
+        .every((key, i) => keysMayMatch(key, right[i]!));
 }
 
 function project(values: readonly Projection[], key: string): Projection[] {
     return values.flatMap((value) =>
         value.at.length > 0
-            ? compatible(value.at[0]!, key)
+            ? keysMayMatch(value.at[0]!, key)
                 ? [{ at: value.at.slice(1), from: value.from }]
                 : []
             : [{ at: [], from: [...value.from, key] }],
@@ -149,9 +149,7 @@ export function visitMutableArgumentReferences(
                 (property) =>
                     (ts.isPropertyAssignment(property) ||
                         ts.isShorthandPropertyAssignment(property)) &&
-                    (ts.isIdentifier(property.name) ||
-                        ts.isStringLiteralLike(property.name) ||
-                        ts.isNumericLiteral(property.name)),
+                    propertyKey(property.name) !== undefined,
             )
         ) {
             for (const property of current.properties) {
@@ -163,7 +161,7 @@ export function visitMutableArgumentReferences(
                         ts.isPropertyAssignment(property)
                             ? property.initializer
                             : property.name,
-                        [...path, propertyNameText(property.name)!],
+                        [...path, propertyKey(property.name)!],
                         consumer,
                         parameterIndex,
                     );
@@ -258,11 +256,9 @@ export function parameterProjectionIsReadOnly(
                 (ts.isPropertyAssignment(property) ||
                     ts.isShorthandPropertyAssignment(property)) &&
                 !ts.isComputedPropertyName(property.name) &&
-                propertyNameText(property.name) !== "__proto__",
+                propertyKey(property.name) !== "__proto__",
         )
-            ? literal.properties.map((property) =>
-                  propertyNameText(property.name!)!,
-              )
+            ? literal.properties.map((property) => propertyKey(property.name!)!)
             : undefined;
     return parameterProjection(
         checker,
@@ -434,7 +430,7 @@ function parameterProjection(
         if (overlaps(from, entry.path)) return true;
         if (independentFields || identityPaths) return false;
         const divergent = from.findIndex(
-            (key, i) => !compatible(key, entry.path[i]!),
+            (key, i) => !keysMayMatch(key, entry.path[i]!),
         );
         const sibling = typeAt(from.slice(0, divergent + 1));
         if (!sibling || typeCanCarryReference(sibling)) {
@@ -477,17 +473,11 @@ function parameterProjection(
         if (!carries(node)) return [];
         if (ts.isIdentifier(node))
             return aliases.get(declaredSymbol(checker, node)!) ?? [];
-        if (ts.isPropertyAccessExpression(node))
-            return project(flow(node.expression), node.name.text);
-        if (ts.isElementAccessExpression(node)) {
-            const key = unwrapExpression(node.argumentExpression);
-            return project(
-                flow(node.expression),
-                ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                    ? key.text
-                    : "*",
-            );
-        }
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        )
+            return project(flow(node.expression), aliasKey(accessKey(node)));
         if (isOperandSelection(node)) return valueOperands(node).flatMap(flow);
         if (ts.isObjectLiteralExpression(node))
             return node.properties.flatMap((property): Projection[] => {
@@ -527,7 +517,7 @@ function parameterProjection(
                             .getIndexInfosOfType(type)
                             .some((index) => typeCanCarryReference(index.type))
                     )
-                        keys.push("*");
+                        keys.push(ANY_KEY);
                     return keys.flatMap((key) =>
                         project(source, key).map((entry) => ({
                             at: [key, ...entry.at],
@@ -544,7 +534,7 @@ function parameterProjection(
                     ? property.initializer
                     : property.name;
                 return flow(value).map((entry) => ({
-                    at: [propertyNameText(property.name) ?? "*", ...entry.at],
+                    at: [aliasKey(propertyKey(property.name)), ...entry.at],
                     from: entry.from,
                 }));
             });
@@ -552,7 +542,7 @@ function parameterProjection(
             return node.elements.flatMap((element, i): Projection[] => {
                 if (ts.isOmittedExpression(element)) return [];
                 const values = ts.isSpreadElement(element)
-                    ? project(flow(element.expression), "*")
+                    ? project(flow(element.expression), ANY_KEY)
                     : flow(element);
                 const elementType = ts.isSpreadElement(element)
                     ? checker.getIndexTypeOfType(
@@ -564,7 +554,7 @@ function parameterProjection(
                     return [];
                 return values.map((entry) => ({
                     at: [
-                        ts.isSpreadElement(element) ? "*" : String(i),
+                        ts.isSpreadElement(element) ? ANY_KEY : String(i),
                         ...entry.at,
                     ],
                     from: entry.from,
@@ -578,8 +568,8 @@ function parameterProjection(
             );
             return element && !typeCanCarryReference(element)
                 ? []
-                : project(flow(owner), "*").map((entry) => ({
-                      at: ["*", ...entry.at],
+                : project(flow(owner), ANY_KEY).map((entry) => ({
+                      at: [ANY_KEY, ...entry.at],
                       from: entry.from,
                   }));
         }
@@ -626,10 +616,10 @@ function parameterProjection(
             const key = ts.isArrayBindingPattern(name)
                 ? String(i)
                 : element.propertyName
-                  ? (propertyNameText(element.propertyName) ?? "*")
+                  ? aliasKey(propertyKey(element.propertyName))
                   : ts.isIdentifier(element.name)
                     ? element.name.text
-                    : "*";
+                    : ANY_KEY;
             bind(element.name, [
                 ...(element.dotDotDotToken ? values : project(values, key)),
                 ...(element.initializer ? flow(element.initializer) : []),
@@ -666,7 +656,7 @@ function parameterProjection(
                         for (const item of node.initializer.declarations)
                             bind(
                                 item.name,
-                                project(flow(node.expression), "*"),
+                                project(flow(node.expression), ANY_KEY),
                             );
                 },
                 {
@@ -686,18 +676,13 @@ function parameterProjection(
             !ts.isElementAccessExpression(node)
         )
             return false;
-        const key = ts.isPropertyAccessExpression(node)
-            ? node.name.text
-            : ts.isStringLiteralLike(node.argumentExpression) ||
-                ts.isNumericLiteral(node.argumentExpression)
-              ? node.argumentExpression.text
-              : "*";
-        return project(flow(node.expression), key).some((value) =>
-            selected.some(
-                (entry) =>
-                    mayAffectSelection(value.from, entry) &&
-                    (value.from.length > entry.path.length || entry.scalar),
-            ),
+        return project(flow(node.expression), aliasKey(accessKey(node))).some(
+            (value) =>
+                selected.some(
+                    (entry) =>
+                        mayAffectSelection(value.from, entry) &&
+                        (value.from.length > entry.path.length || entry.scalar),
+                ),
         );
     };
     const captures = (identifier: ts.Identifier): boolean => {
@@ -722,17 +707,7 @@ function parameterProjection(
                     access.parent.expression === access)
             )
                 return relevant(values).length > 0;
-            const key = ts.isPropertyAccessExpression(access)
-                ? access.name.text
-                : unwrapExpression(access.argumentExpression);
-            values = project(
-                values,
-                typeof key === "string"
-                    ? key
-                    : ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                      ? key.text
-                      : "*",
-            );
+            values = project(values, aliasKey(accessKey(access)));
             expression = access;
         }
         return relevant(values).length > 0;

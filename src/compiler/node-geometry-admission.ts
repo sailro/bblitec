@@ -2,7 +2,7 @@ import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
-import { writeSites } from "./syntax.js";
+import { writeSites, accessKey } from "./syntax.js";
 
 interface Context extends Pick<
     LoweringServices,
@@ -81,11 +81,7 @@ export function checkNodeGeometryMutation(
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
         ) {
-            const name = ts.isPropertyAccessExpression(left)
-                ? left.name.text
-                : ts.isStringLiteralLike(left.argumentExpression)
-                  ? left.argumentExpression.text
-                  : undefined;
+            const name = accessKey(left);
             // A dynamic key may name a transform.
             if (
                 importedVector(left.expression) ||

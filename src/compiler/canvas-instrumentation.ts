@@ -8,6 +8,7 @@ import {
     declaredInDomLibrary,
     libraryGlobal,
     resolvedSymbol,
+    staticAccessKey,
 } from "./symbols.js";
 import {
     choosesOperand,
@@ -122,10 +123,13 @@ export function hasOnlyReportingEffects(
     const property = (
         node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): string | undefined => {
-        if (ts.isPropertyAccessExpression(node)) return node.name.text;
-        if (value(node.argumentExpression) !== "primitive") return undefined;
-        const key = checker.getTypeAtLocation(node.argumentExpression);
-        return key.isStringLiteral() ? key.value : undefined;
+        // A key that converts an object may run its toString.
+        if (
+            ts.isElementAccessExpression(node) &&
+            value(node.argumentExpression) !== "primitive"
+        )
+            return undefined;
+        return staticAccessKey(checker, node);
     };
     const libraryCall = (call: ts.CallExpression): boolean => {
         const declaration = checker.getResolvedSignature(call)?.declaration;

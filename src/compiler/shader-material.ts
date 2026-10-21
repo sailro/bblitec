@@ -846,10 +846,7 @@ function compileShaderUniformSignatures(
     }> = [];
     const signatures = elements.map((element) => {
         const resolved = context.resolveStaticLiteral(element);
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (!ts.isObjectLiteralExpression(resolved)) {

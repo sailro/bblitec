@@ -22,6 +22,7 @@ import {
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
+import { propertyKey } from "../syntax.js";
 
 export interface MeshOptionContext
     extends
@@ -94,13 +95,11 @@ export function compileBoxOptions(
                     );
                 }
                 const name =
-                    ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name)
-                        ? property.name.text
-                        : context.fail(
-                              property,
-                              "Box data options require named numeric fields.",
-                          );
+                    propertyKey(property.name) ??
+                    context.fail(
+                        property,
+                        "Box data options require named numeric fields.",
+                    );
                 values.set(
                     name,
                     number(

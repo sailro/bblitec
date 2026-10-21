@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { accessKey, propertyKey } from "./syntax.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -43,24 +44,28 @@ export function propertyNeverObserved(
     const observes = (node: ts.Node): boolean => {
         if (ts.isPropertyAccessExpression(node) && node.name.text === name)
             return true;
-        if (
-            ts.isElementAccessExpression(node) &&
-            (!ts.isStringLiteralLike(node.argumentExpression) ||
-                node.argumentExpression.text === name) &&
-            carries(node.expression)
-        )
-            return true;
+        if (ts.isElementAccessExpression(node)) {
+            // A key only the run time knows may be this one.
+            const key = accessKey(node);
+            if ((key === undefined || key === name) && carries(node.expression))
+                return true;
+        }
         if (
             ts.isBindingElement(node) &&
-            ((node.propertyName &&
-                ts.isIdentifier(node.propertyName) &&
-                node.propertyName.text === name) ||
-                (!node.propertyName &&
-                    ts.isIdentifier(node.name) &&
-                    node.name.text === name) ||
-                node.dotDotDotToken !== undefined)
-        )
-            return true;
+            ts.isObjectBindingPattern(node.parent)
+        ) {
+            const key = node.propertyName
+                ? propertyKey(node.propertyName)
+                : ts.isIdentifier(node.name)
+                  ? node.name.text
+                  : undefined;
+            if (
+                node.dotDotDotToken !== undefined ||
+                key === undefined ||
+                key === name
+            )
+                return true;
+        }
         if (
             (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) &&
             carries(node.expression)

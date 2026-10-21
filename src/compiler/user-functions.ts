@@ -107,6 +107,7 @@ import {
     argumentAt,
     writeSites,
     referenceSite,
+    accessKey,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -1078,14 +1079,14 @@ function reassignedRecordFields(
     let opaque = false;
     const reassigns = (target: ts.Expression): void => {
         const node = unwrapExpression(target);
-        if (ts.isPropertyAccessExpression(node)) {
-            fields.add(node.name.text);
+        if (
+            !ts.isPropertyAccessExpression(node) &&
+            !ts.isElementAccessExpression(node)
+        )
             return;
-        }
-        if (!ts.isElementAccessExpression(node)) return;
-        const key = unwrapExpression(node.argumentExpression);
-        if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
-            fields.add(key.text);
+        const key = accessKey(node);
+        if (key !== undefined) {
+            fields.add(key);
             return;
         }
         // An indexed collection write changes contents, not a field.

@@ -3,7 +3,7 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     declaredInDefaultLibrary,
     resolvedSymbol,
-    symbolPropertyKey,
+    staticPropertyKey,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import { unwrapExpression, wrappedParent } from "./syntax.js";
@@ -218,16 +218,14 @@ export function classMemberTable(
             staticElements.push(member);
             continue;
         }
-        // A method a unique symbol names (`*[Symbol.iterator]()`) is keyed
-        // by that symbol's property key.
+        // A method or accessor is keyed as its name declares it: `"a-b"()`,
+        // `1()`, `*[Symbol.iterator]()`. A field the class layout cannot
+        // name (computed or quoted) is refused there.
         const name = !member.name
             ? undefined
-            : ts.isMemberName(member.name)
-              ? member.name.text
-              : ts.isMethodDeclaration(member) &&
-                  ts.isComputedPropertyName(member.name)
-                ? symbolPropertyKey(checker, member.name.expression)
-                : undefined;
+            : ts.isPropertyDeclaration(member) && !ts.isMemberName(member.name)
+              ? undefined
+              : staticPropertyKey(checker, member.name);
         if (name === undefined) continue;
         if (ts.isMethodDeclaration(member)) {
             recordImplementation(

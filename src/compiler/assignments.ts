@@ -984,10 +984,7 @@ function optionalNumberPropertyInAssertion(
         ) {
             return false;
         }
-        return (
-            (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
-            member.name.text === property
-        );
+        return propertyKey(member.name) === property;
     });
 }
 
@@ -1004,16 +1001,10 @@ function explicitOptionalNumberExpandoOwner(
 }
 
 function propertyAccessName(node: ts.Node): string | undefined {
-    if (ts.isPropertyAccessExpression(node)) return node.name.text;
-    if (
-        ts.isElementAccessExpression(node) &&
-        node.argumentExpression &&
-        (ts.isStringLiteral(node.argumentExpression) ||
-            ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))
-    ) {
-        return node.argumentExpression.text;
-    }
-    return undefined;
+    return ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+        ? accessKey(node)
+        : undefined;
 }
 
 function isSimplePropertyWrite(node: ts.Node): boolean {
@@ -2366,6 +2357,8 @@ import {
     expressionHasEffects,
     isTypeAssertion,
     wrappersUnder,
+    accessKey,
+    propertyKey,
 } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";

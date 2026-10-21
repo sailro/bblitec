@@ -5,6 +5,7 @@ import {
     unwrapExpression,
     outermostWrapper,
     writeSiteOf,
+    propertyKey,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
@@ -101,9 +102,7 @@ function setsPresentField(
     const property = value.properties.find(
         (candidate) =>
             candidate.name !== undefined &&
-            (ts.isIdentifier(candidate.name) ||
-                ts.isStringLiteral(candidate.name)) &&
-            candidate.name.text === field,
+            propertyKey(candidate.name) === field,
     );
     if (!property) return false;
     const stored = ts.isPropertyAssignment(property)

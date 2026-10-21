@@ -8,7 +8,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, propertyKey } from "../syntax.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
@@ -708,12 +708,7 @@ function compileLoadTexture2D(
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
         for (const property of options.properties) {
-            const name =
-                property.name &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-                    ? property.name.text
-                    : undefined;
+            const name = property.name && propertyKey(property.name);
             if (!loadTexture2DOptionFields.includes(name ?? "")) {
                 context.fail(
                     property,

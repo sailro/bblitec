@@ -14,7 +14,12 @@ import type { DataLowerer } from "./data-lowering.js";
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
-import { argumentAt, isExpressionWrapper, unwrapExpression } from "./syntax.js";
+import {
+    argumentAt,
+    isExpressionWrapper,
+    unwrapExpression,
+    propertyKey,
+} from "./syntax.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { pinCpp } from "./evaluation-order.js";
@@ -638,12 +643,7 @@ export function staticJsonValue(
         const value: Record<string, unknown> = {};
         for (const property of node.properties) {
             if (!ts.isPropertyAssignment(property)) return notJson;
-            const name =
-                ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name) ||
-                ts.isNumericLiteral(property.name)
-                    ? property.name.text
-                    : undefined;
+            const name = propertyKey(property.name);
             if (name === undefined) return notJson;
             const member = staticJsonValue(context, property.initializer);
             if (member === notJson) return notJson;
@@ -671,7 +671,7 @@ export function staticJsonValue(
 
 /** The JSON scalar a literal node spells, or `notJson`. */
 export function jsonScalarLiteral(node: ts.Expression): unknown {
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    if (ts.isStringLiteralLike(node)) {
         return node.text;
     }
     if (ts.isNumericLiteral(node)) return Number(node.text);
@@ -894,9 +894,7 @@ export function staticVec3Value(
         const property = node.properties.find(
             (candidate) =>
                 candidate.name !== undefined &&
-                (ts.isIdentifier(candidate.name) ||
-                    ts.isStringLiteral(candidate.name)) &&
-                candidate.name.text === name,
+                propertyKey(candidate.name) === name,
         );
         if (!property) return 0;
         if (!ts.isPropertyAssignment(property)) return undefined;

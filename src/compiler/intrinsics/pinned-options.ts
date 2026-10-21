@@ -18,6 +18,7 @@ import {
     sharedPinnedContext,
     type LoweringContext,
 } from "../../lowering/context.js";
+import { propertyKey } from "../syntax.js";
 
 /** The value shape one declared option takes. */
 export type PinnedOptionKind =
@@ -123,9 +124,7 @@ function collectInterfaceMembers(
     const { file, declaration } = source.interfaceDeclaration(module, name);
     for (const member of declaration.members) {
         if (!ts.isPropertySignature(member) || !member.type) continue;
-        const memberName = member.name
-            ? propertyNameText(member.name)
-            : undefined;
+        const memberName = member.name ? propertyKey(member.name) : undefined;
         if (memberName === undefined || members.has(memberName)) continue;
         members.set(memberName, { module, file, type: member.type });
     }
@@ -190,12 +189,6 @@ function declaringModule(
             statement.name.text === name,
     );
     return declaredHere ? module : source.moduleOfImport(module, name);
-}
-
-function propertyNameText(name: ts.PropertyName): string | undefined {
-    return ts.isIdentifier(name) || ts.isStringLiteral(name)
-        ? name.text
-        : undefined;
 }
 
 /** The shape a declared type takes, resolving the pin's own type names. */
@@ -302,7 +295,7 @@ function classify(
             ts.isPropertySignature(element) &&
             element.type?.kind === ts.SyntaxKind.NumberKeyword &&
             element.name
-                ? [propertyNameText(element.name)]
+                ? [propertyKey(element.name)]
                 : [],
         );
         const exactly = (expected: readonly string[]): boolean =>

@@ -271,6 +271,7 @@ export interface LoweringServices {
         name: string,
     ): ts.Expression | undefined;
     propertyName(name: ts.PropertyName): string | undefined;
+    compilePropertyKey(name: ts.PropertyName): string | undefined;
     compileStringLiteral(expression: ts.Expression): string;
     staticAssetUrlCandidates(): readonly string[];
     moduleRelativeAssetUrl(expression: ts.Expression): string | undefined;

@@ -2,6 +2,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 import { aliasTarget, declaredSymbol } from "./compiler/symbols.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
+import { propertyKey } from "./compiler/syntax.js";
 
 interface UnusedExport {
     file: string;
@@ -196,12 +197,16 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                 ts.isBindingElement(node) &&
                 ts.isObjectBindingPattern(node.parent)
             ) {
-                const name = node.propertyName ?? node.name;
-                if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+                const key = node.propertyName
+                    ? propertyKey(node.propertyName)
+                    : ts.isIdentifier(node.name)
+                      ? node.name.text
+                      : undefined;
+                if (key !== undefined)
                     mark(
                         checker.getPropertyOfType(
                             checker.getTypeAtLocation(node.parent),
-                            name.text,
+                            key,
                         ),
                     );
             }

@@ -13,11 +13,62 @@ interface SourceFacts {
     constructs: Set<string>;
     /** `parent.name === node`-style tests of the role a name plays in its parent. */
     nameRoleTests: number;
+    /** `ts.isIdentifier(x) || ts.isStringLiteral(x)`-style rules for the key a name spells. */
+    keyRuleTests: number;
     lockSetter: boolean;
     barrel: boolean;
 }
 
 const cache = new Map<string, SourceFacts>();
+
+const literalTests = new Set([
+    "isStringLiteral",
+    "isStringLiteralLike",
+    "isNumericLiteral",
+    "isNoSubstitutionTemplateLiteral",
+]);
+
+/** The `||` operands of a chain, through parentheses. */
+function disjuncts(node: ts.Expression): ts.Expression[] {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ? [...disjuncts(node.left), ...disjuncts(node.right)]
+        : [node];
+}
+
+/** Whether a `||` is no operand of an enclosing `||`. */
+function outermostDisjunction(node: ts.BinaryExpression): boolean {
+    let parent = node.parent;
+    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    return !(
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken
+    );
+}
+
+/** Whether a chain tests one operand for an identifier and for a literal. */
+function keyRule(chain: ts.BinaryExpression): boolean {
+    const tests = new Map<string, Set<string>>();
+    for (const part of disjuncts(chain)) {
+        if (
+            !ts.isCallExpression(part) ||
+            part.arguments.length !== 1 ||
+            !ts.isPropertyAccessExpression(part.expression) ||
+            expressionName(part.expression.expression) !== "ts"
+        )
+            continue;
+        const operand = part.arguments[0]!.getText();
+        const names = tests.get(operand) ?? new Set<string>();
+        names.add(part.expression.name.text);
+        tests.set(operand, names);
+    }
+    return [...tests.values()].some(
+        (names) =>
+            names.has("isIdentifier") &&
+            [...names].some((name) => literalTests.has(name)),
+    );
+}
 
 function expressionName(node: ts.Node): string | undefined {
     if (ts.isIdentifier(node)) return node.text;
@@ -37,7 +88,7 @@ export function sourceFacts(path: string): SourceFacts {
         path,
         readFileSync(path, "utf8"),
         ts.ScriptTarget.Latest,
-        false,
+        true,
     );
     const facts: SourceFacts = {
         imports: new Map(),
@@ -46,6 +97,7 @@ export function sourceFacts(path: string): SourceFacts {
         calls: new Set(),
         constructs: new Set(),
         nameRoleTests: 0,
+        keyRuleTests: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -106,6 +158,13 @@ export function sourceFacts(path: string): SourceFacts {
             )
         )
             facts.nameRoleTests++;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+            outermostDisjunction(node) &&
+            keyRule(node)
+        )
+            facts.keyRuleTests++;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

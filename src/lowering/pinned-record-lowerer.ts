@@ -48,6 +48,7 @@ import {
     wrappersUnder,
     isAssignmentExpression,
     isValueReference,
+    propertyKey,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -5912,11 +5913,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
             return this.closure(node, this.shapeAt(node), this.closureIndent());
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        )
-            return stringLiteral(node.text);
+        if (ts.isStringLiteralLike(node)) return stringLiteral(node.text);
         if (ts.isTemplateExpression(node)) return this.template(node);
         if (this.isAbsentLiteral(node))
             return this.model.absent(this.shapeAt(node), node);
@@ -6062,16 +6059,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             .find(
                 (candidate) =>
                     ts.isPropertyAssignment(candidate) &&
-                    (ts.isIdentifier(candidate.name) ||
-                        ts.isStringLiteral(candidate.name)) &&
-                    candidate.name.text === node.name.text,
+                    propertyKey(candidate.name) === node.name.text,
             );
         if (!property || !ts.isPropertyAssignment(property)) return undefined;
         const value = unwrapTypePreserving(property.initializer);
         const literal = (expression: ts.Expression): boolean =>
             ts.isNumericLiteral(expression) ||
-            ts.isStringLiteral(expression) ||
-            ts.isNoSubstitutionTemplateLiteral(expression) ||
+            ts.isStringLiteralLike(expression) ||
             expression.kind === ts.SyntaxKind.TrueKeyword ||
             expression.kind === ts.SyntaxKind.FalseKeyword ||
             (ts.isPrefixUnaryExpression(expression) &&
@@ -8811,11 +8805,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (ts.isSpreadAssignment(property))
                 return this.spreadWrites(property.expression, record, owner);
             const name =
-                property.name &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-                    ? property.name.text
-                    : this.refuse(property, "Pinned record literal member.");
+                (property.name && propertyKey(property.name)) ??
+                this.refuse(property, "Pinned record literal member.");
             // A tag the port does not store (`_kind: "text-layer"`), or a
             // function it does not represent; dropping either drops no
             // evaluation.
@@ -8991,19 +8982,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.refuse(node, "Pinned dictionary keyed by non-strings.");
         const map = this.temporary("dictionary");
         const entries = node.properties.map((property) => {
-            if (
-                !ts.isPropertyAssignment(property) ||
-                !(
-                    ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name) ||
-                    ts.isNumericLiteral(property.name)
-                )
-            )
+            const key = ts.isPropertyAssignment(property)
+                ? propertyKey(property.name)
+                : undefined;
+            if (key === undefined || !ts.isPropertyAssignment(property))
                 return this.refuse(
                     property,
                     "Pinned dictionary literals take named entries only.",
                 );
-            return `${map}.set(std::string(${stringLiteral(property.name.text)}), ${this.convert(property.initializer, shape.value)});`;
+            return `${map}.set(std::string(${stringLiteral(key)}), ${this.convert(property.initializer, shape.value)});`;
         });
         return `[&] { ${this.cpp(shape)} ${map}{}; ${entries.join(" ")} return ${map}; }()`;
     }
@@ -9937,19 +9924,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ? []
             : [`${indent}${this.cpp(shape)} ${source} = ${value};`];
         for (const element of pattern.elements) {
-            const property = element.propertyName ?? element.name;
+            const key = element.propertyName
+                ? propertyKey(element.propertyName)
+                : ts.isIdentifier(element.name)
+                  ? element.name.text
+                  : undefined;
             if (
                 element.dotDotDotToken ||
                 element.initializer ||
                 !ts.isIdentifier(element.name) ||
-                !(ts.isIdentifier(property) || ts.isStringLiteral(property))
+                key === undefined
             )
                 return this.refuse(element, "Pinned destructuring element.");
-            const member = this.model.member(
-                shape.name,
-                property.text,
-                element,
-            );
+            const member = this.model.member(shape.name, key, element);
             const storage = this.model.declaredShape(
                 this.checker.getTypeAtLocation(element.name),
                 element,

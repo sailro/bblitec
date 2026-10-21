@@ -234,7 +234,7 @@ import {
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
-    symbolPropertyKey,
+    staticPropertyKey,
     type DeclarationOrigin,
 } from "./compiler/symbols.js";
 import {
@@ -283,13 +283,14 @@ import {
     literalMember,
     isUpdateExpression,
     objectProperty,
-    propertyNameText,
+    propertyKey,
     sourceFunctionName,
     stringLiteralText,
     unwrappedIdentifier,
     wrappedParent,
     writeSites,
     isValueReference,
+    expressionHasEffects,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -3131,8 +3132,8 @@ class Compiler implements LoweringServices {
             initializer.properties.every(
                 (property) =>
                     (ts.isPropertyAssignment(property) &&
-                        propertyNameText(property.name) !== undefined &&
-                        propertyNameText(property.name) !== "__proto__" &&
+                        propertyKey(property.name) !== undefined &&
+                        propertyKey(property.name) !== "__proto__" &&
                         !typeCanCarryReference(
                             this.checker.getTypeAtLocation(
                                 property.initializer,
@@ -3154,7 +3155,7 @@ class Compiler implements LoweringServices {
                               !ts.isShorthandPropertyAssignment(property)
                           )
                               return [];
-                          const key = propertyNameText(property.name);
+                          const key = propertyKey(property.name);
                           return key === undefined ? [] : [key];
                       }),
                   )
@@ -4210,24 +4211,54 @@ class Compiler implements LoweringServices {
         });
     }
 
+    /**
+     * The key a property name declares at generation: the checker's
+     * ({@link staticPropertyKey}), else a computed key generation folds
+     * (`[prefix + "x"]`). Reading the key emits nothing; a key expression
+     * that calls, constructs, awaits or writes is left to run where the
+     * literal evaluates it.
+     */
     public propertyName(name: ts.PropertyName): string | undefined {
+        const key = staticPropertyKey(this.checker, name);
         if (
-            ts.isIdentifier(name) ||
-            ts.isStringLiteral(name) ||
-            ts.isNumericLiteral(name)
-        ) {
-            return name.text;
-        }
-        if (ts.isComputedPropertyName(name)) {
-            const symbolKey = symbolPropertyKey(this.checker, name.expression);
-            if (symbolKey !== undefined) return symbolKey;
-            const value = this.compileValue(name.expression);
-            if (value.staticString !== undefined) return value.staticString;
-            if (value.staticNumber !== undefined) {
-                return String(value.staticNumber);
-            }
-        }
-        return undefined;
+            key !== undefined ||
+            !ts.isComputedPropertyName(name) ||
+            expressionHasEffects(name.expression)
+        )
+            return key;
+        const value = this.probeEmission(
+            () => this.compileValue(name.expression),
+            () => false,
+        );
+        return (
+            value.staticString ??
+            (value.staticNumber === undefined
+                ? undefined
+                : String(value.staticNumber))
+        );
+    }
+
+    /**
+     * Evaluates a literal member's key where the literal runs it, its
+     * effects in source order (`{ [next()]: v }`), and returns the key
+     * generation knows. A key that runs nothing reads as
+     * {@link propertyName}.
+     */
+    public compilePropertyKey(name: ts.PropertyName): string | undefined {
+        if (
+            !ts.isComputedPropertyName(name) ||
+            !expressionHasEffects(name.expression)
+        )
+            return this.propertyName(name);
+        const value = this.compileValue(name.expression);
+        const key =
+            staticPropertyKey(this.checker, name) ??
+            value.staticString ??
+            (value.staticNumber === undefined
+                ? undefined
+                : String(value.staticNumber));
+        if (key !== undefined) this.emitDiscardedValue(value);
+        return key;
     }
 
     public compileStringLiteral(expression: ts.Expression): string {
@@ -4266,8 +4297,7 @@ class Compiler implements LoweringServices {
                 if (
                     returned &&
                     (ts.isTemplateExpression(returned) ||
-                        ts.isStringLiteral(returned) ||
-                        ts.isNoSubstitutionTemplateLiteral(returned))
+                        ts.isStringLiteralLike(returned))
                 ) {
                     // This is a generation-time source factory, so keep its
                     // numeric arguments in the inliner's static domain. The
@@ -4323,8 +4353,7 @@ class Compiler implements LoweringServices {
                 if (
                     ts.isCallExpression(node) &&
                     node.arguments.length === 2 &&
-                    (ts.isStringLiteral(argumentAt(node, 0)) ||
-                        ts.isNoSubstitutionTemplateLiteral(argumentAt(node, 0)))
+                    ts.isStringLiteralLike(argumentAt(node, 0))
                 ) {
                     const url = this.moduleRelativeAssetUrl(node);
                     if (url !== undefined) candidates.add(url);
@@ -5311,7 +5340,7 @@ class Compiler implements LoweringServices {
                     ts.isComputedPropertyName(property.name)
                 )
                     return false;
-                const key = propertyNameText(property.name);
+                const key = propertyKey(property.name);
                 return (
                     key !== undefined &&
                     key !== "__proto__" &&
@@ -5558,7 +5587,7 @@ class Compiler implements LoweringServices {
                     ts.isComputedPropertyName(property.name)
                 )
                     return undefined;
-                const name = propertyNameText(property.name);
+                const name = propertyKey(property.name);
                 if (name === undefined || name === "__proto__")
                     return undefined;
                 const value = this.generationArgument(property.initializer);

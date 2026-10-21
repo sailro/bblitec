@@ -17,10 +17,15 @@ import {
 import {
     isAssignmentExpression,
     operandYield,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     outermostWrapper,
     writeSites,
+    ANY_KEY,
+    accessKey,
+    aliasKey,
+    keysMayMatch,
+    keyIndex,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference } from "./type-facts.js";
@@ -140,10 +145,6 @@ interface Projection {
 const MAXIMUM_PATH = 6;
 const MAXIMUM_PROJECTIONS = 16;
 
-function compatible(left: string, right: string): boolean {
-    return left === right || left === "*" || right === "*";
-}
-
 function bounded(path: EffectPath): EffectPath {
     return path.length > MAXIMUM_PATH ? path.slice(0, MAXIMUM_PATH) : path;
 }
@@ -155,7 +156,7 @@ function project(
 ): readonly Projection[] {
     return values.flatMap((value) =>
         value.at.length > 0
-            ? compatible(value.at[0]!, key)
+            ? keysMayMatch(value.at[0]!, key)
                 ? [{ ...value, at: value.at.slice(1) }]
                 : []
             : [{ ...value, from: bounded([...value.from, key]) }],
@@ -188,19 +189,6 @@ function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
     const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
     return element === undefined || typeCanCarryReference(element);
-}
-
-function accessKey(
-    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-): string {
-    if (ts.isPropertyAccessExpression(access))
-        return ts.isPrivateIdentifier(access.name)
-            ? `#${access.name.text}`
-            : access.name.text;
-    const key = unwrapExpression(access.argumentExpression);
-    return ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-        ? key.text
-        : "*";
 }
 
 /** Library methods that call the function they are handed before returning. */
@@ -342,7 +330,7 @@ function summarize(
                     0,
             // A rest parameter holds each argument as an element.
             uses: new EffectWalker(checker, fn).run(symbol, {
-                at: isRestBinding(binding) ? ["*"] : [],
+                at: isRestBinding(binding) ? [ANY_KEY] : [],
                 from: [],
                 derived: false,
             }),
@@ -479,7 +467,7 @@ class EffectWalker {
                     this.emit("enumerated", node, values, scope);
                 this.bindPattern(
                     element.name,
-                    nest(project(values, "*"), "*"),
+                    nest(project(values, ANY_KEY), ANY_KEY),
                     node,
                     scope,
                 );
@@ -488,10 +476,10 @@ class EffectWalker {
             const key = ts.isArrayBindingPattern(name)
                 ? String(position)
                 : element.propertyName
-                  ? (propertyNameText(element.propertyName) ?? "*")
+                  ? aliasKey(propertyKey(element.propertyName))
                   : ts.isIdentifier(element.name)
                     ? element.name.text
-                    : "*";
+                    : ANY_KEY;
             this.bindPattern(element.name, project(values, key), node, scope);
         });
     }
@@ -626,7 +614,7 @@ class EffectWalker {
                 parent.expression === outer
             ))
                 break;
-            const key = accessKey(parent);
+            const key = aliasKey(accessKey(parent));
             if (this.writeTargets.has(parent)) {
                 this.write(parent, current, key, scope);
                 return;
@@ -725,7 +713,7 @@ class EffectWalker {
                     ...scope,
                 });
         // An iterating method hands its callback the elements and receiver.
-        const elements = project(receiver, "*");
+        const elements = project(receiver, ANY_KEY);
         const positions = callbackPositions(method);
         for (const argument of call.arguments) {
             const callback = unwrapExpression(argument);
@@ -773,14 +761,18 @@ class EffectWalker {
         if (ts.isSpreadAssignment(spread)) {
             // An object spread reads every own property and copies its value.
             this.emit("enumerated", spread, values, scope);
-            this.consume(consumer, nest(project(values, "*"), "*"), scope);
+            this.consume(
+                consumer,
+                nest(project(values, ANY_KEY), ANY_KEY),
+                scope,
+            );
             return;
         }
         const element = this.checker.getIndexTypeOfType(
             this.checker.getTypeAtLocation(top),
             ts.IndexKind.Number,
         );
-        const elements = project(values, "*");
+        const elements = project(values, ANY_KEY);
         if (element && !typeCanCarryReference(element)) return;
         if (
             (ts.isCallExpression(consumer) || ts.isNewExpression(consumer)) &&
@@ -794,7 +786,7 @@ class EffectWalker {
                 scope,
             );
         else if (ts.isArrayLiteralExpression(consumer))
-            this.consume(consumer, nest(elements, "*"), scope);
+            this.consume(consumer, nest(elements, ANY_KEY), scope);
         else this.emit("escaped", spread, values, scope);
     }
 
@@ -831,7 +823,7 @@ class EffectWalker {
         if (ts.isPropertyAssignment(parent) && parent.initializer === top) {
             this.consume(
                 parent.parent,
-                nest(values, propertyNameText(parent.name) ?? "*"),
+                nest(values, aliasKey(propertyKey(parent.name))),
                 scope,
             );
             return;
@@ -845,7 +837,7 @@ class EffectWalker {
             const key = parent.elements
                 .slice(0, position)
                 .some(ts.isSpreadElement)
-                ? "*"
+                ? ANY_KEY
                 : String(position);
             this.consume(parent, nest(values, key), scope);
             return;
@@ -905,11 +897,11 @@ class EffectWalker {
                 for (const declaration of list.declarations)
                     this.bindPattern(
                         declaration.name,
-                        project(values, "*"),
+                        project(values, ANY_KEY),
                         parent,
                         scope,
                     );
-            else this.assigned(list, project(values, "*"), parent, scope);
+            else this.assigned(list, project(values, ANY_KEY), parent, scope);
             return;
         }
         if (ts.isForInStatement(parent) && parent.expression === top) {
@@ -980,7 +972,7 @@ class EffectWalker {
             this.consume(
                 call,
                 method === "map" || method === "flatMap"
-                    ? nest(values, "*")
+                    ? nest(values, ANY_KEY)
                     : values,
                 scope,
             );
@@ -1017,7 +1009,9 @@ class EffectWalker {
                     ts.isSpreadElement(element) ? element.expression : element,
                     project(
                         values,
-                        ts.isSpreadElement(element) ? "*" : String(position),
+                        ts.isSpreadElement(element)
+                            ? ANY_KEY
+                            : String(position),
                     ),
                     node,
                     scope,
@@ -1037,7 +1031,7 @@ class EffectWalker {
                 else if (ts.isPropertyAssignment(property))
                     this.assigned(
                         property.initializer,
-                        project(values, propertyNameText(property.name) ?? "*"),
+                        project(values, aliasKey(propertyKey(property.name))),
                         node,
                         scope,
                     );
@@ -1566,10 +1560,7 @@ function argumentVisiblyWritten(
 function startsWith(path: EffectPath, prefix: EffectPath): boolean {
     return (
         path.length >= prefix.length &&
-        prefix.every(
-            (key, index) =>
-                key === path[index] || key === "*" || path[index] === "*",
-        )
+        prefix.every((key, index) => keysMayMatch(key, path[index]!))
     );
 }
 
@@ -1716,18 +1707,6 @@ export function engineCallMutatesArgument(
 
 const fixedLengthMemo = new PredicateMemo<number | null>(0);
 
-/** A non-negative integer key. */
-function laneIndex(key: string | undefined): number | undefined {
-    const value = Number(key);
-    return key !== undefined &&
-        key !== "" &&
-        String(value) === key &&
-        Number.isSafeInteger(value) &&
-        value >= 0
-        ? value
-        : undefined;
-}
-
 /**
  * How many leading elements a call writes through an array parameter whose
  * length and identity it keeps to itself, or undefined when that is not
@@ -1756,7 +1735,7 @@ export function fixedLengthParameterWrites(
                 case "write": {
                     const lane =
                         use.path.length === 1 && !use.derived
-                            ? laneIndex(use.path[0])
+                            ? keyIndex(use.path[0])
                             : undefined;
                     if (lane === undefined) return null;
                     lanes = Math.max(lanes, lane + 1);
@@ -1866,7 +1845,7 @@ function onlyRead(
             path.length === 0 ||
             (array &&
                 path.length === 1 &&
-                (path[0] === "*" || laneIndex(path[0]) !== undefined));
+                (path[0] === ANY_KEY || keyIndex(path[0]) !== undefined));
         return effects.uses.every((use) => {
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;

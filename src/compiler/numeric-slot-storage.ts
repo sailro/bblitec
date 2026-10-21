@@ -3,6 +3,7 @@ import {
     declaredInDefaultLibrary,
     isRetypableDeclaration,
     resolvedSymbol,
+    staticPropertyKey,
 } from "./symbols.js";
 import {
     contextualProperty,
@@ -173,15 +174,12 @@ function storageDeclaration(
 ): ts.Declaration | undefined {
     const parent = node.parent;
     if (parent === undefined) return undefined;
-    if (ts.isPropertyAssignment(parent) && parent.initializer === node)
-        return ts.isObjectLiteralExpression(parent.parent) &&
-            !ts.isComputedPropertyName(parent.name)
-            ? contextualPropertyDeclaration(
-                  checker,
-                  parent.parent,
-                  parent.name.text,
-              )
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node) {
+        const key = staticPropertyKey(checker, parent.name);
+        return ts.isObjectLiteralExpression(parent.parent) && key !== undefined
+            ? contextualPropertyDeclaration(checker, parent.parent, key)
             : undefined;
+    }
     if (ts.isShorthandPropertyAssignment(parent) && parent.name === node)
         return contextualPropertyDeclaration(
             checker,

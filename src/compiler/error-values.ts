@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
-import { expressionMayRunCode } from "./syntax.js";
+import { expressionMayRunCode, propertyKey } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 import type { DataStructField } from "./data-types.js";
 
@@ -362,10 +362,9 @@ function compileErrorCause(
             );
         for (const property of options.properties) {
             const name =
-                (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)) &&
-                ts.isIdentifier(property.name)
-                    ? property.name.text
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? propertyKey(property.name)
                     : undefined;
             if (
                 name !== "cause" ||

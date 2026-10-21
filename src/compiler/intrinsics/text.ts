@@ -51,6 +51,7 @@ export interface TextIntrinsicContext
             | "compileColor4"
             | "checker"
             | "admissions"
+            | "propertyName"
         > {}
 
 export function compileTextIntrinsic(
@@ -553,17 +554,15 @@ export function compileTextIntrinsic(
             );
         layout.options = {};
         for (const property of context.objectProperties(object)) {
-            if (
-                !ts.isPropertyAssignment(property) ||
-                (!ts.isIdentifier(property.name) &&
-                    !ts.isStringLiteral(property.name))
-            ) {
+            const key = ts.isPropertyAssignment(property)
+                ? context.propertyName(property.name)
+                : undefined;
+            if (key === undefined || !ts.isPropertyAssignment(property)) {
                 context.fail(
                     property,
                     "Text layout options require static named properties.",
                 );
             }
-            const key = property.name.text;
             if (key === "align") {
                 const value = context.compileStaticString(property.initializer);
                 if (value !== "left" && value !== "center" && value !== "right")
@@ -649,12 +648,11 @@ function textRunValue(
         initializer: `std::make_shared<bbl::GlyphRun>(*${context.bindings.pinValueToTemporary(source, "text_owner", spread.expression).cpp})`,
     });
     for (const member of members) {
-        if (
-            !ts.isPropertyAssignment(member) ||
-            (!ts.isIdentifier(member.name) && !ts.isStringLiteral(member.name))
-        )
+        const name = ts.isPropertyAssignment(member)
+            ? context.propertyName(member.name)
+            : undefined;
+        if (name === undefined || !ts.isPropertyAssignment(member))
             context.fail(member, "Text run members must be named assignments.");
-        const name = member.name.text;
         const field = `${run}->${snakeCase(name)}`;
         if (name === "defaultColor")
             context.emit({
@@ -719,16 +717,15 @@ function textOptionEntries(
             "Text options require a direct object literal.",
         );
     return object.properties.map((property) => {
-        if (
-            !ts.isPropertyAssignment(property) ||
-            (!ts.isIdentifier(property.name) &&
-                !ts.isStringLiteral(property.name))
-        )
+        const name = ts.isPropertyAssignment(property)
+            ? context.propertyName(property.name)
+            : undefined;
+        if (name === undefined || !ts.isPropertyAssignment(property))
             context.fail(
                 property,
                 "Text options require named property assignments.",
             );
-        return [property.name.text, property.initializer];
+        return [name, property.initializer];
     });
 }
 
@@ -799,16 +796,14 @@ function compileRenderableOptions(
     const options = context.allocateTemporaryCppName("text_options");
     context.emit(`bbl::TextRenderableOptions ${options};`);
     for (const property of object.properties) {
-        if (
-            !ts.isPropertyAssignment(property) ||
-            (!ts.isIdentifier(property.name) &&
-                !ts.isStringLiteral(property.name))
-        )
+        const name = ts.isPropertyAssignment(property)
+            ? context.propertyName(property.name)
+            : undefined;
+        if (name === undefined || !ts.isPropertyAssignment(property))
             context.fail(
                 property,
                 "Text renderable options require named property assignments.",
             );
-        const name = property.name.text;
         const field =
             name === "rotationQuaternion"
                 ? "rotation_quaternion"
@@ -832,11 +827,13 @@ function compileRenderableOptions(
                     : ["x", "y", "z"];
             const values = new EmissionMap<string, string>();
             for (const component of vector.properties) {
+                const lane = ts.isPropertyAssignment(component)
+                    ? context.propertyName(component.name)
+                    : undefined;
                 if (
-                    !ts.isPropertyAssignment(component) ||
-                    (!ts.isIdentifier(component.name) &&
-                        !ts.isStringLiteral(component.name)) ||
-                    !lanes.includes(component.name.text)
+                    lane === undefined ||
+                    !lanes.includes(lane) ||
+                    !ts.isPropertyAssignment(component)
                 )
                     context.fail(
                         component,
@@ -845,7 +842,7 @@ function compileRenderableOptions(
                 const value = context.compileValue(component.initializer);
                 context.expectKind(value, "number", component.initializer);
                 values.set(
-                    component.name.text,
+                    lane,
                     context.bindings.pinValueToTemporary(
                         value,
                         "text_component",

@@ -4,7 +4,6 @@ import type { DataStructField, DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
 import {
-    propertyNameText,
     unwrapExpression,
     wrappedParent,
     isTypeAssertion,
@@ -13,6 +12,7 @@ import {
 import { declaredContextualType } from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
+import { staticPropertyKey } from "./symbols.js";
 
 /** An object literal's own method or function-expression property whose body reads `this`. */
 type HomeObjectMethod = ts.MethodDeclaration | ts.FunctionExpression;
@@ -189,8 +189,8 @@ export function homeObjectMembers(
 }
 
 /**
- * The property name a home-object method is stored under: its literal
- * name, or the literal type of its computed key.
+ * The property name a home-object method is stored under, as the checker
+ * knows its key ({@link staticPropertyKey}).
  */
 function methodName(
     checker: ts.TypeChecker,
@@ -199,13 +199,8 @@ function methodName(
     const property = ts.isMethodDeclaration(method)
         ? method
         : wrappedParent(method);
-    if (!ts.isPropertyAssignment(property) && !ts.isMethodDeclaration(property))
-        return undefined;
-    if (!ts.isComputedPropertyName(property.name))
-        return propertyNameText(property.name);
-    const key = checker.getTypeAtLocation(property.name.expression);
-    return key.isStringLiteral() || key.isNumberLiteral()
-        ? String(key.value)
+    return ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property)
+        ? staticPropertyKey(checker, property.name)
         : undefined;
 }
 

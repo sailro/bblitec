@@ -8,7 +8,7 @@ import {
     yieldsNewArray,
 } from "../fresh-records.js";
 import { returnedRecordLocal } from "../record-observations.js";
-import { propertyNameText, unwrapExpression } from "../syntax.js";
+import { propertyKey, unwrapExpression } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { DataSinkHost } from "./contracts.js";
 
@@ -112,7 +112,7 @@ export function unaliasedDataRecord(
                     ((ts.isPropertyAssignment(property) ||
                         ts.isShorthandPropertyAssignment(property)) &&
                         !ts.isComputedPropertyName(property.name) &&
-                        propertyNameText(property.name) !== "__proto__"),
+                        propertyKey(property.name) !== "__proto__"),
             )
         );
     };

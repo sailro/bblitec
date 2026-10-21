@@ -52,6 +52,7 @@ import {
     isNullishLiteral,
     resolvedSymbol,
     symbolPropertyKey,
+    staticAccessKey,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -224,12 +225,13 @@ import {
     identifierText,
     literalMember,
     outermostWrapper,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     isTypeAssertion,
     wrappersUnder,
     writeSites,
     writeSiteOf,
+    accessKey,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -2001,15 +2003,31 @@ export class DataLowerer {
         );
     }
 
-    /** A literal property's key: a unique symbol's property key, else its source text. */
-    private symbolKeyOrText(name: ts.PropertyName): string {
-        if (!ts.isComputedPropertyName(name)) return name.getText();
-        const type = this.context.checker.getTypeAtLocation(name.expression);
+    /**
+     * The key an element access's compiled key names: what generation folded,
+     * else what the checker knows of it ({@link staticAccessKey}).
+     */
+    private elementKeyName(
+        access: ts.ElementAccessExpression,
+        key: Value,
+    ): string | undefined {
         return (
-            symbolPropertyKey(this.context.checker, name.expression) ??
-            (type.isStringLiteral() || type.isNumberLiteral()
-                ? String(type.value)
-                : name.getText())
+            key.staticString ??
+            (key.staticNumber === undefined
+                ? undefined
+                : String(key.staticNumber)) ??
+            staticAccessKey(this.context.checker, access)
+        );
+    }
+
+    /** A struct literal member's key, which generation must know. */
+    private knownKey(name: ts.PropertyName): string {
+        return (
+            this.context.propertyName(name) ??
+            this.context.fail(
+                name,
+                "A struct literal's keys must be known at generation.",
+            )
         );
     }
 
@@ -2702,12 +2720,7 @@ export class DataLowerer {
         // selects its field here.
         const staticName = this.context.probeEmission(() => {
             const key = this.context.compileValue(left.argumentExpression);
-            const keyType = this.context.checker.getTypeAtLocation(
-                left.argumentExpression,
-            );
-            const name =
-                key.staticString ??
-                (keyType.isStringLiteral() ? keyType.value : undefined);
+            const name = this.elementKeyName(left, key);
             if (name !== undefined) this.context.emitDiscardedValue(key);
             return name;
         });
@@ -6132,16 +6145,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const key = this.context.compileValue(
                     access.argumentExpression,
                 );
-                const keyType = this.context.checker.getTypeAtLocation(
-                    access.argumentExpression,
-                );
-                const name =
-                    key.staticString ??
-                    (keyType.isStringLiteral() ? keyType.value : undefined) ??
-                    symbolPropertyKey(
-                        this.context.checker,
-                        access.argumentExpression,
-                    );
+                const name = this.elementKeyName(access, key);
                 if (name === undefined) return undefined;
                 this.context.emitDiscardedValue(key);
                 const field = this.context.dataTypes.structField(
@@ -12496,11 +12500,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "Dictionary literals support properties, shorthand properties, and spreads.",
                     );
                 const name = property.name;
-                const key = ts.isComputedPropertyName(name)
-                    ? this.compileForSink(name.expression, dataType.key)
-                    : dataType.key.kind === "string"
-                      ? this.context.cppString(name.text)
-                      : doubleLiteral(Number(name.text));
+                const literal = propertyKey(name);
+                const key =
+                    literal !== undefined
+                        ? dataType.key.kind === "string"
+                            ? this.context.cppString(literal)
+                            : doubleLiteral(Number(literal))
+                        : ts.isComputedPropertyName(name)
+                          ? this.compileForSink(name.expression, dataType.key)
+                          : this.context.fail(
+                                name,
+                                "Dictionary literal keys must be literal or computed.",
+                            );
                 const keyName =
                     this.context.allocateTemporaryCppName("record_key");
                 this.context.emit({
@@ -12531,16 +12542,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Open Record literals support plain property assignments.",
                 );
             }
-            const name =
-                ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name) ||
-                ts.isNumericLiteral(property.name)
-                    ? property.name.text
-                    : undefined;
+            const name = this.context.propertyName(property.name);
             if (name === undefined) {
                 this.context.fail(
                     property.name,
-                    "Open Record keys must be literal names.",
+                    "Open Record keys must be known at generation.",
                 );
             }
             const key =
@@ -12568,13 +12574,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public literalKeyOrder(literal: ts.ObjectLiteralExpression): string[] {
         return (
             this.evaluatedLiteralKeys.get(literal) ??
-            literal.properties.flatMap((property) =>
-                ts.isPropertyAssignment(property) &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-                    ? [property.name.text]
-                    : [],
-            )
+            literal.properties.flatMap((property) => {
+                const key =
+                    ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)
+                        ? this.context.propertyName(property.name)
+                        : undefined;
+                return key === undefined ? [] : [key];
+            })
         );
     }
 
@@ -12615,10 +12622,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (ts.isPropertyAssignment(property)) {
                 provided.set(
-                    ts.isStringLiteral(property.name) ||
-                        ts.isNumericLiteral(property.name)
-                        ? property.name.text
-                        : this.symbolKeyOrText(property.name),
+                    this.knownKey(property.name),
                     property.initializer,
                 );
                 continue;
@@ -12627,12 +12631,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 provided.set(property.name.text, property.name);
                 continue;
             }
-            if (
-                ts.isMethodDeclaration(property) &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-            ) {
-                provided.set(property.name.text, property);
+            if (ts.isMethodDeclaration(property)) {
+                provided.set(this.knownKey(property.name), property);
                 continue;
             }
             this.context.fail(
@@ -13433,10 +13433,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (ts.isPropertyAssignment(property)) {
                 declareDefault();
-                const field = fieldOf(
-                    this.symbolKeyOrText(property.name),
-                    property,
-                );
+                const field = fieldOf(this.knownKey(property.name), property);
                 trackKnownField(
                     field.sourceName,
                     field,
@@ -13496,7 +13493,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ts.isMethodDeclaration(property) &&
                 !homeObjectMembers(literal).has(property)
             ) {
-                const name = propertyNameText(property.name);
+                const name = propertyKey(property.name);
                 const field =
                     name === undefined ? undefined : fieldOf(name, property);
                 if (field?.type.kind === "function") {
@@ -13838,12 +13835,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             // A key generation knows (a literal, or a specialized key
             // parameter) names one optional struct field.
-            const keyType = this.context.checker.getTypeAtLocation(
-                target.argumentExpression,
-            );
-            const staticKey =
-                key.staticString ??
-                (keyType.isStringLiteral() ? keyType.value : undefined);
+            const staticKey = this.elementKeyName(target, key);
             if (
                 staticKey !== undefined &&
                 narrowed?.dataType?.kind === "struct"
@@ -13860,6 +13852,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (narrowed?.dataType?.kind === "struct") {
                 const receiver = narrowed;
                 const type = narrowed.dataType;
+                const keyType = this.context.checker.getTypeAtLocation(
+                    target.argumentExpression,
+                );
                 const possibleKeys =
                     keyType.isUnion() &&
                     keyType.types.every((member) => member.isStringLiteral())
@@ -15483,11 +15478,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const owner = this.dataTypeAt(left.expression);
         const held = owner?.kind === "optional" ? owner.inner : owner;
         if (held?.kind !== "struct") return;
-        const name = ts.isPropertyAccessExpression(left)
-            ? left.name.text
-            : ts.isStringLiteralLike(left.argumentExpression)
-              ? left.argumentExpression.text
-              : undefined;
+        const name = accessKey(left);
         const named =
             name === undefined
                 ? undefined
@@ -16521,7 +16512,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 continue;
             }
             const key = ts.isPropertyAssignment(property)
-                ? propertyNameText(property.name)
+                ? propertyKey(property.name)
                 : undefined;
             const name =
                 ts.isPropertyAssignment(property) &&
@@ -16630,8 +16621,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const owner = this.context.compileValue(name.expression);
             const property = ts.isPropertyAccessExpression(name)
                 ? name.name.text
-                : this.context.compileValue(name.argumentExpression)
-                      .staticString;
+                : this.elementKeyName(
+                      name,
+                      this.context.compileValue(name.argumentExpression),
+                  );
             const setter =
                 property === undefined
                     ? undefined
@@ -19906,10 +19899,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // reads one. Anything else has to be a path already typed as
         // a string, so a number or handle reaching a string sink
         // fails by type rather than by concatenation.
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return this.context.cppString(unwrapped.text);
         }
         if (ts.isIdentifier(unwrapped)) {

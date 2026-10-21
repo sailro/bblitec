@@ -5,7 +5,7 @@ import { repositoryRelativePath } from "./upstream-source.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
-    propertyNameText,
+    propertyKey,
 } from "./compiler/syntax.js";
 import { sourceLocation } from "./source-location.js";
 import { declaredSymbol, resolvedSymbol } from "./compiler/symbols.js";
@@ -243,7 +243,7 @@ export function scanApiUsage(
             ts.isObjectLiteralExpression(node.parent)
         ) {
             const context = checker.getContextualType(node.parent);
-            const name = propertyNameText(node.name);
+            const name = propertyKey(node.name);
             if (context && name !== undefined) {
                 add(properties(context, name), node, "provide", () =>
                     ts.isPropertyAssignment(node)
@@ -255,16 +255,17 @@ export function scanApiUsage(
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)
         ) {
-            const name = node.propertyName ?? node.name;
-            if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) {
+            const key = node.propertyName
+                ? propertyKey(node.propertyName)
+                : ts.isIdentifier(node.name)
+                  ? node.name.text
+                  : undefined;
+            if (key !== undefined) {
                 add(
-                    properties(
-                        checker.getTypeAtLocation(node.parent),
-                        name.text,
-                    ),
+                    properties(checker.getTypeAtLocation(node.parent), key),
                     node,
                     "read",
-                    () => name.text,
+                    () => key,
                 );
             }
         } else if (ts.isIdentifier(node)) {

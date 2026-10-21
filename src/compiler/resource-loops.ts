@@ -42,6 +42,7 @@ import {
     unwrapExpression,
     writeSites,
     isValueReference,
+    propertyKey,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -1541,23 +1542,21 @@ export function parameterizedResourceLoop(
                                     ts.isPropertyAssignment(property) ||
                                     ts.isShorthandPropertyAssignment(property)
                                 ) {
-                                    const name = property.name;
+                                    // A key only the run time knows may
+                                    // name a static option.
+                                    const key = propertyKey(property.name);
                                     if (
-                                        ts.isIdentifier(name) ||
-                                        ts.isStringLiteralLike(name)
-                                    ) {
-                                        if (
-                                            staticOptions.includes(name.text) &&
+                                        key === undefined ||
+                                        (staticOptions.includes(key) &&
                                             !invariant(
                                                 ts.isPropertyAssignment(
                                                     property,
                                                 )
                                                     ? property.initializer
                                                     : property.name,
-                                            )
-                                        ) {
-                                            safe = false;
-                                        }
+                                            ))
+                                    ) {
+                                        safe = false;
                                     }
                                 } else {
                                     safe = false;

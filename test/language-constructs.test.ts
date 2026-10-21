@@ -14720,3 +14720,10 @@ check(
         throw new Error("counter written in its loop");
     `,
 );
+check(
+    "a bigint key is its decimal text",
+    `
+    const o = { 1n: "one" };
+    if (o[1] !== "one") throw new Error("bigint key");
+    `,
+);

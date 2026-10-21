@@ -1320,10 +1320,7 @@ export class StaticEvaluator {
     }
 
     private foldStringLiteral(unwrapped: ts.Expression): string {
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isIdentifier(unwrapped)) {
@@ -2035,10 +2032,7 @@ export class StaticEvaluator {
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return "true";
         if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return "false";
         if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isNumericLiteral(unwrapped)) {

@@ -457,6 +457,22 @@ test("name roles are read through syntax.ts", () => {
     );
 });
 
+test("property keys are read through one owner per layer", () => {
+    // The key a name spells is propertyKey / accessKey / literalKey
+    // (syntax.ts), staticPropertyKey / staticAccessKey with the checker
+    // (symbols.ts), and Compiler.propertyName at generation. The pinned
+    // files test an expression's shape, not a name's key.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).keyRuleTests > 0).sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/syntax.ts",
+            "src/lowering/pinned-ubo-writer-lowerer.ts",
+            "src/unused-exports.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

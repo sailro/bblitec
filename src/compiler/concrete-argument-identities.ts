@@ -7,7 +7,7 @@ import {
 } from "./symbols.js";
 import {
     isOperandSelection,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     valueOperands,
 } from "./syntax.js";
@@ -53,7 +53,7 @@ export function concreteArgumentIdentityPaths(
             node.properties.every(
                 (property) =>
                     (ts.isPropertyAssignment(property) &&
-                        propertyNameText(property.name) !== undefined &&
+                        propertyKey(property.name) !== undefined &&
                         scalar(property.initializer)) ||
                     (ts.isShorthandPropertyAssignment(property) &&
                         scalar(property.name)),
@@ -211,7 +211,7 @@ export function concreteArgumentIdentityPaths(
                     !ts.isShorthandPropertyAssignment(property)
                 )
                     return undefined;
-                const key = propertyNameText(property.name);
+                const key = propertyKey(property.name);
                 if (key === undefined) return undefined;
                 const member = child(
                     ts.isPropertyAssignment(property)

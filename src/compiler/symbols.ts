@@ -2,7 +2,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "../repository-root.js";
-import { stringLiteralText, unwrapExpression } from "./syntax.js";
+import { accessKey, propertyKey, unwrapExpression } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -425,6 +425,59 @@ export function symbolPropertyKey(
         : undefined;
 }
 
+/**
+ * The key a key expression's type fixes: a unique symbol's, or a string,
+ * number or bigint literal type's ToPropertyKey text.
+ */
+function typedKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): string | undefined {
+    const symbolKey = symbolPropertyKey(checker, expression);
+    if (symbolKey !== undefined) return symbolKey;
+    const type = checker.getTypeAtLocation(expression);
+    if (type.isStringLiteral() || type.isNumberLiteral())
+        return String(type.value);
+    if (type.flags & ts.TypeFlags.BigIntLiteral) {
+        const { negative, base10Value } = (type as ts.BigIntLiteralType).value;
+        return negative && base10Value !== "0"
+            ? `-${base10Value}`
+            : base10Value;
+    }
+    return undefined;
+}
+
+/**
+ * The key a property name declares as the checker knows it: the syntax's
+ * ({@link propertyKey}), or the key a computed name's type fixes
+ * (`[KEY]` with `const KEY = "a"`, `[Tone.Bold]`, a unique symbol). Whether
+ * the key expression must still run is the lowering's question.
+ */
+export function staticPropertyKey(
+    checker: ts.TypeChecker,
+    name: ts.PropertyName,
+): string | undefined {
+    return (
+        propertyKey(name) ??
+        (ts.isComputedPropertyName(name)
+            ? typedKey(checker, name.expression)
+            : undefined)
+    );
+}
+
+/** The key an access reads as the checker knows it ({@link accessKey}, then the key's type). */
+export function staticAccessKey(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
+    return (
+        accessKey(access) ??
+        (ts.isElementAccessExpression(access)
+            ? typedKey(checker, access.argumentExpression)
+            : undefined)
+    );
+}
+
 /** Whether a property key is a symbol's: no string-keyed enumeration lists it. */
 export function isSymbolPropertyKey(key: string): boolean {
     return key.startsWith("__@");
@@ -725,11 +778,7 @@ export class CompilerSymbols {
                 !isBabylonModule(imported.specifier)
             )
                 return undefined;
-            const name = ts.isPropertyAccessExpression(identifier)
-                ? identifier.name.text
-                : stringLiteralText(
-                      unwrapExpression(identifier.argumentExpression),
-                  );
+            const name = accessKey(identifier);
             return name &&
                 this.checker.getPropertyOfType(
                     this.checker.getTypeAtLocation(owner),

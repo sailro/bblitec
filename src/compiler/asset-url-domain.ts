@@ -27,6 +27,8 @@ import {
     unwrapExpression,
     writeSites,
     referenceSite,
+    accessKey,
+    keyIndex,
 } from "./syntax.js";
 import {
     functionOfDeclaration,
@@ -102,6 +104,14 @@ interface MemberWrite {
     readonly value: ts.Expression;
 }
 
+/** The step an access takes: its key, or any element for an index or a run-time key. */
+function memberStep(
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | typeof element {
+    const key = accessKey(access);
+    return key === undefined || keyIndex(key) !== undefined ? element : key;
+}
+
 /** The path `target` writes below its root binding, when every key is plain. */
 function memberWritePath(
     target: ts.Expression,
@@ -112,11 +122,7 @@ function memberWritePath(
         ts.isPropertyAccessExpression(node) ||
         ts.isElementAccessExpression(node)
     ) {
-        if (ts.isPropertyAccessExpression(node)) path.unshift(node.name.text);
-        else {
-            const key = unwrapExpression(node.argumentExpression);
-            path.unshift(ts.isStringLiteralLike(key) ? key.text : element);
-        }
+        path.unshift(memberStep(node));
         node = unwrapExpression(node.expression);
     }
     return ts.isIdentifier(node) && path.length > 0
@@ -987,17 +993,12 @@ class AssetUrlDomain {
             );
             if (domain) return domain;
         }
-        if (ts.isElementAccessExpression(node)) {
-            const key = unwrapExpression(node.argumentExpression);
+        if (ts.isElementAccessExpression(node))
             return this.read(
                 node.expression,
-                [
-                    ts.isStringLiteralLike(key) ? key.text : element,
-                    ...projection,
-                ],
+                [memberStep(node), ...projection],
                 environment,
             );
-        }
         if (
             ts.isObjectLiteralExpression(node) &&
             typeof projection[0] === "string"

@@ -7,7 +7,7 @@ import {
 } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { propertyNameText } from "./syntax.js";
+import { propertyKey } from "./syntax.js";
 import {
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
@@ -486,8 +486,7 @@ export class RecordProxies {
                     ts.isObjectLiteralExpression(literal) &&
                     (literal.properties.length !== 1 ||
                         !ts.isPropertyAssignment(literal.properties[0]!) ||
-                        propertyNameText(literal.properties[0].name) !==
-                            "value")
+                        propertyKey(literal.properties[0].name) !== "value")
                 )
                     return undefined;
                 const descriptor = context.compileValue(valueNode);

@@ -111,6 +111,7 @@ import {
     libraryGlobal,
     resolvedSymbol,
     symbolFieldName,
+    staticPropertyKey,
 } from "./symbols.js";
 import {
     absentValueKind,
@@ -142,7 +143,7 @@ import {
 } from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
     isTypeAssertion,
     wrappersUnder,
@@ -2442,9 +2443,8 @@ export class DataTypeRegistry {
     private registerAccessor(
         node: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
     ): void {
-        if (!ts.isIdentifier(node.name) && !ts.isStringLiteral(node.name))
-            return;
-        const name = node.name.text;
+        const name = staticPropertyKey(this.checker, node.name);
+        if (name === undefined) return;
         const properties = ts.isGetAccessorDeclaration(node)
             ? this.getterProperties
             : this.setterProperties;
@@ -6805,7 +6805,7 @@ export class DataTypeRegistry {
                               .map((symbol) => symbol.name)
                       );
                   })()
-                : property.name && propertyNameText(property.name);
+                : property.name && propertyKey(property.name);
             if (names === undefined) return undefined;
             keys.push(...(typeof names === "string" ? [names] : names));
         }
@@ -9431,12 +9431,11 @@ export class DataTypeRegistry {
         const stored = this.classStructLayout(type.name);
         if (source)
             for (const member of classInstanceProperties(source.declaration)) {
-                const name = ts.isPrivateIdentifier(member.name)
-                    ? member.name.text
-                    : ts.isObjectBindingPattern(member.name) ||
-                        ts.isArrayBindingPattern(member.name)
-                      ? undefined
-                      : propertyNameText(member.name);
+                const name =
+                    ts.isObjectBindingPattern(member.name) ||
+                    ts.isArrayBindingPattern(member.name)
+                        ? undefined
+                        : propertyKey(member.name);
                 if (
                     name === undefined ||
                     !stored.some((field) => field.sourceName === name)
