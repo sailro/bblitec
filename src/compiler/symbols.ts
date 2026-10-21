@@ -891,6 +891,56 @@ export class CompilerSymbols {
         };
     }
 
+    /**
+     * The pinned export a name binds, through every re-export on the way:
+     * `import { createEngine } from "./engine"`, where engine.ts re-exports
+     * it from the pinned package, binds `createEngine`. Undefined when no
+     * import chain reaches the pinned package.
+     */
+    private pinnedExport(
+        identifier: ts.Identifier,
+    ): { name: string; typeOnly: boolean } | undefined {
+        let symbol = declaredSymbol(this.checker, identifier);
+        let typeOnly = false;
+        const seen = new Set<ts.Symbol>();
+        while (
+            symbol &&
+            (symbol.flags & ts.SymbolFlags.Alias) !== 0 &&
+            !seen.has(symbol)
+        ) {
+            seen.add(symbol);
+            for (const declaration of symbol.declarations ?? []) {
+                if (
+                    !ts.isImportSpecifier(declaration) &&
+                    !ts.isExportSpecifier(declaration)
+                )
+                    continue;
+                const site = ts.isImportSpecifier(declaration)
+                    ? declaration.parent.parent.parent
+                    : declaration.parent.parent;
+                if (
+                    !ts.isImportDeclaration(site) &&
+                    !ts.isExportDeclaration(site)
+                )
+                    continue;
+                typeOnly ||=
+                    declaration.isTypeOnly ||
+                    (ts.isImportDeclaration(site)
+                        ? (site.importClause?.isTypeOnly ?? false)
+                        : site.isTypeOnly);
+                const module = site.moduleSpecifier;
+                if (
+                    module &&
+                    ts.isStringLiteral(module) &&
+                    isBabylonModule(module.text)
+                )
+                    return { name: specifierSourceName(declaration), typeOnly };
+            }
+            symbol = this.checker.getImmediateAliasedSymbol(symbol);
+        }
+        return undefined;
+    }
+
     /** See {@link physicsEngineModulePackage}. */
     public isPhysicsEngineModule(identifier: ts.Identifier): boolean {
         return (
@@ -927,22 +977,20 @@ export class CompilerSymbols {
                 : undefined;
         }
         if (!ts.isIdentifier(identifier)) return undefined;
-        const imported = this.importModuleSpecifier(identifier);
-        if (!imported?.named || !isBabylonModule(imported.specifier)) {
-            const symbol = this.valueSymbol(identifier);
-            if (!symbol || active?.has(symbol)) return undefined;
-            active ??= new Set();
-            active.add(symbol);
-            const declaration = symbol.valueDeclaration;
-            return declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                ts.isVariableDeclarationList(declaration.parent) &&
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-                ? this.importedName(declaration.initializer, active)
-                : undefined;
-        }
-        return imported.named.propertyName?.text ?? imported.named.name.text;
+        const pinned = this.pinnedExport(identifier);
+        if (pinned) return pinned.name;
+        const symbol = this.valueSymbol(identifier);
+        if (!symbol || active?.has(symbol)) return undefined;
+        active ??= new Set();
+        active.add(symbol);
+        const declaration = symbol.valueDeclaration;
+        return declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+            ? this.importedName(declaration.initializer, active)
+            : undefined;
     }
 
     /**
@@ -953,15 +1001,13 @@ export class CompilerSymbols {
     public babylonImportName(identifier: ts.Identifier): string | undefined {
         const imported = this.importModuleSpecifier(identifier);
         if (
-            !imported ||
-            imported.typeOnly ||
-            !isBabylonModule(imported.specifier)
-        ) {
-            return undefined;
-        }
-        return imported.nonNamed
-            ? "*"
-            : imported.named && specifierSourceName(imported.named);
+            imported?.nonNamed &&
+            !imported.typeOnly &&
+            isBabylonModule(imported.specifier)
+        )
+            return "*";
+        const pinned = this.pinnedExport(identifier);
+        return pinned && !pinned.typeOnly ? pinned.name : undefined;
     }
 
     /**

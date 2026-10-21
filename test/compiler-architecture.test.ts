@@ -684,6 +684,22 @@ test("library types are identified through symbols.ts", () => {
     );
 });
 
+test("pinned imports and type-only imports have one reader", () => {
+    // CompilerSymbols.pinnedExport walks re-exports to the pinned package;
+    // moduleImportKind decides a type-only import; syntax.ts reads an
+    // export specifier's own type-only flag for a name's role.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).members.has("isTypeOnly"))
+            .sort(),
+        [
+            "src/compiler/symbols.ts",
+            "src/compiler/syntax.ts",
+            "src/module-imports.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The

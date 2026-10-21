@@ -47,6 +47,7 @@ import {
     writesThroughTrackedRoot,
 } from "./user-functions.js";
 import { rootIdentifier, argumentAt, isValueReference } from "./syntax.js";
+import { moduleImportKind } from "../module-imports.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = [
@@ -234,8 +235,11 @@ export function browserTextureFunctionShape(
  */
 export function importsAreExecutable(sourceFile: ts.SourceFile): boolean {
     for (const statement of sourceFile.statements) {
-        if (!ts.isImportDeclaration(statement)) continue;
-        if (statement.importClause?.isTypeOnly) continue;
+        if (
+            !ts.isImportDeclaration(statement) ||
+            moduleImportKind(statement) === "type"
+        )
+            continue;
         if (!ts.isStringLiteral(statement.moduleSpecifier)) return false;
         const specifier = statement.moduleSpecifier.text;
         if (isBabylonModule(specifier)) continue;
