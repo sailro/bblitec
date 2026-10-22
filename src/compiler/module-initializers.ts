@@ -8,7 +8,6 @@ import { receiverWritingMethods } from "./receiver-methods.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
 import {
     callArgumentIsReadOnly,
-    libraryArgumentIsReadOnly,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
@@ -341,7 +340,6 @@ function collectMutatedContainerSymbols(
                     !typeCanCarryReference(
                         checker.getTypeAtLocation(argument),
                     ) ||
-                    libraryArgumentIsReadOnly(checker, node, index) ||
                     pinnedCallArgumentIsReadOnly(node, called, index) ||
                     callArgumentIsReadOnly(checker, node, index)
                 )

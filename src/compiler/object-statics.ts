@@ -1067,6 +1067,37 @@ function compileObjectAssign(
         }
         return owner;
     }
+    // A Record stored as a map: each own enumerable source property is a
+    // key. A JavaScript Map's entries are no properties, so it stays refused.
+    if (
+        target.kind === "data" &&
+        target.dataType?.kind === "map" &&
+        target.dataType.dictionary &&
+        target.dataType.key.kind === "string"
+    ) {
+        const mapType = target.dataType;
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
+        // Every argument is evaluated before the first source's keys are read.
+        const values = sources.map((source) =>
+            context.bindings.pinValueToTemporary(
+                context.compileValue(source),
+                "assign_source",
+                source,
+            ),
+        );
+        sources.forEach((source, index) => {
+            for (const [key, value] of sourcePairs(source, values[index]!))
+                context.emit({
+                    kind: "expression",
+                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
+                });
+        });
+        return owner;
+    }
     // Nothing else has stored fields to copy into: an engine handle's
     // properties are setters with native effects, which a copy of plain
     // properties would bypass. Browser-only targets never reach here; the

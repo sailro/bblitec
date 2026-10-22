@@ -15211,3 +15211,11 @@ check(
     if (calls !== 5 || fresh.n !== 1 || fresh.list.join() !== "1,2") throw new Error("fresh " + calls + fresh.n + fresh.list.join());
     `,
 );
+check(
+    "Object.assign into a Record adds and replaces its keys",
+    `
+    function run(): string { const R: Record<string, number> = { a: 1 }; const extra = { c: 3 }; Object.assign(R, { a: 5, b: 2 }, extra); return Object.keys(R).join() + ":" + R["a"] + R["b"] + R["c"]; }
+    function same(): number { const R: Record<string, number> = { a: 1 }; const result = Object.assign(R, { b: 2 }); result["c"] = 3; return Object.keys(R).length; }
+    if (run() !== "a,b,c:523" || same() !== 3) throw new Error("assign " + run() + same());
+    `,
+);

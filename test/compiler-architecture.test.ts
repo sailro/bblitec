@@ -984,3 +984,18 @@ test("a runtime index reads static storage through runtimeIndexedOwner", () => {
         calls.join(),
     );
 });
+
+test("a library call's effect on an argument is read from one table", () => {
+    // libraryArgumentEffect owns the language library's writers and readers
+    // and the Web IDL rule; every argument-effect question asks it.
+    const source = readFileSync("src/compiler/parameter-effects.ts", "utf8");
+    for (const table of ["WRITING_LIBRARY_CALLS", "READING_LIBRARY_CALLS"])
+        assert.equal(
+            [...source.matchAll(new RegExp(`${table}[.]has[(]`, "g"))].length,
+            1,
+            table,
+        );
+    assert.deepEqual(declarationOwners("libraryArgumentEffect"), [
+        "src/compiler/parameter-effects.ts",
+    ]);
+});

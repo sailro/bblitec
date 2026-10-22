@@ -128,6 +128,7 @@ import {
 } from "./user-functions.js";
 import {
     engineCallMutatesArgument,
+    libraryCallMayWriteArgument,
     parameterIsMutated,
     parameterMutatedPaths,
     parameterIsReadOnly,
@@ -3063,9 +3064,18 @@ export class DeclarationLowerer {
                                 keepsStaticMember(value),
                             ),
                         );
-                        writable(bound).recordOwnKeys =
-                            plainRecordSnapshot.recordOwnKeys ??
-                            Object.keys(properties);
+                        // A key a conditional spread decides is own while
+                        // its field is, not always.
+                        if (
+                            ownKeysKnown(
+                                this.context,
+                                plainRecordSnapshot,
+                                name,
+                            )
+                        )
+                            writable(bound).recordOwnKeys =
+                                plainRecordSnapshot.recordOwnKeys ??
+                                Object.keys(properties);
                         this.context.dataLowerer.retainRecordArrayLiteralFacts(
                             bound,
                             declaration.initializer,
@@ -4668,11 +4678,16 @@ export class DeclarationLowerer {
                             return node.arguments.some(
                                 (argument, index) =>
                                     scan.containsAlias(argument) &&
-                                    engineCallMutatesArgument(
+                                    (engineCallMutatesArgument(
                                         this.context.checker,
                                         node,
                                         index,
-                                    ),
+                                    ) ||
+                                        libraryCallMayWriteArgument(
+                                            this.context.checker,
+                                            node,
+                                            index,
+                                        )),
                             );
                         for (const [
                             index,

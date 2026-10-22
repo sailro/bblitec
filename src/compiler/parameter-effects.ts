@@ -10,8 +10,10 @@ import {
 } from "./receiver-methods.js";
 import {
     declarationInDefaultLibrary,
+    declarationOrigin,
     declaredSymbol,
     libraryGlobal,
+    libraryName,
     nullishComparison,
     calledDeclaration,
 } from "./symbols.js";
@@ -36,6 +38,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import { callResultHoldsArguments } from "./kept-values.js";
 import {
     typeCanCarryReference,
     arrayElementType,
@@ -1212,29 +1215,176 @@ function libraryCallName(
     return owner ? `${owner}.${callee.name.text}` : callee.name.text;
 }
 
-/** Default-library calls that write their first argument. */
+/** Default-library calls that write their first argument and read the rest. */
 const WRITING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
+    "Atomics.add",
+    "Atomics.and",
+    "Atomics.compareExchange",
+    "Atomics.exchange",
+    "Atomics.or",
+    "Atomics.store",
+    "Atomics.sub",
+    "Atomics.xor",
     "Object.assign",
-    "Object.defineProperty",
     "Object.defineProperties",
+    "Object.defineProperty",
+    "Object.freeze",
+    "Object.preventExtensions",
+    "Object.seal",
     "Object.setPrototypeOf",
-    "Reflect.set",
     "Reflect.defineProperty",
     "Reflect.deleteProperty",
+    "Reflect.set",
     "Reflect.setPrototypeOf",
 ]);
 
 /** Default-library functions that only read what they are handed. */
 const READING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
+    "Array.from",
     "Array.isArray",
+    "Array.of",
+    "ArrayBuffer.isView",
+    "Atomics.load",
+    "BigInt",
     "Boolean",
+    "JSON.stringify",
     "Number",
+    "Number.isFinite",
+    "Number.isInteger",
+    "Number.isNaN",
+    "Number.isSafeInteger",
+    "Number.parseFloat",
+    "Number.parseInt",
+    "Object.create",
+    "Object.entries",
+    "Object.fromEntries",
+    "Object.getOwnPropertyDescriptor",
+    "Object.getOwnPropertyDescriptors",
+    "Object.getOwnPropertyNames",
+    "Object.getOwnPropertySymbols",
+    "Object.getPrototypeOf",
+    "Object.hasOwn",
+    "Object.is",
+    "Object.isExtensible",
+    "Object.isFrozen",
+    "Object.isSealed",
+    "Object.keys",
+    "Object.values",
+    "Promise.all",
+    "Promise.allSettled",
+    "Promise.any",
+    "Promise.race",
+    "Promise.resolve",
+    "Reflect.get",
+    "Reflect.getOwnPropertyDescriptor",
+    "Reflect.getPrototypeOf",
+    "Reflect.has",
+    "Reflect.isExtensible",
+    "Reflect.ownKeys",
     "String",
     "isFinite",
     "isNaN",
     "parseFloat",
     "parseInt",
+    "reject",
+    "resolve",
+    "structuredClone",
 ]);
+
+/** What a default-library call does to the object handed to it. */
+export type LibraryArgumentEffect = "reads" | "writes" | "unknown";
+
+/**
+ * What a default-library call does to the object at argument `index`: the
+ * tables above for the language library; a Web IDL function converts every
+ * argument at the call except a buffer source, which it receives by
+ * reference and may fill (`crypto.getRandomValues(bytes)`); a library method
+ * writes no argument (its receiver is the caller's concern). Anything else
+ * may write it.
+ */
+export function libraryArgumentEffect(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    index: number,
+): LibraryArgumentEffect {
+    // A library construction writes none of its arguments; a view built over
+    // a buffer holds it, which is what another owner keeps, not a write.
+    if (ts.isNewExpression(call)) return "reads";
+    const name = libraryCallName(checker, call);
+    if (name !== undefined && WRITING_LIBRARY_CALLS.has(name))
+        return index === 0 ? "writes" : "reads";
+    if (name !== undefined && READING_LIBRARY_CALLS.has(name)) return "reads";
+    // Math's functions take numbers; a typed array's `from` / `of` copy.
+    const [owner, member] = name?.split(".") ?? [];
+    if (
+        owner === "Math" ||
+        (owner !== undefined &&
+            TYPED_ARRAY_KINDS.has(owner) &&
+            (member === "from" || member === "of"))
+    )
+        return "reads";
+    const declaration = calledDeclaration(checker, call);
+    if (declaration && declarationOrigin(declaration) === "dom") {
+        const argument = call.arguments?.[index];
+        return argument && isBufferSource(checker, argument)
+            ? "writes"
+            : "reads";
+    }
+    const callee = unwrapExpression(call.expression);
+    return ts.isPropertyAccessExpression(callee) &&
+        libraryGlobal(checker, callee.expression) === undefined
+        ? "reads"
+        : "unknown";
+}
+
+const BUFFER_SOURCE_NAMES: ReadonlySet<string> = new Set([
+    "ArrayBuffer",
+    "BigInt64Array",
+    "BigUint64Array",
+    "DataView",
+    "SharedArrayBuffer",
+]);
+
+/** A typed array, an ArrayBuffer or a DataView: what Web IDL passes by reference. */
+function isBufferSource(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return unionMembers(checker.getTypeAtLocation(expression)).some(
+        (member) => {
+            const name = libraryName(member);
+            return (
+                name !== undefined &&
+                (TYPED_ARRAY_KINDS.has(name) || BUFFER_SOURCE_NAMES.has(name))
+            );
+        },
+    );
+}
+
+/** A library call that reads the argument and keeps nothing of it. */
+function libraryOnlyReads(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    return (
+        libraryArgumentEffect(checker, call, index) === "reads" &&
+        !isStoringDataCall(call, checker) &&
+        !callResultHoldsArguments(checker, call)
+    );
+}
+
+/** Whether a default-library call may write its argument at `index`. */
+export function libraryCallMayWriteArgument(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    return (
+        callTarget(checker, call).kind === "library" &&
+        libraryArgumentEffect(checker, call, index) !== "reads"
+    );
+}
 
 /** Whether a default-library call leaves its argument at `index` unwritten. */
 export function libraryArgumentIsReadOnly(
@@ -1242,12 +1392,9 @@ export function libraryArgumentIsReadOnly(
     call: ts.CallExpression,
     index: number,
 ): boolean {
-    const target = callTarget(checker, call);
     return (
-        target.kind === "library" &&
-        (index > 0 ||
-            target.name === undefined ||
-            !WRITING_LIBRARY_CALLS.has(target.name))
+        callTarget(checker, call).kind === "library" &&
+        libraryArgumentEffect(checker, call, index) === "reads"
     );
 }
 
@@ -1380,9 +1527,7 @@ function argumentWritesNothing(
     if (ts.isNewExpression(use.call)) return true;
     return (
         target.kind === "library" &&
-        ((use.index === 0 && target.name === "Object.keys") ||
-            (isStoringDataCall(use.call, checker) &&
-                !WRITING_LIBRARY_CALLS.has(target.name ?? "")))
+        libraryArgumentEffect(checker, use.call, use.index) === "reads"
     );
 }
 
@@ -1500,11 +1645,7 @@ function argumentVisiblyWritten(
         return true;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return (
-            use.index === 0 &&
-            target.name !== undefined &&
-            WRITING_LIBRARY_CALLS.has(target.name)
-        );
+        return libraryArgumentEffect(checker, use.call, use.index) !== "reads";
     return (
         target.kind === "bodies" &&
         !use.spread &&
@@ -1603,9 +1744,11 @@ function heldObjectWritten(
                     const target = callTarget(checker, use.call);
                     if (target.kind === "library")
                         return (
-                            use.index === 0 &&
-                            target.name !== undefined &&
-                            WRITING_LIBRARY_CALLS.has(target.name)
+                            libraryArgumentEffect(
+                                checker,
+                                use.call,
+                                use.index,
+                            ) !== "reads"
                         );
                     // The object itself, or a container holding it, handed on.
                     const held = below
@@ -1854,9 +1997,7 @@ function argumentUseOnlyRead(
     if (ts.isNewExpression(use.call)) return false;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return (
-            target.name !== undefined && READING_LIBRARY_CALLS.has(target.name)
-        );
+        return libraryOnlyReads(checker, use.call, use.index);
     return (
         target.kind === "bodies" &&
         everyArgumentBody(use.call, target, use.index, onlyRead)
@@ -1883,7 +2024,7 @@ export function callArgumentIsReadOnly(
         return true;
     const target = callTarget(checker, call);
     if (target.kind === "library")
-        return index === 0 && target.name === "Object.keys";
+        return libraryArgumentEffect(checker, call, index) === "reads";
     return (
         target.kind === "bodies" &&
         !target.engine &&
