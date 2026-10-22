@@ -2419,7 +2419,9 @@ function compileMeshPrimitiveState(
 ): string {
     const node = context.unwrap(expression);
     if (ts.isConditionalExpression(node))
-        return `(${context.compileBoolean(node.condition)} ? ${compileMeshPrimitiveState(context, node.whenTrue)} : ${compileMeshPrimitiveState(context, node.whenFalse)})`;
+        return context.dataLowerer.selectArms(node, (arm) =>
+            compileMeshPrimitiveState(context, arm),
+        );
     if (isGlobalUndefined(context.checker, node))
         return "std::optional<bbl::MeshPrimitiveState>{}";
     const object = node;

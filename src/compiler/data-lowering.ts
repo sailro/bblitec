@@ -4336,6 +4336,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * `c ? a : b` over the arm spellings a caller computes (an intrinsic's
+     * enum name, a record call): the condition by truthiness, each arm's
+     * preparation run only on its own branch, and a generation-known
+     * condition lowering only the arm it takes.
+     */
+    public selectArms(
+        conditional: ts.ConditionalExpression,
+        spell: (arm: ts.Expression) => string,
+    ): string {
+        const condition = this.context.conditions.compileCondition(
+            conditional.condition,
+        );
+        const arm = (branch: ts.Expression): string => {
+            const { value, lines } = this.compileArm(() => spell(branch));
+            return this.armExpression(branch, lines, value);
+        };
+        if (condition === "true") return arm(conditional.whenTrue);
+        if (condition === "false") return arm(conditional.whenFalse);
+        return `(${condition} ? ${arm(conditional.whenTrue)} : ${arm(conditional.whenFalse)})`;
+    }
+
+    /**
      * An arm's expression evaluated after its preparation: the expression
      * itself when there is none, else an immediately invoked lambda. Await
      * belongs to the enclosing coroutine, never a lambda, so a prepared arm

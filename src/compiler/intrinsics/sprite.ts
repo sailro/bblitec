@@ -1508,15 +1508,9 @@ function compileUpdateSprite2DIndex(
     };
     const unwrappedOptions = context.unwrap(options);
     if (ts.isConditionalExpression(unwrappedOptions)) {
-        const condition = context.conditions.compileCondition(
-            unwrappedOptions.condition,
-        );
         return {
             kind: "void",
-            cpp:
-                `(${condition} ? ` +
-                `${updateCpp(unwrappedOptions.whenTrue)} : ` +
-                `${updateCpp(unwrappedOptions.whenFalse)})`,
+            cpp: context.dataLowerer.selectArms(unwrappedOptions, updateCpp),
             engineCpp,
         };
     }

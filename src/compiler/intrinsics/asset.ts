@@ -737,9 +737,8 @@ function compileLoadTexture2D(
         }
         const addressMode = (expression: ts.Expression): string => {
             const unwrapped = context.unwrap(expression);
-            if (ts.isConditionalExpression(unwrapped)) {
-                return `(${context.compileBoolean(unwrapped.condition)} ? ${addressMode(unwrapped.whenTrue)} : ${addressMode(unwrapped.whenFalse)})`;
-            }
+            if (ts.isConditionalExpression(unwrapped))
+                return context.dataLowerer.selectArms(unwrapped, addressMode);
             const mode = context.compileStringLiteral(expression);
             const mapped = addressModeByPin[mode];
             if (!mapped) {

@@ -9623,6 +9623,30 @@ test("lowers dynamic retained UI innerHTML substitutions", () => {
     assert.doesNotMatch(result.cpp, /__BBLITE_UI_MARKUP_/);
 });
 
+test("evaluates a retained UI substitution's || right operand only when taken", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        let reads = 0;
+        function pickLabel(): string { reads++; return reads > 1 ? "k" : ""; }
+        function fallbackLabel(): string { reads += 10; return "?"; }
+        async function main(): Promise<void> {
+            await createEngine({});
+            const stats = document.createElement("div");
+            window.addEventListener("keydown", () => {
+                stats.innerHTML = \`<span>KEY \${pickLabel() || fallbackLabel()}</span>\`;
+            });
+            document.body.appendChild(stats);
+        }
+        void main();
+    `);
+    // The fallback's effect sits under the left operand's falsy test.
+    assert.match(
+        result.cpp,
+        /if \([^\n]*empty\(\)[^\n]*\) \{\n\s*\(\*v_reads\) \+= 10\.0;/,
+    );
+    assert.equal(result.cpp.match(/\(\*v_reads\) \+= 10\.0;/g)?.length, 1);
+});
+
 test("folds static string concatenation assigned to retained UI text", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

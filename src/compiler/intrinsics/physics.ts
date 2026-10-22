@@ -77,6 +77,7 @@ export interface PhysicsIntrinsicContext
             | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
+            | "dataLowerer"
             | "intrinsicOptions"
             | "reachJsData"
             | "sceneManifest"
@@ -814,7 +815,7 @@ function compileCreatePhysicsConstraint(
     const compileType = (expression: ts.Expression): string => {
         const node = context.resolveStaticExpression(expression);
         if (ts.isConditionalExpression(node))
-            return `(${context.compileBoolean(node.condition)} ? ${compileType(node.whenTrue)} : ${compileType(node.whenFalse)})`;
+            return context.dataLowerer.selectArms(node, compileType);
         pinnedEnumMemberName(context, node, "PhysicsConstraintType");
         return context.compileNumber(node, "double");
     };

@@ -1432,24 +1432,7 @@ export class UiProjection {
     private uiTemplateSubstitutionCpp(
         expression: ts.Expression,
         purpose: string,
-        allowStringFallback = false,
     ): string {
-        const logical = this.context.unwrap(expression);
-        if (
-            allowStringFallback &&
-            ts.isBinaryExpression(logical) &&
-            logical.operatorToken.kind === ts.SyntaxKind.BarBarToken
-        ) {
-            const left = this.context.compileValue(logical.left);
-            const right = this.context.compileValue(logical.right);
-            if (isStringValue(left) && isStringValue(right)) {
-                return (
-                    `(!std::string(${left.cpp}).empty()` +
-                    ` ? std::string(${left.cpp})` +
-                    ` : std::string(${right.cpp}))`
-                );
-            }
-        }
         return this.uiTemplateValueCpp(
             this.context.compileValue(expression),
             expression,
@@ -4914,7 +4897,6 @@ export class UiProjection {
             this.uiTemplateSubstitutionCpp(
                 substitutions[index]!,
                 "Native UI innerHTML",
-                true,
             ),
         );
     }

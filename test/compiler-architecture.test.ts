@@ -1198,6 +1198,19 @@ test("string concatenation operands and number formats are read once", () => {
         assert.ok(sourceFacts(path).calls.has("foldNumberFormat"), path);
 });
 
+test("an intrinsic's conditional arms are selected by one rule", () => {
+    // selectArms tests the condition by truthiness and runs each arm's
+    // preparation only on its own branch; intrinsics that spell `c ? a : b`
+    // over their own arm spellings use it.
+    for (const path of [
+        "src/compiler/assignments.ts",
+        "src/compiler/intrinsics/asset.ts",
+        "src/compiler/intrinsics/physics.ts",
+        "src/compiler/intrinsics/sprite.ts",
+    ])
+        assert.ok(sourceFacts(path).members.has("selectArms"), path);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.
