@@ -2415,10 +2415,13 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(left) &&
             this.probeEmission(
                 // The selected property writer evaluates this receiver.
-                () =>
-                    this.resolveRecordValue(left.expression)?.recordSetters?.[
-                        left.name.text
-                    ],
+                () => {
+                    const owner = this.resolveRecordValue(left.expression);
+                    return (
+                        owner?.recordSetters?.[left.name.text] ??
+                        owner?.recordGetters?.[left.name.text]
+                    );
+                },
                 () => false,
             )
         ) {
@@ -6482,13 +6485,17 @@ class Compiler implements LoweringServices {
         owner: Value,
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
+        // The argument already computed (a compound store's new value);
+        // `value` then only locates diagnostics.
+        evaluated?: Value,
     ): void {
         const parameter = setter.parameters[0];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            this.classLowerer.compileSetter(owner, setter, value);
+            this.classLowerer.compileSetter(owner, setter, value, evaluated);
             return;
         }
-        const argument = this.compileClassParameterValue(parameter.name, value);
+        const argument =
+            evaluated ?? this.compileClassParameterValue(parameter.name, value);
         this.withRecordScopes(owner, () =>
             this.classLowerer.compileSetter(owner, setter, value, argument),
         );

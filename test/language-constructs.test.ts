@@ -15260,3 +15260,24 @@ check(
     if (joined !== "3x-4" || parts !== "3|y12") throw new Error("plus " + joined + " " + parts);
     `,
 );
+check(
+    "a compound store and an update through an accessor run its setter",
+    `
+    let gets = 0, sets = 0;
+    class A { private x = 1; get v(): number { gets++; return this.x; } set v(n: number) { sets++; this.x = n; } }
+    const a = new A();
+    a.v += 4;
+    a.v++;
+    if (a.v !== 6 || gets !== 3 || sets !== 2) throw new Error("compound accessor " + gets + " " + sets);
+    `,
+);
+check(
+    "writing a getter-only member throws a TypeError",
+    // A module is strict code; the reference run is a script, so it says so.
+    `"use strict";
+    const o = { get x(): number { return 1; } };
+    let threw = false;
+    try { (o as { x: number }).x = 5; } catch (e) { threw = e instanceof TypeError; }
+    if (!threw || o.x !== 1) throw new Error("getter-only write " + threw);
+    `,
+);

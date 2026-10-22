@@ -1379,6 +1379,10 @@ export function emitPropertyAssignment(
                 context.compileRecordSetter(owner, setter, expression.right);
                 return;
             }
+            if (owner.recordGetters?.[left.name.text]) {
+                emitGetterOnlyWrite(context, expression, left.name.text);
+                return;
+            }
             // Probe record wiring without evaluating an arbitrary RHS.
             // Calls and data expressions may emit substantial native work;
             // compiling one merely to discover it is not a record would run
@@ -2207,6 +2211,22 @@ function numericFieldStore(
         context.compileNumber(right, fieldOperandWidth(operator, width)),
         width,
     );
+}
+
+/**
+ * `o.x = v` where `x` has a getter and no setter: a module is strict, so
+ * the store throws a TypeError once the right side has been evaluated.
+ */
+function emitGetterOnlyWrite(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    key: string,
+): void {
+    context.emitDiscardedValue(context.compileValue(expression.right));
+    context.emit({
+        kind: "expression",
+        code: `std::rethrow_exception(bbl::js::make_error("TypeError", ${context.cppString(`Cannot set property ${key} of #<Object> which has only a getter`)}, std::exception_ptr{}));`,
+    });
 }
 
 /**

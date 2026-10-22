@@ -612,6 +612,7 @@ interface DataLoweringContext extends Pick<
     | "resolveThisField"
     | "resolveRecordMember"
     | "resolveRecordValue"
+    | "compileRecordSetter"
     | "compileClassParameterValue"
     | "browserErasure"
     | "knownValueWithoutEvaluation"
@@ -676,6 +677,12 @@ type NumericUpdatePlace =
     | { kind: "scalar"; cpp: string; target: Value }
     /** A represented numeric accessor retains its owner through the store. */
     | { kind: "accessor"; slot: string }
+    /** A record's accessor (a class or object-literal `get`/`set`): read through the getter, stored through the setter. */
+    | {
+          kind: "setter";
+          operand: ts.PropertyAccessExpression | ts.ElementAccessExpression;
+          key: string;
+      }
     /** An optional-number slot, absent until written. */
     | {
           kind: "optional";
@@ -17253,7 +17260,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** Numeric receiver slots read once before the RHS and store through the same owner. */
     private accessorNumberPlace(
         operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-    ): Extract<NumericUpdatePlace, { kind: "accessor" }> | undefined {
+    ):
+        | Extract<NumericUpdatePlace, { kind: "accessor" | "setter" }>
+        | undefined {
+        const setter = this.recordSetterPlace(operand);
+        if (setter) return setter;
         if (
             !ts.isPropertyAccessExpression(operand) ||
             !this.mayWriteAccessor(operand)
@@ -17286,6 +17297,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 slot: `${held.cpp}${reference ? "->" : "."}${field.name}`,
             };
         });
+    }
+
+    /**
+     * A member whose record carries an accessor (a class or object-literal
+     * `get` / `set`): `o.v op= x` and `o.v++` read the getter and store
+     * through the setter, never into the place the getter returned.
+     */
+    private recordSetterPlace(
+        operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Extract<NumericUpdatePlace, { kind: "setter" }> | undefined {
+        const key = ts.isPropertyAccessExpression(operand)
+            ? operand.name.text
+            : accessKey(operand);
+        if (key === undefined) return undefined;
+        const accessor = this.context.probeEmission(
+            () => {
+                const owner = this.context.resolveRecordValue(
+                    operand.expression,
+                );
+                return Boolean(
+                    owner?.recordSetters?.[key] || owner?.recordGetters?.[key],
+                );
+            },
+            () => false,
+        );
+        return accessor ? { kind: "setter", operand, key } : undefined;
     }
 
     /**
@@ -17362,7 +17399,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const stored = this.context.allocateTemporaryCppName("update_next");
         let read: string;
         let store: (value: string) => string;
-        if (place.kind === "accessor") {
+        let storeThroughSetter: ((value: string) => void) | undefined;
+        if (place.kind === "setter") {
+            const owner = this.context.resolveRecordValue(
+                place.operand.expression,
+            );
+            const setter = owner?.recordSetters?.[place.key];
+            if (!owner || !setter)
+                this.context.fail(
+                    place.operand,
+                    "A member with a getter and no setter cannot be written: a module throws a TypeError.",
+                );
+            const value = this.context.compileValue(place.operand);
+            if (value.kind !== "number")
+                this.context.fail(
+                    place.operand,
+                    "A numeric update through an accessor requires a number getter.",
+                );
+            read = value.cpp;
+            store = () => "";
+            storeThroughSetter = (stored) =>
+                this.context.compileRecordSetter(
+                    owner,
+                    setter,
+                    place.operand,
+                    this.leafValue(stored, { kind: "number" }),
+                );
+        } else if (place.kind === "accessor") {
             read = `${place.slot}.get()`;
             store = (value) => `${place.slot}.set(${value});`;
         } else if (place.kind === "entry") {
@@ -17425,7 +17488,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: stored,
             initializer: next(previous),
         });
-        this.context.emit({ kind: "expression", code: store(stored) });
+        if (storeThroughSetter) storeThroughSetter(stored);
+        else this.context.emit({ kind: "expression", code: store(stored) });
         if (place.kind === "entry")
             this.context.bindings.invalidateRecordProperties(place.owner);
         else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));

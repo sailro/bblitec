@@ -398,6 +398,7 @@ export interface LoweringServices {
         owner: Value,
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
+        evaluated?: Value,
     ): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
