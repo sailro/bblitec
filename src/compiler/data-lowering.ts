@@ -9592,11 +9592,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 argumentOffset,
             );
         }
-        if (receiver)
+        if (receiver) {
+            // JavaScript's TypeError, which a scene's catch can tell apart.
+            this.context.reachJsData();
             this.context.emit({
                 kind: "expression",
-                code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                code: `if (!(${receiver})) bbl::js::throw_nullish_access("Cannot call a method on a nullish receiver.");`,
             });
+        }
         const callback =
             this.context.allocateTemporaryCppName("stored_callback");
         this.context.emit({

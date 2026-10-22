@@ -1451,11 +1451,14 @@ function compileKnownDataMethod(
             });
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
-            if (referenceReceiver)
+            if (referenceReceiver) {
+                // JavaScript's TypeError, which a scene's catch can tell apart.
+                lowerer.context.reachJsData();
                 lowerer.context.emit({
                     kind: "expression",
-                    code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                    code: `if (!(${receiver})) bbl::js::throw_nullish_access("Cannot call a method on a nullish receiver.");`,
                 });
+            }
             return lowerer.compileCallableRecordCall(
                 call,
                 lowerer.leafValue(

@@ -6092,7 +6092,8 @@ template <bool Maximum>
         return value;
     }
     const double floored = std::floor(value);
-    return value - floored >= 0.5 ? floored + 1.0 : floored;
+    // A negative value that rounds to zero is -0 (`Math.round(-0.4)`).
+    return std::copysign(value - floored >= 0.5 ? floored + 1.0 : floored, value);
 }
 
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser

@@ -15011,3 +15011,20 @@ check(
         throw new Error(sorted.join());
     `,
 );
+check(
+    "Math.round of a small negative value is negative zero",
+    `
+    let d = -0.4;
+    const values = [Math.round(d), Math.round(d - 0.1), Math.round(-0.4)];
+    if (!values.every((v) => Object.is(v, -0)) || Math.round(d - 0.2) !== -1) throw new Error("round sign");
+    `,
+);
+check(
+    "a method call on a nullish receiver throws a TypeError",
+    `
+    let kind = "";
+    const o: { m(): number } | null = Math.random() > 2 ? { m: () => 1 } : null;
+    try { o!.m(); } catch (e) { kind = e instanceof TypeError ? "TypeError" : "other"; }
+    if (kind !== "TypeError") throw new Error("kind " + kind);
+    `,
+);
