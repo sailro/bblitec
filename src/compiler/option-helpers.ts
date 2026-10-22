@@ -15,7 +15,6 @@ import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import {
-    argumentAt,
     isExpressionWrapper,
     unwrapExpression,
     literalMember,
@@ -28,10 +27,10 @@ import type { DataType } from "./data-types.js";
 import { pinCpp } from "./evaluation-order.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
+    foldMathCall,
     MATH_CONSTANTS,
     mathMemberAccess,
     mathMemberCall,
-    mathUnaryFold,
 } from "./math-intrinsics.js";
 import {
     foldNumericBinary,
@@ -793,33 +792,12 @@ export function staticNumberValue(
     }
     const mathCall = mathMemberCall(node, libraryGlobal);
     if (mathCall) {
-        const { name, call } = mathCall;
-        if (call.arguments.length === 1) {
-            const fold = mathUnaryFold(name);
-            if (fold) {
-                const argument = staticNumberValue(
-                    context,
-                    argumentAt(call, 0),
-                );
-                return argument === undefined ? undefined : fold(argument);
-            }
-        }
-        if ((name === "max" || name === "min") && call.arguments.length >= 2) {
-            const values = call.arguments.map((argument) =>
-                staticNumberValue(context, argument),
-            );
-            if (
-                values.every(
-                    (value): value is number =>
-                        value !== undefined &&
-                        Number.isFinite(value) &&
-                        !Object.is(value, -0),
-                )
-            ) {
-                return Math[name](...values);
-            }
-        }
-        return undefined;
+        const values = mathCall.call.arguments.map((argument) =>
+            staticNumberValue(context, argument),
+        );
+        return values.every((value): value is number => value !== undefined)
+            ? foldMathCall(mathCall.name, values)
+            : undefined;
     }
     if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
         return context.staticProperty(node);

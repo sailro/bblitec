@@ -1061,6 +1061,53 @@ test("a Promise static call is recognized by promises.ts", () => {
     assert.ok(sourceFacts("src/compiler/async.ts").calls.has("promiseStatic"));
 });
 
+test("Math is folded, spelled and resolved through math-intrinsics.ts", () => {
+    // MATH_MEMBERS / MATH_CONSTANTS are the one table for scene code and
+    // pinned bodies, foldMathCall the one generation-time fold, and a
+    // pinned body resolves `Math` through pinnedLibraryGlobal.
+    for (const name of [
+        "MATH_MEMBERS",
+        "MATH_CONSTANTS",
+        "foldMathCall",
+        "mathExtremeCall",
+        "mathMemberIsImpure",
+        "spelledMathCall",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/math-intrinsics.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("pinnedLibraryGlobal"), [
+        "src/pinned-program.ts",
+    ]);
+    for (const path of [
+        "src/compiler/browser-erasure.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/option-helpers.ts",
+        "src/lowering/flow-graph-lowerer.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("foldMathCall"), path);
+    for (const path of [
+        "src/compiler/canvas-readback.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/native-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("mathMemberIsImpure"), path);
+    for (const path of [
+        "src/lowering/context.ts",
+        "src/lowering/gltf/cpp-expression.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("pinnedLibraryGlobal"), path);
+    for (const path of [
+        "src/lowering/gltf/cpp-expression.ts",
+        "src/lowering/navigation-build-plan.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("spelledMathCall"), path);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

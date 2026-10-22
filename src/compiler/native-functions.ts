@@ -39,7 +39,11 @@ import {
     passesByReference,
     type DataType,
 } from "./data-types.js";
-import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
+import {
+    MATH_MEMBERS,
+    mathMemberCall,
+    mathMemberIsImpure,
+} from "./math-intrinsics.js";
 import {
     classMemberTable,
     classMethod,
@@ -1456,9 +1460,11 @@ export class NativeFunctionLowerer {
             const math = mathMemberCall(call, (expression) =>
                 libraryGlobal(this.context.checker, expression),
             );
-            const member =
-                math === undefined ? undefined : MATH_MEMBERS.get(math.name);
-            if (member !== undefined && member.reach !== "js-random")
+            if (
+                math !== undefined &&
+                MATH_MEMBERS.has(math.name) &&
+                !mathMemberIsImpure(math.name)
+            )
                 return true;
         }
         const called = this.directCallDeclaration(call);

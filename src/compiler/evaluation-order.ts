@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { mathMemberIsImpure } from "./math-intrinsics.js";
 import {
     classChain,
     localClassOfSymbol,
@@ -731,7 +732,7 @@ export class EvaluationOrder {
             );
         if (!ts.isPropertyAccessExpression(callee)) return false;
         if (libraryGlobal(this.checker, callee.expression) === "Math")
-            return callee.name.text !== "random";
+            return !mathMemberIsImpure(callee.name.text);
         return (
             this.isPrimitive(callee.expression) &&
             !callee.name.text.startsWith("toLocale") &&

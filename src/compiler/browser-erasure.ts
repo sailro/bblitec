@@ -48,7 +48,7 @@ import {
     ecmascriptGlobalTypeof,
     libraryName,
 } from "./symbols.js";
-import { mathUnaryFold } from "./math-intrinsics.js";
+import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
 import {
@@ -2242,24 +2242,25 @@ export class BrowserErasure {
             // taint rule in `isBrowserOnlyExpression` already documents
             // this call as one whose argument the query answers; folding
             // it here is what lets the helper around it answer too.
-            if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.context.libraryGlobal(unwrapped.expression.expression) ===
-                    "Math" &&
-                unwrapped.arguments.length === 1
-            ) {
-                // The names read off the table `staticNumberValue` folds
-                // through rather than one spelled here, so this rule and
-                // the taint rule above -- which treats every Math call over
-                // a resolved value alike -- cannot disagree about which
-                // ones resolve. A transcendental is deliberately absent
-                // from that table, and stays unfoldable here too.
-                const fold = mathUnaryFold(unwrapped.expression.name.text);
-                if (fold === undefined) return undefined;
-                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
-                return argument?.kind === "number"
-                    ? { kind: "number", value: fold(argument.value) }
+            const math = mathMemberCall(unwrapped, (expression) =>
+                this.context.libraryGlobal(expression),
+            );
+            if (math) {
+                // The fold every reader shares, so this rule and the taint
+                // rule above -- which treats every Math call over a resolved
+                // value alike -- cannot disagree about which ones resolve.
+                const values = unwrapped.arguments.map((argument) => {
+                    const value = this.browserValueOf(argument);
+                    return value?.kind === "number" ? value.value : undefined;
+                });
+                const folded = values.every(
+                    (value): value is number => value !== undefined,
+                )
+                    ? foldMathCall(math.name, values)
                     : undefined;
+                return folded === undefined
+                    ? undefined
+                    : { kind: "number", value: folded };
             }
             const helper = this.evaluateBrowserHelperCall(unwrapped);
             if (helper !== undefined) return helper;

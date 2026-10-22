@@ -161,29 +161,6 @@ export function jsBitwiseCall(
     return helper ? `bbl::js::${helper}(${left}, ${right})` : undefined;
 }
 
-/**
- * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
- * NaN operand poisons the result and `-0` orders below `+0`, neither of
- * which `std::max`/`std::min` does. `source` is a range of doubles, or a
- * braced argument list (`mathExtremeCall`).
- */
-export function mathExtremeCpp(method: string, source: string): string {
-    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
-}
-
-/**
- * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
- * spelling scene code and pinned bodies share. The braced list evaluates
- * left to right, as JavaScript's argument list does, and every operand,
- * whatever its native type, converts to JavaScript's own width first.
- */
-export function mathExtremeCall(
-    method: "max" | "min",
-    args: readonly string[],
-): string {
-    return mathExtremeCpp(method, `{${args.join(", ")}}`);
-}
-
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
 export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     new Map<ts.SyntaxKind, string>([
@@ -250,77 +227,4 @@ export const PINNED_BOOLEAN_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
  */
 export function pinnedRemainderCall(left: string, right: string): string {
     return `std::fmod(${left}, ${right})`;
-}
-
-/**
- * The `Math` members that are a `<cmath>` call of the same arity. Every one of
- * these takes and returns a double, which is what a pinned writer computes in
- * before it stores. `Math.max`/`Math.min` are not among them: they are
- * variadic, and JavaScript's NaN and signed-zero rules are not `std::max`'s,
- * so they lower through `mathExtremeCall`.
- */
-const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
-    pow: "std::pow",
-    log: "std::log",
-    cos: "std::cos",
-    acos: "std::acos",
-    asin: "std::asin",
-    atan2: "std::atan2",
-    sin: "std::sin",
-    tan: "std::tan",
-    sqrt: "std::sqrt",
-    abs: "std::abs",
-    log2: "std::log2",
-    ceil: "std::ceil",
-    floor: "std::floor",
-};
-
-/**
- * The spelling the shared table gives one member, for a consumer outside
- * the pinned-body layer that must agree with it — the scene-code compiler's
- * `Math` dispatch reads the members both layers accept through this, so the
- * two layers cannot drift on what a shared `<cmath>` member lowers to. A
- * member the table does not carry throws, which is what keeps the shared
- * list the single authority instead of a fallback.
- */
-export function pinnedMathSpelling(name: string): string {
-    const spelling = PINNED_MATH_FUNCTIONS[name];
-    if (!spelling) {
-        throw new Error(
-            `Math.${name} is not in the shared pinned cmath table.`,
-        );
-    }
-    return spelling;
-}
-
-/** `Math.hypot` at any arity, shared by scene and pinned lowering. */
-export function pinnedHypotCall(args: readonly string[]): string {
-    return `bbl::js::hypot_js({${args.join(", ")}})`;
-}
-
-/**
- * `Math.round` as the pin's own half-up rounding rather than `<cmath>`'s
- * half-away-from-zero, spelled once for every lowering that reaches it.
- */
-export function pinnedRoundCall(args: readonly string[]): string {
-    return `bbl::js::round_js(${args.join(", ")})`;
-}
-
-/**
- * A supported `Math.x(...)` call -- a `<cmath>`
- * member or `Math.max`/`Math.min` -- or undefined when the node is not one.
- */
-export function pinnedMathCall(node: ts.Node): ts.CallExpression | undefined {
-    if (
-        !ts.isCallExpression(node) ||
-        !ts.isPropertyAccessExpression(node.expression) ||
-        !ts.isIdentifier(node.expression.expression) ||
-        node.expression.expression.text !== "Math"
-    ) {
-        return undefined;
-    }
-    const name = node.expression.name.text;
-    return name === "max" || name === "min" || PINNED_MATH_FUNCTIONS[name]
-        ? node
-        : undefined;
 }

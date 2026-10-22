@@ -16,10 +16,12 @@ import {
 } from "../upstream-source.js";
 import {
     moduleScopeVariable,
+    pinnedLibraryGlobal,
     pinnedNamesOf,
     registerPinnedSource,
     type PinnedProgram,
 } from "../pinned-program.js";
+import { MATH_CONSTANTS } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
@@ -357,14 +359,12 @@ export function numericValue(
         );
         if (folded !== undefined) return folded;
     }
-    if (
+    const mathConstant =
         ts.isPropertyAccessExpression(unwrapped) &&
-        ts.isIdentifier(unwrapped.expression) &&
-        unwrapped.expression.text === "Math" &&
-        unwrapped.name.text === "PI"
-    ) {
-        return Math.PI;
-    }
+        pinnedLibraryGlobal(unwrapped.expression) === "Math"
+            ? MATH_CONSTANTS.get(unwrapped.name.text)
+            : undefined;
+    if (mathConstant) return mathConstant.value;
     if (ts.isBinaryExpression(unwrapped)) {
         const folded = foldNumericBinary(
             unwrapped.operatorToken.kind,

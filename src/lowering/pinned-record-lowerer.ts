@@ -35,6 +35,7 @@ import {
     numberConstant,
     numberPredicateCpp,
 } from "../compiler/number-intrinsics.js";
+import { MATH_CONSTANTS } from "../compiler/math-intrinsics.js";
 import { SYNCHRONOUS_CALLBACK_METHODS } from "../compiler/parameter-effects.js";
 import { regexpHasLineAnchor } from "../compiler/regexp-grammar.js";
 import {
@@ -3066,22 +3067,6 @@ interface Place {
     /** The store, for a place written through a helper. */
     readonly store: (value: string) => string;
 }
-
-/** `Math`'s constant members, by the dotted name a read spells. */
-const MATH_CONSTANTS: ReadonlyMap<string, number> = new Map(
-    (
-        [
-            "E",
-            "LN10",
-            "LN2",
-            "LOG10E",
-            "LOG2E",
-            "PI",
-            "SQRT1_2",
-            "SQRT2",
-        ] as const
-    ).map((name) => [`Math.${name}`, Math[name]]),
-);
 
 /**
  * One lowered function body: the record statements and expressions, with
@@ -6587,9 +6572,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (platformValue)
             return this.narrowed(platformValue.cpp, platformValue.shape, node);
         // `Math.PI` and the other constants of `Math`: the doubles they are.
-        const mathConstant =
-            global !== undefined ? MATH_CONSTANTS.get(global) : undefined;
-        if (mathConstant !== undefined) return doubleCpp(mathConstant);
+        const mathConstant = global?.startsWith("Math.")
+            ? MATH_CONSTANTS.get(global.slice("Math.".length))
+            : undefined;
+        if (mathConstant !== undefined) return doubleCpp(mathConstant.value);
         const constant = this.constant(node);
         if (constant !== undefined) return doubleCpp(constant);
         // An enum member (`const enum` included) is its value.

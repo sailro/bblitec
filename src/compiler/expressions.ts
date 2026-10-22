@@ -164,7 +164,7 @@ import { compileSymbolCall } from "./symbol-values.js";
 import { compileBigIntUpdate, compileBigIntValue } from "./bigint-values.js";
 import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
-    FORMATTED_MATH_FOLDS,
+    foldMathCall,
     mathConstantAccess,
     mathFunctionValue,
     mathMemberCall,
@@ -2041,19 +2041,12 @@ export class ExpressionLowerer {
         const mathCall = mathMemberCall(node, (expression) =>
             this.context.libraryGlobal(expression),
         );
-        const formatted = mathCall && FORMATTED_MATH_FOLDS.get(mathCall.name);
-        if (!mathCall || !formatted) {
-            return undefined;
-        }
+        if (!mathCall) return undefined;
         const values = mathCall.call.arguments.map((argument) =>
             this.generationTimeNumber(argument),
         );
-        const numbers = values.filter(
-            (value): value is number => value !== undefined,
-        );
-        return numbers.length === values.length &&
-            numbers.length === formatted.arity
-            ? formatted.fold(...numbers)
+        return values.every((value): value is number => value !== undefined)
+            ? foldMathCall(mathCall.name, values, true)
             : undefined;
     }
 

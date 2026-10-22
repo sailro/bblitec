@@ -8,7 +8,8 @@ import type { PinnedCallSpelling } from "../pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { PinnedNumericLowerer } from "../pinned-numeric-lowerer.js";
 import { cppPrecedence } from "../pinned-numeric-expression.js";
-import { pinnedMathCall } from "../pinned-operators.js";
+import { spelledMathCall } from "../../compiler/math-intrinsics.js";
+import { pinnedLibraryGlobal } from "../../pinned-program.js";
 import { CppExpressionScope, RenderedCpp, refuseNode } from "./shared.js";
 
 const expressionLowerers = new WeakMap<
@@ -84,17 +85,15 @@ function renderCppLeaf(
         return scope.propertyRead(expression);
     }
     if (ts.isCallExpression(expression)) {
-        const math = pinnedMathCall(expression);
-        if (math) return undefined;
-        const callee = expression.expression;
+        if (spelledMathCall(expression, pinnedLibraryGlobal)) return undefined;
         if (scope.callRead) return scope.callRead(expression);
+        const callee = expression.expression;
         refuseNode(
             scope.symbol,
             scope.file,
             expression,
             ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "Math"
+                pinnedLibraryGlobal(callee.expression) === "Math"
                 ? `calls Math.${callee.name.text}, which has no lowering`
                 : "calls a function this lowering cannot carry",
         );

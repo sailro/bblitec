@@ -1,22 +1,19 @@
 /**
- * What scene code's `Math` reaches: every member the compiler lowers with
- * its runtime spelling, its generation-time fold where one is exact, and
- * the constants a numeric reader folds or spells.
+ * What `Math` reaches, in scene code and pinned bodies alike: every member
+ * with its runtime spelling, its generation-time fold where one is exact,
+ * and the constants a numeric reader folds or spells.
  *
- * The `<cmath>` members shared with the pinned layer are spelled through
- * `pinnedMathSpelling`, so the two layers cannot drift on them; the
- * compiler-only members follow the same `std::` rule here because no pinned
- * body reaches them. Members whose semantics differ from `<cmath>`
- * (`Math.round`'s tie rule, `Math.hypot`'s arity, `Math.sign`, `Math.imul`,
- * the seeded `Math.random`) carry the PAL spelling that implements the
- * spec's own rule, and say which runtime that spelling needs.
+ * The `<cmath>` members spell `std::<name>`. Members whose semantics differ
+ * from `<cmath>` (`Math.round`'s tie rule, `Math.hypot`'s arity,
+ * `Math.sign`, `Math.imul`, the seeded `Math.random`) carry the PAL
+ * spelling that implements the spec's own rule, and say which runtime that
+ * spelling needs.
  *
- * `Math.max`/`Math.min` are deliberately absent: they are n-ary, fold only
- * when every operand is a finite static number, and lower a spread over a
- * numeric container as a loop, so `DataLowerer.compileMathCall` owns them
- * as one arm rather than this table pretending they are one call. That arm
- * spells an argument list through `mathExtremeCall`, the spelling pinned
- * bodies lower `Math.max`/`Math.min` through too.
+ * `Math.max`/`Math.min` are deliberately absent: they are n-ary and lower a
+ * spread over a numeric container as a loop, so `DataLowerer.compileMathCall`
+ * owns them as one arm rather than this table pretending they are one call.
+ * That arm spells an argument list through `mathExtremeCall`, the spelling
+ * pinned bodies lower `Math.max`/`Math.min` through too.
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
@@ -25,13 +22,6 @@ import type { LibraryGlobal } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
-import {
-    mathExtremeCpp,
-    mathExtremeCall,
-    pinnedHypotCall,
-    pinnedMathSpelling,
-    pinnedRoundCall,
-} from "../lowering/pinned-operators.js";
 
 interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
@@ -42,57 +32,75 @@ interface MathMember {
     /** A variadic member over an already evaluated numeric range. */
     readonly rangeCpp?: (range: string) => string;
     /**
-     * The exact generation-time fold. Only the integer-valued members carry
-     * one: their result is exact in both engines, so the folded value and
-     * the emitted call agree, and a scene that hands one to generation-time
-     * state (a particle column) needs the value rather than the expression.
-     * The transcendental members deliberately do NOT fold: V8 and a native
-     * maths library need not agree on them.
+     * The exact generation-time fold. Only the members whose result is
+     * exact in both engines carry one (the integer-valued ones, sign,
+     * imul), so the folded value and the emitted call agree, and a scene
+     * that hands one to generation-time state (a particle column) needs the
+     * value rather than the expression. The transcendental members, pow and
+     * hypot deliberately do NOT fold: V8 and a native maths library need
+     * not agree on them.
      */
-    readonly fold?: (value: number) => number;
+    readonly fold?: (...values: number[]) => number;
     /** The runtime the spelling needs beyond `<cmath>`. */
     readonly reach?: "js-data" | "js-random";
     /** Whether two calls may answer differently, so the value cannot be folded or hoisted. */
     readonly impure?: true;
 }
 
-/** A member shared with the pinned layer, spelled through its table. */
-function shared(name: string): MathMember["cpp"] {
-    const spelling = pinnedMathSpelling(name);
-    return (args) => `${spelling}(${args.join(", ")})`;
+/** A `<cmath>` member of the same name and arity over doubles. */
+function cmath(name: string): MathMember["cpp"] {
+    return (args) => `std::${name}(${args.join(", ")})`;
 }
 
-/** A compiler-only member, following the same `std::` rule. */
-function compilerOnly(name: string): MathMember["cpp"] {
-    return (args) => `std::${name}(${args.join(", ")})`;
+/**
+ * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
+ * NaN operand poisons the result and `-0` orders below `+0`, neither of
+ * which `std::max`/`std::min` does. `source` is a range of doubles, or a
+ * braced argument list (`mathExtremeCall`).
+ */
+export function mathExtremeCpp(method: string, source: string): string {
+    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
+
+/**
+ * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
+ * spelling scene code and pinned bodies share. The braced list evaluates
+ * left to right, as JavaScript's argument list does, and every operand,
+ * whatever its native type, converts to JavaScript's own width first.
+ */
+export function mathExtremeCall(
+    method: "max" | "min",
+    args: readonly string[],
+): string {
+    return mathExtremeCpp(method, `{${args.join(", ")}}`);
 }
 
 export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     string,
     MathMember
 >([
-    ["abs", { arity: 1, cpp: shared("abs"), fold: Math.abs }],
-    ["ceil", { arity: 1, cpp: shared("ceil"), fold: Math.ceil }],
-    ["cos", { arity: 1, cpp: shared("cos") }],
-    ["floor", { arity: 1, cpp: shared("floor"), fold: Math.floor }],
-    ["sin", { arity: 1, cpp: shared("sin") }],
-    ["sqrt", { arity: 1, cpp: shared("sqrt") }],
-    ["tan", { arity: 1, cpp: shared("tan") }],
-    ["atan", { arity: 1, cpp: compilerOnly("atan") }],
-    ["acos", { arity: 1, cpp: shared("acos") }],
-    ["asin", { arity: 1, cpp: shared("asin") }],
-    ["log", { arity: 1, cpp: shared("log") }],
-    ["log2", { arity: 1, cpp: shared("log2") }],
-    ["log10", { arity: 1, cpp: compilerOnly("log10") }],
-    ["log1p", { arity: 1, cpp: compilerOnly("log1p") }],
-    ["expm1", { arity: 1, cpp: compilerOnly("expm1") }],
-    ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
-    ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
-    ["cosh", { arity: 1, cpp: compilerOnly("cosh") }],
-    ["tanh", { arity: 1, cpp: compilerOnly("tanh") }],
-    ["asinh", { arity: 1, cpp: compilerOnly("asinh") }],
-    ["acosh", { arity: 1, cpp: compilerOnly("acosh") }],
-    ["atanh", { arity: 1, cpp: compilerOnly("atanh") }],
+    ["abs", { arity: 1, cpp: cmath("abs"), fold: Math.abs }],
+    ["ceil", { arity: 1, cpp: cmath("ceil"), fold: Math.ceil }],
+    ["cos", { arity: 1, cpp: cmath("cos") }],
+    ["floor", { arity: 1, cpp: cmath("floor"), fold: Math.floor }],
+    ["sin", { arity: 1, cpp: cmath("sin") }],
+    ["sqrt", { arity: 1, cpp: cmath("sqrt") }],
+    ["tan", { arity: 1, cpp: cmath("tan") }],
+    ["atan", { arity: 1, cpp: cmath("atan") }],
+    ["acos", { arity: 1, cpp: cmath("acos") }],
+    ["asin", { arity: 1, cpp: cmath("asin") }],
+    ["log", { arity: 1, cpp: cmath("log") }],
+    ["log2", { arity: 1, cpp: cmath("log2") }],
+    ["log10", { arity: 1, cpp: cmath("log10") }],
+    ["log1p", { arity: 1, cpp: cmath("log1p") }],
+    ["expm1", { arity: 1, cpp: cmath("expm1") }],
+    ["cbrt", { arity: 1, cpp: cmath("cbrt") }],
+    ["sinh", { arity: 1, cpp: cmath("sinh") }],
+    ["cosh", { arity: 1, cpp: cmath("cosh") }],
+    ["tanh", { arity: 1, cpp: cmath("tanh") }],
+    ["asinh", { arity: 1, cpp: cmath("asinh") }],
+    ["acosh", { arity: 1, cpp: cmath("acosh") }],
+    ["atanh", { arity: 1, cpp: cmath("atanh") }],
     [
         "fround",
         {
@@ -111,24 +119,30 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             reach: "js-data",
         },
     ],
-    ["exp", { arity: 1, cpp: compilerOnly("exp") }],
-    ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
-    // The pinned layer's `<cmath>` spelling; scene code lowers `Math.pow`
-    // through `exponentiationCall`, as it lowers `**`.
-    ["pow", { arity: 2, cpp: shared("pow") }],
-    ["atan2", { arity: 2, cpp: shared("atan2") }],
+    ["exp", { arity: 1, cpp: cmath("exp") }],
+    ["trunc", { arity: 1, cpp: cmath("trunc"), fold: Math.trunc }],
+    // The `<cmath>` spelling a pinned body's `Math.pow` takes; scene code
+    // lowers `Math.pow` through `exponentiationCall`, as it lowers `**`.
+    ["pow", { arity: 2, cpp: cmath("pow") }],
+    ["atan2", { arity: 2, cpp: cmath("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
     // half. `round_js` carries the spec's own rule.
     [
         "round",
-        { arity: 1, cpp: pinnedRoundCall, fold: Math.round, reach: "js-data" },
+        {
+            arity: 1,
+            cpp: (args) => `bbl::js::round_js(${args.join(", ")})`,
+            fold: Math.round,
+            reach: "js-data",
+        },
     ],
     [
         "sign",
         {
             arity: 1,
             cpp: (args) => `bbl::js::math_sign(${args.join(", ")})`,
+            fold: Math.sign,
             reach: "js-data",
         },
     ],
@@ -137,6 +151,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         {
             arity: 2,
             cpp: (args) => `bbl::js::math_imul(${args.join(", ")})`,
+            fold: Math.imul,
             reach: "js-data",
         },
     ],
@@ -152,7 +167,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         {
             arity: 0,
             variadic: true,
-            cpp: pinnedHypotCall,
+            cpp: (args) => `bbl::js::hypot_js({${args.join(", ")}})`,
             rangeCpp: (range) => `bbl::js::hypot_js(${range})`,
             reach: "js-data",
         },
@@ -181,10 +196,15 @@ export function exponentiationCall(
 ): { readonly cpp: string; readonly jsData: boolean } {
     return staticExponent !== undefined && Number.isFinite(staticExponent)
         ? {
-              cpp: `${pinnedMathSpelling("pow")}(${base}, ${exponent})`,
+              cpp: `std::pow(${base}, ${exponent})`,
               jsData: false,
           }
         : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
+}
+
+/** Whether two calls of the member may answer differently (`Math.random`). */
+export function mathMemberIsImpure(name: string): boolean {
+    return MATH_MEMBERS.get(name)?.impure === true;
 }
 
 /** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
@@ -194,12 +214,26 @@ export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
         : MATH_MEMBERS.get(name)?.cpp;
 }
 
-/** The exact fold of a one-argument member, where the table carries one. */
-export function mathUnaryFold(
+/**
+ * The generation-time value of `Math.<name>(...values)`, or undefined when
+ * the call must run: the one fold every reader shares. Max, min and the
+ * table's exact members fold; an approximated member folds only into
+ * generation-time source text (`formatted`, see FORMATTED_MATH_FOLDS), and
+ * an impure one (random) never does.
+ */
+export function foldMathCall(
     name: string,
-): ((value: number) => number) | undefined {
+    values: readonly number[],
+    formatted = false,
+): number | undefined {
+    if (name === "max" || name === "min") return Math[name](...values);
     const member = MATH_MEMBERS.get(name);
-    return member?.arity === 1 ? member.fold : undefined;
+    const fold =
+        member?.fold ??
+        (formatted ? FORMATTED_MATH_FOLDS.get(name) : undefined);
+    return fold && member && values.length === member.arity
+        ? fold(...values)
+        : undefined;
 }
 
 /** How a member's arity reads in a refusal. */
@@ -252,13 +286,13 @@ export function mathConstantAccess(
  * (`toFixed` over a folded angle). Ordinary numeric expressions keep these
  * native, so their runtime width and library semantics are unchanged.
  */
-export const FORMATTED_MATH_FOLDS: ReadonlyMap<
+const FORMATTED_MATH_FOLDS: ReadonlyMap<
     string,
-    { readonly arity: number; readonly fold: (...args: number[]) => number }
-> = new EmissionMap([
-    ["atan2", { arity: 2, fold: Math.atan2 }],
-    ["cos", { arity: 1, fold: Math.cos }],
-    ["sin", { arity: 1, fold: Math.sin }],
+    (...values: number[]) => number
+> = new EmissionMap<string, (...values: number[]) => number>([
+    ["atan2", Math.atan2],
+    ["cos", Math.cos],
+    ["sin", Math.sin],
 ]);
 
 /**
@@ -284,6 +318,15 @@ export function mathMemberCall(
     if (!ts.isCallExpression(expression)) return undefined;
     const access = mathMemberAccess(expression.expression, libraryGlobal);
     return access ? { name: access.name.text, call: expression } : undefined;
+}
+
+/** A call of a member the table spells (max and min included), with its name. */
+export function spelledMathCall(
+    expression: ts.Expression,
+    libraryGlobal: LibraryGlobal,
+): ReturnType<typeof mathMemberCall> {
+    const math = mathMemberCall(expression, libraryGlobal);
+    return math && mathCallSpelling(math.name) ? math : undefined;
 }
 
 /** Math callbacks use the native numeric helpers and owned rest-array convention. */

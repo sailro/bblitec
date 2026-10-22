@@ -27,15 +27,8 @@ import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
-import {
-    moduleSymbols,
-    pinnedCheckerOf,
-    pinnedNamesOf,
-} from "../pinned-program.js";
-import {
-    declarationInDefaultLibrary,
-    declaredSymbol,
-} from "../compiler/symbols.js";
+import { pinnedCheckerOf, pinnedLibraryGlobal } from "../pinned-program.js";
+import { declaredSymbol } from "../compiler/symbols.js";
 import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
@@ -4598,35 +4591,23 @@ export class PinnedNumericLowerer {
         if (
             !spelling &&
             ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Math"
+            pinnedLibraryGlobal(callee.expression) === "Math"
         ) {
-            const declaration = pinnedNamesOf(
-                callee.getSourceFile(),
-            ).declarationOf(callee.expression);
-            const global = declaration
-                ? declarationInDefaultLibrary(declaration)
-                : !declaredSymbol(
-                      moduleSymbols(callee.getSourceFile()),
-                      callee.expression,
-                  );
-            if (global) {
-                const method = callee.name.text;
-                const member = MATH_MEMBERS.get(method);
-                if (
-                    member &&
-                    (member.variadic
-                        ? args.length < member.arity
-                        : args.length !== member.arity)
-                )
-                    this.fail(node, `'${name}' arity`);
-                const arguments_ = this.scope.mathValue
-                    ? args.map(this.scope.mathValue.argument)
-                    : args;
-                const result = mathCallSpelling(method)?.(arguments_);
-                if (result !== undefined)
-                    return this.scope.mathValue?.result(result) ?? result;
-            }
+            const method = callee.name.text;
+            const member = MATH_MEMBERS.get(method);
+            if (
+                member &&
+                (member.variadic
+                    ? args.length < member.arity
+                    : args.length !== member.arity)
+            )
+                this.fail(node, `'${name}' arity`);
+            const arguments_ = this.scope.mathValue
+                ? args.map(this.scope.mathValue.argument)
+                : args;
+            const result = mathCallSpelling(method)?.(arguments_);
+            if (result !== undefined)
+                return this.scope.mathValue?.result(result) ?? result;
         }
         if (!spelling) this.fail(node, `call '${name}'`);
         const result = spelling(args);

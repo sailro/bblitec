@@ -56,7 +56,8 @@ import {
     type PinnedRecordMember,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedMathCall } from "./pinned-operators.js";
+import { spelledMathCall } from "../compiler/math-intrinsics.js";
+import { pinnedLibraryGlobal } from "../pinned-program.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { writeSites } from "../compiler/syntax.js";
 
@@ -180,7 +181,7 @@ function callsOutside(
         statement,
         (node) =>
             ts.isCallExpression(node) &&
-            !pinnedMathCall(node) &&
+            !spelledMathCall(node, pinnedLibraryGlobal) &&
             !allowed.has(node.expression.getText()),
     );
 }

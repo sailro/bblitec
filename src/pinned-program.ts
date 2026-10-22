@@ -3,6 +3,7 @@ import ts from "typescript";
 import {
     aliasTarget,
     compilerPackageTypings,
+    declarationInDefaultLibrary,
     declaredSymbol,
     resolvedSymbol,
 } from "./compiler/symbols.js";
@@ -625,6 +626,23 @@ export function pinnedNamesOf(file: ts.SourceFile): PinnedNames {
         singleFiles.set(file, single);
     }
     return single;
+}
+
+/**
+ * The library global a pinned expression names (`Math`), or undefined: an
+ * identifier the default library declares, or one the pin's own names leave
+ * undeclared. A pinned module's own binding of the name is not the global.
+ */
+export function pinnedLibraryGlobal(
+    expression: ts.Expression,
+): string | undefined {
+    if (!ts.isIdentifier(expression)) return undefined;
+    const file = expression.getSourceFile();
+    const declaration = pinnedNamesOf(file).declarationOf(expression);
+    const global = declaration
+        ? declarationInDefaultLibrary(declaration)
+        : !declaredSymbol(moduleSymbols(file), expression);
+    return global ? expression.text : undefined;
 }
 
 /** Types from the same checked program as the pin's name resolution. */

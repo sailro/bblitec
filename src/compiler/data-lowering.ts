@@ -154,14 +154,12 @@ import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
     exponentiationCall,
+    foldMathCall,
     MATH_MEMBERS,
-    mathMemberAccess,
-    mathUnaryFold,
-} from "./math-intrinsics.js";
-import {
     mathExtremeCall,
     mathExtremeCpp,
-} from "../lowering/pinned-operators.js";
+    mathMemberAccess,
+} from "./math-intrinsics.js";
 import { ASSIGNMENT_OPERATORS, compoundAssignmentValue } from "./statements.js";
 import {
     dataTypesEqual,
@@ -8391,32 +8389,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             call.arguments.map((argument) =>
                 this.context.compileNumber(argument, "double"),
             );
-        // The integer-valued one-argument functions fold over a static
-        // argument (the table says which): the result is exact in both
-        // engines, so the folded value and the emitted call agree, and a
-        // scene that hands one to generation-time state (a particle
-        // column) needs the value rather than the expression.
-        const fold = mathUnaryFold(method);
-        if (fold && call.arguments.length === 1) {
-            // Folded from the SOURCE, never from a compiled value: this arm
-            // runs before the runtime path compiles the argument, and
-            // compiling it speculatively would emit an inlined body twice
-            // when the fold misses.
-            const argument = staticNumberValue(
-                this.context,
-                argumentAt(call, 0),
-            );
-            const folded = argument === undefined ? undefined : fold(argument);
-            if (folded !== undefined && Number.isFinite(folded)) {
-                return {
-                    kind: "number",
-                    cpp: doubleLiteral(folded),
-                    staticNumber: folded,
-                    dataType: { kind: "number" },
-                };
-            }
-        }
+        // An exact member folds over static arguments (foldMathCall says
+        // which), so a scene that hands one to generation-time state (a
+        // particle column) gets the value rather than the expression.
         const member = MATH_MEMBERS.get(method);
+        if (member?.fold) {
+            // Folded from the SOURCE, never from a compiled value: this arm
+            // runs before the runtime path compiles the arguments, and
+            // compiling one speculatively would emit an inlined body twice
+            // when the fold misses.
+            const values = call.arguments.map((argument) =>
+                staticNumberValue(this.context, argument),
+            );
+            const folded = values.every(
+                (value): value is number => value !== undefined,
+            )
+                ? foldMathCall(method, values)
+                : undefined;
+            if (folded !== undefined) return numberConstantValue(folded);
+        }
         if (member) {
             const count = call.arguments.length;
             if (
@@ -8484,7 +8475,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         )
                     ) {
                         this.context.emitDiscardedValue(spread);
-                        return numberConstantValue(Math[method](...parts));
+                        return numberConstantValue(
+                            foldMathCall(method, parts)!,
+                        );
                     }
                     range = this.compileKnownValueForSink(
                         spread,
@@ -8539,17 +8532,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const staticParts = call.arguments.map((argument) =>
                 this.context.evaluator.staticNumberThroughRecords(argument),
             );
-            if (
-                staticParts.every(
-                    (part): part is number =>
-                        part !== undefined &&
-                        Number.isFinite(part) &&
-                        !Object.is(part, -0),
-                )
-            ) {
-                const folded = Math[method](...staticParts);
-                return numberConstantValue(folded);
-            }
+            if (staticParts.every((part): part is number => part !== undefined))
+                return numberConstantValue(foldMathCall(method, staticParts)!);
             // The list evaluates left to right without a rest-array allocation;
             // stored and direct calls share NaN and signed-zero behavior.
             const parts = numbers();

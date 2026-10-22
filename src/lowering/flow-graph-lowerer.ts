@@ -31,7 +31,7 @@
  * name rather than approximating.
  */
 import ts from "typescript";
-import { mathCallSpelling } from "../compiler/math-intrinsics.js";
+import { foldMathCall, mathCallSpelling } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral,
     sanitizeCppIdentifier,
@@ -1831,27 +1831,19 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     private mathCall(method: string, args: Val[], node: ts.Node): Val {
-        if (
-            args.every(
-                (argument) =>
-                    argument.k === "static" &&
-                    typeof argument.value === "number",
-            )
-        ) {
-            const numbers = args.map(
-                (argument) => (argument as { value: number }).value,
-            );
-            const fn = (
-                Math as unknown as Record<
-                    string,
-                    (...values: number[]) => number
-                >
-            )[method];
-            if (typeof fn !== "function") this.fail(node, `Math.${method}`);
-            return staticNumber(fn(...numbers));
-        }
+        const numbers = args.map((argument) =>
+            argument.k === "static" && typeof argument.value === "number"
+                ? argument.value
+                : undefined,
+        );
+        const folded = numbers.every(
+            (value): value is number => value !== undefined,
+        )
+            ? foldMathCall(method, numbers)
+            : undefined;
+        if (folded !== undefined) return staticNumber(folded);
         const spell = mathCallSpelling(method);
-        if (!spell) this.fail(node, `Math.${method} over a run-time value`);
+        if (!spell) this.fail(node, `Math.${method}`);
         return {
             k: "residual",
             cpp: spell(args.map((argument) => this.graph.numberCpp(argument))),
