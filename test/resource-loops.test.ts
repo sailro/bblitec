@@ -695,7 +695,12 @@ test("keeps collected runtime handles live rather than snapshotting one loop ite
     `),
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
-    assert.equal(result.cpp.match(/\.rotation\.y \+=/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
     assert.match(result.cpp, /const auto& \w+ = v_meshes;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.doesNotMatch(result.cpp, /handle_table/);
