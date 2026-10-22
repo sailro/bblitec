@@ -94,6 +94,7 @@ import {
 import {
     jsBitwiseCall,
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
+    pinnedRemainderCall,
 } from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
@@ -10057,7 +10058,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             // `x %= y`: JavaScript's remainder of doubles is `fmod`.
             if (kind === ts.SyntaxKind.PercentEqualsToken) {
                 const place = this.numericPlace(expression.left);
-                return `${place} = std::fmod(${place}, ${this.value(expression.right)})`;
+                return `${place} = ${pinnedRemainderCall(place, this.value(expression.right))}`;
             }
             if (compound)
                 return `${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)}`;

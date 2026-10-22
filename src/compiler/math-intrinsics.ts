@@ -27,8 +27,14 @@ interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
     readonly arity: number;
     readonly variadic?: true;
-    /** The C++ call over doubles. */
-    readonly cpp: (args: readonly string[]) => string;
+    /**
+     * The C++ call over doubles; `statics` holds the arguments generation
+     * already knows (`Math.pow` spells `std::pow` under a finite exponent).
+     */
+    readonly cpp: (
+        args: readonly string[],
+        statics?: readonly (number | undefined)[],
+    ) => string;
     /** A variadic member over an already evaluated numeric range. */
     readonly rangeCpp?: (range: string) => string;
     /**
@@ -121,9 +127,15 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
     ["exp", { arity: 1, cpp: cmath("exp") }],
     ["trunc", { arity: 1, cpp: cmath("trunc"), fold: Math.trunc }],
-    // The `<cmath>` spelling a pinned body's `Math.pow` takes; scene code
-    // lowers `Math.pow` through `exponentiationCall`, as it lowers `**`.
-    ["pow", { arity: 2, cpp: cmath("pow") }],
+    // JavaScript exponentiation, as `**` lowers (exponentiationCall).
+    [
+        "pow",
+        {
+            arity: 2,
+            cpp: (args, statics) =>
+                exponentiationCall(args[0]!, args[1]!, statics?.[1]).cpp,
+        },
+    ],
     ["atan2", { arity: 2, cpp: cmath("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
@@ -367,8 +379,6 @@ export function mathFunctionValue(
         ? mathExtremeCpp(access.name.text, "argument_0")
         : variadic
           ? member!.rangeCpp!("argument_0")
-          : access.name.text === "pow"
-            ? exponentiationCall(parameters[0]!, parameters[1]!, undefined).cpp
-            : member!.cpp(parameters);
+          : member!.cpp(parameters);
     return nativeFunctionValue(context, access, type, `return ${body};`);
 }

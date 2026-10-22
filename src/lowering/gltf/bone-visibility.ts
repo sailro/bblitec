@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
+import { jsBitwiseNotCall } from "../pinned-operators.js";
 
 /** Zero mask denotes an absent entry in the admitted visibility-only native map. */
 export function lowerGltfBoneVisibility(context: LoweringContext): string {
@@ -43,7 +44,7 @@ export function lowerGltfBoneVisibility(context: LoweringContext): string {
                 ts.isPrefixUnaryExpression(node) &&
                 node.operator === ts.SyntaxKind.TildeToken
             )
-                return `bbl::js::bitwise_not(${numeric.expression(node.operand)})`;
+                return jsBitwiseNotCall(numeric.expression(node.operand));
             return undefined;
         },
         statement(node, numeric, indent) {

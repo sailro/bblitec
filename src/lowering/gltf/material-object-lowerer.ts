@@ -14,7 +14,10 @@ import type {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
+    jsBitwiseCall,
+    pinnedRemainderCall,
 } from "../pinned-operators.js";
+import { exponentiationCall } from "../../compiler/math-intrinsics.js";
 
 const numericOperators = new Map([
     ...PINNED_ARITHMETIC_OPERATORS,
@@ -358,14 +361,14 @@ export function lowerGltfMaterialObjectFunction(
                 if (operator === ts.SyntaxKind.PlusToken)
                     return `${value(node.left, lowerer)}.add(${value(node.right, lowerer)})`;
                 if (operator === ts.SyntaxKind.PercentToken)
-                    return `GltfPbrValue{std::fmod(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number())}`;
+                    return `GltfPbrValue{${pinnedRemainderCall(`${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`)}}`;
                 const token = numericOperators.get(operator);
                 if (token)
                     return `GltfPbrValue{${value(node.left, lowerer)}.number() ${token} ${value(node.right, lowerer)}.number()}`;
                 if (operator === ts.SyntaxKind.AsteriskAsteriskToken)
-                    return `GltfPbrValue{std::pow(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number())}`;
+                    return `GltfPbrValue{${exponentiationCall(`${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`, ts.isNumericLiteral(node.right) ? Number(node.right.text) : undefined).cpp}}`;
                 if (operator === ts.SyntaxKind.BarToken)
-                    return `GltfPbrValue{double(bbl::js::bitwise_or(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number()))}`;
+                    return `GltfPbrValue{double(${jsBitwiseCall(operator, `${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`)})}`;
             }
             if (ts.isCallExpression(node)) {
                 const resource = lowerResourceCall?.(node, lowerer);

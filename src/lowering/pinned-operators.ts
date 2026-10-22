@@ -151,6 +151,11 @@ export const PINNED_BITWISE_ASSIGNMENT_OPERATORS: ReadonlyMap<
     ],
 ]);
 
+/** `~operand`: JavaScript's ToInt32 complement, the `bbl::js` helper. */
+export function jsBitwiseNotCall(operand: string): string {
+    return `bbl::js::bitwise_not(${operand})`;
+}
+
 /** A bitwise operator as its `bbl::js` call, or undefined for another kind. */
 export function jsBitwiseCall(
     kind: ts.SyntaxKind,

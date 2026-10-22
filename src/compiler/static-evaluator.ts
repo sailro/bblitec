@@ -98,6 +98,8 @@ import {
     JS_BITWISE_FUNCTIONS,
     PINNED_ARITHMETIC_OPERATORS,
     jsBitwiseCall,
+    jsBitwiseNotCall,
+    pinnedRemainderCall,
 } from "../lowering/pinned-operators.js";
 import {
     exponentiationCall,
@@ -815,10 +817,9 @@ export class StaticEvaluator {
                 );
             }
             if (unwrapped.operator === ts.SyntaxKind.TildeToken) {
-                const compiled = `bbl::js::bitwise_not(${this.compileNumber(
-                    unwrapped.operand,
-                    "double",
-                )})`;
+                const compiled = jsBitwiseNotCall(
+                    this.compileNumber(unwrapped.operand, "double"),
+                );
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
@@ -957,9 +958,8 @@ export class StaticEvaluator {
                     : compiled;
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.PercentToken) {
-                // JavaScript % keeps the dividend sign, exactly like fmod.
                 const [left, right] = this.numericOperands(unwrapped);
-                const compiled = `std::fmod(${left}, ${right})`;
+                const compiled = pinnedRemainderCall(left, right);
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;

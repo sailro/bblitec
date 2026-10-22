@@ -62,8 +62,10 @@ import {
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
     PINNED_COMPARISON_OPERATORS,
     JS_BITWISE_FUNCTIONS,
+    foldNumericBinary,
     foldNumericUnary,
     jsBitwiseCall,
+    jsBitwiseNotCall,
 } from "./pinned-operators.js";
 import { isNullable, holdsOnly } from "../compiler/type-facts.js";
 
@@ -3499,16 +3501,15 @@ export class PinnedNumericLowerer {
         // A binding under its own name first, so a constant that names
         // itself recurses no further than one step and fails there.
         this.moduleConstants.set(initializer, undefined);
-        // A literal constant is also a value generation knows, which is
+        // A constant number is also a value generation knows, which is
         // what lets a serialized enumerator compare against it at
         // generation (`lockMode === LOCK_PER_PARTICLE`).
-        const literal = unwrapExpression(initializer);
+        const cpp = `(${this.expression(initializer)})`;
+        const staticNumber = this.staticNumberOf(initializer);
         const binding: PinnedBinding = {
-            cpp: `(${this.expression(initializer)})`,
+            cpp,
             type: "scalar",
-            ...(ts.isNumericLiteral(literal)
-                ? { staticNumber: Number(literal.text) }
-                : {}),
+            ...(staticNumber !== undefined ? { staticNumber } : {}),
         };
         this.moduleConstants.set(initializer, binding);
         return binding;
@@ -3545,6 +3546,7 @@ export class PinnedNumericLowerer {
                 node,
                 (child) => this.renderExpression(child),
                 this.scope.expressionSpelling,
+                (child) => this.staticNumberOf(child),
             ) ??
             this.fail(
                 node,
@@ -3572,7 +3574,7 @@ export class PinnedNumericLowerer {
         }
         if (ts.isPrefixUnaryExpression(node)) {
             if (node.operator === ts.SyntaxKind.TildeToken)
-                return `js::bitwise_not(${this.expression(node.operand)})`;
+                return jsBitwiseNotCall(this.expression(node.operand));
             // `--buffer.alive` in value position: the pin reads the slot it
             // just released, and both sides mean the decremented value.
             if (
@@ -3688,6 +3690,7 @@ export class PinnedNumericLowerer {
                         ? cppPrimary(this.condition(child))
                         : this.renderExpression(child),
                 this.scope.expressionSpelling,
+                (child) => this.staticNumberOf(child),
             );
         }
         if (ts.isPropertyAccessExpression(node)) {
@@ -3962,7 +3965,8 @@ export class PinnedNumericLowerer {
 
     /**
      * The number an expression already is: a literal, a binding the caller
-     * fixed, or a module constant the file declares as a literal.
+     * fixed, a module constant the file declares as a literal, or
+     * arithmetic over those (`1 / 2.4`).
      */
     private staticNumberOf(expression: ts.Expression): number | undefined {
         const node = unwrapExpression(expression);
@@ -3972,6 +3976,14 @@ export class PinnedNumericLowerer {
             return inner === undefined
                 ? undefined
                 : foldNumericUnary(node.operator, inner);
+        }
+        if (ts.isBinaryExpression(node)) {
+            const left = this.staticNumberOf(node.left);
+            if (left === undefined) return undefined;
+            const right = this.staticNumberOf(node.right);
+            return right === undefined
+                ? undefined
+                : foldNumericBinary(node.operatorToken.kind, left, right);
         }
         if (!ts.isIdentifier(node)) return undefined;
         const bound = this.binding(node) ?? this.moduleConstant(node);
@@ -4605,7 +4617,10 @@ export class PinnedNumericLowerer {
             const arguments_ = this.scope.mathValue
                 ? args.map(this.scope.mathValue.argument)
                 : args;
-            const result = mathCallSpelling(method)?.(arguments_);
+            const result = mathCallSpelling(method)?.(
+                arguments_,
+                node.arguments.map((argument) => this.staticNumberOf(argument)),
+            );
             if (result !== undefined)
                 return this.scope.mathValue?.result(result) ?? result;
         }

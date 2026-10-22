@@ -2484,16 +2484,7 @@ function validateMeshPrimitiveFeatures(
         return;
     }
     if (isGlobalUndefined(context.checker, node)) return;
-    let value = staticNumberValue(context, node);
-    if (
-        value === undefined &&
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken
-    ) {
-        const left = staticNumberValue(context, node.left),
-            right = staticNumberValue(context, node.right);
-        if (left !== undefined && right !== undefined) value = left << right;
-    }
+    const value = staticNumberValue(context, node);
     // gltf-feature-primitive owns winding, topology and uint32-strip in bits11–15.
     // Lower bits select shader inputs and require their own resource/variant admission.
     if (

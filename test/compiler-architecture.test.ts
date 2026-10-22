@@ -1108,6 +1108,25 @@ test("Math is folded, spelled and resolved through math-intrinsics.ts", () => {
         assert.ok(sourceFacts(path).calls.has("spelledMathCall"), path);
 });
 
+test("exponentiation, remainder and complement are spelled once", () => {
+    // exponentiationCall (std::pow only under a finite static exponent,
+    // else power_js), pinnedRemainderCall (fmod) and jsBitwiseNotCall are
+    // the only places that spell these operators as C++.
+    const spellers = (pattern: RegExp): string[] =>
+        sourcePaths
+            .filter((path) => pattern.test(readFileSync(path, "utf8")))
+            .sort();
+    assert.deepEqual(spellers(/std::pow[(]/), [
+        "src/compiler/math-intrinsics.ts",
+    ]);
+    assert.deepEqual(spellers(/std::fmod[(]/), [
+        "src/lowering/pinned-operators.ts",
+    ]);
+    assert.deepEqual(spellers(/bitwise_not[(]/), [
+        "src/lowering/pinned-operators.ts",
+    ]);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

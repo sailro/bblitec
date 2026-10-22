@@ -57,6 +57,7 @@ import {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
+    jsBitwiseCall,
     pinnedRemainderCall,
 } from "./pinned-operators.js";
 import {
@@ -1437,17 +1438,13 @@ class Interpreter implements ValueModel<Val, Binding> {
                 shape: "number",
             };
         }
-        if (
-            kind === ts.SyntaxKind.BarToken &&
-            right.k === "static" &&
-            right.value === 0
-        ) {
+        const bitwise = jsBitwiseCall(kind, a, b);
+        if (bitwise)
             return {
                 k: "residual",
-                cpp: `static_cast<double>(static_cast<std::int32_t>(${a}))`,
+                cpp: `static_cast<double>(${bitwise})`,
                 shape: "number",
             };
-        }
         return this.fail(node, "binary operator");
     }
 
@@ -1846,7 +1843,10 @@ class Interpreter implements ValueModel<Val, Binding> {
         if (!spell) this.fail(node, `Math.${method}`);
         return {
             k: "residual",
-            cpp: spell(args.map((argument) => this.graph.numberCpp(argument))),
+            cpp: spell(
+                args.map((argument) => this.graph.numberCpp(argument)),
+                numbers,
+            ),
             shape: "number",
         };
     }
