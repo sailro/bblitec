@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { countedLoopShape } from "./counted-loops.js";
 import { declarationOrigin, resolvedSymbol } from "./symbols.js";
 import {
     outermostWrapper,
@@ -262,56 +263,25 @@ function loopCounter(
     loop: ts.ForStatement,
     lengthSymbol: ts.Symbol,
 ): { symbol: ts.Symbol; start: ts.Expression } | undefined {
-    const initializer = loop.initializer;
-    if (
-        !initializer ||
-        !ts.isVariableDeclarationList(initializer) ||
-        initializer.declarations.length !== 1
-    )
-        return undefined;
-    const [declaration] = initializer.declarations;
-    if (
-        !declaration ||
-        !ts.isIdentifier(declaration.name) ||
-        !declaration.initializer
-    )
-        return undefined;
-    const symbol = resolvedSymbol(checker, declaration.name);
-    const condition = loop.condition && unwrapExpression(loop.condition);
-    if (
-        !symbol ||
-        !condition ||
-        !ts.isBinaryExpression(condition) ||
-        condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-        resolvedSymbol(checker, unwrapExpression(condition.left)) !== symbol ||
-        resolvedSymbol(checker, unwrapExpression(condition.right)) !==
-            lengthSymbol ||
-        !incrementsByOne(checker, loop.incrementor, symbol) ||
-        assigns(loop.statement, symbol, checker)
-    )
-        return undefined;
-    return { symbol, start: unwrapExpression(declaration.initializer) };
-}
-
-function incrementsByOne(
-    checker: ts.TypeChecker,
-    incrementor: ts.Expression | undefined,
-    symbol: ts.Symbol,
-): boolean {
-    const node = incrementor && unwrapExpression(incrementor);
-    if (!node) return false;
-    if (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node))
-        return (
-            node.operator === ts.SyntaxKind.PlusPlusToken &&
-            resolvedSymbol(checker, unwrapExpression(node.operand)) === symbol
-        );
-    return (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-        resolvedSymbol(checker, unwrapExpression(node.left)) === symbol &&
-        ts.isNumericLiteral(node.right) &&
-        node.right.text === "1"
+    const shape = countedLoopShape(loop, (identifier) =>
+        resolvedSymbol(checker, identifier),
     );
+    const condition = shape?.condition;
+    const step = shape?.step;
+    if (
+        !shape ||
+        !condition ||
+        condition.mirrored ||
+        condition.operator !== "<" ||
+        resolvedSymbol(checker, unwrapExpression(condition.bound)) !==
+            lengthSymbol ||
+        step?.sign !== 1 ||
+        (step.amount !== undefined &&
+            !(ts.isNumericLiteral(step.amount) && step.amount.text === "1")) ||
+        assigns(loop.statement, shape.symbol, checker)
+    )
+        return undefined;
+    return { symbol: shape.symbol, start: unwrapExpression(shape.start) };
 }
 
 /** Whether `node` writes the binding `symbol` names. */

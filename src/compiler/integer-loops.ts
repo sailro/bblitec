@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { countedLoopShape, type CountedLoopShape } from "./counted-loops.js";
 import {
     findAnalysisNodeWithState,
     someAnalysisNode,
@@ -6,7 +7,6 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import type { Value } from "./types.js";
 import {
-    isUpdateExpression,
     isSuspensionPoint,
     variableKind,
 } from "./syntax.js";
@@ -38,13 +38,6 @@ interface IntegerLoopCounter {
 const maximumStart = 2 ** 31;
 const maximumStep = 2 ** 8;
 
-const comparisons = new Map<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.LessThanToken, "<"],
-    [ts.SyntaxKind.LessThanEqualsToken, "<="],
-    [ts.SyntaxKind.GreaterThanToken, ">"],
-    [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-]);
-
 /**
  * The counter of `for (let i = <integer>; <condition>; <step>)` when it can
  * count natively: the step is `i++`, `++i`, `i--`, `--i`, `i += <integer>`
@@ -57,38 +50,24 @@ export function integerLoopCounter(
     context: IntegerLoopContext,
     statement: ts.ForStatement,
 ): IntegerLoopCounter | undefined {
-    const list = statement.initializer;
+    const shape = countedLoopShape(statement, (identifier) =>
+        context.symbols.valueSymbol(identifier),
+    );
     if (
-        list === undefined ||
-        !ts.isVariableDeclarationList(list) ||
-        variableKind(list) !== "let" ||
-        list.declarations.length !== 1
-    ) {
-        return undefined;
-    }
-    const declaration = list.declarations[0]!;
-    if (
-        !ts.isIdentifier(declaration.name) ||
-        declaration.initializer === undefined ||
-        (context.checker.getTypeAtLocation(declaration.name).flags &
+        !shape ||
+        shape.keyword !== "let" ||
+        (context.checker.getTypeAtLocation(shape.binding).flags &
             (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) ===
             0
     ) {
         return undefined;
     }
-    const start = staticInteger(context, declaration.initializer);
-    const symbol = context.symbols.valueSymbol(declaration.name);
-    if (
-        start === undefined ||
-        Math.abs(start) > maximumStart ||
-        symbol === undefined ||
-        statement.incrementor === undefined
-    ) {
-        return undefined;
-    }
+    const start = staticInteger(context, shape.start);
+    if (start === undefined || Math.abs(start) > maximumStart) return undefined;
+    const symbol = shape.symbol;
     const names = (node: ts.Node): boolean =>
         ts.isIdentifier(node) && context.symbols.valueSymbol(node) === symbol;
-    const step = counterStep(context, statement.incrementor, names);
+    const step = counterStep(context, shape.step);
     if (step === undefined) return undefined;
     const regions = [statement.condition, statement.statement].filter(
         (node): node is ts.Expression | ts.Statement => node !== undefined,
@@ -110,11 +89,9 @@ export function integerLoopCounter(
             ) !== undefined,
     );
     if (disqualified) return undefined;
-    const bound = statement.condition
-        ? integerBound(context, statement.condition, names)
-        : undefined;
+    const bound = integerBound(context, shape.condition);
     return {
-        binding: declaration.name,
+        binding: shape.binding,
         start,
         step,
         ...(bound ? { bound } : {}),
@@ -159,51 +136,26 @@ export function integerLoopStepCpp(
 
 function counterStep(
     context: IntegerLoopContext,
-    incrementor: ts.Expression,
-    names: (node: ts.Node) => boolean,
+    step: CountedLoopShape["step"],
 ): number | undefined {
-    const expression = context.unwrap(incrementor);
-    if (
-        isUpdateExpression(expression) &&
-        names(context.unwrap(expression.operand))
-    )
-        return expression.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1;
-    if (
-        !ts.isBinaryExpression(expression) ||
-        !names(context.unwrap(expression.left))
-    ) {
-        return undefined;
-    }
-    const amount = staticInteger(context, expression.right);
+    if (!step) return undefined;
+    if (step.amount === undefined) return step.sign;
+    const amount = staticInteger(context, step.amount);
     if (amount === undefined || amount === 0 || Math.abs(amount) > maximumStep)
         return undefined;
-    if (expression.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken)
-        return amount;
-    if (expression.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken)
-        return -amount;
-    return undefined;
+    return step.sign * amount;
 }
 
 /** `i < K` (or `K > i`, and the other orderings) against a static integer. */
 function integerBound(
     context: IntegerLoopContext,
-    condition: ts.Expression,
-    names: (node: ts.Node) => boolean,
+    condition: CountedLoopShape["condition"],
 ): IntegerLoopCounter["bound"] {
-    const comparison = context.unwrap(condition);
-    if (!ts.isBinaryExpression(comparison)) return undefined;
-    const operator = comparisons.get(comparison.operatorToken.kind);
-    if (!operator) return undefined;
-    if (names(context.unwrap(comparison.left))) {
-        const value = staticInteger(context, comparison.right);
-        return value === undefined ? undefined : { operator, value };
-    }
-    if (!names(context.unwrap(comparison.right))) return undefined;
-    const value = staticInteger(context, comparison.left);
-    const mirrored = operator.startsWith("<")
-        ? operator.replace("<", ">")
-        : operator.replace(">", "<");
-    return value === undefined ? undefined : { operator: mirrored, value };
+    if (!condition) return undefined;
+    const value = staticInteger(context, condition.bound);
+    return value === undefined
+        ? undefined
+        : { operator: condition.operator, value };
 }
 
 /**

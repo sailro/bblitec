@@ -2,6 +2,7 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { countedLoopShape } from "./counted-loops.js";
 import { classChain, classMemberTable } from "./class-members.js";
 import {
     isPinnedType,
@@ -38,7 +39,6 @@ import {
 import {
     guardsOperands,
     isDeclaredInside,
-    isUpdateExpression,
     rootIdentifier,
     unwrapExpression,
     writeSites,
@@ -999,51 +999,30 @@ export function staticIndexLoopShape(
     symbols: CompilerSymbols,
     statement: ts.ForStatement,
 ): StaticIndexLoop | undefined {
+    const shape = countedLoopShape(statement, (identifier) =>
+        symbols.valueSymbol(identifier),
+    );
+    const condition = shape?.condition;
+    const step = shape?.step;
+    // A literal start, an upward bound and a step of one.
     if (
-        !statement.initializer ||
-        !ts.isVariableDeclarationList(statement.initializer) ||
-        statement.initializer.declarations.length !== 1 ||
-        !statement.condition ||
-        !ts.isBinaryExpression(statement.condition) ||
-        (statement.condition.operatorToken.kind !==
-            ts.SyntaxKind.LessThanToken &&
-            statement.condition.operatorToken.kind !==
-                ts.SyntaxKind.LessThanEqualsToken) ||
-        !statement.incrementor
-    ) {
+        !shape ||
+        !ts.isNumericLiteral(shape.start) ||
+        !condition ||
+        condition.mirrored ||
+        (condition.operator !== "<" && condition.operator !== "<=") ||
+        step?.sign !== 1 ||
+        (step.amount !== undefined &&
+            !(ts.isNumericLiteral(step.amount) && step.amount.text === "1"))
+    )
         return undefined;
-    }
-    const declaration = statement.initializer.declarations[0]!;
-    const incrementor = statement.incrementor;
-    if (
-        !ts.isIdentifier(declaration.name) ||
-        !declaration.initializer ||
-        !ts.isNumericLiteral(declaration.initializer) ||
-        !ts.isIdentifier(statement.condition.left) ||
-        !isUpdateExpression(incrementor) ||
-        incrementor.operator !== ts.SyntaxKind.PlusPlusToken ||
-        !ts.isIdentifier(incrementor.operand)
-    ) {
-        return undefined;
-    }
-    const symbol = symbols.valueSymbol(declaration.name);
-    const start = Number(declaration.initializer.text);
-    if (
-        !symbol ||
-        symbols.valueSymbol(statement.condition.left) !== symbol ||
-        symbols.valueSymbol(incrementor.operand) !== symbol ||
-        !Number.isSafeInteger(start) ||
-        start < 0
-    ) {
-        return undefined;
-    }
+    const start = Number(shape.start.text);
+    if (!Number.isSafeInteger(start) || start < 0) return undefined;
     return {
-        indexBinding: declaration.name,
+        indexBinding: shape.binding,
         start,
-        end: statement.condition.right,
-        inclusive:
-            statement.condition.operatorToken.kind ===
-            ts.SyntaxKind.LessThanEqualsToken,
+        end: condition.bound,
+        inclusive: condition.operator === "<=",
     };
 }
 

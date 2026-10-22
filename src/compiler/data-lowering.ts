@@ -34,6 +34,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { countedLoopShape } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import {
@@ -6844,44 +6845,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               boundOwner: ts.Expression;
           }
         | undefined {
-        const initializer = loop.initializer;
-        if (
-            initializer === undefined ||
-            !ts.isVariableDeclarationList(initializer) ||
-            initializer.declarations.length !== 1
-        ) {
-            return undefined;
-        }
-        const declaration = initializer.declarations[0]!;
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            declaration.initializer === undefined
-        ) {
-            return undefined;
-        }
-        const start = staticNumberValue(this.context, declaration.initializer);
+        const shape = countedLoopShape(loop, (identifier) =>
+            declaredSymbol(this.context.checker, identifier),
+        );
+        if (!shape) return undefined;
+        const start = staticNumberValue(this.context, shape.start);
         if (start === undefined || !Number.isInteger(start) || start < 0) {
             return undefined;
         }
-        const indexSymbol = declaredSymbol(
-            this.context.checker,
-            declaration.name,
-        );
-        if (!indexSymbol) {
+        const indexSymbol = shape.symbol;
+        // `i < path.length`, stepping by one.
+        const condition = shape.condition;
+        if (!condition || condition.mirrored || condition.operator !== "<")
             return undefined;
-        }
-        const condition = loop.condition
-            ? this.context.unwrap(loop.condition)
-            : undefined;
-        if (
-            condition === undefined ||
-            !ts.isBinaryExpression(condition) ||
-            condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-            !this.isSameSymbolIdentifier(condition.left, indexSymbol)
-        ) {
-            return undefined;
-        }
-        const bound = this.context.unwrap(condition.right);
+        const bound = this.context.unwrap(condition.bound);
         if (
             !ts.isPropertyAccessExpression(bound) ||
             bound.questionDotToken !== undefined ||
@@ -6890,7 +6867,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         ) {
             return undefined;
         }
-        if (!this.isCanonicalIncrement(loop.incrementor, indexSymbol)) {
+        if (
+            shape.step?.sign !== 1 ||
+            (shape.step.amount !== undefined &&
+                staticNumberValue(this.context, shape.step.amount) !== 1)
+        ) {
             return undefined;
         }
         if (
@@ -6913,29 +6894,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return (
             ts.isIdentifier(unwrapped) &&
             declaredSymbol(this.context.checker, unwrapped) === symbol
-        );
-    }
-
-    private isCanonicalIncrement(
-        incrementor: ts.Expression | undefined,
-        indexSymbol: ts.Symbol,
-    ): boolean {
-        if (incrementor === undefined) {
-            return false;
-        }
-        const unwrapped = this.context.unwrap(incrementor);
-        if (
-            (ts.isPostfixUnaryExpression(unwrapped) ||
-                ts.isPrefixUnaryExpression(unwrapped)) &&
-            unwrapped.operator === ts.SyntaxKind.PlusPlusToken
-        ) {
-            return this.isSameSymbolIdentifier(unwrapped.operand, indexSymbol);
-        }
-        return (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-            this.isSameSymbolIdentifier(unwrapped.left, indexSymbol) &&
-            staticNumberValue(this.context, unwrapped.right) === 1
         );
     }
 

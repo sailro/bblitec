@@ -775,14 +775,13 @@ test("write sites are read through syntax.ts", () => {
     // These still test `delete`, `++` or `--` themselves, to lower those
     // forms or match a pinned shape; each leaves the list as its lowering
     // moves to one owner, and no other file may start.
+    // counted-loops.ts reads a loop's step: the counted-loop parser's own form.
     const pending = [
         "src/compiler.ts",
-        "src/compiler/array-length-growth.ts",
         "src/compiler/bigint-values.ts",
+        "src/compiler/counted-loops.ts",
         "src/compiler/data-lowering.ts",
-        "src/compiler/integer-loops.ts",
         "src/compiler/node-input-surface.ts",
-        "src/compiler/resource-loops.ts",
         "src/compiler/statements.ts",
         "src/compiler/static-evaluator.ts",
         "src/compiler/text-surface.ts",
@@ -1034,4 +1033,20 @@ test("a body's final return is read through loop-control.ts", () => {
         0,
     );
     assert.ok(reads <= 28, `statements.at(-1) reads: ${reads}`);
+});
+
+test("a counted loop's shape is parsed by counted-loops.ts", () => {
+    // countedLoopShape reads `for (let i = start; i < bound; i++)` once; the
+    // static unroller, the native integer counter, the bounds-check facts and
+    // the length-growth proof each apply only their own policy to it.
+    assert.deepEqual(declarationOwners("countedLoopShape"), [
+        "src/compiler/counted-loops.ts",
+    ]);
+    for (const path of [
+        "src/compiler/resource-loops.ts",
+        "src/compiler/integer-loops.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/array-length-growth.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("countedLoopShape"), path);
 });
