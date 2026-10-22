@@ -527,17 +527,25 @@ export function functionUsesDynamicThis(
  * `mutatingArrayMethods`. Both are legitimate and neither is the other's
  * default, so the predicate is a parameter rather than a second copy of the
  * three clauses.
+ *
+ * `isTarget` learns whether the target is assigned or is a mutated
+ * receiver: assigning a bare name rebinds it, which a caller tracking the
+ * object rather than the name does not count.
  */
 function writesThroughRoot(
     node: ts.Node,
-    isTarget: (expression: ts.Expression) => boolean,
+    isTarget: (
+        expression: ts.Expression,
+        via: "assignment" | "receiver",
+    ) => boolean,
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
     checker?: ts.TypeChecker,
     sourceFiles?: readonly ts.SourceFile[],
 ): boolean {
     const writes = writeSites(node);
-    if (writes.length > 0) return writes.some(({ target }) => isTarget(target));
+    if (writes.length > 0)
+        return writes.some(({ target }) => isTarget(target, "assignment"));
     if (
         checker &&
         sourceFiles &&
@@ -551,7 +559,7 @@ function writesThroughRoot(
         target !== undefined &&
         (!checker ||
             typeCanCarryReference(checker.getTypeAtLocation(target))) &&
-        isTarget(target)
+        isTarget(target, "receiver")
     );
 }
 

@@ -944,14 +944,16 @@ test("a union's members are read through type-facts.ts", () => {
 });
 
 test("what another owner keeps is read through kept-values.ts", () => {
-    // literalHeldValues (a literal's values at any depth) and keptArguments
-    // (a construction, a storing call) serve every scan of what another
-    // owner keeps: an object written after its initializer, a callback
-    // that shares the bindings it captures.
+    // literalHeldValues (a literal's values at any depth), keptArguments
+    // (a construction, a storing call) and callResultCanHoldReceiver (a
+    // method's result keeping its receiver) serve every scan of what
+    // another owner keeps: an object written after its initializer, a
+    // callback that shares the bindings it captures.
     for (const name of [
         "literalHeldValues",
         "keptArguments",
         "constructionKeepsArguments",
+        "callResultCanHoldReceiver",
     ])
         assert.deepEqual(
             declarationOwners(name),

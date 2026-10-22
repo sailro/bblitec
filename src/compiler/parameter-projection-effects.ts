@@ -38,6 +38,7 @@ import {
     inheritsFrom,
 } from "./type-facts.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
+import { callResultCanHoldReceiver } from "./kept-values.js";
 
 type Path = readonly string[];
 
@@ -213,9 +214,10 @@ export function visitMutableArgumentReferences(
                 part.arguments.forEach((argument, argumentIndex) =>
                     visit(argument, [], part, argumentIndex),
                 );
-                forEachAnalysisNode(part.expression, collect, {
-                    functions: "skip",
-                });
+                if (callResultCanHoldReceiver(checker, part))
+                    forEachAnalysisNode(part.expression, collect, {
+                        functions: "skip",
+                    });
                 return "skip";
             }
             if (

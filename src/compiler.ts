@@ -367,7 +367,10 @@ import {
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
-import { keptArguments } from "./compiler/kept-values.js";
+import {
+    callResultCanHoldReceiver,
+    keptArguments,
+} from "./compiler/kept-values.js";
 
 export type {
     CompileAsset,
@@ -3133,7 +3136,18 @@ class Compiler implements LoweringServices {
                 : undefined;
         const files = new Set(initialFiles);
         const aliases = new Set([symbol]);
+        // Named helpers that return the constant: a call of one is the
+        // constant.
+        const returners = new Set<ts.Symbol>();
+        const returnsConstant = (call: ts.CallExpression): boolean => {
+            const callee = unwrapExpression(call.expression);
+            const called = ts.isIdentifier(callee)
+                ? this.symbols.valueSymbol(callee)
+                : undefined;
+            return called !== undefined && returners.has(called);
+        };
         const names = (node: ts.Node): boolean => {
+            if (ts.isCallExpression(node)) return returnsConstant(node);
             const named =
                 ts.isIdentifier(node) ||
                 ts.isPropertyAccessExpression(node) ||
@@ -3156,11 +3170,16 @@ class Compiler implements LoweringServices {
                     )
                         return "skip";
                     if (ts.isCallExpression(node)) {
-                        let retained = someAnalysisNode(
-                            node.expression,
-                            names,
-                            { functions: "skip" },
-                        );
+                        // A function's result is not the function; a
+                        // method's can be its receiver or a member of it.
+                        let retained = ts.isIdentifier(
+                            unwrapExpression(node.expression),
+                        )
+                            ? returnsConstant(node)
+                            : callResultCanHoldReceiver(this.checker, node) &&
+                              someAnalysisNode(node.expression, names, {
+                                  functions: "skip",
+                              });
                         node.arguments.forEach((_, index) => {
                             visitMutableArgumentReferences(
                                 this.checker,
@@ -3220,26 +3239,31 @@ class Compiler implements LoweringServices {
             for (const file of files) {
                 const written = someAnalysisNode(file, (node) => {
                     if (
-                        scalarRecord &&
                         ts.isReturnStatement(node) &&
                         node.expression &&
                         mentions(node.expression)
                     ) {
                         // A named helper can return a container holding the
-                        // identity. Follow its callers, including importing files.
+                        // identity. Follow its callers, including importing
+                        // files; a scalar record's certificate cannot follow
+                        // any other function's result.
                         const owner = ts.findAncestor(
                             node.parent,
                             ts.isFunctionLike,
                         );
-                        if (
-                            !owner ||
-                            !ts.isFunctionDeclaration(owner) ||
-                            !owner.name
-                        )
-                            return true;
-                        const returnedBy = this.symbols.valueSymbol(owner.name);
-                        if (!returnedBy) return true;
-                        addAlias(returnedBy);
+                        const returnedBy =
+                            owner &&
+                            ts.isFunctionDeclaration(owner) &&
+                            owner.name
+                                ? this.symbols.valueSymbol(owner.name)
+                                : undefined;
+                        if (returnedBy) {
+                            if (!returners.has(returnedBy)) {
+                                returners.add(returnedBy);
+                                changed = true;
+                            }
+                            addAlias(returnedBy);
+                        } else if (scalarRecord) return true;
                     }
                     // Stored or returned references can acquire aliases outside
                     // this binding walk. A closed scalar-record certificate must
@@ -3278,6 +3302,17 @@ class Compiler implements LoweringServices {
                     )
                         for (const iterated of node.initializer.declarations)
                             alias(iterated.name);
+                    // `view = M`, `view ??= M`, a pattern leaf or a loop target:
+                    // the name holds what it receives.
+                    for (const { target, stored, from } of writeSites(node)) {
+                        const source = stored ?? from;
+                        if (
+                            ts.isIdentifier(target) &&
+                            source &&
+                            mentions(source)
+                        )
+                            alias(target);
+                    }
                     return (
                         // The alias walk can stop at a getter's scalar result,
                         // but evaluating that getter may still mutate its owner.
@@ -3293,7 +3328,16 @@ class Compiler implements LoweringServices {
                             this.evaluationOrder.writesStorage(node)) ||
                         writesThroughTrackedRoot(
                             node,
-                            (target) => names(this.unwrap(target)),
+                            // Assigning an alias name rebinds the name; the
+                            // object it held is unchanged.
+                            (target, via) => {
+                                const written = this.unwrap(target);
+                                return via === "assignment" &&
+                                    ts.isIdentifier(written)
+                                    ? this.symbols.valueSymbol(written) ===
+                                          symbol
+                                    : names(written);
+                            },
                             undefined,
                             this.checker,
                             this.program.getSourceFiles(),
@@ -3309,14 +3353,10 @@ class Compiler implements LoweringServices {
                                     ) &&
                                     writesArgument(node, index),
                             )) ||
-                        // A member kept past the call (a construction, a
-                        // storing call) is written through its new owner;
-                        // the binding itself escapes whole.
-                        keptArguments(this.checker, node).some(
-                            (argument) =>
-                                !ts.isIdentifier(unwrapExpression(argument)) &&
-                                mentions(argument),
-                        )
+                        // The constant, or a member of it, kept past the call
+                        // (a construction, a storing call) is written through
+                        // its new owner.
+                        keptArguments(this.checker, node).some(mentions)
                     );
                 });
                 if (written) return true;

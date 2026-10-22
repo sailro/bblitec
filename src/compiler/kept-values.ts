@@ -1,7 +1,8 @@
 import ts from "typescript";
-import { isStoringDataCall } from "./receiver-methods.js";
+import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
 import { libraryGlobal } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
+import { arrayShape, typeCanCarryReference } from "./type-facts.js";
 
 /**
  * The values a literal holds, at any depth: an object literal's property
@@ -58,4 +59,27 @@ export function keptArguments(
     )
         return node.arguments ?? [];
     return [];
+}
+
+/**
+ * Whether a call's result can share identity with its callee's receiver
+ * (`receiver.method(...)`). A library array whose elements carry no
+ * reference hands out only itself, which only its mutating methods return;
+ * any other receiver may return itself or a member.
+ */
+export function callResultCanHoldReceiver(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
+    const callee = unwrapExpression(call.expression);
+    if (!ts.isPropertyAccessExpression(callee)) return true;
+    const shape = arrayShape(
+        checker,
+        checker.getTypeAtLocation(callee.expression),
+    );
+    return (
+        shape === undefined ||
+        typeCanCarryReference(shape.element) ||
+        mutatingArrayMethods.has(callee.name.text)
+    );
 }

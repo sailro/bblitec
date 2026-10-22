@@ -284,8 +284,7 @@ function collectMutatedContainerSymbols(
         const symbol = moduleContainerSymbol(target, checker, symbols);
         if (symbol) mutated.add(symbol);
     };
-    const heldMember = (value: ts.Expression): boolean =>
-        !ts.isIdentifier(unwrapExpression(value)) &&
+    const heldReference = (value: ts.Expression): boolean =>
         typeCanCarryReference(checker.getTypeAtLocation(value));
     const recordThrough = (target: ts.Expression): void => {
         // A write to the name itself is a rebinding, not a write through it.
@@ -304,20 +303,20 @@ function collectMutatedContainerSymbols(
             typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
         ) {
             const alias = symbols.valueSymbol(node.name);
-            // The container itself, or (a literal holding them) its members.
+            // The container itself, or a literal holding it or its members.
             const origins = [
                 node.initializer,
-                ...literalHeldValues(node.initializer).filter(heldMember),
+                ...literalHeldValues(node.initializer).filter(heldReference),
             ].flatMap((value) => {
                 const origin = moduleContainerSymbol(value, checker, symbols);
                 return origin ? [origin] : [];
             });
             if (alias && origins.length > 0) aliases.set(alias, origins);
         }
-        // A member kept past a call (a construction, a storing call) is
-        // written through its new owner; the container itself escapes whole.
+        // A container, or a member of one, kept past a call (a construction,
+        // a storing call) is written through its new owner.
         for (const argument of keptArguments(checker, node))
-            if (heldMember(argument)) record(argument);
+            if (heldReference(argument)) record(argument);
         if (ts.isCallExpression(node)) {
             const called = calledDeclaration(checker, node);
             node.arguments.forEach((argument, index) => {

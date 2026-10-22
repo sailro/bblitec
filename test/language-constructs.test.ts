@@ -15153,3 +15153,16 @@ check(
         throw new Error("pad " + s.padStart(6, "-"));
     `,
 );
+check(
+    "a module Map written through a reassigned alias or a returning helper",
+    `
+    function entries(): [string, number][] { return [["a", 1], ["b", 1]]; }
+    const M = new Map(entries());
+    let view = new Map<string, number>();
+    view = M;
+    view.set("a", 2);
+    function registry(): Map<string, number> { return M; }
+    registry().set("b", 3);
+    if (M.get("a") !== 2 || M.get("b") !== 3) throw new Error("map aliases " + M.get("a") + " " + M.get("b"));
+    `,
+);
