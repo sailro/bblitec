@@ -165,6 +165,40 @@ export function staticScalarValue(
     return undefined;
 }
 
+/** A Number formatting method a generation-time string folds. */
+export type NumberFormat = "toFixed" | "toPrecision" | "toExponential";
+
+/** The integer digit counts each format accepts (JavaScript throws a RangeError outside). */
+export const NUMBER_FORMAT_DIGITS: ReadonlyMap<
+    NumberFormat,
+    readonly [number, number]
+> = new EmissionMap<NumberFormat, readonly [number, number]>([
+    ["toFixed", [0, 100]],
+    ["toPrecision", [1, 100]],
+    ["toExponential", [0, 100]],
+]);
+
+/** The format a method name is, or undefined. */
+export function numberFormatOf(name: string): NumberFormat | undefined {
+    return [...NUMBER_FORMAT_DIGITS.keys()].find((format) => format === name);
+}
+
+/**
+ * `value.<format>(digits)` folded with the engine's own formatting, or
+ * undefined when `digits` is no integer in the format's range.
+ */
+export function foldNumberFormat(
+    format: NumberFormat,
+    value: number,
+    digits: number | undefined,
+): string | undefined {
+    if (digits === undefined) return value[format]();
+    const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
+    return Number.isInteger(digits) && digits >= low && digits <= high
+        ? value[format](digits)
+        : undefined;
+}
+
 export function numberConstantValue(value: number): Value {
     const cpp = Number.isNaN(value)
         ? "std::numeric_limits<double>::quiet_NaN()"

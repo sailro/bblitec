@@ -74,8 +74,11 @@ import {
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
+    foldNumberFormat,
+    NUMBER_FORMAT_DIGITS,
     numberConstant,
     numberConstantValue,
+    numberFormatOf,
     numberPredicateFunction,
 } from "./number-intrinsics.js";
 import {
@@ -204,6 +207,7 @@ import {
     isVoid,
     valueKindOf,
     callSignatures,
+    stringPlusOperands,
 } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -2131,18 +2135,11 @@ export class ExpressionLowerer {
         node: ts.Expression,
         operands: ts.Expression[],
     ): void {
-        const unwrapped = this.context.unwrap(node);
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
-                "string"
-        ) {
-            this.collectStringPlusOperands(unwrapped.left, operands);
-            this.collectStringPlusOperands(unwrapped.right, operands);
-            return;
-        }
-        operands.push(node);
+        operands.push(
+            ...(stringPlusOperands(this.context.checker, node, (expression) =>
+                this.context.unwrap(expression),
+            ) ?? [node]),
+        );
     }
 
     /** A local module namespace exposes value exports in lexical key order. */
@@ -7210,40 +7207,14 @@ export class ExpressionLowerer {
                     `Number.${callee.name.text} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
                 );
             }
-            let text: string;
-            if (callee.name.text === "toFixed") {
-                if (digits !== undefined && (digits < 0 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toFixed precision must be between 0 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toFixed()
-                        : number.toFixed(digits);
-            } else if (callee.name.text === "toPrecision") {
-                if (digits !== undefined && (digits < 1 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toPrecision precision must be between 1 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toPrecision()
-                        : number.toPrecision(digits);
-            } else {
-                if (digits !== undefined && (digits < 0 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toExponential precision must be between 0 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toExponential()
-                        : number.toExponential(digits);
+            const format = numberFormatOf(callee.name.text)!;
+            const text = foldNumberFormat(format, number, digits);
+            if (text === undefined) {
+                const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
+                this.context.fail(
+                    call,
+                    `Number.${format} precision must be between ${low} and ${high}.`,
+                );
             }
             return {
                 kind: "string",

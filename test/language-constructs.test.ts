@@ -15252,3 +15252,11 @@ check(
     if (seen !== 42 || caught !== 2) throw new Error("own then " + seen + " " + caught);
     `,
 );
+check(
+    "a numeric sum inside a folded string keeps its sum",
+    `
+    const joined = [1 + 2 + "x", 4].join("-");
+    const parts = [1 + 2, "y" + 1 + 2].join("|");
+    if (joined !== "3x-4" || parts !== "3|y12") throw new Error("plus " + joined + " " + parts);
+    `,
+);

@@ -44,7 +44,12 @@ import { EmissionSet, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { isStringValue, presenceCpp, type Value } from "./types.js";
 import { CompileError } from "./compile-error.js";
-import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
+import {
+    foldNumberFormat,
+    numberConstant,
+    numberConstantValue,
+    numberFormatOf,
+} from "./number-intrinsics.js";
 import {
     declaredSymbol,
     isGlobalUndefined,
@@ -71,6 +76,7 @@ import {
     absenceKind,
     excludesObjectColour,
     isNullable,
+    stringPlusOperands,
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -1370,10 +1376,24 @@ export class StaticEvaluator {
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
         ) {
-            return (
-                this.compileStringLiteral(unwrapped.left) +
-                this.compileStringLiteral(unwrapped.right)
+            // A string `+` joins its operands' texts; a numeric `+` -- one
+            // operand of it, or the whole -- is its sum's text.
+            const operands = stringPlusOperands(
+                this.checker,
+                unwrapped,
+                (expression) => this.unwrap(expression),
             );
+            return operands
+                ? operands
+                      .map((operand) =>
+                          valueKindOf(
+                              this.checker.getTypeAtLocation(operand),
+                          ) === "string"
+                              ? this.compileStringLiteral(operand)
+                              : this.staticText(operand),
+                      )
+                      .join("")
+                : this.staticText(unwrapped);
         }
         if (ts.isTemplateExpression(unwrapped)) {
             let result = unwrapped.head.text;
@@ -2064,13 +2084,16 @@ export class StaticEvaluator {
         }
         const numeric = this.staticNumberThroughRecords(unwrapped);
         if (numeric !== undefined) return String(numeric);
-        if (
+        const format =
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ["toFixed", "toPrecision", "toExponential"].includes(
-                unwrapped.expression.name.text,
-            ) &&
             unwrapped.arguments.length <= 1
+                ? numberFormatOf(unwrapped.expression.name.text)
+                : undefined;
+        if (
+            format &&
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression)
         ) {
             const number = this.staticNumberValue(
                 unwrapped.expression.expression,
@@ -2078,33 +2101,12 @@ export class StaticEvaluator {
             const digits = unwrapped.arguments[0]
                 ? this.staticNumberValue(unwrapped.arguments[0])
                 : undefined;
-            const method = unwrapped.expression.name.text;
-            if (number !== undefined && unwrapped.arguments.length === 0) {
-                return method === "toFixed"
-                    ? number.toFixed()
-                    : method === "toPrecision"
-                      ? number.toPrecision()
-                      : number.toExponential();
-            }
-            if (
-                number !== undefined &&
-                digits !== undefined &&
-                Number.isInteger(digits)
-            ) {
-                if (method === "toFixed" && digits >= 0 && digits <= 100) {
-                    return number.toFixed(digits);
-                }
-                if (method === "toPrecision" && digits >= 1 && digits <= 100) {
-                    return number.toPrecision(digits);
-                }
-                if (
-                    method === "toExponential" &&
-                    digits >= 0 &&
-                    digits <= 100
-                ) {
-                    return number.toExponential(digits);
-                }
-            }
+            const text =
+                number === undefined ||
+                (unwrapped.arguments.length > 0 && digits === undefined)
+                    ? undefined
+                    : foldNumberFormat(format, number, digits);
+            if (text !== undefined) return text;
         }
         if (
             ts.isIdentifier(unwrapped) ||

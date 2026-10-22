@@ -2177,11 +2177,14 @@ export class BrowserErasure {
                 isParseFloatCallee(unwrapped.expression, this.context) &&
                 unwrapped.arguments.length === 1
             ) {
+                // A browser string folds; any other argument is ordinary
+                // program data the runtime path converts, never an empty
+                // string (an unknown value folded to NaN).
                 const argument = this.browserValueOf(argumentAt(unwrapped, 0));
-                const text = argument?.kind === "string" ? argument.value : "";
+                if (argument?.kind !== "string") return undefined;
                 return {
                     kind: "number",
-                    value: Number.parseFloat(text),
+                    value: Number.parseFloat(argument.value),
                 };
             }
             if (

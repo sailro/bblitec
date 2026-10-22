@@ -1412,18 +1412,16 @@ export class UiProjection {
                 }
                 return true;
             }
+            // A numeric `+` is one operand (`1 + 2 + "x"` spells 3).
             if (
                 !ts.isBinaryExpression(current) ||
-                current.operatorToken.kind !== ts.SyntaxKind.PlusToken
+                current.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+                valueKindOf(this.context.checker.getTypeAtLocation(current)) !==
+                    "string"
             )
                 return false;
             if (!runtimeOperands)
                 return collect(current.left) && collect(current.right);
-            if (
-                valueKindOf(this.context.checker.getTypeAtLocation(current)) !==
-                "string"
-            )
-                return false;
             operand(current.left);
             operand(current.right);
             return true;

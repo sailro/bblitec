@@ -1327,7 +1327,7 @@ void set_sprite_2d_uv_offset(
         index >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
             "setSprite2DUvOffset: index " +
-            std::to_string(index) +
+            js::number_to_string(index) +
             " out of range [0, " + std::to_string(layer.count) + ")");
     }
     ensure_sprite_uv_scroll(layer);

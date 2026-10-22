@@ -55,6 +55,38 @@ export function valueKindOf(member: ts.Type): ValueKind {
         : "unknown";
 }
 
+/**
+ * The operands a string `+` joins, left to right, or undefined when `node`
+ * is no `+` whose type is a string. Every nested `+` whose own type is a
+ * string joins the same concatenation; a nested numeric `+` -- `1 + 2 + "x"`
+ * -- stays one operand, because its sum is what JavaScript spells.
+ */
+export function stringPlusOperands(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression,
+): ts.Expression[] | undefined {
+    const joins = (expression: ts.Expression): boolean => {
+        const unwrapped = unwrap(expression);
+        return (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            valueKindOf(checker.getTypeAtLocation(unwrapped)) === "string"
+        );
+    };
+    if (!joins(node)) return undefined;
+    const operands: ts.Expression[] = [];
+    const collect = (expression: ts.Expression): void => {
+        const unwrapped = unwrap(expression);
+        if (joins(unwrapped) && ts.isBinaryExpression(unwrapped)) {
+            collect(unwrapped.left);
+            collect(unwrapped.right);
+        } else operands.push(expression);
+    };
+    collect(node);
+    return operands;
+}
+
 /** The kinds of value a type's members hold; `never` holds none. */
 export function valueKinds(type: ts.Type): ReadonlySet<ValueKind> {
     if ((type.flags & ts.TypeFlags.Never) !== 0) return new Set();

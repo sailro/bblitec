@@ -1175,6 +1175,29 @@ test("ToUint32 / ToInt32 of a JavaScript number are spelled once", () => {
     assert.ok(casts <= 163, `static_cast<std::uint32_t> casts: ${casts}`);
 });
 
+test("string concatenation operands and number formats are read once", () => {
+    // stringPlusOperands keeps a numeric `+` one operand (`1 + 2 + "x"` is
+    // "3x") for the runtime concatenation, the static string fold and UI
+    // text; foldNumberFormat is the one toFixed / toPrecision /
+    // toExponential fold.
+    assert.deepEqual(declarationOwners("stringPlusOperands"), [
+        "src/compiler/type-facts.ts",
+    ]);
+    for (const path of [
+        "src/compiler/expressions.ts",
+        "src/compiler/static-evaluator.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("stringPlusOperands"), path);
+    assert.deepEqual(declarationOwners("foldNumberFormat"), [
+        "src/compiler/number-intrinsics.ts",
+    ]);
+    for (const path of [
+        "src/compiler/expressions.ts",
+        "src/compiler/static-evaluator.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("foldNumberFormat"), path);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

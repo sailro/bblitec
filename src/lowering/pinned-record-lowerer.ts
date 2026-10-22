@@ -114,6 +114,7 @@ import {
     valueKindOf,
     callSignatures,
     unionMembers,
+    nullability,
 } from "../compiler/type-facts.js";
 export type { RecordShape } from "./record-shapes.js";
 
@@ -8221,14 +8222,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return `bbl::pinned::number_of(${this.value(first)})`;
                 }
                 // `Number(header)` where the header may be absent: `null`
-                // converts to 0.
+                // converts to 0 and `undefined` to NaN; an optional that
+                // may be either cannot say which it holds.
+                const absent = nullability(
+                    this.checker.getTypeAtLocation(first),
+                );
                 if (
                     shape.kind === "optional" &&
-                    shape.value.kind === "string"
+                    shape.value.kind === "string" &&
+                    absent.null !== absent.undefined
                 ) {
                     this.model.include("bblite/pinned_values.hpp");
                     const value = this.temporary("number_source");
-                    return `[&] { const auto ${value} = ${this.value(first)}; return ${value} ? bbl::pinned::number_of(*${value}) : 0.0; }()`;
+                    const whenAbsent = absent.null
+                        ? "0.0"
+                        : "std::numeric_limits<double>::quiet_NaN()";
+                    return `[&] { const auto ${value} = ${this.value(first)}; return ${value} ? bbl::pinned::number_of(*${value}) : ${whenAbsent}; }()`;
                 }
                 break;
             }
