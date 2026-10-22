@@ -900,6 +900,10 @@ test("a binding's rebinds are read through binding-rebinds.ts", () => {
         "writeBinding",
     ])
         assert.deepEqual(declarationOwners(name), [], name);
+    // The evaluation order asks the index too, rather than walking its own.
+    assert.ok(
+        sourceFacts("src/compiler/evaluation-order.ts").calls.has("isRebound"),
+    );
 });
 
 test("call signatures are read through type-facts.ts", () => {

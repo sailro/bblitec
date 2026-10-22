@@ -1983,15 +1983,13 @@ export class DeclarationLowerer {
         const owner = ts.findAncestor(declaration, ts.isFunctionLike);
         if (!isFunctionWithBody(owner)) return false;
         const symbol = this.context.symbols.valueSymbol(declaration.name);
-        const names = (expression: ts.Expression): boolean => {
-            const target = this.context.unwrap(expression);
-            return (
-                ts.isIdentifier(target) &&
-                this.context.symbols.valueSymbol(target) === symbol
-            );
-        };
+        // A write site's target is already unwrapped.
         const writes = (node: ts.Node): boolean =>
-            writeSites(node).some(({ target }) => names(target));
+            writeSites(node).some(
+                ({ target }) =>
+                    ts.isIdentifier(target) &&
+                    this.context.symbols.valueSymbol(target) === symbol,
+            );
         const visit = (node: ts.Node): boolean => {
             if (writes(node)) return true;
             if (ts.isFunctionLike(node)) return someAnalysisNode(node, writes);

@@ -286,7 +286,7 @@ function pinnedCallArgumentIsReadOnly(
  * Every name whose container `sourceFile` writes INTO -- a field store, an
  * element store, an increment through it, a `delete`, or a mutating
  * method call on it -- anywhere in the file, callbacks included. Rebinding
- * the name itself is `collectReboundSymbols`'s question; this one is about
+ * the name itself is `isRebound`'s question (binding-rebinds.ts); this one is about
  * what the name holds.
  */
 function collectMutatedContainerSymbols(

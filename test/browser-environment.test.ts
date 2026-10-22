@@ -282,3 +282,21 @@ test("a module constant a platform probe initializes is a run-time condition", (
     assert.match(cpp, /\(v_module\d+_IS_MAC \? "keys\.cmd" : "keys\.ctrl"\)/);
     assert.match(cpp, /if \(v_module\d+_IS_MAC\)/);
 });
+
+test("a browser number a let reads once is a number its increments change", (t) => {
+    // `++` rebinds the name: the value the deployment answered is the
+    // initializer, not every later read.
+    const result = compileSource(`
+        let frames = Number(new URLSearchParams(location.search).get("frames") ?? "3");
+        frames++;
+        let n = Number(new URLSearchParams(location.search).get("n") ?? "2");
+        for (let k = 0; k < 3; k++) n++;
+        if (frames !== 4 || n !== 5) throw new Error("increments " + frames + " " + n);
+    `);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(native, "browser-number-increments", result.cpp, {});
+});

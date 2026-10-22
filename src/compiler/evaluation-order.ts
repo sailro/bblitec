@@ -21,6 +21,7 @@ import {
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
     unwrapExpression,
     rootExpression,
@@ -237,8 +238,6 @@ function encloses(outer: ts.Node, inner: ts.Node): boolean {
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
 export class EvaluationOrder {
-    /** @unjournaled A cache of the checker's answers for a file. */
-    private readonly written = new WeakMap<ts.SourceFile, Set<ts.Symbol>>();
     /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
     /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
@@ -1450,27 +1449,14 @@ export class EvaluationOrder {
             : undefined;
     }
 
-    /** Whether any code assigns the variable after its declaration. */
+    /** Whether any code in its file assigns the variable after its declaration. */
     private isWrittenVariable(symbol: ts.Symbol): boolean {
         if ((symbol.flags & ts.SymbolFlags.Variable) === 0) return false;
         const file = symbol.valueDeclaration?.getSourceFile();
-        if (!file) return false;
-        let written = this.written.get(file);
-        if (!written) {
-            const found = new Set<ts.Symbol>();
-            const record = (target: ts.Expression): void => {
-                const node = unwrapExpression(target);
-                if (!ts.isIdentifier(node)) return;
-                const assigned = resolvedSymbol(this.checker, node);
-                if (assigned) found.add(assigned);
-            };
-            forEachAnalysisNode(file, (node) => {
-                for (const site of writeSites(node)) record(site.target);
-            });
-            written = found;
-            this.written.set(file, written);
-        }
-        return written.has(symbol);
+        return (
+            file !== undefined &&
+            isRebound(this.checker, [file], symbol, { updates: true })
+        );
     }
 }
 

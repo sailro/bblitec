@@ -683,9 +683,9 @@ export class SharedClosureAnalysis {
     }
 
     /**
-     * A non-literal inferred struct needs storage only when its binding
-     * changes. `++`/`--` stay out: the answer every caller here has always
-     * had (the module-state planner counts them).
+     * Whether anything gives the binding a new value, `++` and `--` included:
+     * they rebind a number (a browser value read once is no longer it), and
+     * cannot apply to the objects most callers ask about.
      */
     public identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.context.symbols.valueSymbol(identifier);
@@ -695,7 +695,7 @@ export class SharedClosureAnalysis {
                 this.context.checker,
                 this.context.program.getSourceFiles(),
                 symbol,
-                { updates: false },
+                { updates: true },
             )
         );
     }
