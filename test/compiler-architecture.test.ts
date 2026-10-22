@@ -1117,8 +1117,27 @@ test("exponentiation, remainder and complement are spelled once", () => {
             .filter((path) => pattern.test(readFileSync(path, "utf8")))
             .sort();
     assert.deepEqual(spellers(/std::pow[(]/), [
-        "src/compiler/math-intrinsics.ts",
+        "src/lowering/pinned-operators.ts",
     ]);
+    // compoundAssignmentValue / compoundAssignmentStore are the one
+    // compound-assignment rule for scene code and pinned bodies.
+    for (const name of [
+        "ASSIGNMENT_OPERATORS",
+        "compoundAssignmentValue",
+        "compoundAssignmentStore",
+        "exponentiationCall",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/lowering/pinned-operators.ts"],
+            name,
+        );
+    for (const path of [
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/pinned-ubo-writer-lowerer.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("compoundAssignmentStore"), path);
     assert.deepEqual(spellers(/std::fmod[(]/), [
         "src/lowering/pinned-operators.ts",
     ]);

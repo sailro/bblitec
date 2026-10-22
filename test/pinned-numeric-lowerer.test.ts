@@ -484,13 +484,10 @@ test("compound bitwise stores, array literals and written const records run as J
         ]),
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
     });
+    assert.match(body, /v = bbl::js::shift_right\(v, r\);/);
     assert.match(
         body,
-        /v = static_cast<double>\(bbl::js::shift_right\(v, r\)\);/,
-    );
-    assert.match(
-        body,
-        /r = static_cast<double>\(bbl::js::bitwise_or\(r, bbl::js::shift_right\(v, 1\.0\)\)\);/,
+        /r = bbl::js::bitwise_or\(r, bbl::js::shift_right\(v, 1\.0\)\);/,
     );
     assert.match(body, /std::vector<double> b\{1\.5, 2\.0, 3\.0\};/);
     assert.match(body, /^Vec3d p = /m);
@@ -1454,10 +1451,7 @@ test("keeps a truth-initialized local boolean through logical stores", () => {
         ],
     );
     assert.match(emitted, /bool dirty = \(a != b\);/);
-    assert.match(
-        emitted,
-        /flags = static_cast<double>\(bbl::js::bitwise_or\(flags, 2\.0\)\);/,
-    );
+    assert.match(emitted, /flags = bbl::js::bitwise_or\(flags, 2\.0\);/);
     assert.match(
         emitted,
         /dirty = dirty \|\| \(\(bbl::js::bitwise_and\(flags, 2\.0\) != 0\.0\)\);/,

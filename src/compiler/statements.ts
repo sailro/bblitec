@@ -5,7 +5,6 @@ import {
 } from "./analysis-walk.js";
 import {
     emissionArray,
-    EmissionMap,
     EmissionSet,
     EmissionWeakSet,
     journaled,
@@ -109,8 +108,10 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { ownEntries, ownKeysKnown } from "./object-statics.js";
-import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
-import { exponentiationCall } from "./math-intrinsics.js";
+import {
+    ASSIGNMENT_OPERATORS,
+    compoundAssignmentValue,
+} from "../lowering/pinned-operators.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
 
@@ -310,74 +311,6 @@ function bodyStatements(
         ? statement.statement.statements
         : [statement.statement];
 }
-
-/**
- * The compound assignments whose C++ operator would not mean the JavaScript
- * one, by spelling, with the `bbl::js` helper each lowers through: a bitwise
- * form applies its operator's `JS_BITWISE_FUNCTIONS` helper, and `%=` is
- * JavaScript's floating remainder. `**=` lowers as `**` does.
- */
-const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
-    new EmissionMap([
-        ["%=", "remainder_js"],
-        ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
-            `${ts.tokenToString(kind)}=`,
-            helper,
-        ]),
-    ]);
-
-/**
- * The number `previous op= right` stores. `native` when C++'s own `op=`
- * means JavaScript's; `jsData` when the spelling reaches the runtime
- * helpers. `staticRight` is the right side generation knows, which lets
- * `**=` spell `std::pow` as `**` does (`exponentiationCall`).
- */
-export function compoundAssignmentValue(
-    operator: string,
-    previous: string,
-    right: string,
-    staticRight: number | undefined,
-): {
-    readonly cpp: string;
-    readonly native: boolean;
-    readonly jsData: boolean;
-} {
-    if (operator === "**=")
-        return {
-            ...exponentiationCall(previous, right, staticRight),
-            native: false,
-        };
-    const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-    return helper
-        ? {
-              cpp: `bbl::js::${helper}(${previous}, ${right})`,
-              native: false,
-              jsData: true,
-          }
-        : {
-              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
-              native: true,
-              jsData: false,
-          };
-}
-
-/** `=` and the compound assignments the lowerings accept, by spelling. */
-export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
-    new EmissionMap([
-        [ts.SyntaxKind.EqualsToken, "="],
-        [ts.SyntaxKind.PlusEqualsToken, "+="],
-        [ts.SyntaxKind.MinusEqualsToken, "-="],
-        [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-        [ts.SyntaxKind.SlashEqualsToken, "/="],
-        [ts.SyntaxKind.PercentEqualsToken, "%="],
-        [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
-        [ts.SyntaxKind.AmpersandEqualsToken, "&="],
-        [ts.SyntaxKind.BarEqualsToken, "|="],
-        [ts.SyntaxKind.CaretEqualsToken, "^="],
-        [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
-        [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
-        [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
-    ]);
 
 /**
  * How an unrolled iteration ended at generation: on, by a break or continue

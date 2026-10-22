@@ -22,6 +22,7 @@ import type { LibraryGlobal } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
+import { exponentiationCall } from "../lowering/pinned-operators.js";
 
 interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
@@ -194,25 +195,6 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         },
     ],
 ]);
-
-/**
- * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
- * except that a NaN exponent, or an infinite one over a base of magnitude
- * 1, is NaN (`power_js`). A statically finite exponent meets neither case
- * and spells `std::pow` without the runtime.
- */
-export function exponentiationCall(
-    base: string,
-    exponent: string,
-    staticExponent: number | undefined,
-): { readonly cpp: string; readonly jsData: boolean } {
-    return staticExponent !== undefined && Number.isFinite(staticExponent)
-        ? {
-              cpp: `std::pow(${base}, ${exponent})`,
-              jsData: false,
-          }
-        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
-}
 
 /** Whether two calls of the member may answer differently (`Math.random`). */
 export function mathMemberIsImpure(name: string): boolean {

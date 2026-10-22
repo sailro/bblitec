@@ -92,9 +92,8 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import {
-    jsBitwiseCall,
-    PINNED_BITWISE_ASSIGNMENT_OPERATORS,
-    pinnedRemainderCall,
+    ASSIGNMENT_OPERATORS,
+    compoundAssignmentStore,
 } from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
@@ -10043,25 +10042,18 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     })`;
                 }
             }
-            const compound = new Map<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.PlusEqualsToken, "+="],
-                [ts.SyntaxKind.MinusEqualsToken, "-="],
-                [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-                [ts.SyntaxKind.SlashEqualsToken, "/="],
-            ]).get(kind);
-            // `r <<= 1` stores `r << 1` through the shared JavaScript helper.
-            const bitwise = PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(kind);
-            if (bitwise !== undefined) {
+            // `x += y`, `r <<= 1`, `x %= y`: the shared compound rule.
+            if (
+                kind !== ts.SyntaxKind.AsteriskAsteriskEqualsToken &&
+                ASSIGNMENT_OPERATORS.has(kind)
+            ) {
                 const place = this.numericPlace(expression.left);
-                return `${place} = static_cast<double>(${jsBitwiseCall(bitwise, place, this.value(expression.right))})`;
+                return compoundAssignmentStore(
+                    kind,
+                    place,
+                    this.value(expression.right),
+                )!;
             }
-            // `x %= y`: JavaScript's remainder of doubles is `fmod`.
-            if (kind === ts.SyntaxKind.PercentEqualsToken) {
-                const place = this.numericPlace(expression.left);
-                return `${place} = ${pinnedRemainderCall(place, this.value(expression.right))}`;
-            }
-            if (compound)
-                return `${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)}`;
             // `i++, j--` (a loop's incrementors): each effect in order.
             if (kind === ts.SyntaxKind.CommaToken) {
                 const effects = [

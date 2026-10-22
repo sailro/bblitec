@@ -22,6 +22,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
+import { compoundAssignmentStore } from "./pinned-operators.js";
 import {
     hasNode,
     nullishDefault,
@@ -1358,16 +1359,12 @@ function emitPlainStatement(
             statement.expression.operatorToken.kind ===
                 ts.SyntaxKind.AsteriskEqualsToken)
     ) {
-        const operators = new Map<ts.SyntaxKind, string>([
-            [ts.SyntaxKind.EqualsToken, "="],
-            [ts.SyntaxKind.PlusEqualsToken, "+="],
-            [ts.SyntaxKind.MinusEqualsToken, "-="],
-            [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-        ]);
         return [
-            `    ${statement.expression.left.text} ${operators.get(
+            `    ${compoundAssignmentStore(
                 statement.expression.operatorToken.kind,
-            )} ${emitExpression(state, statement.expression.right)};`,
+                statement.expression.left.text,
+                emitExpression(state, statement.expression.right),
+            )};`,
         ];
     }
     if (

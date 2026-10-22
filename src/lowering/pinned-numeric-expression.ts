@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { exponentiationCall } from "../compiler/math-intrinsics.js";
+import { exponentiationCall } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     PINNED_BOOLEAN_OPERATORS,

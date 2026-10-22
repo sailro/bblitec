@@ -60,6 +60,7 @@ import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
+    compoundAssignmentStore,
     PINNED_COMPARISON_OPERATORS,
     JS_BITWISE_FUNCTIONS,
     foldNumericBinary,
@@ -2588,7 +2589,11 @@ export class PinnedNumericLowerer {
                 "compound bitwise assignment to a non-scalar",
             );
         }
-        return `${cpp} = static_cast<double>(${jsBitwiseCall(bitwise!, cpp, this.expression(expression.right))})`;
+        return compoundAssignmentStore(
+            kind,
+            cpp,
+            this.expression(expression.right),
+        )!;
     }
 
     /** A `for (const x of list)` over a record list, element by element. */

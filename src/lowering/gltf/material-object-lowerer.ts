@@ -14,10 +14,10 @@ import type {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
+    exponentiationCall,
     jsBitwiseCall,
     pinnedRemainderCall,
 } from "../pinned-operators.js";
-import { exponentiationCall } from "../../compiler/math-intrinsics.js";
 
 const numericOperators = new Map([
     ...PINNED_ARITHMETIC_OPERATORS,

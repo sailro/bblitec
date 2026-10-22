@@ -97,12 +97,12 @@ import {
 import {
     JS_BITWISE_FUNCTIONS,
     PINNED_ARITHMETIC_OPERATORS,
+    exponentiationCall,
     jsBitwiseCall,
     jsBitwiseNotCall,
     pinnedRemainderCall,
 } from "../lowering/pinned-operators.js";
 import {
-    exponentiationCall,
     MATH_MEMBERS,
     mathConstantAccess,
     mathMemberCall,

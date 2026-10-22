@@ -180,6 +180,113 @@ export function jsBitwiseCall(
     return helper ? `bbl::js::${helper}(${left}, ${right})` : undefined;
 }
 
+/**
+ * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
+ * except that a NaN exponent, or an infinite one over a base of magnitude
+ * 1, is NaN (`power_js`). A statically finite exponent meets neither case
+ * and spells `std::pow` without the runtime.
+ */
+export function exponentiationCall(
+    base: string,
+    exponent: string,
+    staticExponent: number | undefined,
+): { readonly cpp: string; readonly jsData: boolean } {
+    return staticExponent !== undefined && Number.isFinite(staticExponent)
+        ? {
+              cpp: `std::pow(${base}, ${exponent})`,
+              jsData: false,
+          }
+        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
+}
+
+/** `=` and the compound assignments, by syntax kind, with their spelling. */
+export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map<
+    ts.SyntaxKind,
+    string
+>([
+    [ts.SyntaxKind.EqualsToken, "="],
+    [ts.SyntaxKind.PlusEqualsToken, "+="],
+    [ts.SyntaxKind.MinusEqualsToken, "-="],
+    [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+    [ts.SyntaxKind.SlashEqualsToken, "/="],
+    [ts.SyntaxKind.PercentEqualsToken, "%="],
+    [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
+    [ts.SyntaxKind.AmpersandEqualsToken, "&="],
+    [ts.SyntaxKind.BarEqualsToken, "|="],
+    [ts.SyntaxKind.CaretEqualsToken, "^="],
+    [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
+    [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
+    [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
+]);
+
+/**
+ * The number `previous op= right` stores: the one compound-assignment rule
+ * scene code and pinned bodies share. `native` when C++'s own `op=` means
+ * JavaScript's; `jsData` when the spelling reaches the runtime helpers. A
+ * bitwise form applies its operator's helper, `%=` is the floating
+ * remainder, and `staticRight` lets `**=` spell `std::pow` as `**` does.
+ */
+export function compoundAssignmentValue(
+    operator: string,
+    previous: string,
+    right: string,
+    staticRight: number | undefined,
+): {
+    readonly cpp: string;
+    readonly native: boolean;
+    readonly jsData: boolean;
+} {
+    if (operator === "**=")
+        return {
+            ...exponentiationCall(previous, right, staticRight),
+            native: false,
+        };
+    if (operator === "%=")
+        return {
+            cpp: pinnedRemainderCall(previous, right),
+            native: false,
+            jsData: false,
+        };
+    const kind = [...ASSIGNMENT_OPERATORS].find(
+        ([, spelling]) => spelling === operator,
+    )?.[0];
+    const bitwise =
+        kind === undefined
+            ? undefined
+            : PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(kind);
+    return bitwise !== undefined
+        ? {
+              cpp: jsBitwiseCall(bitwise, previous, right)!,
+              native: false,
+              jsData: true,
+          }
+        : {
+              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
+              native: true,
+              jsData: false,
+          };
+}
+
+/**
+ * `place op= right` as a C++ statement expression: C++'s own `op=` where it
+ * means JavaScript's, else a store of {@link compoundAssignmentValue}.
+ * Undefined for a kind that is no assignment.
+ */
+export function compoundAssignmentStore(
+    kind: ts.SyntaxKind,
+    place: string,
+    right: string,
+    staticRight?: number,
+): string | undefined {
+    const operator = ASSIGNMENT_OPERATORS.get(kind);
+    if (operator === undefined) return undefined;
+    if (operator === "=") return `${place} = ${right}`;
+    const value = compoundAssignmentValue(operator, place, right, staticRight);
+    return value.native
+        ? `${place} ${operator} ${right}`
+        : `${place} = ${value.cpp}`;
+}
+
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
 export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     new Map<ts.SyntaxKind, string>([

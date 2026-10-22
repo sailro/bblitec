@@ -153,14 +153,17 @@ import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
-    exponentiationCall,
     foldMathCall,
     MATH_MEMBERS,
     mathExtremeCall,
     mathExtremeCpp,
     mathMemberAccess,
 } from "./math-intrinsics.js";
-import { ASSIGNMENT_OPERATORS, compoundAssignmentValue } from "./statements.js";
+import {
+    ASSIGNMENT_OPERATORS,
+    compoundAssignmentValue,
+    exponentiationCall,
+} from "../lowering/pinned-operators.js";
 import {
     dataTypesEqual,
     isUndefinedDataType,
