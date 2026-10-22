@@ -15053,3 +15053,25 @@ check(
     if (CFG.a.n !== 2 || CFG.b.n !== 4 || scalar.speed !== 2) throw new Error("kept member " + CFG.a.n + " " + CFG.b.n);
     `,
 );
+check(
+    "case labels evaluate in order until one matches",
+    `
+    let log = "";
+    function c(n: number): number { log += n; return n; }
+    function pick(x: number): string {
+        switch (x) { case c(1): return "a"; case c(2): return "b"; case c(3): return "c"; }
+        return "none";
+    }
+    function fall(x: number): string {
+        let out = "";
+        switch (x) { case c(1): out += "a"; case c(2): out += "b"; break; default: out += "d"; case c(3): out += "c"; }
+        return out;
+    }
+    const first = pick(2) + ":" + log;
+    log = "";
+    const second = fall(1) + ":" + log;
+    log = "";
+    const third = fall(5) + ":" + log;
+    if (first !== "b:12" || second !== "ab:1" || third !== "dc:123") throw new Error("case order " + first + " " + second + " " + third);
+    `,
+);

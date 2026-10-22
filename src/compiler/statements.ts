@@ -494,6 +494,12 @@ function jumpTarget(
 }
 
 /** The statement a label names, through any further labels on it. */
+/** A case label's code (an inlined call's statements) and its test. */
+interface SwitchLabel {
+    readonly prelude: readonly string[];
+    readonly test: string | undefined;
+}
+
 export class StatementLowerer {
     /**
      * Whether a native return leaves a completion-aware cleanup of its own
@@ -1479,8 +1485,27 @@ export class StatementLowerer {
             if (!optional) return `${discriminant} == ${label}`;
             return `(${optionalPresentCpp(storage)} && ${optionalValueCpp(storage)} == ${label})`;
         };
+        // Labels evaluate in order until one matches: each one's code (an
+        // inlined call) runs only when no earlier label matched.
+        const labels = new Map<ts.CaseClause, SwitchLabel>();
+        clauses.filter(ts.isCaseClause).forEach((clause, index) => {
+            let test: string | undefined;
+            const compile = (): void => {
+                test = labelTest(clause);
+            };
+            const prelude = context.captureEmittedLines(() =>
+                index === 0
+                    ? compile()
+                    : this.inRuntimeControlFlow(context, compile),
+            );
+            labels.set(clause, { prelude, test });
+        });
+        const lazyLabels = [...labels.values()].some(
+            (label) => label.prelude.length > 0,
+        );
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
         if (
+            lazyLabels ||
             (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) ||
             clauses.some(
                 (clause, index) =>
@@ -1493,7 +1518,7 @@ export class StatementLowerer {
                 context,
                 statement,
                 discriminant,
-                labelTest,
+                labels,
             );
             context.decreaseIndent();
             context.emit({ kind: "close", code: "}" });
@@ -1514,7 +1539,7 @@ export class StatementLowerer {
                 emittedBranch = true;
                 continue;
             }
-            const test = labelTest(clause);
+            const test = labels.get(clause)?.test;
             // An inlined function may receive a narrower string-literal
             // union than its declared parameter. Labels outside that union
             // are unreachable for this invocation.
@@ -1657,27 +1682,64 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.SwitchStatement,
         discriminant: string,
-        labelTest: (clause: ts.CaseClause) => string | undefined,
+        labels: ReadonlyMap<ts.CaseClause, SwitchLabel>,
     ): void {
         const clauses = statement.caseBlock.clauses;
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
-        const tests: Array<{ condition: string; index: number }> = [];
-        clauses.forEach((clause, index) => {
-            if (!ts.isCaseClause(clause)) return;
-            const condition = labelTest(clause);
-            if (condition !== undefined) tests.push({ condition, index });
-        });
+        const fallback = String(
+            defaultIndex === -1 ? clauses.length : defaultIndex,
+        );
         const selected = `${discriminant}_selected`;
-        context.emit({
-            kind: "declaration",
-            type: "const int",
-            name: selected,
-            initializer: tests.reduceRight(
-                (rest, { condition, index }) =>
-                    `(${condition}) ? ${index} : ${rest}`,
-                String(defaultIndex === -1 ? clauses.length : defaultIndex),
-            ),
+        const cases = clauses.flatMap((clause, index) => {
+            const label = ts.isCaseClause(clause)
+                ? labels.get(clause)
+                : undefined;
+            return label ? [{ ...label, index }] : [];
         });
+        if (cases.every((label) => label.prelude.length === 0)) {
+            context.emit({
+                kind: "declaration",
+                type: "const int",
+                name: selected,
+                initializer: cases.reduceRight(
+                    (rest, { test, index }) =>
+                        test === undefined
+                            ? rest
+                            : `(${test}) ? ${index} : ${rest}`,
+                    fallback,
+                ),
+            });
+        } else {
+            // Each label's code runs only when no earlier label matched: the
+            // next one nests in the previous one's `else`. A label this
+            // invocation cannot hold still evaluates.
+            context.emit({
+                kind: "declaration",
+                type: "int",
+                name: selected,
+                initializer: fallback,
+            });
+            let nested = 0;
+            cases.forEach(({ prelude, test, index }, position) => {
+                for (const line of prelude) context.emit(line);
+                if (test === undefined) return;
+                context.emit({ kind: "open", code: `if (${test}) {` });
+                context.increaseIndent();
+                context.emit(`${selected} = ${index};`);
+                context.decreaseIndent();
+                if (position === cases.length - 1) {
+                    context.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                context.emit("} else {");
+                context.increaseIndent();
+                nested += 1;
+            });
+            for (; nested > 0; nested -= 1) {
+                context.decreaseIndent();
+                context.emit({ kind: "close", code: "}" });
+            }
+        }
         this.withSwitchBreakTarget(context, statement, () => {
             clauses.forEach((clause, index) => {
                 if (clause.statements.length === 0) return;
