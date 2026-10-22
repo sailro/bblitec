@@ -15098,3 +15098,10 @@ check(
     if (absent !== undefined || present !== 1 || none !== undefined) throw new Error("optional element call " + absent + " " + present + " " + none);
     `,
 );
+check(
+    "a string holding a trigraph sequence compiles as written",
+    `
+    const marks = "??= ??( ??) ??< ??> ??! ??' ??- ??/";
+    if (marks.length !== 35 || marks[2] !== "=" || !marks.includes("??/")) throw new Error("trigraph text " + marks.length);
+    `,
+);

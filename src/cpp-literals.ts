@@ -273,6 +273,9 @@ export function cppRootName(cpp: string): string {
  * A string holding U+0000 is spelled as a `std::string` sized by the
  * literal itself: every native string sink reads a bare literal through
  * `const char*`, which would stop at the first NUL.
+ *
+ * `??` is spelled `?\?`: `??=`, `??(` and the other trigraphs would
+ * otherwise be read (or warned about) as one character.
  */
 export function stringLiteral(value: string): string {
     const literal = JSON.stringify(value)
@@ -297,7 +300,8 @@ export function stringLiteral(value: string): string {
         .split("\u2028")
         .join("\\u2028")
         .split("\u2029")
-        .join("\\u2029");
+        .join("\\u2029")
+        .replaceAll("??", "?\\?");
     return value.includes("\u0000")
         ? `std::string(${literal}, sizeof(${literal}) - 1)`
         : literal;
