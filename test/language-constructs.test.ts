@@ -15184,3 +15184,16 @@ check(
         throw new Error("absent elements " + results.join() + kind(out));
     `,
 );
+check(
+    "a write through a call's fresh result lands on that result",
+    `
+    let calls = 0;
+    function make(): { n: number; list: number[] } { calls++; return { n: 1, list: [1, 2] }; }
+    make().n = 5;
+    make().n += 5;
+    make().list[0] = 5;
+    make().list.push(3);
+    const fresh = make();
+    if (calls !== 5 || fresh.n !== 1 || fresh.list.join() !== "1,2") throw new Error("fresh " + calls + fresh.n + fresh.list.join());
+    `,
+);

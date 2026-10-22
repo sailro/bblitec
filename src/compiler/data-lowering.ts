@@ -2450,6 +2450,19 @@ export class DataLowerer {
                         owner,
                         unwrapped.expression,
                     ) ?? owner;
+            // `make().n = 5` writes the fresh object a call returns, which a
+            // value struct holds only as a temporary.
+            if (
+                mode === "write" &&
+                ts.isCallExpression(receiver) &&
+                owner.dataType?.kind === "struct" &&
+                !this.context.dataTypes.isReferenceStruct(owner.dataType.name)
+            )
+                owner = this.context.bindings.pinValueToTemporary(
+                    owner,
+                    "written_result",
+                    receiver,
+                );
             const ownerType =
                 owner.dataType?.kind === "optional"
                     ? owner.dataType.inner
