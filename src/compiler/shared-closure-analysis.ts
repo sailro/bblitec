@@ -5,6 +5,7 @@ import {
 } from "./analysis-walk.js";
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
+import { schedulerOf } from "./schedulers.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     choosesOperand,
@@ -223,7 +224,6 @@ export class SharedClosureAnalysis {
         ) {
             return index === 1;
         }
-        const global = this.context.libraryGlobal(call.expression);
         if (
             ts.isPropertyAccessExpression(callee) &&
             ["then", "catch", "finally"].includes(callee.name.text) &&
@@ -232,13 +232,12 @@ export class SharedClosureAnalysis {
             ) === "Promise"
         )
             return index === 0 || (callee.name.text === "then" && index === 1);
+        const scheduler = schedulerOf(call.expression, (expression) =>
+            this.context.libraryGlobal(expression),
+        );
         return (
-            (global === "setTimeout" ||
-                global === "setInterval" ||
-                global === "queueMicrotask" ||
-                global === "requestIdleCallback" ||
-                (includeFrameRegistrations &&
-                    global === "requestAnimationFrame")) &&
+            scheduler !== undefined &&
+            (scheduler !== "frame" || includeFrameRegistrations) &&
             index === 0 &&
             call.arguments.length >= 1
         );

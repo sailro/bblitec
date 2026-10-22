@@ -5,6 +5,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
+import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
@@ -119,14 +120,6 @@ export class PendingActivationsRequired extends Error {
         super("A constructed promise requires pending-activation unwinding.");
     }
 }
-
-/** Library schedulers whose callbacks never run before the call returns. */
-const DEFERRED_SCHEDULERS: ReadonlySet<string> = new Set([
-    "queueMicrotask",
-    "requestAnimationFrame",
-    "setInterval",
-    "setTimeout",
-]);
 
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
@@ -862,9 +855,9 @@ export class AsyncLowerer {
             executor.body,
             (candidate): candidate is ts.CallExpression =>
                 ts.isCallExpression(candidate) &&
-                DEFERRED_SCHEDULERS.has(
-                    context.libraryGlobal(candidate.expression) ?? "",
-                ) &&
+                schedulerOf(candidate.expression, (expression) =>
+                    context.libraryGlobal(expression),
+                ) !== undefined &&
                 candidate.arguments.some(namesResolving),
         );
     }

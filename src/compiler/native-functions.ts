@@ -5,6 +5,7 @@ import {
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
 import {
     expressionMayRunCode,
@@ -2503,15 +2504,10 @@ export class NativeFunctionLowerer {
                     // binding to queue against, and a counted wait through one
                     // would lose the count -- its body is emitted once for
                     // every call and every iteration.
-                    const name = ts.isIdentifier(callee)
-                        ? callee.text
-                        : ts.isPropertyAccessExpression(callee)
-                          ? callee.name.text
-                          : undefined;
-                    if (
-                        name === "setTimeout" ||
-                        name === "requestAnimationFrame"
-                    ) {
+                    const scheduler = schedulerOf(callee, (expression) =>
+                        libraryGlobal(this.context.checker, expression),
+                    );
+                    if (scheduler === "timeout" || scheduler === "frame") {
                         return true;
                     }
                 }

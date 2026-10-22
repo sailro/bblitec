@@ -17,6 +17,7 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
+import { cancelledSchedulerOf, schedulerOf } from "./schedulers.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     argumentAt,
@@ -94,14 +95,6 @@ export function isNumberParserCallee(
             context.libraryGlobal(callee.expression) === "Number")
     );
 }
-
-/** The library timer functions `platform-calls.ts` and `compileDeferredCallback` lower. */
-const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
-    "setTimeout",
-    "clearTimeout",
-    "setInterval",
-    "clearInterval",
-]);
 
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
@@ -1226,9 +1219,12 @@ export class BrowserErasure {
      * exactly as `clearTimeout(id)` does.
      */
     private isPlatformTimerCall(call: ts.CallExpression): boolean {
-        return PLATFORM_TIMER_FUNCTIONS.has(
-            this.context.libraryGlobal(call.expression) ?? "",
-        );
+        const global = (expression: ts.Expression) =>
+            this.context.libraryGlobal(expression);
+        const kind =
+            schedulerOf(call.expression, global) ??
+            cancelledSchedulerOf(call.expression, global);
+        return kind === "timeout" || kind === "interval";
     }
 
     /** @unjournaled Query-local memoization is cleared in finally, including declined probes. */

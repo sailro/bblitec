@@ -98,6 +98,20 @@ export class CallbackLowerer {
     constructor(private readonly context: CallbackContext) {}
 
     /**
+     * Whether a callback copies what it captures: one the caller retains, any
+     * under workers, one inside a frame callback or under managed captures
+     * outlives the scope whose locals it reads.
+     */
+    private capturesByValue(retainCaptures: boolean): boolean {
+        return (
+            retainCaptures ||
+            !!this.context.options.workers ||
+            this.context.frameCallbackDepth > 0 ||
+            this.context.managedCaptures.length > 0
+        );
+    }
+
+    /**
      * Collision listeners are registered before every startup assignment has
      * necessarily run. Their native bodies are specialized only after the
      * entry walk is complete, while retaining registration-site scopes.
@@ -208,11 +222,7 @@ export class CallbackLowerer {
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue =
-                        retainCaptures ||
-                        !!this.context.options.workers ||
-                        this.context.frameCallbackDepth > 0 ||
-                        this.context.managedCaptures.length > 0;
+                    const captureByValue = this.capturesByValue(retainCaptures);
                     const emitBody = () => {
                         this.context.useNativeValue(bound);
                         this.context.emit({
@@ -306,11 +316,7 @@ export class CallbackLowerer {
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.context.beginNativeFunctionBody(undefined, true);
-        const captureByValue =
-            retainCaptures ||
-            !!this.context.options.workers ||
-            this.context.frameCallbackDepth > 0 ||
-            this.context.managedCaptures.length > 0;
+        const captureByValue = this.capturesByValue(retainCaptures);
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
@@ -467,11 +473,7 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
-        const captureByValue =
-            retainCaptures ||
-            !!this.context.options.workers ||
-            this.context.frameCallbackDepth > 0 ||
-            this.context.managedCaptures.length > 0;
+        const captureByValue = this.capturesByValue(retainCaptures);
         this.context.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {

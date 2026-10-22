@@ -1003,3 +1003,17 @@ test("a library call's effect on an argument is read from one table", () => {
         "src/compiler/parameter-effects.ts",
     ]);
 });
+
+test("library schedulers are named in schedulers.ts", () => {
+    // schedulerOf / cancelledSchedulerOf resolve a callee as a library global
+    // (a user method named setTimeout is none). The worker realm's own list
+    // names the functions it provides, schedulers among them.
+    const lists = sourcePaths.filter((path) => {
+        const text = readFileSync(path, "utf8");
+        return text.includes('"setTimeout"') && text.includes('"setInterval"');
+    });
+    assert.deepEqual(lists, [
+        "src/compiler/schedulers.ts",
+        "src/compiler/workers.ts",
+    ]);
+});
