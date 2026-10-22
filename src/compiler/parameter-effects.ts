@@ -1519,7 +1519,7 @@ function argumentWritesNothing(
     use: Extract<ParameterUse, { kind: "argument" }>,
 ): boolean {
     const target = callTarget(checker, use.call);
-    if (target.kind === "bodies" && !target.engine)
+    if (target.kind === "bodies")
         return (
             !use.spread &&
             everyArgumentBody(use.call, target, use.index, parameterIsReadOnly)
@@ -1791,6 +1791,11 @@ function heldObjectWritten(
  * follows every store the parameter reaches, the other proves a parameter
  * it only reads unchanged.
  */
+/**
+ * Whether an engine body visibly writes through `binding`: a write it is seen
+ * to make that its own read-only proof does not discount (a write into an
+ * engine resource a member names changes no member).
+ */
 function engineBodyWrites(
     checker: ts.TypeChecker,
     body: EffectFunction,
@@ -1802,7 +1807,11 @@ function engineBodyWrites(
     );
 }
 
-/** Whether an engine call writes through the object it is handed at `index`. */
+/**
+ * Whether an engine call visibly writes through the object it is handed at
+ * `index`. What the engine keeps (a mesh's vertex arrays) is the keeping
+ * question (`keptArguments`), not a write here.
+ */
 export function engineCallMutatesArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
@@ -2027,7 +2036,6 @@ export function callArgumentIsReadOnly(
         return libraryArgumentEffect(checker, call, index) === "reads";
     return (
         target.kind === "bodies" &&
-        !target.engine &&
         everyArgumentBody(call, target, index, parameterIsReadOnly)
     );
 }
