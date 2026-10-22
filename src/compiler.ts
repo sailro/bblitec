@@ -304,6 +304,7 @@ import {
     isSupportedFunction,
     variableKind,
     unwrapExpression,
+    accessKey,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -2422,6 +2423,24 @@ class Compiler implements LoweringServices {
         ) {
             emitPropertyAssignment(this, expression);
             return;
+        }
+        // `record["x"] = v` with a static key runs the setter `record.x = v`
+        // would; storing the key as data would drop the call.
+        if (
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isElementAccessExpression(left)
+        ) {
+            const key = accessKey(left);
+            const owner =
+                key === undefined
+                    ? undefined
+                    : this.resolveRecordValue(left.expression);
+            const setter =
+                key === undefined ? undefined : owner?.recordSetters?.[key];
+            if (owner && setter) {
+                this.compileRecordSetter(owner, setter, expression.right);
+                return;
+            }
         }
         // An effect task's `record` / `dispose` replaces the method its
         // frame graph calls; the read of either is a copy, not a slot.

@@ -15228,3 +15228,17 @@ check(
     if (f(0) !== 1 || f(5) !== 2 || g(3) !== 23) throw new Error("folded break " + f(0) + f(5) + g(3));
     `,
 );
+check(
+    "a setter runs for a write by a static key",
+    `
+    let writes = 0;
+    class A { private v = 0; set x(n: number) { writes++; this.v = n; } get x(): number { return this.v; } }
+    const a = new A();
+    a["x"] = 3;
+    a.x = 4;
+    let seen = 0;
+    const o = { set x(n: number) { seen = n; } };
+    o["x"] = 7;
+    if (writes !== 2 || a.x !== 4 || seen !== 7) throw new Error("setters " + writes + " " + a.x + " " + seen);
+    `,
+);
