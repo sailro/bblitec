@@ -1211,6 +1211,19 @@ test("an intrinsic's conditional arms are selected by one rule", () => {
         assert.ok(sourceFacts(path).members.has("selectArms"), path);
 });
 
+test("a number's C++ width is always the caller's choice", () => {
+    // compileNumber, compileVec3, vec3FromRecord, tupleComponents and the
+    // option readers take a required precision: a silent float default
+    // narrowed double sinks (W77).
+    const defaulted = (text: string): boolean =>
+        text.includes('precision?: "float" | "double"') ||
+        text.includes('precision: "float" | "double" = "float"');
+    assert.deepEqual(
+        sourcePaths.filter((path) => defaulted(readFileSync(path, "utf8"))),
+        [],
+    );
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

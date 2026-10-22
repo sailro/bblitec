@@ -292,7 +292,7 @@ function emitFrameGraphTransmission(
         );
     }
     const copyCount = context.objectProperty(options, "copyCount");
-    if (!copyCount || context.compileNumber(copyCount) !== "1.0f") {
+    if (!copyCount || context.compileNumber(copyCount, "float") !== "1.0f") {
         context.fail(
             options,
             "Reached frame-graph transmission requires copyCount: 1.",
@@ -513,7 +513,7 @@ function emitLightVectorComponentAssignment(
         kind: "declaration",
         type: "const float",
         name: value,
-        initializer: context.compileNumber(expression.right),
+        initializer: context.compileNumber(expression.right, "float"),
     });
     context.reachFeature("light:parameters", expression);
     context.emit({
@@ -1626,7 +1626,7 @@ export function emitPropertyAssignment(
         );
         context.emit({
             kind: "expression",
-            code: `${scene.cpp}.environment.${property} ${operator} ${context.compileNumber(expression.right)};`,
+            code: `${numericFieldStore(context, `${scene.cpp}.environment.${property}`, operator, expression.right, "float")};`,
         });
         return;
     }
@@ -2013,13 +2013,13 @@ export function emitPropertyAssignment(
                         initializer: `bbl::scene_node_${trsVector.nativeField}(${engine}, ${target}).${component}`,
                     });
                 }
-                const right = context.compileNumber(
+                const replacement = numericFieldValue(
+                    context,
+                    previous,
+                    operator,
                     expression.right,
                     trsVector.precision,
                 );
-                const replacement = previous
-                    ? `(${previous} ${operator.slice(0, -1)} ${right})`
-                    : right;
                 context.emit({
                     kind: "expression",
                     code:
@@ -2032,16 +2032,13 @@ export function emitPropertyAssignment(
                 `${recordAt(`${engine}.transform_nodes`, mesh.cpp)}.` +
                 trsVector.nativeField;
             const current = `${vectorRead}.${component}`;
-            const replacement =
-                operator === "="
-                    ? context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )
-                    : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )})`;
+            const replacement = numericFieldValue(
+                context,
+                current,
+                operator,
+                expression.right,
+                trsVector.precision,
+            );
             context.emit({
                 kind: "expression",
                 code:
@@ -2105,16 +2102,13 @@ export function emitPropertyAssignment(
             }
             const engine = context.requireEngine(mesh, expression);
             const current = `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${component}`;
-            const replacement =
-                operator === "="
-                    ? context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )
-                    : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )})`;
+            const replacement = numericFieldValue(
+                context,
+                current,
+                operator,
+                expression.right,
+                trsVector.precision,
+            );
             context.emit({
                 kind: "expression",
                 code:
@@ -2139,7 +2133,10 @@ export function emitPropertyAssignment(
         // field is a double.
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
+            code: `${numericFieldStore(
+                context,
+                `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component}`,
+                operator,
                 expression.right,
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
@@ -2156,6 +2153,60 @@ export function emitPropertyAssignment(
     }
 
     context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
+}
+
+/**
+ * The value `current op= right` gives a numeric field of `width`:
+ * JavaScript computes it in double and rounds once at a float32 store,
+ * where `float op float` would round the right side and then the result.
+ */
+function numericFieldValue(
+    context: AssignmentContext,
+    current: string | undefined,
+    operator: string,
+    right: ts.Expression,
+    width: "float" | "double",
+): string {
+    if (operator === "=" || current === undefined)
+        return context.compileNumber(right, width);
+    const value = `${width === "float" ? `static_cast<double>(${current})` : current} ${operator.slice(0, -1)} ${context.compileNumber(right, "double")}`;
+    return width === "float" ? `static_cast<float>(${value})` : `(${value})`;
+}
+
+/** The width a field write compiles its right side at: double once JavaScript's arithmetic precedes the store. */
+function fieldOperandWidth(
+    operator: string,
+    width: "float" | "double",
+): "float" | "double" {
+    return operator === "=" ? width : "double";
+}
+
+/** `place op= right` at a numeric field of `width`, `right` compiled at {@link fieldOperandWidth}. */
+function numericFieldStoreCpp(
+    place: string,
+    operator: string,
+    right: string,
+    width: "float" | "double",
+): string {
+    return operator === "=" || width === "double"
+        ? `${place} ${operator} ${right}`
+        : `${place} = static_cast<float>(static_cast<double>(${place}) ${operator.slice(0, -1)} ${right})`;
+}
+
+/** `place op= right` as a statement at a numeric field of `width`, by {@link numericFieldValue}'s rule. */
+function numericFieldStore(
+    context: AssignmentContext,
+    place: string,
+    operator: string,
+    right: ts.Expression,
+    width: "float" | "double",
+): string {
+    return numericFieldStoreCpp(
+        place,
+        operator,
+        context.compileNumber(right, fieldOperandWidth(operator, width)),
+        width,
+    );
 }
 
 /**
@@ -2962,6 +3013,9 @@ function emitTargetPropertyAssignment(
                 return true;
             }
         }
+        const fieldOperator = recordField.simpleOnly ? "=" : operator;
+        const fieldWidth =
+            recordField.collection === "cameras" ? "double" : "float";
         const compiled = context.captureNativeExpression(() =>
             recordField.value === "color3"
                 ? context.compileColor3(expression.right)
@@ -2975,9 +3029,7 @@ function emitTargetPropertyAssignment(
                       })
                     : context.compileNumber(
                           expression.right,
-                          recordField.collection === "cameras"
-                              ? "double"
-                              : "float",
+                          fieldOperandWidth(fieldOperator, fieldWidth),
                       ),
         );
         const value = compiled.cpp;
@@ -3015,8 +3067,9 @@ function emitTargetPropertyAssignment(
         context.emit({
             kind: "expression",
             code:
-                `${record}.${recordField.field} ` +
-                `${recordField.simpleOnly ? "=" : operator} ${stored};`,
+                recordField.value === "number"
+                    ? `${numericFieldStoreCpp(`${record}.${recordField.field}`, fieldOperator, stored, fieldWidth)};`
+                    : `${record}.${recordField.field} ${fieldOperator} ${stored};`,
         });
         if (
             recordField.kind === "material" &&
@@ -3110,18 +3163,21 @@ function emitTargetPropertyAssignment(
                 `${target.kind} ${property}`,
             );
         }
-        const value =
-            direct.valueKind === "color3"
-                ? context.compileColor3(expression.right)
-                : context.compileNumber(
-                      expression.right,
-                      direct.nativeProperty === "intensity"
-                          ? "double"
-                          : "float",
-                  );
+        const place = `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty}`;
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
+            code:
+                direct.valueKind === "color3"
+                    ? `${place} ${operator} ${context.compileColor3(expression.right)};`
+                    : `${numericFieldStore(
+                          context,
+                          place,
+                          operator,
+                          expression.right,
+                          direct.nativeProperty === "intensity"
+                              ? "double"
+                              : "float",
+                      )};`,
         });
         return true;
     }
@@ -3690,7 +3746,7 @@ function emitBoundMinAssignment(
         const side = property === "boundMin" ? "min" : "max";
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right, "float")};`,
         });
         context.emit({
             kind: "expression",

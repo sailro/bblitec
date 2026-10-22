@@ -638,7 +638,7 @@ function compileCreateSolidTexture2D(
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const channels = call.arguments
         .slice(1)
-        .map((argument) => context.compileNumber(argument));
+        .map((argument) => context.compileNumber(argument, "float"));
     if (channels.length === 3) {
         channels.push("1.0f");
     }
@@ -1197,7 +1197,7 @@ function compileUpdateStorageBuffer(
     );
     const engineCpp = context.requireEngine(buffer, call);
     const byteOffset = call.arguments[3]
-        ? context.compileNumber(argumentAt(call, 3))
+        ? context.compileNumber(argumentAt(call, 3), "float")
         : "0.0f";
     context.reachFeature("material:shader-storage", call);
     return {

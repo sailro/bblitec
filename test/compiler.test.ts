@@ -1560,7 +1560,12 @@ test("shares handle-touching methods beside native siblings", () => {
 
     // Handle parameters use a shared closure over their instance metadata.
     assert.doesNotMatch(result.cpp, /bblscene::Spinner_spin/);
-    assert.equal(result.cpp.match(/rotation\.y \+=/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
     // The plain-data sibling on the same instance still emits once.
     assert.match(result.cpp, /bblscene::Spinner_rate\(/);
 });
@@ -8387,7 +8392,10 @@ test("reads mutated flat-entry variables from live generated state", (t) => {
         );
         assert.match(result.cpp, /\.position\.x = v_counter;/);
         assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0;/);
-        assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+        assert.match(
+            result.cpp,
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.3\)/,
+        );
         assert.equal(
             (result.cpp.match(/bbl::mark_mesh_dirty\(/g) ?? []).length,
             2,
@@ -8575,15 +8583,33 @@ test("preserves compound assignments for numeric properties", () => {
     `);
 
     assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0;/);
-    assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
-    assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
+    assert.match(
+        result.cpp,
+        /\.environment\.exposure = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.exposure\) - 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.environment\.contrast = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.contrast\) \+ 0\.2\)/,
+    );
     assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
     assertCameraScalarWrite(result.cpp, "beta", /\(\w+ - 0\.4\)/);
-    assert.match(result.cpp, /\.alpha \+= 0\.1f/);
-    assert.match(result.cpp, /\.specular_power -= 1\.0f/);
+    assert.match(
+        result.cpp,
+        /\.alpha = static_cast<float>\(static_cast<double>\([^\n]*\.alpha\) \+ 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.specular_power = static_cast<float>\(static_cast<double>\([^\n]*\.specular_power\) - 1\.0\)/,
+    );
     assert.match(result.cpp, /\.position\.x -= 0\.02/);
-    assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
-    assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
+    assert.match(
+        result.cpp,
+        /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.01\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.scaling\.z = static_cast<float>\(static_cast<double>\([^\n]*\.scaling\.z\) \+ 0\.03\)/,
+    );
 });
 
 test("records awaits lowered by static expression evaluation", () => {
@@ -9645,6 +9671,31 @@ test("evaluates a retained UI substitution's || right operand only when taken", 
         /if \([^\n]*empty\(\)[^\n]*\) \{\n\s*\(\*v_reads\) \+= 10\.0;/,
     );
     assert.equal(result.cpp.match(/\(\*v_reads\) \+= 10\.0;/g)?.length, 1);
+});
+
+test("a float field's compound store rounds once, at the store", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.scaling.x = 3;
+            box.scaling.x *= 1.1;
+            box.scaling.y = 1e39;
+        }
+        void main();
+    `);
+    // JavaScript computes 3 * 1.1 in double and rounds at the float32
+    // store; an out-of-range number stores as an infinity.
+    assert.match(
+        result.cpp,
+        /scaling\.x = static_cast<float>\(static_cast<double>\([^\n]*scaling\.x\) \* 1\.1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /scaling\.y = std::numeric_limits<float>::infinity\(\);/,
+    );
+    assert.doesNotMatch(result.cpp, /\*= 1\.1f|1e\+39f/);
 });
 
 test("folds static string concatenation assigned to retained UI text", () => {

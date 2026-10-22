@@ -585,7 +585,7 @@ export function requiredObjectNumber(
     context: RequiredObjectNumberContext,
     object: ts.ObjectLiteralExpression,
     name: string,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string {
     const value = context.objectProperty(object, name);
     if (!value) {

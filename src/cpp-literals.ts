@@ -9,6 +9,10 @@
  * `1e+21.0f` — not C++.
  */
 export function floatLiteral(value: number): string {
+    // A finite double past FLT_MAX rounds to an infinity at a float32 store
+    // (Math.fround), where the C++ literal would be out of range.
+    if (Number.isFinite(value) && !Number.isFinite(Math.fround(value)))
+        return `${value < 0 ? "-" : ""}std::numeric_limits<float>::infinity()`;
     // C++ rounds the decimal once, straight to float; JavaScript rounds the
     // double. They differ only for a double exactly halfway between two
     // floats, whose shortest decimal lies past the midpoint.

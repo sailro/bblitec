@@ -244,12 +244,12 @@ export interface LoweringServices {
     staticProperty(access: ts.PropertyAccessExpression): number | undefined;
     compileVec3(
         expression: ts.Expression,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     castNumber(value: Value, precision: "float" | "double"): string;
     compileBoolean(expression: ts.Expression): string;
@@ -257,7 +257,7 @@ export interface LoweringServices {
     compileColor4(expression: ts.Expression): string;
     compileNumber(
         expression: ts.Expression,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     compileEnumSwitchLabel(
         expression: ts.Expression,

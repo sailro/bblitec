@@ -390,7 +390,9 @@ function compileLines(
                 context.fail(expression, "Expected a static array literal.");
             counts.push(points.length);
             return `{${points
-                .map((point) => context.vec3FromRecord(point, expression))
+                .map((point) =>
+                    context.vec3FromRecord(point, expression, "float"),
+                )
                 .join(", ")}}`;
         });
         return {
@@ -404,7 +406,7 @@ function compileLines(
         const points = context.expectStaticArrayLiteral(line);
         counts.push(points.elements.length);
         return `{${points.elements
-            .map((point) => context.compileVec3(point))
+            .map((point) => context.compileVec3(point, "float"))
             .join(", ")}}`;
     });
     return {

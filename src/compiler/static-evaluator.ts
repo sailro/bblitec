@@ -368,7 +368,7 @@ export class StaticEvaluator {
      */
     public compileVec3(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
         value?: Value,
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
@@ -438,7 +438,7 @@ export class StaticEvaluator {
     public vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
         const lanes = ["x", "y", "z"].map((name) => {
@@ -459,7 +459,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 2, resolved);
         if (tuple) {
             return `bbl::Vec2{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -467,7 +467,7 @@ export class StaticEvaluator {
             unwrapped.elements.length === 2
         ) {
             return `bbl::Vec2{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Vec2 array [x, y].");
@@ -481,7 +481,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4, resolved);
         if (tuple) {
             return `bbl::Vec4{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -489,7 +489,7 @@ export class StaticEvaluator {
             unwrapped.elements.length === 4
         ) {
             return `bbl::Vec4{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Vec4 array [x, y, z, w].");
@@ -504,17 +504,17 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `bbl::Color3{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
-        const data = this.dataTupleComponents(unwrapped, resolved);
+        const data = this.dataTupleComponents(unwrapped, resolved, "float");
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
         const spreadTuple = this.spreadTupleElements(unwrapped, 3);
         if (spreadTuple) {
             return `bbl::Color3{${spreadTuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -522,13 +522,15 @@ export class StaticEvaluator {
             unwrapped.elements.length === 3
         ) {
             return `bbl::Color3{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
             return `bbl::Color3{${["r", "g", "b"]
-                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .map((channel) =>
+                    this.requiredObjectNumber(unwrapped, channel, "float"),
+                )
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
@@ -570,7 +572,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4);
         if (tuple) {
             return `bbl::Color4{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -578,14 +580,16 @@ export class StaticEvaluator {
             unwrapped.elements.length === 4
         ) {
             return `bbl::Color4{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             const channels = ["r", "g", "b", "a"];
             this.requireObjectColour(expression, unwrapped, channels);
             return `bbl::Color4{${channels
-                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .map((channel) =>
+                    this.requiredObjectNumber(unwrapped, channel, "float"),
+                )
                 .join(", ")}}`;
         }
         this.fail(
@@ -666,7 +670,7 @@ export class StaticEvaluator {
 
     public compileNumber(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         traceSourceNode(expression);
         let nonNullAssertion: boolean | undefined;
@@ -1961,7 +1965,7 @@ export class StaticEvaluator {
     private dataTupleComponents(
         expression: ts.Expression,
         value: Value | undefined,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
         length = 3,
     ): string[] | undefined {
         if (!value || !isDataTuple(value, length)) {
@@ -1979,7 +1983,7 @@ export class StaticEvaluator {
     private numberValue(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         if (value.kind !== "number") {
             this.fail(
@@ -2229,7 +2233,7 @@ export class StaticEvaluator {
     private requiredObjectNumber(
         object: ts.ObjectLiteralExpression,
         name: string,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const value = objectProperty(this.objectProperties(object), name);
         if (!value) {

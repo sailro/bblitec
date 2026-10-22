@@ -27,7 +27,7 @@ export function compileComputeUniformWriterIntrinsic(
     const owner = context.compileValue(argumentAt(call, 0));
     if (!setter) {
         context.expectKind(owner, "compute-uniform-arena", call);
-        const slot = context.compileNumber(argumentAt(call, 1)),
+        const slot = context.compileNumber(argumentAt(call, 1), "double"),
             layout = context.compileValue(argumentAt(call, 2));
         context.expectKind(layout, "compute-uniform-layout", call);
         return {
@@ -59,7 +59,7 @@ export function compileComputeUniformWriterIntrinsic(
             input,
         );
         cpp = `bbl::UniformNumericView(${retained.cpp})`;
-    } else cpp = context.compileNumber(input);
+    } else cpp = context.compileNumber(input, "float");
     return {
         kind: "void",
         cpp: `bbl::set_compute_uniform_${setter}(${owner.cpp}, ${field.cpp}, ${cpp})`,

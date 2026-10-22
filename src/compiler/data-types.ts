@@ -869,7 +869,7 @@ export function passesByReference(
 export function tupleComponents(
     base: string,
     arity: number,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string[] {
     return Array.from({ length: arity }, (_unused, index) =>
         precision === "float"

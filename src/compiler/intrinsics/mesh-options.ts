@@ -61,7 +61,7 @@ export const SPHERE_OPTION_NAMES = [
 export function compileBoxOptions(
     context: MeshOptionContext,
     expression: ts.Expression,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): [string, string, string] {
     const unwrapped = context.unwrap(expression);
     // Data factories receive JS numbers before their array stores narrow.
@@ -171,8 +171,8 @@ export function compileGroundOptions(
             context.fail(values, "Ground uvScale requires [uScale, vScale].");
         }
         compiledUvScale = [
-            context.compileNumber(values.elements[0]!),
-            context.compileNumber(values.elements[1]!),
+            context.compileNumber(values.elements[0]!, "float"),
+            context.compileNumber(values.elements[1]!, "float"),
         ];
     }
     return [
@@ -224,10 +224,10 @@ export function compilePlaneOptions(
     const size = context.objectProperty(object, "size");
     const width = context.objectProperty(object, "width");
     const height = context.objectProperty(object, "height");
-    const compiledSize = size ? context.compileNumber(size) : "1.0f";
+    const compiledSize = size ? context.compileNumber(size, "float") : "1.0f";
     return [
-        width ? context.compileNumber(width) : compiledSize,
-        height ? context.compileNumber(height) : compiledSize,
+        width ? context.compileNumber(width, "float") : compiledSize,
+        height ? context.compileNumber(height, "float") : compiledSize,
     ];
 }
 

@@ -293,7 +293,7 @@ function requiredStaticFiniteNumber(
             `${label} must be a finite static number; the pinned material block is composed at generation.`,
         );
     }
-    return { cpp: context.compileNumber(expression), value };
+    return { cpp: context.compileNumber(expression, "float"), value };
 }
 
 /** Metallic/roughness factors are unconditional UBO lanes in the pin. */
@@ -304,7 +304,7 @@ function pbrUniformNumber(
 ): { cpp: string; value: number | undefined } {
     return expression
         ? {
-              cpp: context.compileNumber(expression),
+              cpp: context.compileNumber(expression, "float"),
               value: selectedStaticNumberValue(context, expression),
           }
         : { cpp: floatLiteral(fallback), value: fallback };
@@ -630,7 +630,7 @@ export function compilePbrMaterialOptions(
         );
     }
     const occlusionStrengthCpp = occlusionStrength
-        ? context.compileNumber(occlusionStrength)
+        ? context.compileNumber(occlusionStrength, "float")
         : pinnedDefaultFloatCpp("occlusionStrength");
     const staticMetallicF0Factor = metallicF0Factor
         ? staticNumberValue(context, metallicF0Factor)
@@ -645,7 +645,7 @@ export function compilePbrMaterialOptions(
         );
     }
     const metallicF0FactorCpp = metallicF0Factor
-        ? context.compileNumber(metallicF0Factor)
+        ? context.compileNumber(metallicF0Factor, "float")
         : pinnedDefaultFloatCpp("metallicF0Factor");
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
@@ -998,16 +998,16 @@ export function compileClearCoatOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("clearcoatIntensity"),
         roughness: roughness
-            ? context.compileNumber(roughness)
+            ? context.compileNumber(roughness, "float")
             : pinnedDefaultFloatCpp("clearcoatRoughness"),
         indexOfRefraction: indexOfRefraction
-            ? context.compileNumber(indexOfRefraction)
+            ? context.compileNumber(indexOfRefraction, "float")
             : pinnedDefaultFloatCpp("clearcoatIndexOfRefraction"),
         bumpTextureScale: bumpTextureScale
-            ? context.compileNumber(bumpTextureScale)
+            ? context.compileNumber(bumpTextureScale, "float")
             : pinnedDefaultFloatCpp("clearcoatBumpTextureScale"),
         manifest: {
             isEnabled: enabled === "true",
@@ -1075,16 +1075,16 @@ export function compileIridescenceOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("iridescenceIntensity"),
         indexOfRefraction: indexOfRefraction
-            ? context.compileNumber(indexOfRefraction)
+            ? context.compileNumber(indexOfRefraction, "float")
             : pinnedDefaultFloatCpp("iridescenceIndexOfRefraction"),
         minimumThickness: minimumThickness
-            ? context.compileNumber(minimumThickness)
+            ? context.compileNumber(minimumThickness, "float")
             : pinnedDefaultFloatCpp("iridescenceMinimumThickness"),
         maximumThickness: maximumThickness
-            ? context.compileNumber(maximumThickness)
+            ? context.compileNumber(maximumThickness, "float")
             : pinnedDefaultFloatCpp("iridescenceMaximumThickness"),
         manifest: {
             isEnabled: enabled === "true",
@@ -1142,7 +1142,7 @@ export function compileAnisotropyOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("anisotropyIntensity"),
         direction: direction
             ? context.evaluator.compileVec2(direction)
@@ -1218,10 +1218,10 @@ export function compileSheenOptions(
             ? context.compileColor3(color)
             : pinnedDefaultColor3Cpp("sheenColor"),
         roughness: roughness
-            ? context.compileNumber(roughness)
+            ? context.compileNumber(roughness, "float")
             : pinnedDefaultFloatCpp("sheenRoughness"),
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("sheenIntensity"),
         texture,
         albedoScaling: albedoScalingEnabled,

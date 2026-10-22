@@ -5446,6 +5446,7 @@ export class StatementLowerer {
             call,
             3,
             `${property}.set`,
+            "float",
         );
         context.emit({
             kind: "expression",
@@ -5473,7 +5474,7 @@ export class StatementLowerer {
         // A translation is a JavaScript number upstream and reaches a
         // matrix column, so its lane is double where a rotation's and a
         // scale's are float.
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string[] {
         if (
             call.arguments.length === 1 &&
@@ -5500,15 +5501,11 @@ export class StatementLowerer {
                     `${label} spreads a value that is not a ${arity}-element numeric tuple.`,
                 );
             }
-            const components = tupleComponents(
+            return tupleComponents(
                 context.bindings.bindDataTuple(value, arity, "spread"),
                 arity,
+                precision,
             );
-            return precision === "float"
-                ? components.map(
-                      (component) => `static_cast<float>(${component})`,
-                  )
-                : components;
         }
         if (call.arguments.length !== arity) {
             context.fail(

@@ -605,7 +605,7 @@ export function compilePropertyAnimationClip(
             // JavaScript numbers and stores the time into its Float32Array
             // `input`, rounding once.
             const time = timeExpression
-                ? context.compileNumber(timeExpression)
+                ? context.compileNumber(timeExpression, "float")
                 : `static_cast<float>(${context.compileNumber(frameExpression!, "double")} / ${trackFrameRate})`;
             const value = compilePropertyAnimationKeyValue(
                 context,
@@ -645,10 +645,12 @@ function compilePropertyAnimationKeyValue(
     const resolved = context.resolveStaticExpression(expression);
     const values =
         components === 1
-            ? [context.compileNumber(resolved)]
+            ? [context.compileNumber(resolved, "float")]
             : context
                   .expectStaticArrayLiteral(resolved)
-                  .elements.map((element) => context.compileNumber(element));
+                  .elements.map((element) =>
+                      context.compileNumber(element, "float"),
+                  );
     if (values.length !== components) {
         context.fail(
             resolved,

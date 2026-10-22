@@ -2399,7 +2399,7 @@ function compileCreateBox(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.intrinsicOptions.compileBoxOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileBoxOptions(call.arguments[1], "float")
         : ["1.0f", "1.0f", "1.0f"];
     context.reachFeature("mesh:box", call);
     return {
@@ -2753,7 +2753,7 @@ function compileCreateMorphTargets(
                 "Direct createMorphTargets requires one initial weight.",
             );
         }
-        weight = context.compileNumber(values.elements[0]!);
+        weight = context.compileNumber(values.elements[0]!, "float");
     }
     context.reachFeature("mesh:morph-targets", call);
     return {
@@ -2766,7 +2766,7 @@ function compileCreateMorphTargets(
                 "f32array",
             ),
             normalsCpp: normalValue,
-            vertexCountCpp: context.compileNumber(argumentAt(call, 2)),
+            vertexCountCpp: context.compileNumber(argumentAt(call, 2), "float"),
             weightCpp: weight,
         },
     };

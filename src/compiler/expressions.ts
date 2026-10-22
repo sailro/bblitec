@@ -2365,7 +2365,7 @@ export class ExpressionLowerer {
             case "number":
                 return {
                     kind: "number",
-                    cpp: this.context.compileNumber(expression),
+                    cpp: this.context.compileNumber(expression, "float"),
                     ...(Number.isFinite(value.browserValue.value)
                         ? {
                               staticNumber: value.browserValue.value,

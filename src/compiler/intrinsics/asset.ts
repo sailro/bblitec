@@ -931,7 +931,7 @@ function compileLoadSkybox(
             ),
     );
     const size = call.arguments[3]
-        ? context.compileNumber(call.arguments[3])
+        ? context.compileNumber(call.arguments[3], "double")
         : "100.0";
     context.reachFeature("background:image-skybox", call);
     return {

@@ -4011,7 +4011,7 @@ class Compiler implements LoweringServices {
 
     public compileVec3(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const unwrapped = this.unwrap(expression);
         if (
@@ -4045,7 +4045,7 @@ class Compiler implements LoweringServices {
     public vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
@@ -4121,7 +4121,7 @@ class Compiler implements LoweringServices {
 
     public compileNumber(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         return (
             this.dataLowerer.assignedNumber(expression, precision) ??
@@ -5166,7 +5166,7 @@ class Compiler implements LoweringServices {
                 {
                     name: uniformName,
                     type: "f32",
-                    components: [this.compileNumber(argument)],
+                    components: [this.compileNumber(argument, "float")],
                 },
             ],
         };
