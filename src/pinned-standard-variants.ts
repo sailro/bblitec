@@ -66,6 +66,7 @@ import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
  * throws by name below — the wave-D worklist, not a silent approximation.
  */
 import ts from "typescript";
+import { jsToUint32Call } from "./lowering/pinned-operators.js";
 import {
     reachCsmReceiverFactories,
     type ShadowLightSlot,
@@ -2243,7 +2244,7 @@ export function pinnedStandardSupportBlock(
                         skeletonModule,
                         "Pinned skeleton feature hook returned no value.",
                     );
-                return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
+                return jsToUint32Call(lowerer.expression(expression));
             },
         });
         // BBLITE_STANDARD_SKELETON, which gates the PALs' use of this

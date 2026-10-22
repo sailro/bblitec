@@ -1,5 +1,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { jsToUint32Call } from "../lowering/pinned-operators.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
 import { isGlobalUndefined, isSymbolPropertyKey } from "./symbols.js";
 import {
@@ -746,7 +747,7 @@ export function compileWorkerValue(
         context.reachJsData();
         return {
             kind: "void",
-            cpp: `${loop}.cancel_animation_frame(bbl::js::to_uint32(${context.compileNumber(argumentAt(node, 0), "double")}))`,
+            cpp: `${loop}.cancel_animation_frame(${jsToUint32Call(context.compileNumber(argumentAt(node, 0), "double"))})`,
         };
     }
     if (

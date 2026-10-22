@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import type { LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -36,7 +37,7 @@ function mergedStorageStatement(
         cpp: name,
         type: positions ? "f32" : "u32",
         indexedStore: (owner, index, value) =>
-            `bbl::js::array_store_checked(${owner}, ${index}, "navigation source merge") = ${positions ? `static_cast<float>(${value})` : `bbl::js::to_uint32(${value})`}`,
+            `bbl::js::array_store_checked(${owner}, ${index}, "navigation source merge") = ${positions ? `static_cast<float>(${value})` : jsToUint32Call(value)}`,
     });
     const size = lowerer.portBinding(
         positions ? "totalVerts" : "totalIdx",

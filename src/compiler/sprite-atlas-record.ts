@@ -1,6 +1,7 @@
 import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { jsToUint32Call } from "../lowering/pinned-operators.js";
 import { doubleLiteral } from "./data-types.js";
 import type { Value } from "./types.js";
 
@@ -263,8 +264,8 @@ export function compileSpriteAtlasRecord(
     return (
         `([&]() { bbl::SpriteAtlasRecord ${atlas}; ` +
         textureSetup(texture.cpp, atlas, stored) +
-        `${atlas}.width = bbl::js::to_uint32(${tupleLane(size, 0)}); ` +
-        `${atlas}.height = bbl::js::to_uint32(${tupleLane(size, 1)}); ` +
+        `${atlas}.width = ${jsToUint32Call(tupleLane(size, 0))}; ` +
+        `${atlas}.height = ${jsToUint32Call(tupleLane(size, 1))}; ` +
         `${atlas}.premultiplied_alpha = ${premultiplied.cpp}; ` +
         `${atlas}.mip_maps = false; ` +
         frameStatements +

@@ -66,6 +66,7 @@ import {
     foldNumericUnary,
     jsBitwiseCall,
     jsBitwiseNotCall,
+    jsToUint32Call,
 } from "./pinned-operators.js";
 import { isNullable, holdsOnly } from "../compiler/type-facts.js";
 
@@ -2901,7 +2902,7 @@ export class PinnedNumericLowerer {
         // undefined outside it -- a cluster mask's bit 31 arrives as a
         // negative int32 -- so the conversion is the spec's rather than the
         // language's. A bitwise lane converts from its own 32 bits.
-        if (element === "std::uint32_t") return `bbl::js::to_uint32(${text})`;
+        if (element === "std::uint32_t") return jsToUint32Call(text);
         if (element === "std::uint8_t") return `bbl::js::to_uint8(${text})`;
         return text;
     }

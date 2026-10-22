@@ -151,6 +151,20 @@ export const PINNED_BITWISE_ASSIGNMENT_OPERATORS: ReadonlyMap<
     ],
 ]);
 
+/**
+ * JavaScript's ToUint32 / ToInt32 of a double: truncate toward zero and wrap
+ * modulo 2^32, NaN and the infinities to 0. A bare `static_cast` agrees only
+ * inside the target range (a mask's bit 31 arrives as a negative int32).
+ */
+export function jsToUint32Call(value: string): string {
+    return `bbl::js::to_uint32(${value})`;
+}
+
+/** ToInt32, as {@link jsToUint32Call}. */
+export function jsToInt32Call(value: string): string {
+    return `bbl::js::to_int32(${value})`;
+}
+
 /** `~operand`: JavaScript's ToInt32 complement, the `bbl::js` helper. */
 export function jsBitwiseNotCall(operand: string): string {
     return `bbl::js::bitwise_not(${operand})`;

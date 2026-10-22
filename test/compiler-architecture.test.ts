@@ -1127,6 +1127,35 @@ test("exponentiation, remainder and complement are spelled once", () => {
     ]);
 });
 
+test("ToUint32 / ToInt32 of a JavaScript number are spelled once", () => {
+    // jsToUint32Call / jsToInt32Call wrap modulo 2^32 (NaN to 0); a bare
+    // static_cast of a double is undefined outside the target range. The
+    // sprite atlas helper's fixed text is the one other speller, and the
+    // raw uint32 casts (indices and counts) may only shrink.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                /bbl::js::to_u?int32[(]/.test(readFileSync(path, "utf8")),
+            )
+            .sort(),
+        [
+            "src/compiler/sprite-atlas-record.ts",
+            "src/lowering/pinned-operators.ts",
+        ],
+    );
+    const casts = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [
+                ...readFileSync(path, "utf8").matchAll(
+                    /static_cast<std::uint32_t>[(]/g,
+                ),
+            ].length,
+        0,
+    );
+    assert.ok(casts <= 163, `static_cast<std::uint32_t> casts: ${casts}`);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

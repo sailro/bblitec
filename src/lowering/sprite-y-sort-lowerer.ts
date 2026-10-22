@@ -27,6 +27,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  *    current rows.
  */
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import { PinnedRecordModel, type MemberSpec } from "./pinned-record-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import {
@@ -228,7 +229,7 @@ function ySortCalls(): Map<string, (args: readonly string[]) => string> {
         "_markSprite2DDirty",
         (args) =>
             `touch_sprite_instances(${args[0]}, ` +
-            `bbl::js::to_uint32(${args[1]}), bbl::js::to_uint32(${args[2]}))`,
+            `${jsToUint32Call(args[1]!)}, ${jsToUint32Call(args[2]!)})`,
     );
     return calls;
 }

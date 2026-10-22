@@ -34,6 +34,7 @@ import type { NativeCaptureBinding } from "../closure-captures.js";
 // are. A native build links a solver through `pal_physics_*.cpp` and never
 // sees the WASM the browser loaded.
 import ts from "typescript";
+import { jsToUint32Call } from "../../lowering/pinned-operators.js";
 import { argumentAt, unwrapExpression } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
 import { vec3Record } from "./mesh.js";
@@ -77,6 +78,7 @@ export interface PhysicsIntrinsicContext
             | "emit"
             | "resolveStaticExpression"
             | "intrinsicOptions"
+            | "reachJsData"
             | "sceneManifest"
         > {}
 
@@ -1561,12 +1563,13 @@ function compileSetPhysicsShapeFilterMembershipMask(
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     context.expectKind(shape, "physics-shape", argumentAt(call, 1));
     context.expectSameEngine(world, shape, call);
+    context.reachJsData();
     return {
         kind: "void",
         cpp:
             `bbl::upstream::set_physics_shape_filter_membership_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
-            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+            `${jsToUint32Call(context.compileNumber(argumentAt(call, 2), "double"))})`,
     };
 }
 
@@ -1617,12 +1620,13 @@ function compileSetPhysicsShapeFilterCollideMask(
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     context.expectKind(shape, "physics-shape", argumentAt(call, 1));
     context.expectSameEngine(world, shape, call);
+    context.reachJsData();
     return {
         kind: "void",
         cpp:
             `bbl::upstream::set_physics_shape_filter_collide_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
-            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+            `${jsToUint32Call(context.compileNumber(argumentAt(call, 2), "double"))})`,
     };
 }
 
@@ -1953,9 +1957,12 @@ function compilePhysicsRaycast(
                 `ray_${name}`,
             ).cpp;
             if (name === "shouldHitTriggers") shouldHitTriggers = snapshot;
-            else if (name === "membership")
-                membership = `static_cast<std::uint32_t>(${snapshot})`;
-            else collideWith = `static_cast<std::uint32_t>(${snapshot})`;
+            else {
+                context.reachJsData();
+                if (name === "membership")
+                    membership = jsToUint32Call(snapshot);
+                else collideWith = jsToUint32Call(snapshot);
+            }
         }
     }
     const result = context.allocateTemporaryCppName("physics_raycast");

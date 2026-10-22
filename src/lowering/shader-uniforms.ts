@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { jsToInt32Call } from "./pinned-operators.js";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -459,7 +460,7 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
                         cpp: "upload.slot_versions",
                         type: "f64-buffer",
                         indexedStore: (owner, index, value) =>
-                            `${owner}[static_cast<std::size_t>(${index})] = js::to_int32(${value})`,
+                            `${owner}[static_cast<std::size_t>(${index})] = ${jsToInt32Call(value)}`,
                     },
                 ],
                 ["i", { cpp: "index", type: "scalar" }],

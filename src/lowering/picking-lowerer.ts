@@ -1,5 +1,6 @@
 import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 import {
@@ -255,7 +256,7 @@ ${this.lowerDecodePickId()}`,
         return `// ${this.context.provenance(gpuPickerModule, "pickAsyncImpl")}
 // The readback's \`pickId\`, from the colour staging row's first bytes.
 inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
-    return bbl::js::to_uint32(${lowerer.expression(store.right)});
+    return ${jsToUint32Call(lowerer.expression(store.right))};
 }`;
     }
 
