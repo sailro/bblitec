@@ -15,6 +15,7 @@ import {
     unwrapExpression,
     referenceSite,
     equalityOperator,
+    variableKind,
 } from "./syntax.js";
 import { holdsOnly } from "./type-facts.js";
 
@@ -38,7 +39,7 @@ function constant(node: ts.Node): node is ts.VariableDeclaration & {
         ts.isIdentifier(node.name) &&
         !!node.initializer &&
         ts.isVariableDeclarationList(node.parent) &&
-        (node.parent.flags & ts.NodeFlags.Const) !== 0
+        variableKind(node.parent) === "const"
     );
 }
 

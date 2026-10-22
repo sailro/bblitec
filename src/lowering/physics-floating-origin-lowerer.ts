@@ -40,6 +40,7 @@ import {
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+import { variableKind } from "../compiler/syntax.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -489,7 +490,7 @@ function declaration(
         return undefined;
     }
     const name = entry.name.text;
-    const constant = (node.declarationList.flags & ts.NodeFlags.Const) !== 0;
+    const constant = variableKind(node.declarationList) === "const";
     const qualifier = constant ? "const " : "";
     const initializer = entry.initializer
         ? context.unwrapExpression(entry.initializer)

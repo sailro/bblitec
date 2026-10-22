@@ -83,6 +83,7 @@ import {
     lowerNodeParticleProviderShared,
     lowerNodeParticleProviderState,
 } from "./node-particle-provider-lowerer.js";
+import { variableKind } from "../compiler/syntax.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
 const systemModule = "src/particle/particle-system.ts";
@@ -1969,7 +1970,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                     !ts.isIdentifier(cursor.name) ||
                     cursor.name.text !== "c" ||
                     !cursor.initializer ||
-                    (statement.initializer.flags & ts.NodeFlags.Let) === 0
+                    variableKind(statement.initializer) !== "let"
                 )
                     this.context.contractError(
                         statement,

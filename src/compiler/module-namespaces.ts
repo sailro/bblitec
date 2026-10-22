@@ -8,7 +8,11 @@ import {
     declaredSymbol,
     computedEnumMember,
 } from "./symbols.js";
-import { unwrapExpression, containsSuspension } from "./syntax.js";
+import {
+    unwrapExpression,
+    containsSuspension,
+    variableKind,
+} from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { emitReachableStatements } from "./loop-control.js";
@@ -311,8 +315,7 @@ export class ModuleNamespaces {
                 value.kind === "number" &&
                 value.staticNumber === undefined &&
                 ts.isVariableDeclaration(declaration) &&
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                    0
+                variableKind(declaration) === "const"
                     ? staticNumberValue(this.context, declaration.name)
                     : undefined;
             return staticNumber !== undefined && Number.isFinite(staticNumber)
@@ -461,8 +464,7 @@ export class ModuleNamespaces {
                     continue;
                 if (
                     ts.isVariableStatement(statement) &&
-                    (statement.declarationList.flags & ts.NodeFlags.Const) !==
-                        0 &&
+                    variableKind(statement.declarationList) === "const" &&
                     statement.declarationList.declarations.every(
                         (declaration) =>
                             ts.isIdentifier(declaration.name) &&

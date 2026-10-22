@@ -39,6 +39,7 @@ import {
     equalityOperator,
     functionKind,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -140,7 +141,7 @@ export function emitHandleCollectionLoop<
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
             ts.isForOfStatement(declaration.parent.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+            variableKind(declaration.parent) === "const";
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
@@ -220,7 +221,7 @@ function assetOwnerMapBuilder(
             !ts.isForOfStatement(statement) ||
             isSuspensionPoint(statement) ||
             !ts.isVariableDeclarationList(statement.initializer) ||
-            !(statement.initializer.flags & ts.NodeFlags.Const) ||
+            variableKind(statement.initializer) !== "const" ||
             statement.initializer.declarations.length !== 1
         )
             return undefined;
@@ -3076,7 +3077,7 @@ function isAssetDescendantNameSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1 ||
         !isPropertyReadOf(walk.expression, root, "children")
     ) {
@@ -3104,7 +3105,7 @@ function isAssetDescendantNameSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0
+        variableKind(loopStatements[0].declarationList) !== "const"
     ) {
         return false;
     }
@@ -3219,7 +3220,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1
     ) {
         return false;
@@ -3250,7 +3251,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(loopStatements[0].declarationList) !== "const" ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
         )
@@ -4214,7 +4215,7 @@ function constAliasOf(
     const declaration = singleConstDeclaration(statement);
     return declaration &&
         ts.isVariableStatement(statement) &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(statement.declarationList) === "const" &&
         isIdentifierRead(declaration.initializer, node)
         ? declaration.name
         : undefined;

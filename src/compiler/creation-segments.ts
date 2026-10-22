@@ -5,6 +5,7 @@ import {
     unwrapExpression,
     writeSites,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 
@@ -121,7 +122,7 @@ function isFreshCreation(
         return (
             bound !== undefined &&
             ts.isVariableDeclaration(bound) &&
-            (ts.getCombinedNodeFlags(bound) & ts.NodeFlags.Const) !== 0 &&
+            variableKind(bound) === "const" &&
             bound.initializer !== undefined &&
             ts.findAncestor(bound, ts.isFunctionLike) === fn &&
             isFreshCreation(context, bound.initializer, depth + 1)

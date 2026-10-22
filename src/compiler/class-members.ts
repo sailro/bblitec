@@ -10,6 +10,7 @@ import {
     unwrapExpression,
     wrappedParent,
     expressionHasEffects,
+    variableKind,
 } from "./syntax.js";
 
 /**
@@ -24,7 +25,7 @@ export function localClassOfSymbol(
         const initializer =
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.initializer
                 ? unwrapExpression(declaration.initializer)
                 : undefined;

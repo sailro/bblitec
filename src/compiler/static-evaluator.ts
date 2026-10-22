@@ -92,6 +92,7 @@ import {
     writeSites,
     functionKind,
     type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -117,7 +118,7 @@ function isModuleScopeFunction(declaration: SupportedFunction): boolean {
     return (
         ts.isVariableDeclaration(binding) &&
         ts.isVariableDeclarationList(binding.parent) &&
-        (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(binding.parent) === "const" &&
         ts.isVariableStatement(binding.parent.parent) &&
         ts.isSourceFile(binding.parent.parent.parent)
     );
@@ -132,7 +133,7 @@ function isModuleConstant(symbol: ts.Symbol): boolean {
         ts.isVariableStatement(statement) &&
         ts.isSourceFile(statement.parent) &&
         !statement.parent.isDeclarationFile &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+        variableKind(statement.declarationList) === "const"
     );
 }
 
@@ -1542,7 +1543,7 @@ export class StaticEvaluator {
         if (
             !ts.isVariableDeclaration(declaration) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(declaration.parent) !== "const"
         ) {
             return undefined;
         }

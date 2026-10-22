@@ -17,6 +17,7 @@ import {
     plainDataMembers,
     functionKind,
     isFunctionWithBody,
+    variableKind,
 } from "./syntax.js";
 import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
 
@@ -147,7 +148,7 @@ export function concreteArgumentIdentityPaths(
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
                 ts.isVariableDeclarationList(declaration.parent) &&
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+                variableKind(declaration.parent) === "const"
             ) {
                 const initializer = unwrapExpression(declaration.initializer);
                 // A fresh scalar record cannot hide another object. Other
@@ -317,7 +318,7 @@ export function concreteArgumentIdentityPaths(
                 }
                 if (
                     !ts.isVariableStatement(statement) ||
-                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+                    variableKind(statement.declarationList) !== "const"
                 )
                     return undefined;
                 for (const local of statement.declarationList.declarations) {

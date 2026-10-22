@@ -31,6 +31,7 @@ import {
     writeSites,
     positionalParameter,
     isSupportedFunction,
+    variableKind,
 } from "./syntax.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
@@ -583,8 +584,7 @@ class ModuleInitializerPlanner {
             if (!ts.isVariableStatement(statement)) {
                 continue;
             }
-            const isConst =
-                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+            const isConst = variableKind(statement.declarationList) === "const";
             const selected = statement.declarationList.declarations.some(
                 (declaration) => {
                     if (retained.has(declaration)) return true;
@@ -653,8 +653,7 @@ class ModuleInitializerPlanner {
             if (!ts.isVariableStatement(statement)) {
                 continue;
             }
-            const isConst =
-                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+            const isConst = variableKind(statement.declarationList) === "const";
             for (const declaration of statement.declarationList.declarations) {
                 if (!ts.isIdentifier(declaration.name)) {
                     continue;

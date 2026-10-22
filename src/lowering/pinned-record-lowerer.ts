@@ -55,6 +55,8 @@ import {
     functionKind,
     isAsyncFunction,
     isGeneratorFunction,
+    variableKind,
+    isBlockScopedVariable,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -4061,7 +4063,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const owner = list.parent;
             if (
                 ts.isVariableDeclarationList(list) &&
-                (list.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
+                isBlockScopedVariable(list)
             ) {
                 if (ts.isForStatement(owner) && owner.initializer === list)
                     return owner;
@@ -5950,7 +5952,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isSourceFile(declaration.parent.parent.parent) &&
             !declaration.getSourceFile().isDeclarationFile
         ) {
-            if (declaration.parent.flags & ts.NodeFlags.Const) {
+            if (variableKind(declaration.parent) === "const") {
                 // A constant bound to an object the pin constructs once
                 // (a scratch matrix) is one object for the realm.
                 if (
@@ -6016,7 +6018,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
-            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            variableKind(declaration.parent) !== "const" ||
             !ts.isSourceFile(declaration.parent.parent.parent) ||
             declaration.getSourceFile().isDeclarationFile ||
             !declaration.initializer
@@ -8658,7 +8660,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): string[] {
         if (
             !ts.isIdentifier(declaration.name) ||
-            !(declaration.parent.flags & ts.NodeFlags.Const)
+            variableKind(declaration.parent) !== "const"
         )
             return [];
         const symbol = declaredSymbol(this.checker, declaration.name);
@@ -9193,7 +9195,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const name =
             declaration &&
             ts.isVariableDeclaration(declaration) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.initializer &&
             ts.isIdentifier(declaration.initializer) &&
             !declaration.getSourceFile().isDeclarationFile

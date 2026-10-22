@@ -1,7 +1,11 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { resolvedSymbol } from "./symbols.js";
-import { type SupportedFunction, unwrapExpression } from "./syntax.js";
+import {
+    type SupportedFunction,
+    unwrapExpression,
+    variableKind,
+} from "./syntax.js";
 
 /** Prove storage provenance without inferring aliasing from a readonly type. */
 export function arrayReturnStorage(
@@ -26,7 +30,7 @@ export function arrayReturnStorage(
                 !ts.isVariableDeclaration(binding) ||
                 !binding.initializer ||
                 !ts.isVariableDeclarationList(binding.parent) ||
-                !(binding.parent.flags & ts.NodeFlags.Const)
+                variableKind(binding.parent) !== "const"
             )
                 return undefined;
             if (ts.findAncestor(binding, (ancestor) => ancestor === body))
@@ -44,7 +48,7 @@ export function arrayReturnStorage(
                 !ts.isVariableDeclaration(binding) ||
                 !binding.initializer ||
                 !ts.isVariableDeclarationList(binding.parent) ||
-                !(binding.parent.flags & ts.NodeFlags.Const) ||
+                variableKind(binding.parent) !== "const" ||
                 !ts.isVariableStatement(binding.parent.parent) ||
                 !ts.isSourceFile(binding.parent.parent.parent)
             )

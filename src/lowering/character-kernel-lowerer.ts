@@ -26,7 +26,7 @@ import {
     type PinnedNumericScope,
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
-import { isSuspensionPoint } from "../compiler/syntax.js";
+import { isSuspensionPoint, variableKind } from "../compiler/syntax.js";
 import { valueKindOf, holdsOnly } from "../compiler/type-facts.js";
 
 /** A pinned value with its represented storage and alias lifetime. */
@@ -342,8 +342,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         declaration: ts.VariableDeclaration,
         indent: string,
     ): string[] {
-        const stable =
-            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+        const stable = variableKind(statement.declarationList) === "const";
         if (!declaration.initializer)
             return this.refuse(
                 declaration,
@@ -641,7 +640,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         if (
             !bound &&
             constant?.initializer &&
-            (constant.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(constant.parent) === "const" &&
             constant.getSourceFile() === node.getSourceFile() &&
             !isRecordScalar(this.declarationType(constant))
         ) {

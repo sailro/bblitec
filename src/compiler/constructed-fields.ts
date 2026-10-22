@@ -8,6 +8,7 @@ import {
     lastWriter,
     objectLiteralMembers,
     testsTruthinessOnly,
+    variableKind,
 } from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
@@ -46,7 +47,7 @@ export function constructedFieldPresent(
         !declaration ||
         !ts.isVariableDeclaration(declaration) ||
         !ts.isIdentifier(declaration.name) ||
-        (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+        variableKind(declaration) !== "const" ||
         !declaration.initializer
     ) {
         return false;

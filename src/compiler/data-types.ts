@@ -151,6 +151,7 @@ import {
     wrappersUnder,
     declarationNamed,
     objectLiteralMembers,
+    variableKind,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
@@ -2819,7 +2820,7 @@ export class DataTypeRegistry {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
-            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            variableKind(declaration.parent) !== "const" ||
             !declaration.initializer ||
             !ts.isNewExpression(unwrapExpression(declaration.initializer))
         )

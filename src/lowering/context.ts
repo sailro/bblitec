@@ -8,6 +8,7 @@ import {
     type WriteSite,
     lastWriter,
     objectLiteralMembers,
+    variableKind,
 } from "../compiler/syntax.js";
 import {
     sharedUpstreamStore,
@@ -125,18 +126,24 @@ export function unwrapExpression(expression: ts.Expression): ts.Expression {
  * initial value: a binding the pin mutates at run time (`MAX_LIGHTS`, which
  * `setMaxLights` grows) that this port freezes and refuses the mutation of.
  */
+/** A `const`, or with `frozen` a `let` too: the bindings a pinned module constant reads. */
+function admitsModuleConstant(
+    variable: ts.Node,
+    frozen: boolean | undefined,
+): boolean {
+    const kind = variableKind(variable);
+    return kind === "const" || (frozen === true && kind === "let");
+}
+
 function moduleScopeConstant(
     file: ts.SourceFile,
     name: string,
     options: { frozen?: boolean } = {},
 ): ts.Expression | undefined {
-    const admitted = options.frozen
-        ? ts.NodeFlags.Const | ts.NodeFlags.Let
-        : ts.NodeFlags.Const;
     for (const statement of file.statements) {
         if (
             !ts.isVariableStatement(statement) ||
-            (statement.declarationList.flags & admitted) === 0
+            !admitsModuleConstant(statement.declarationList, options.frozen)
         ) {
             continue;
         }
@@ -308,10 +315,7 @@ export function constantOf(
 ): PinnedConstant | undefined {
     const declaration = moduleScopeVariable(declarationOf(identifier));
     if (!declaration?.initializer) return undefined;
-    const admitted = options.frozen
-        ? ts.NodeFlags.Const | ts.NodeFlags.Let
-        : ts.NodeFlags.Const;
-    if ((declaration.parent.flags & admitted) === 0) return undefined;
+    if (!admitsModuleConstant(declaration, options.frozen)) return undefined;
     const file = declaration.getSourceFile();
     if (
         options.sameFile &&

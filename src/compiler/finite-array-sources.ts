@@ -6,6 +6,7 @@ import {
     unwrapExpression,
     accessKey,
     propertyKey,
+    variableKind,
 } from "./syntax.js";
 import { contextualProperty } from "./type-facts.js";
 
@@ -246,7 +247,7 @@ export class FiniteArraySources {
                 !ts.isVariableDeclaration(declaration) ||
                 !declaration.initializer ||
                 !ts.isVariableDeclarationList(declaration.parent) ||
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0
+                variableKind(declaration.parent) !== "const"
             )
                 break;
             node = unwrapExpression(declaration.initializer);

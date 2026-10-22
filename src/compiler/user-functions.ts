@@ -124,6 +124,7 @@ import {
     isSupportedFunction,
     functionOfDeclaration,
     type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -454,7 +455,7 @@ export function requiresDefaultParameterBinding(
                 binding &&
                 ts.isVariableDeclaration(binding) &&
                 ts.isVariableDeclarationList(binding.parent) &&
-                (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                variableKind(binding.parent) === "const" &&
                 (type.flags &
                     (ts.TypeFlags.StringLiteral |
                         ts.TypeFlags.NumberLiteral |
@@ -3010,7 +3011,7 @@ export class UserFunctionLowerer {
             !isDeclaredInside(constant, declaration) &&
             ts.isVariableDeclaration(constant) &&
             ts.isVariableDeclarationList(constant.parent) &&
-            (constant.parent.flags & ts.NodeFlags.Const) !== 0
+            variableKind(constant.parent) === "const"
         );
     }
 

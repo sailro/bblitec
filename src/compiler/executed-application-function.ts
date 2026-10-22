@@ -39,6 +39,7 @@ import {
     statementDeclaredNames,
     isValueReference,
     propertyKey,
+    variableKind,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
@@ -353,7 +354,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             !statement ||
             !ts.isIdentifier(target.name) ||
             !ts.isVariableStatement(statement) ||
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            variableKind(statement.declarationList) !== "const"
         ) {
             return this.context.fail(
                 target,
@@ -390,7 +391,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         }
         if (
             ts.isVariableStatement(statement) &&
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0 &&
+            variableKind(statement.declarationList) !== "const" &&
             // A `let` only never-run functions assign keeps its initializer.
             !(
                 this.context.sourceFiles &&

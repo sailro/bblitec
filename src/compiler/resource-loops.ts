@@ -49,6 +49,7 @@ import {
     isSupportedFunction,
     type SupportedFunction,
     isFunctionWithBody,
+    variableKind,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -315,7 +316,7 @@ export function walkReachedLoopNodes(
             target?.declarations?.some(
                 (declaration) =>
                     ts.isVariableDeclaration(declaration) &&
-                    (declaration.parent.flags & ts.NodeFlags.Const) === 0,
+                    variableKind(declaration.parent) !== "const",
             )
         )
             return undefined;

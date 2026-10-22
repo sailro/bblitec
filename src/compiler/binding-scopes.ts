@@ -19,6 +19,8 @@ import {
     isExpressionWrapper,
     functionOfDeclaration,
     isSupportedFunction,
+    variableKind,
+    isBlockScopedVariable,
 } from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -409,7 +411,7 @@ export class BindingScopes {
             visited.add(declaration);
             const initializer = unwrapExpression(declaration.initializer);
             if (
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                variableKind(declaration.parent) !== "const" ||
                 !ts.isIdentifier(initializer)
             )
                 break;
@@ -768,7 +770,7 @@ export class BindingScopes {
             declaration &&
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.BlockScoped) !== 0;
+            isBlockScopedVariable(declaration.parent);
         const declaringScope = declaration
             ? ts.findAncestor(
                   declaration,
@@ -1144,7 +1146,7 @@ export class BindingScopes {
             declaration.initializer !== undefined &&
             name !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             !this.context.sharedClosures.identifierIsRebound(name)
         );
     }

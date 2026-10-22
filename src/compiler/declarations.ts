@@ -92,6 +92,8 @@ import {
     isSupportedFunction,
     type SupportedFunction,
     isFunctionWithBody,
+    variableKind,
+    isBlockScopedVariable,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -451,7 +453,7 @@ export class DeclarationLowerer {
             value.staticString !== undefined &&
             !value.parameterBinding &&
             ts.isIdentifier(declaration.name) &&
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+            variableKind(declaration) === "const"
         ) {
             const stored = this.context.bindings.lookup(declaration.name);
             writable(stored).lexicalStaticString = value.staticString;
@@ -512,7 +514,7 @@ export class DeclarationLowerer {
     public prepareModuleBinding(declaration: ts.VariableDeclaration): void {
         if (
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.BlockScoped) === 0
+            !isBlockScopedVariable(declaration.parent)
         )
             return this.context.fail(
                 declaration,
@@ -728,7 +730,7 @@ export class DeclarationLowerer {
             if (
                 declaration.parent === undefined ||
                 !ts.isVariableDeclarationList(declaration.parent) ||
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+                variableKind(declaration.parent) === "const"
             ) {
                 this.context.fail(
                     declaration,
@@ -846,7 +848,7 @@ export class DeclarationLowerer {
         if (
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 &&
+            variableKind(declaration.parent) !== "const" &&
             !this.neverReassigned(declaration)
         ) {
             const symbol = this.context.symbols.valueSymbol(declaration.name);
@@ -1060,7 +1062,7 @@ export class DeclarationLowerer {
             if (text !== undefined) value = { ...value, staticString: text };
         }
         const initializerFactsStable = (): boolean =>
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 ||
+            variableKind(declaration) === "const" ||
             (!sharedClosureStorage &&
                 this.localTextBindingIsUnwritten(declaration));
         const orderedText =
@@ -1100,7 +1102,7 @@ export class DeclarationLowerer {
             ts.isVariableDeclarationList(declaration.parent) &&
             ts.isVariableStatement(declaration.parent.parent) &&
             ts.isSourceFile(declaration.parent.parent.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+            variableKind(declaration.parent) === "const"
         ) {
             // Materialized modules cannot revisit their initializers. Keep a
             // proven numeric snapshot on the immutable binding itself. Local
@@ -1370,7 +1372,7 @@ export class DeclarationLowerer {
                 !constructs &&
                 declaration.parent !== undefined &&
                 ts.isVariableDeclarationList(declaration.parent) &&
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                variableKind(declaration.parent) === "const" &&
                 passesByReference(this.context.dataTypes, narrowed.dataType) &&
                 !narrowed.freshData &&
                 (ts.isIdentifier(initializer) ||
@@ -1815,7 +1817,7 @@ export class DeclarationLowerer {
         if (
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 &&
+            variableKind(declaration.parent) !== "const" &&
             !this.neverReassigned(declaration)
         ) {
             // Rebound locals read their current native storage. Text keeps
@@ -1969,8 +1971,7 @@ export class DeclarationLowerer {
     private localTextBindingIsUnwritten(
         declaration: ts.VariableDeclaration,
     ): boolean {
-        if ((ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0)
-            return true;
+        if (variableKind(declaration) === "const") return true;
         if (!ts.isIdentifier(declaration.name)) return false;
         const owner = ts.findAncestor(declaration, ts.isFunctionLike);
         if (!isFunctionWithBody(owner)) return false;

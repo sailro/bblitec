@@ -29,6 +29,7 @@ import {
     plainDataMembers,
     equalityOperator,
     functionKind,
+    variableKind,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -453,7 +454,7 @@ export function constInitializer(
     return declaration &&
         ts.isVariableDeclaration(declaration) &&
         ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(declaration.parent) === "const" &&
         declaration.initializer
         ? context.unwrap(declaration.initializer)
         : undefined;
@@ -2489,10 +2490,7 @@ export class BrowserErasure {
     ): HelperOutcome | undefined {
         for (const statement of statements) {
             if (ts.isVariableStatement(statement)) {
-                if (
-                    (statement.declarationList.flags & ts.NodeFlags.Const) ===
-                    0
-                ) {
+                if (variableKind(statement.declarationList) !== "const") {
                     return undefined;
                 }
                 for (const declaration of statement.declarationList

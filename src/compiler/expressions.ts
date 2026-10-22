@@ -109,6 +109,7 @@ import {
     isAsyncFunction,
     containsSuspension,
     restParameterIndex,
+    variableKind,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -3513,7 +3514,7 @@ export class ExpressionLowerer {
             ts.isVariableDeclaration(declaration) &&
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.parent.parent !== undefined &&
             ts.isVariableStatement(declaration.parent.parent) &&
             ts.isSourceFile(declaration.parent.parent.parent)

@@ -22,6 +22,7 @@ import {
     writeSites,
     writeSiteOf,
     positionalParameter,
+    variableKind,
 } from "./syntax.js";
 import {
     undefinedOnly,
@@ -389,8 +390,7 @@ export function hasOnlyReportingEffects(
     const statement = (node: ts.Statement): boolean => {
         if (ts.isBlock(node)) return node.statements.every(statement);
         if (ts.isVariableStatement(node)) {
-            if ((node.declarationList.flags & ts.NodeFlags.Const) === 0)
-                return false;
+            if (variableKind(node.declarationList) !== "const") return false;
             return node.declarationList.declarations.every((declaration) => {
                 if (
                     !ts.isIdentifier(declaration.name) ||
@@ -539,7 +539,7 @@ function hasOnlyInstrumentationEffects(
                 ts.isVariableDeclaration(target) &&
                 target.initializer !== undefined &&
                 ts.isVariableDeclarationList(target.parent) &&
-                (target.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                variableKind(target.parent) === "const" &&
                 confined(target.initializer, seen)
             );
         }

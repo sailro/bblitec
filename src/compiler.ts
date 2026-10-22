@@ -299,6 +299,7 @@ import {
     containsSuspension,
     functionKind,
     isSupportedFunction,
+    variableKind,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -1490,9 +1491,7 @@ class Compiler implements LoweringServices {
                 if (
                     !ts.isVariableStatement(statement) ||
                     (file !== this.sourceFile &&
-                        (statement.declarationList.flags &
-                            ts.NodeFlags.Const) ===
-                            0)
+                        variableKind(statement.declarationList) !== "const")
                 ) {
                     continue;
                 }
@@ -1576,9 +1575,7 @@ class Compiler implements LoweringServices {
                     .declarations) {
                     if (!ts.isIdentifier(declaration.name)) continue;
                     if (
-                        (statement.declarationList.flags &
-                            ts.NodeFlags.Const) !==
-                            0 &&
+                        variableKind(statement.declarationList) === "const" &&
                         declaration.initializer &&
                         !this.dynamicBindings.has(declaration) &&
                         this.evaluationOrder.isPureExpression(
@@ -2962,7 +2959,7 @@ class Compiler implements LoweringServices {
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+            variableKind(declaration.parent) !== "const" ||
             !declaration.initializer
         ) {
             return undefined;
@@ -5297,7 +5294,7 @@ class Compiler implements LoweringServices {
             ts.isVariableStatement(statement) &&
             ts.isSourceFile(statement.parent) &&
             !statement.parent.isDeclarationFile &&
-            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+            variableKind(statement.declarationList) === "const"
             ? { declaration, name: declaration.name }
             : undefined;
     }
@@ -5457,7 +5454,7 @@ class Compiler implements LoweringServices {
                 !ts.isVariableDeclaration(binding) ||
                 binding.initializer !== declaration ||
                 !ts.isVariableDeclarationList(binding.parent) ||
-                (binding.parent.flags & ts.NodeFlags.Const) === 0
+                variableKind(binding.parent) !== "const"
             )
                 return undefined;
         }
@@ -5649,7 +5646,7 @@ class Compiler implements LoweringServices {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !declaration.initializer ||
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+            variableKind(declaration) !== "const"
         )
             return undefined;
         const call = this.unwrap(declaration.initializer);
@@ -5821,7 +5818,7 @@ class Compiler implements LoweringServices {
         const known = this.stableInitializers.get(declaration);
         if (known !== undefined) return known || undefined;
         const constant = (named: ts.VariableDeclaration): boolean =>
-            (ts.getCombinedNodeFlags(named) & ts.NodeFlags.Const) !== 0 &&
+            variableKind(named) === "const" &&
             !this.evaluator.isWrittenThrough(named);
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
@@ -8926,7 +8923,7 @@ class Compiler implements LoweringServices {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(declaration.parent) !== "const"
         ) {
             return undefined;
         }

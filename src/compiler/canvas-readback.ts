@@ -17,7 +17,7 @@ import { runGenerationChild } from "./generation-child.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { ModuleJsonDeclined, runModuleJsonSync } from "./module-json-sync.js";
 import { CompilerSymbols } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, variableKind } from "./syntax.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { Value } from "./types.js";
@@ -99,7 +99,7 @@ function checkClosedInputs(
                     ts.isVariableDeclarationList(target.parent) &&
                     ts.isVariableStatement(target.parent.parent) &&
                     ts.isSourceFile(target.parent.parent.parent) &&
-                    (!(target.parent.flags & ts.NodeFlags.Const) ||
+                    (variableKind(target.parent) !== "const" ||
                         !parameterIsReadOnly(context.checker, member, child))
                 ) {
                     context.fail(

@@ -27,7 +27,7 @@ import {
     foldNumericComparison,
     foldNumericUnary,
 } from "./pinned-operators.js";
-import { bindingElementKey } from "../compiler/syntax.js";
+import { bindingElementKey, variableKind } from "../compiler/syntax.js";
 
 /** A lexical environment: bindings by name, resolved through the parents. */
 export class Env<B> {
@@ -342,8 +342,7 @@ export class PartialEvaluator<V, B> {
         const adapted = this.model.statement?.(statement, frame, this);
         if (adapted !== undefined) return adapted;
         if (ts.isVariableStatement(statement)) {
-            const mutable =
-                (statement.declarationList.flags & ts.NodeFlags.Const) === 0;
+            const mutable = variableKind(statement.declarationList) !== "const";
             for (const declaration of statement.declarationList.declarations) {
                 const value = declaration.initializer
                     ? this.expression(declaration.initializer, frame)
@@ -954,7 +953,7 @@ export class PartialEvaluator<V, B> {
         if (constant) {
             if (
                 !constant.initializer ||
-                (constant.parent.flags & ts.NodeFlags.Const) === 0
+                variableKind(constant.parent) !== "const"
             )
                 return undefined;
             value = this.expression(

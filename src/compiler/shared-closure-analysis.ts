@@ -17,6 +17,7 @@ import {
     isGeneratorFunction,
     isSupportedFunction,
     type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
@@ -129,7 +130,7 @@ export class SharedClosureAnalysis {
             !declaration.parent ||
             (ts.isVariableDeclaration(declaration) &&
                 (!ts.isVariableDeclarationList(declaration.parent) ||
-                    (declaration.parent.flags & ts.NodeFlags.Const) !== 0))
+                    variableKind(declaration.parent) === "const"))
         ) {
             return false;
         }

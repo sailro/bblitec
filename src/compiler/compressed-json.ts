@@ -33,6 +33,7 @@ import {
     functionKind,
     isAsyncFunction,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 
 interface CompressedJsonContext extends Pick<
@@ -83,7 +84,7 @@ function constBinding(
 ): { name: string; initializer: ts.Expression } | undefined {
     if (
         !ts.isVariableStatement(statement) ||
-        (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(statement.declarationList) !== "const" ||
         statement.declarationList.declarations.length !== 1
     ) {
         return undefined;
@@ -236,7 +237,7 @@ function forOfBinding(
         !ts.isForOfStatement(statement) ||
         !ts.isVariableDeclarationList(statement.initializer) ||
         isSuspensionPoint(statement) ||
-        (statement.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(statement.initializer) !== "const" ||
         statement.initializer.declarations.length !== 1 ||
         !identifierIs(statement.expression, collection) ||
         !ts.isBlock(statement.statement)

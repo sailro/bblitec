@@ -244,6 +244,7 @@ import {
     equalityOperator,
     containsSuspension,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -3812,7 +3813,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             !ts.isVariableDeclaration(declaration) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+            variableKind(declaration.parent) !== "const" ||
             declaration.initializer === undefined
         ) {
             return undefined;

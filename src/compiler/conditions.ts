@@ -31,6 +31,7 @@ import {
     unwrapExpression,
     equalityOperator,
     containsSuspension,
+    variableKind,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
 import { declaredIn, resolvedSymbol } from "./symbols.js";
@@ -140,7 +141,7 @@ export class ConditionLowerer {
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
-                ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const
+                variableKind(declaration) === "const"
             ) {
                 node = this.context.unwrap(declaration.initializer);
                 continue;

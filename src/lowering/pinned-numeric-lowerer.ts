@@ -51,6 +51,7 @@ import {
     namesMember,
     declarationNamed,
     isSuspensionPoint,
+    variableKind,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -1533,7 +1534,7 @@ export class PinnedNumericLowerer {
         list: ts.VariableDeclarationList,
         indent: string,
     ): string[] {
-        const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+        const isConst = variableKind(list) === "const";
         const lines: string[] = [];
         for (const declaration of list.declarations) {
             // `const { width, height } = f(...)` -- the one destructuring the

@@ -7,6 +7,7 @@ import { compressedTextureFormat as layout } from "../compressed-texture-format.
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { variableKind } from "../compiler/syntax.js";
 
 const KTX_MODULE = "src/texture/ktx-loader.ts";
 const FORMATS_MODULE = "src/texture/compressed-formats.ts";
@@ -194,7 +195,7 @@ export class CompressedTextureLowerer {
             : [];
         if (
             !ts.isVariableDeclarationList(loop.initializer) ||
-            (loop.initializer.flags & ts.NodeFlags.Let) === 0 ||
+            variableKind(loop.initializer) !== "let" ||
             counter.length !== 1 ||
             !ts.isIdentifier(counter[0]!.name) ||
             counter[0]!.name.text !== "i" ||

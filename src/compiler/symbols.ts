@@ -12,9 +12,9 @@ import {
     argumentForParameter,
     type ParameterInput,
     functionOfDeclaration,
-    isConstVariable,
     isFunctionWithBody,
     type FunctionWithBody,
+    variableKind,
 } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
@@ -447,7 +447,7 @@ export function calledFunction(
             : undefined;
     return binding &&
         ts.isVariableDeclaration(binding) &&
-        isConstVariable(binding)
+        variableKind(binding) === "const"
         ? functionOfDeclaration(binding)
         : undefined;
 }
@@ -1067,7 +1067,7 @@ export class CompilerSymbols {
             ts.isVariableDeclaration(declaration) &&
             declaration.initializer &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+            variableKind(declaration.parent) === "const"
             ? this.importedName(declaration.initializer, active)
             : undefined;
     }

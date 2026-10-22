@@ -5,7 +5,11 @@ import {
 } from "./analysis-walk.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { Value } from "./types.js";
-import { isUpdateExpression, isSuspensionPoint } from "./syntax.js";
+import {
+    isUpdateExpression,
+    isSuspensionPoint,
+    variableKind,
+} from "./syntax.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -57,8 +61,7 @@ export function integerLoopCounter(
     if (
         list === undefined ||
         !ts.isVariableDeclarationList(list) ||
-        (list.flags & ts.NodeFlags.Let) === 0 ||
-        (list.flags & ts.NodeFlags.Const) !== 0 ||
+        variableKind(list) !== "let" ||
         list.declarations.length !== 1
     ) {
         return undefined;
@@ -218,7 +221,7 @@ function staticInteger(
             declaration !== undefined &&
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(declaration.parent) !== "const"
         );
     });
     if (reassignable) return undefined;

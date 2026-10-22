@@ -29,6 +29,7 @@ import {
     rootIdentifier,
     isTypeAssertion,
     wrappersAround,
+    variableKind,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -960,8 +961,7 @@ export function compileDataMethodCall(
                 !declaration ||
                 !ts.isVariableDeclaration(declaration) ||
                 !declaration.initializer ||
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) ===
-                    0 ||
+                variableKind(declaration) !== "const" ||
                 !arrayOnlyRead(lowerer.context, resolved)
             )
                 return undefined;

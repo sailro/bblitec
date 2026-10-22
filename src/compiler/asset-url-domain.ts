@@ -38,6 +38,7 @@ import {
     testsTruthinessOnly,
     functionOfDeclaration,
     type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import { valueKindOf } from "./type-facts.js";
 
@@ -223,7 +224,7 @@ function classifyRegistryArray(
         ts.isVariableDeclaration(parent) &&
         parent.initializer === use &&
         ts.isIdentifier(parent.name) &&
-        parent.parent.flags & ts.NodeFlags.Const
+        variableKind(parent.parent) === "const"
     ) {
         const alias = resolvedSymbol(checker, parent.name);
         if (!alias) return false;
@@ -259,7 +260,7 @@ function mapRegistry(
 ): MapRegistry | undefined {
     if (
         !ts.isIdentifier(declaration.name) ||
-        !(declaration.parent.flags & ts.NodeFlags.Const) ||
+        variableKind(declaration.parent) !== "const" ||
         !declaration.initializer
     )
         return undefined;
@@ -861,7 +862,7 @@ class AssetUrlDomain {
         if (declaration && ts.isVariableDeclaration(declaration)) {
             if (
                 declaration.getSourceFile() !== node.getSourceFile() &&
-                !(declaration.parent.flags & ts.NodeFlags.Const)
+                variableKind(declaration.parent) !== "const"
             )
                 return [];
             if (declaration.initializer) {

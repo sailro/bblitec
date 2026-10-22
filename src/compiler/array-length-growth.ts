@@ -7,6 +7,7 @@ import {
     writeSiteOf,
     writeSites,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 
 /**
@@ -244,7 +245,7 @@ function constantBindingSymbol(
         declaration &&
         ts.isVariableDeclaration(declaration) &&
         ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        variableKind(declaration.parent) === "const"
     )
         return symbol;
     return undefined;
@@ -468,7 +469,7 @@ class ReachedReferences {
             ts.isVariableDeclaration(declaration) &&
             declaration.initializer &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+            variableKind(declaration.parent) === "const"
         ) {
             const initializer = unwrapExpression(declaration.initializer);
             if (

@@ -138,6 +138,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    variableKind,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
@@ -2780,8 +2781,7 @@ export class UiProjection {
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                    0
+                variableKind(declaration) === "const"
             ) {
                 target = this.context.unwrap(declaration.initializer);
             }

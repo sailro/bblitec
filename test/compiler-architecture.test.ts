@@ -859,3 +859,26 @@ test("a call's target is read through symbols.ts", () => {
         ],
     );
 });
+
+test("a variable's keyword is read through syntax.ts", () => {
+    // variableKind reads `var` / `let` / `const` (`using` binds like const)
+    // off a declaration list, a declaration or a binding element of one;
+    // namespace-declarations.ts reads a const enum's modifier.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const facts = sourceFacts(path);
+                return (
+                    facts.calls.has("ts.getCombinedNodeFlags") ||
+                    ["Const", "Let", "BlockScoped", "Using"].some((flag) =>
+                        facts.members.has(flag),
+                    )
+                );
+            })
+            .sort(),
+        ["src/compiler/namespace-declarations.ts", "src/compiler/syntax.ts"],
+    );
+    assert.deepEqual(declarationOwners("variableKind"), [
+        "src/compiler/syntax.ts",
+    ]);
+});

@@ -30,6 +30,7 @@ import {
     referenceSite,
     equalityOperator,
     positionalParameter,
+    variableKind,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -648,7 +649,7 @@ function emptyTokenRoot(
         seen.add(current);
         if (
             !ts.isVariableDeclarationList(current.parent) ||
-            (current.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(current.parent) !== "const"
         )
             return undefined;
         const initializer = unwrapExpression(current.initializer);
@@ -1074,7 +1075,7 @@ function createdDuringCall(
         !ts.isVariableDeclaration(declaration) ||
         !declaration.initializer ||
         !ts.isVariableDeclarationList(declaration.parent) ||
-        (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(declaration.parent) !== "const" ||
         !newArrayExpression(checker, declaration.initializer)
     )
         return false;

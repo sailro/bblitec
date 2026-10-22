@@ -6,6 +6,7 @@ import type {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { lowerObjectComponents } from "./pinned-function-lowerer.js";
+import { variableKind } from "../compiler/syntax.js";
 
 const boundsModule = "src/mesh/mesh-world-bounds.ts";
 const thinInstanceBoundsModule =
@@ -105,7 +106,7 @@ export function lowerWorldAabbHelpers(
         for (const statement of declaration.body!.statements) {
             if (
                 !ts.isVariableStatement(statement) ||
-                (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+                variableKind(statement.declarationList) !== "const"
             )
                 continue;
             for (const local of statement.declarationList.declarations) {

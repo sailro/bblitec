@@ -6,6 +6,7 @@ import {
     unwrapExpression,
     writeSites,
     isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import {
     accessedPropertySymbol,
@@ -247,7 +248,7 @@ class InertWalk {
             !ts.isVariableDeclaration(declaration) ||
             !this.isInsideRoot(declaration) ||
             !declaration.initializer ||
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+            variableKind(declaration) !== "const"
         ) {
             return false;
         }

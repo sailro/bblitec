@@ -33,6 +33,7 @@ import {
     equalityOperator,
     parameterForArgument,
     functionKind,
+    variableKind,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
@@ -532,9 +533,7 @@ class EffectWalker {
                     ts.isVariableDeclaration(scope.parent) &&
                     scope.parent.initializer === scope &&
                     ts.isIdentifier(scope.parent.name) &&
-                    (ts.getCombinedNodeFlags(scope.parent) &
-                        ts.NodeFlags.Const) !==
-                        0
+                    variableKind(scope.parent) === "const"
                   ? scope.parent.name
                   : undefined;
         const symbol = name && declaredSymbol(this.checker, name);

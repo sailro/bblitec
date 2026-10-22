@@ -1704,9 +1704,35 @@ export function isFunctionWithBody(
     return isSupportedFunction(node) && node.body !== undefined;
 }
 
-/** Whether a variable is declared `const`: it holds its initializer's value for good. */
-export function isConstVariable(declaration: ts.VariableDeclaration): boolean {
-    return (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0;
+/**
+ * How a variable is declared: `var`, `let`, or `const` -- `using` and
+ * `await using` bind like `const`, never reassigned.
+ */
+export type VariableKind = "var" | "let" | "const";
+
+/**
+ * The keyword a variable is declared with, read from its declaration list:
+ * the list itself, a declaration in it, or a binding element (or pattern)
+ * of one. Undefined for any other binding: a parameter, a catch variable.
+ */
+export function variableKind(node: ts.Node): VariableKind | undefined {
+    let list = node;
+    while (
+        ts.isBindingElement(list) ||
+        ts.isArrayBindingPattern(list) ||
+        ts.isObjectBindingPattern(list)
+    )
+        list = list.parent;
+    if (ts.isVariableDeclaration(list)) list = list.parent;
+    if (!ts.isVariableDeclarationList(list)) return undefined;
+    if (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Using)) return "const";
+    return list.flags & ts.NodeFlags.Let ? "let" : "var";
+}
+
+/** Whether a variable is `let` or `const`: scoped to its block, a fresh binding per loop iteration. */
+export function isBlockScopedVariable(node: ts.Node): boolean {
+    const kind = variableKind(node);
+    return kind === "let" || kind === "const";
 }
 
 /**
@@ -1750,7 +1776,7 @@ export function localSyncFunction(
     if (!declaration || declaration.getSourceFile().isDeclarationFile)
         return undefined;
     const fn = ts.isVariableDeclaration(declaration)
-        ? isConstVariable(declaration)
+        ? variableKind(declaration) === "const"
             ? functionOfDeclaration(declaration)
             : undefined
         : declaration;

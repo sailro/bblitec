@@ -8,6 +8,7 @@ import {
     rootIdentifier,
     unwrapExpression,
     writeSites,
+    variableKind,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import type { Value } from "./types.js";
@@ -235,7 +236,7 @@ export function requireStableRetainedDescriptor(
                 (ts.getCombinedModifierFlags(declaration) &
                     ts.ModifierFlags.Export) !==
                     0 ||
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                variableKind(declaration.parent) !== "const" ||
                 active.has(symbol)
             )
                 fail(node);

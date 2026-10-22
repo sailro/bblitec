@@ -1,5 +1,10 @@
 import ts from "typescript";
-import { argumentAt, identifierText, isAsyncFunction } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    isAsyncFunction,
+    variableKind,
+} from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { declaredSymbol, type LibraryGlobal } from "./symbols.js";
 
@@ -31,8 +36,7 @@ export function framePollExecutor(
     )
         return undefined;
     const poll = declaration.declarationList.declarations[0]!;
-    if (!(declaration.declarationList.flags & ts.NodeFlags.Const))
-        return undefined;
+    if (variableKind(declaration.declarationList) !== "const") return undefined;
     if (
         !ts.isIdentifier(poll.name) ||
         !poll.initializer ||
@@ -94,8 +98,7 @@ export function framePollExecutor(
             .every(
                 (statement) =>
                     ts.isVariableStatement(statement) &&
-                    (statement.declarationList.flags & ts.NodeFlags.Const) !==
-                        0,
+                    variableKind(statement.declarationList) === "const",
             )
     )
         return undefined;

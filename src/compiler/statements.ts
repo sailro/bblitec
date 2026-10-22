@@ -66,6 +66,7 @@ import {
     jumpsTo,
     isDeclaredInside,
     labeledBody,
+    variableKind,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -2649,7 +2650,7 @@ export class StatementLowerer {
                     // Each iteration of `for (let ...)` has bindings of its
                     // own: a closure keeps the cell it captured, and the
                     // next iteration counts on a copy (CreatePerIterationEnvironment).
-                    if ((statement.initializer.flags & ts.NodeFlags.Let) !== 0)
+                    if (variableKind(statement.initializer) === "let")
                         for (const declaration of statement.initializer
                             .declarations)
                             if (
