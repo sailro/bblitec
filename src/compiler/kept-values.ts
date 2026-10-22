@@ -83,3 +83,35 @@ export function callResultCanHoldReceiver(
         mutatingArrayMethods.has(callee.name.text)
     );
 }
+
+/** Library calls whose result holds their arguments or the arguments' members. */
+const HOLDING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
+    "Array.from",
+    "Array.of",
+    "Object.assign",
+    "Object.entries",
+    "Object.fromEntries",
+    "Object.values",
+    "Promise.all",
+    "Promise.allSettled",
+    "Promise.any",
+    "Promise.race",
+    "Promise.resolve",
+]);
+
+/**
+ * Whether a library call's result can share identity with its arguments or
+ * their members (`Object.values(record)[0]` is the record's first value).
+ */
+export function callResultHoldsArguments(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
+    const callee = unwrapExpression(call.expression);
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const owner = libraryGlobal(checker, callee.expression);
+    return (
+        owner !== undefined &&
+        HOLDING_LIBRARY_CALLS.has(`${owner}.${callee.name.text}`)
+    );
+}

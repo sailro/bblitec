@@ -132,7 +132,11 @@ import {
     parameterMutatedPaths,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
-import { keptArguments, literalHeldValues } from "./kept-values.js";
+import {
+    callResultHoldsArguments,
+    keptArguments,
+    literalHeldValues,
+} from "./kept-values.js";
 
 /** What declaration lowering reads of the compiler. */
 interface DeclarationContext
@@ -3258,14 +3262,15 @@ export class DeclarationLowerer {
             ts.isIdentifier(name);
         if (
             annotatedOpenRecordLiteral &&
-            !this.openRecordContainerIsMutated(name) &&
+            !this.inferredObjectIsMutated(name) &&
             !this.context.moduleContainerIsMutated(name) &&
             !this.context.sharedClosures.identifierIsRebound(name)
         ) {
             // An immutable Record literal stays a compile-time record. A
             // dynamic read materializes the existing namespace-scope Map,
-            // while a Record that is actually written needs ordinary Map
-            // storage here (the XML attribute parser is that shape).
+            // while a Record that is written, or whose member object escapes
+            // by identity, needs ordinary Map storage here (the XML attribute
+            // parser is that shape).
             return false;
         }
         const inferredPlainObject =
@@ -4365,30 +4370,6 @@ export class DeclarationLowerer {
         );
     }
 
-    private openRecordContainerIsMutated(identifier: ts.Identifier): boolean {
-        const symbol = this.context.symbols.valueSymbol(identifier);
-        if (!symbol) return false;
-        let mutated = false;
-        const directlyIndexes = (expression: ts.Expression): boolean =>
-            (ts.isElementAccessExpression(expression) ||
-                ts.isPropertyAccessExpression(expression)) &&
-            this.context.unwrappedValueSymbol(expression.expression) === symbol;
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (mutated) return "skip";
-                if (
-                    writeSites(node).some(({ target }) =>
-                        directlyIndexes(target),
-                    )
-                ) {
-                    mutated = true;
-                    return "skip";
-                }
-            });
-        ts.forEachChild(identifier.getSourceFile(), visit);
-        return mutated;
-    }
-
     /**
      * Whether the object literal `identifier` is initialized with may hold
      * `key`: written in it, or brought by a spread whose keys are unknown or
@@ -4545,6 +4526,10 @@ export class DeclarationLowerer {
             )
                 return isAlias(scan, node.expression, active, unwrap);
             if (!ts.isCallExpression(node)) return false;
+            if (callResultHoldsArguments(this.context.checker, node))
+                return node.arguments.some((argument) =>
+                    isAlias(scan, argument, active, unwrap),
+                );
             const called = calledFunction(this.context.checker, node);
             if (!called || active.has(called)) return false;
             active.add(called);
@@ -4585,6 +4570,15 @@ export class DeclarationLowerer {
         ): boolean =>
             !scan.namesAlias(unwrapExpression(value)) &&
             holdsIdentity(scan, value);
+        const holdsLeaf = (
+            source: ts.Expression,
+            leaf: ts.Identifier,
+            scan: AliasedMutationScan,
+        ): boolean =>
+            isAlias(scan, source, new Set(), (expression) =>
+                unwrapExpression(expression, { await: true }),
+            ) &&
+            typeCanCarryReference(this.context.checker.getTypeAtLocation(leaf));
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
@@ -4595,15 +4589,11 @@ export class DeclarationLowerer {
                         holdsMember(scan, value),
                     ),
                 // `const { inner } = record` holds a member, as
-                // `const inner = record.inner` does.
+                // `const inner = record.inner` and
+                // `for (const inner of Object.values(record))` do.
                 // Queries record no await: read through it without counting.
-                aliasingMember: (source, leaf, scan) =>
-                    isAlias(scan, source, new Set(), (expression) =>
-                        unwrapExpression(expression, { await: true }),
-                    ) &&
-                    typeCanCarryReference(
-                        this.context.checker.getTypeAtLocation(leaf),
-                    ),
+                aliasingMember: holdsLeaf,
+                aliasingIteration: holdsLeaf,
                 mutates: (node, scan) => {
                     if (
                         ts.isVariableDeclaration(node) &&

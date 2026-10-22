@@ -3148,11 +3148,19 @@ class Compiler implements LoweringServices {
             return called !== undefined && returners.has(called);
         };
         const names = (node: ts.Node): boolean => {
-            if (ts.isCallExpression(node)) return returnsConstant(node);
+            // A member chain rooted at a call reads that call's result.
+            let root: ts.Node = node;
+            while (
+                ts.isPropertyAccessExpression(root) ||
+                ts.isElementAccessExpression(root)
+            )
+                root = unwrapExpression(root.expression);
+            if (ts.isCallExpression(root) && returnsConstant(root)) return true;
             const named =
                 ts.isIdentifier(node) ||
                 ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
+                ts.isElementAccessExpression(node) ||
+                ts.isCallExpression(node)
                     ? moduleContainerSymbol(node, this.checker, this.symbols)
                     : undefined;
             return named !== undefined && aliases.has(named);

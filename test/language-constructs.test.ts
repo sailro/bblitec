@@ -15185,6 +15185,20 @@ check(
     `,
 );
 check(
+    "a record member reached by identity is the member itself",
+    `
+    function bump(o: { n: number }): void { o.n += 4; }
+    function helper(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; bump(R["a"]!); return R["a"]!.n; }
+    function pushed(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; const list: { n: number }[] = []; list.push(R["a"]!); list[0]!.n = 5; return R["a"]!.n; }
+    function held(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; const h = { o: R["a"]! }; h.o.n = 5; return R["a"]!.n; }
+    function values(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; Object.values(R)[0]!.n = 5; return R["a"]!.n; }
+    function looped(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; for (const v of Object.values(R)) v.n = 5; return R["a"]!.n; }
+    function plain(): number { const R = { a: { n: 1 } }; Object.values(R)[0]!.n = 5; return R.a.n; }
+    const results = [helper(), pushed(), held(), values(), looped(), plain()];
+    if (results.join() !== "5,5,5,5,5,5") throw new Error("members " + results.join());
+    `,
+);
+check(
     "a write through a call's fresh result lands on that result",
     `
     let calls = 0;

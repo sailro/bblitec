@@ -617,6 +617,16 @@ export function aliasedMutationScan(
             leaf: ts.Identifier,
             scan: AliasedMutationScan,
         ) => boolean;
+        /**
+         * `for (const leaf of source)`: whether the loop name holds a tracked
+         * member. A walk whose aliases stand for the container itself (the
+         * array walk) leaves it out: a loop over an array reads its elements.
+         */
+        readonly aliasingIteration?: (
+            source: ts.Expression,
+            leaf: ts.Identifier,
+            scan: AliasedMutationScan,
+        ) => boolean;
     },
 ): boolean {
     const initial = valueSymbol(identifier);
@@ -648,6 +658,21 @@ export function aliasedMutationScan(
                         if (walk.aliasingMember?.(node.initializer, leaf, scan))
                             scan.addAlias(valueSymbol(leaf));
             }
+            // `for (const v of source)` binds a member of the source.
+            if (
+                ts.isForOfStatement(node) &&
+                ts.isVariableDeclarationList(node.initializer)
+            )
+                for (const declaration of node.initializer.declarations)
+                    for (const leaf of bindingNameIdentifiers(declaration.name))
+                        if (
+                            walk.aliasingIteration?.(
+                                node.expression,
+                                leaf,
+                                scan,
+                            )
+                        )
+                            scan.addAlias(valueSymbol(leaf));
             for (const { target, stored, from } of writeSites(node)) {
                 if (!ts.isIdentifier(target)) continue;
                 if (stored ? walk.aliasingInitializer(stored, scan) : false)

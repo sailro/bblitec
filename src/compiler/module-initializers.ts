@@ -34,9 +34,17 @@ import {
     variableKind,
 } from "./syntax.js";
 import { isRebound } from "./binding-rebinds.js";
-import { keptArguments, literalHeldValues } from "./kept-values.js";
+import {
+    callResultHoldsArguments,
+    keptArguments,
+    literalHeldValues,
+} from "./kept-values.js";
 
-/** The owning binding beneath ordinary members and imported namespace exports. */
+/**
+ * The owning binding beneath ordinary members, imported namespace exports
+ * and a library call whose result holds its arguments (`Object.values(M)[0]`
+ * is a member of M): the first argument that names one.
+ */
 export function moduleContainerSymbol(
     expression: ts.Expression,
     checker: ts.TypeChecker,
@@ -46,6 +54,15 @@ export function moduleContainerSymbol(
     let symbol: ts.Symbol | undefined;
     if (ts.isIdentifier(current)) symbol = symbols.valueSymbol(current);
     else if (
+        ts.isCallExpression(current) &&
+        callResultHoldsArguments(checker, current)
+    ) {
+        for (const argument of current.arguments) {
+            const held = moduleContainerSymbol(argument, checker, symbols);
+            if (held) return held;
+        }
+        return undefined;
+    } else if (
         ts.isPropertyAccessExpression(current) ||
         ts.isElementAccessExpression(current)
     ) {
