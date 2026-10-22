@@ -2,6 +2,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { caughtErrorValue } from "./error-values.js";
 import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
+import { libraryName } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import { yieldsNewArray } from "./fresh-records.js";
@@ -83,6 +84,24 @@ export function promiseStatic(
     return ts.isPropertyAccessExpression(callee) &&
         libraryGlobal(callee.expression) === "Promise"
         ? PROMISE_STATICS.get(callee.name.text)
+        : undefined;
+}
+
+/** A reaction method of the library's Promise. */
+export type PromiseReaction = "then" | "catch" | "finally";
+
+/**
+ * The reaction a callee names on a library Promise (`p.then`), or
+ * undefined: a user class's own `then` is an ordinary method.
+ */
+export function promiseReactionOf(
+    access: ts.PropertyAccessExpression,
+    checker: ts.TypeChecker,
+): PromiseReaction | undefined {
+    const name = access.name.text;
+    return (name === "then" || name === "catch" || name === "finally") &&
+        libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
+        ? name
         : undefined;
 }
 
@@ -207,17 +226,15 @@ export function compileImmediatePromise(
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
-    if (!ts.isPropertyAccessExpression(call.expression)) {
-        return undefined;
-    }
-    const method = call.expression.name.text;
+    if (!ts.isPropertyAccessExpression(call.expression)) return undefined;
+    const method = promiseReactionOf(call.expression, context.checker);
+    if (!method) return undefined;
     if (method === "catch") {
         return compileImmediateCatch(context, call);
     }
     // Cleanup that waits for a settlement needs an owned promise.
     if (method === "finally" && !context.options.workers)
         throw new ApplicationRealmRequired();
-    if (method !== "then") return undefined;
     // Retaining the chain observes its settlement and identity. The immediate
     // callback path only emits effects; the application realm owns the result.
     if (

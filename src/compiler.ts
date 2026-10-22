@@ -272,6 +272,7 @@ import {
     parameterIsReadOnly,
     parameterWrittenSlots,
 } from "./compiler/parameter-effects.js";
+import { promiseReactionOf } from "./compiler/promises.js";
 import { recordComponents } from "./compiler/record-components.js";
 import { recordFieldIsWritten } from "./compiler/record-observations.js";
 import {
@@ -1849,7 +1850,7 @@ class Compiler implements LoweringServices {
         if (
             ts.isCallExpression(expression) &&
             ts.isPropertyAccessExpression(expression.expression) &&
-            expression.expression.name.text === "catch"
+            promiseReactionOf(expression.expression, this.checker) === "catch"
         ) {
             const promise = this.entryReporterPromise(expression, true);
             if (!promise) return false;
@@ -1936,7 +1937,7 @@ class Compiler implements LoweringServices {
         if (
             !ts.isCallExpression(call) ||
             !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "catch" ||
+            promiseReactionOf(call.expression, this.checker) !== "catch" ||
             call.arguments.length !== 1
         ) {
             return undefined;

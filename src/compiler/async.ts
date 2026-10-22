@@ -52,6 +52,7 @@ import {
 import { caughtErrorValue } from "./error-values.js";
 import {
     isPromiseResultUsed,
+    promiseReactionOf,
     promiseStatic,
     rejectionOnlyPromiseCpp,
     settlesNever,
@@ -1909,19 +1910,12 @@ export class AsyncLowerer {
         );
     }
 
-    private isPromiseType(expression: ts.Expression): boolean {
-        return (
-            libraryName(this.context.checker.getTypeAtLocation(expression)) ===
-            "Promise"
-        );
-    }
     private isPromiseMethod(
         expression: ts.Expression,
     ): expression is ts.PropertyAccessExpression {
         return (
             ts.isPropertyAccessExpression(expression) &&
-            ["then", "catch", "finally"].includes(expression.name.text) &&
-            this.isPromiseType(expression.expression)
+            promiseReactionOf(expression, this.context.checker) !== undefined
         );
     }
     private cppType(value: Value, node: ts.Node): string {

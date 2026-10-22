@@ -15242,3 +15242,13 @@ check(
     if (writes !== 2 || a.x !== 4 || seen !== 7) throw new Error("setters " + writes + " " + a.x + " " + seen);
     `,
 );
+check(
+    "a class's own then is an ordinary method",
+    `
+    class Task { then(f: (n: number) => void): void { f(42); } catch(n: number): number { return n + 1; } }
+    let seen = 0;
+    new Task().then((n) => { seen = n; });
+    const caught = new Task().catch(1);
+    if (seen !== 42 || caught !== 2) throw new Error("own then " + seen + " " + caught);
+    `,
+);

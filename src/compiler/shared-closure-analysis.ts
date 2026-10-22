@@ -23,7 +23,7 @@ import {
 import { presentMembers, callSignatures } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { libraryName } from "./symbols.js";
+import { promiseReactionOf } from "./promises.js";
 import { keptArguments } from "./kept-values.js";
 
 interface SharedClosureBindings {
@@ -224,14 +224,11 @@ export class SharedClosureAnalysis {
         ) {
             return index === 1;
         }
-        if (
+        const reaction =
             ts.isPropertyAccessExpression(callee) &&
-            ["then", "catch", "finally"].includes(callee.name.text) &&
-            libraryName(
-                this.context.checker.getTypeAtLocation(callee.expression),
-            ) === "Promise"
-        )
-            return index === 0 || (callee.name.text === "then" && index === 1);
+            promiseReactionOf(callee, this.context.checker);
+        if (reaction)
+            return index === 0 || (reaction === "then" && index === 1);
         const scheduler = schedulerOf(call.expression, (expression) =>
             this.context.libraryGlobal(expression),
         );

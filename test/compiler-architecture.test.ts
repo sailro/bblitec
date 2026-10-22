@@ -1060,3 +1060,19 @@ test("a Promise static call is recognized by promises.ts", () => {
     ]);
     assert.ok(sourceFacts("src/compiler/async.ts").calls.has("promiseStatic"));
 });
+
+test("a Promise reaction call is recognized by promises.ts", () => {
+    // promiseReactionOf reads then / catch / finally only on a receiver the
+    // checker types as the library Promise: a class's own then is a method.
+    assert.deepEqual(declarationOwners("promiseReactionOf"), [
+        "src/compiler/promises.ts",
+    ]);
+    for (const path of [
+        "src/compiler.ts",
+        "src/compiler/async.ts",
+        "src/compiler/compressed-json.ts",
+        "src/compiler/pending-activations.ts",
+        "src/compiler/shared-closure-analysis.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("promiseReactionOf"), path);
+});

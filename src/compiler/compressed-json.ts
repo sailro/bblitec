@@ -24,6 +24,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { Value } from "./types.js";
+import { promiseReactionOf } from "./promises.js";
 import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
 import {
@@ -688,7 +689,7 @@ export function compileCompressedJsonPromiseThen(
     const callback = call.arguments[0];
     if (
         !ts.isPropertyAccessExpression(then) ||
-        then.name.text !== "then" ||
+        promiseReactionOf(then, context.checker) !== "then" ||
         call.arguments.length !== 1 ||
         !callback ||
         !ts.isIdentifier(callback) ||
