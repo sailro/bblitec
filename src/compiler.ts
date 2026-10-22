@@ -227,6 +227,7 @@ import { PropertyAccessLowerer, propertyRules } from "./compiler/properties.js";
 import {
     CompilerSymbols,
     accessedPropertySymbol,
+    staticAccessKey,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
@@ -305,7 +306,6 @@ import {
     isSupportedFunction,
     variableKind,
     unwrapExpression,
-    accessKey,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -2434,7 +2434,7 @@ class Compiler implements LoweringServices {
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             ts.isElementAccessExpression(left)
         ) {
-            const key = accessKey(left);
+            const key = staticAccessKey(this.checker, left);
             const owner =
                 key === undefined
                     ? undefined

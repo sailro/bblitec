@@ -15281,3 +15281,15 @@ check(
     if (!threw || o.x !== 1) throw new Error("getter-only write " + threw);
     `,
 );
+check(
+    "a setter runs for a write by a const key",
+    `
+    let order = "";
+    class A { set v(n: number) { order += "s" + n; } get v(): number { return 0; } }
+    const a = new A();
+    const k = "v";
+    function rhs(): number { order += "r"; return 1; }
+    a[k] = rhs();
+    if (order !== "rs1") throw new Error("const key setter " + order);
+    `,
+);

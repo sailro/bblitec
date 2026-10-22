@@ -17307,9 +17307,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private recordSetterPlace(
         operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): Extract<NumericUpdatePlace, { kind: "setter" }> | undefined {
-        const key = ts.isPropertyAccessExpression(operand)
-            ? operand.name.text
-            : accessKey(operand);
+        const key = staticAccessKey(this.context.checker, operand);
         if (key === undefined) return undefined;
         const accessor = this.context.probeEmission(
             () => {
