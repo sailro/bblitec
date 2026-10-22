@@ -314,9 +314,8 @@ function collectMutatedContainerSymbols(
             });
             if (alias && origins.length > 0) aliases.set(alias, origins);
         }
-        // A member kept past a call (a construction of a program class, a
-        // storing call) is written through its new owner; the container
-        // itself escapes whole.
+        // A member kept past a call (a construction, a storing call) is
+        // written through its new owner; the container itself escapes whole.
         for (const argument of keptArguments(checker, node))
             if (heldMember(argument)) record(argument);
         if (ts.isCallExpression(node)) {

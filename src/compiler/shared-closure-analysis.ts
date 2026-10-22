@@ -23,6 +23,7 @@ import { presentMembers, callSignatures } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { libraryName } from "./symbols.js";
+import { keptArguments } from "./kept-values.js";
 
 interface SharedClosureBindings {
     captured: ReadonlySet<ts.Symbol>;
@@ -474,28 +475,17 @@ export class SharedClosureAnalysis {
                 ).length > 0
             )
                 return true;
-            // Constructors and instance fields can retain the function for
-            // the object's lifetime, including a callback supplied as a
-            // parameter property. Mutable outer bindings remain shared.
+            // A construction (a parameter property, a field), a storing call
+            // (a container) and an instance field keep the function past the
+            // call. Mutable outer bindings remain shared.
             if (
-                (ts.isNewExpression(parent) &&
-                    parent.arguments?.includes(value) &&
-                    this.context.libraryGlobal(parent.expression) ===
-                        undefined) ||
+                keptArguments(this.context.checker, parent).includes(value) ||
                 (ts.isPropertyDeclaration(parent) &&
                     parent.initializer === value)
             )
                 return true;
-            if (
-                ts.isCallExpression(parent) &&
-                parent.arguments.includes(value)
-            ) {
-                const callee = this.context.unwrap(parent.expression);
-                return (
-                    ts.isPropertyAccessExpression(callee) &&
-                    ["push", "unshift", "add", "set"].includes(callee.name.text)
-                );
-            }
+            if (ts.isCallExpression(parent) && parent.arguments.includes(value))
+                return false;
             // `o.cb = fn` and `o.cb ??= fn` store the function whole.
             const store = writeSites(parent).find(
                 ({ stored }) => stored === value,

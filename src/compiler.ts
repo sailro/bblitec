@@ -3309,9 +3309,9 @@ class Compiler implements LoweringServices {
                                     ) &&
                                     writesArgument(node, index),
                             )) ||
-                        // A member kept past the call (a construction of a
-                        // program class, a storing call) is written through
-                        // its new owner; the binding itself escapes whole.
+                        // A member kept past the call (a construction, a
+                        // storing call) is written through its new owner;
+                        // the binding itself escapes whole.
                         keptArguments(this.checker, node).some(
                             (argument) =>
                                 !ts.isIdentifier(unwrapExpression(argument)) &&

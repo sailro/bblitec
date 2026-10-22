@@ -15105,3 +15105,15 @@ check(
     if (marks.length !== 35 || marks[2] !== "=" || !marks.includes("??/")) throw new Error("trigraph text " + marks.length);
     `,
 );
+check(
+    "a callback kept by splice or fill shares the bindings it captures",
+    `
+    let n = 0;
+    const fns: (() => void)[] = [];
+    fns.splice(0, 0, () => { n++; });
+    fns[0]!();
+    fns.fill(() => { n += 10; });
+    fns[0]!();
+    if (n !== 11) throw new Error("kept callback " + n);
+    `,
+);
