@@ -9,7 +9,7 @@ import {
     isTypeAssertion,
     wrappersAround,
 } from "./syntax.js";
-import { declaredContextualType } from "./type-facts.js";
+import { declaredContextualType, unionMembers } from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { staticPropertyKey } from "./symbols.js";
@@ -49,18 +49,15 @@ function mayHoldMethod(
     name: string,
     home: ts.Type | undefined,
 ): boolean {
-    return (objectType.isUnion() ? objectType.types : [objectType]).some(
-        (member) => {
-            if (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
-                return true;
-            const apparent = checker.getApparentType(member);
-            return (
-                checker.getPropertyOfType(apparent, name) !== undefined &&
-                (home === undefined ||
-                    checker.isTypeAssignableTo(home, apparent))
-            );
-        },
-    );
+    return unionMembers(objectType).some((member) => {
+        if (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+            return true;
+        const apparent = checker.getApparentType(member);
+        return (
+            checker.getPropertyOfType(apparent, name) !== undefined &&
+            (home === undefined || checker.isTypeAssignableTo(home, apparent))
+        );
+    });
 }
 
 /**

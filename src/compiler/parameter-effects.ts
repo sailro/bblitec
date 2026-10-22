@@ -36,7 +36,11 @@ import {
     variableKind,
 } from "./syntax.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    unionMembers,
+} from "./type-facts.js";
 
 /**
  * What a function does with the object one of its parameters holds, from
@@ -1133,7 +1137,7 @@ function libraryMayHold(
         return (
             type === undefined ||
             (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            (type.isUnion() ? type.types : [type]).some((member) =>
+            unionMembers(type).some((member) =>
                 ["ArrayBuffer", "SharedArrayBuffer"].includes(
                     member.getSymbol()?.name ?? "",
                 ),

@@ -10,7 +10,7 @@ import {
     optionalOptionValue,
 } from "./option-helpers.js";
 import { pinCpp } from "./evaluation-order.js";
-import { valueKindOf } from "./type-facts.js";
+import { valueKindOf, unionMembers } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -264,9 +264,9 @@ export function declaresListenerSignal(
     expression: ts.Expression | undefined,
 ): boolean {
     const declares = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.some(declares)
-            : type.getProperty("signal") !== undefined;
+        unionMembers(type).some(
+            (member) => member.getProperty("signal") !== undefined,
+        );
     return (
         expression !== undefined &&
         declares(

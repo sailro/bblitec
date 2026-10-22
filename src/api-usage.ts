@@ -15,6 +15,7 @@ import {
     declaredSymbol,
     resolvedSymbol,
 } from "./compiler/symbols.js";
+import { unionMembers } from "./compiler/type-facts.js";
 
 export interface ApiUse {
     id: string;
@@ -142,7 +143,7 @@ export function scanApiUsage(
         const targets = seen.get(actual) ?? new Set<ts.Type>();
         targets.add(expected);
         seen.set(actual, targets);
-        for (const part of actual.isUnion() ? actual.types : [actual])
+        for (const part of unionMembers(actual))
             for (const member of checker.getPropertiesOfType(part)) {
                 for (const declaration of member.declarations ?? []) {
                     if (

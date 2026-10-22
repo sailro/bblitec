@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { accessKey, bindingElementKey } from "./syntax.js";
+import { unionMembers } from "./type-facts.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -34,7 +35,7 @@ export function propertyNeverObserved(
     if (known !== undefined) return known;
     const carries = (expression: ts.Expression): boolean => {
         const type = checker.getTypeAtLocation(expression);
-        const parts = type.isUnion() ? type.types : [type];
+        const parts = unionMembers(type);
         return parts.some(
             (part) =>
                 (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==

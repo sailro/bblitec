@@ -65,6 +65,7 @@ import {
     isVoid,
     arrayElementType,
     callSignatures,
+    unionMembers,
 } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { propertyNeverObserved } from "./unread-properties.js";
@@ -2703,10 +2704,7 @@ export class AsyncLowerer {
                 then.declarations?.some((declaration) =>
                     ts.isGetAccessorDeclaration(declaration),
                 ) === true ||
-                (propertyType.isUnion()
-                    ? propertyType.types
-                    : [propertyType]
-                ).some(
+                unionMembers(propertyType).some(
                     (member) =>
                         callSignatures(this.context.checker, member, "exact")
                             .length > 0,

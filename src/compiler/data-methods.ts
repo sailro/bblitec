@@ -88,6 +88,7 @@ import {
     slotHoldsOnlyNull,
     valueKindOf,
     callSignatures,
+    unionMembers,
 } from "./type-facts.js";
 
 /**
@@ -4376,11 +4377,7 @@ function compileStringDataMethod(
         const replacementType = lowerer.context.checker.getTypeAtLocation(
             argumentAt(call, 1),
         );
-        const callbackReplacement = (
-            replacementType.isUnion()
-                ? replacementType.types
-                : [replacementType]
-        ).some(
+        const callbackReplacement = unionMembers(replacementType).some(
             (type) =>
                 callSignatures(lowerer.context.checker, type, "exact")
                     .length !== 0,

@@ -52,6 +52,7 @@ import {
     holdsOnly,
     callSignatures,
     classInstanceDeclaration,
+    unionMembers,
 } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -1695,7 +1696,7 @@ export class ClassLowerer {
             this.context.checker.getTypeAtLocation(node),
         );
         const classes: ts.ClassLikeDeclaration[] = [];
-        for (const member of type.isUnion() ? type.types : [type]) {
+        for (const member of unionMembers(type)) {
             const constraint =
                 (member.flags & ts.TypeFlags.TypeParameter) !== 0
                     ? this.context.checker.getBaseConstraintOfType(member)

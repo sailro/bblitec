@@ -3,7 +3,12 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
-import { nullability, arrayElementType, arrayShape } from "./type-facts.js";
+import {
+    nullability,
+    arrayElementType,
+    arrayShape,
+    unionMembers,
+} from "./type-facts.js";
 import {
     programObservations,
     type ObservedWrite,
@@ -191,7 +196,7 @@ export function recordFieldIsWritten(
     // instantiation, which assignability cannot relate to `source`; only a
     // write that names the property is attributed to it.
     const viewedAsSource = (holder: ts.Type): boolean =>
-        (holder.isUnion() ? holder.types : [holder]).some((member) =>
+        unionMembers(holder).some((member) =>
             checker.isTypeAssignableTo(member, source),
         );
     const mayRemove = (write: ObservedWrite): boolean => {
@@ -927,7 +932,7 @@ function holdsRecord(
     const holderHandle = pinnedSourceHandleKind(holder);
     // A record union's value is a record of one of its members.
     return records.some((record) =>
-        (record.isUnion() ? record.types : [record]).some((member) => {
+        unionMembers(record).some((member) => {
             const memberHandle = pinnedSourceHandleKind(member);
             if (holderHandle !== undefined || memberHandle !== undefined) {
                 return holderHandle === memberHandle;

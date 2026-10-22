@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { isTypeReference, callSignatures } from "./type-facts.js";
+import { isTypeReference, callSignatures, unionMembers } from "./type-facts.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -242,7 +242,7 @@ class TypeUnifier {
      * whose other properties it matches.
      */
     private unifyUnion(pattern: ts.UnionType, actual: ts.Type): void {
-        const actualMembers = actual.isUnion() ? [...actual.types] : [actual];
+        const actualMembers = [...unionMembers(actual)];
         const parameters: ts.Type[] = [];
         const generic: ts.Type[] = [];
         for (const member of pattern.types) {

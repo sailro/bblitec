@@ -31,6 +31,7 @@ import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
+import { unionMembers } from "../type-facts.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -271,7 +272,7 @@ function requireCopiedOwnUndefinedFields(
     );
     if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
         return;
-    const members = source.isUnion() ? source.types : [source];
+    const members = unionMembers(source);
     const storedFields = storedSource
         ? new Map(
               lowerer.context.dataTypes

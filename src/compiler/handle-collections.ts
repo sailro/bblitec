@@ -72,7 +72,7 @@ import {
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
-import { arrayElementType } from "./type-facts.js";
+import { arrayElementType, unionMembers } from "./type-facts.js";
 
 /**
  * One engine handle collection an expression names.
@@ -1337,8 +1337,8 @@ export class HandleCollections {
             this.context.checker.getTypeAtLocation(collection.expression),
         );
         if (
-            !(ownerType.isUnion() ? ownerType.types : [ownerType]).some(
-                (part) => isPinnedType(part, ["AssetContainer"]),
+            !unionMembers(ownerType).some((part) =>
+                isPinnedType(part, ["AssetContainer"]),
             )
         )
             return undefined;

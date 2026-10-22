@@ -128,6 +128,7 @@ import {
     callSignatures,
     classInstanceDeclaration,
     inheritsFrom,
+    unionMembers,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -224,7 +225,7 @@ function literalTagValues(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): readonly string[] | undefined {
-    const values = (type.isUnion() ? type.types : [type]).map((member) =>
+    const values = unionMembers(type).map((member) =>
         literalTagValue(checker, member),
     );
     return values.every((value) => value !== undefined) ? values : undefined;
@@ -1334,8 +1335,7 @@ export class DataTypeRegistry {
             !carried.some((source) => {
                 const type = source.type;
                 const shapes =
-                    this.recordComponentOf(type)?.shapes ??
-                    (type.isUnion() ? type.types : [type]);
+                    this.recordComponentOf(type)?.shapes ?? unionMembers(type);
                 return shapes.some((shape) => shape.getProperty(property));
             })
         )
@@ -2445,7 +2445,7 @@ export class DataTypeRegistry {
             ? this.getterProperties
             : this.setterProperties;
         const noteImplemented = (type: ts.Type, prototype = false): void => {
-            for (const member of type.isUnion() ? type.types : [type])
+            for (const member of unionMembers(type))
                 for (const declaration of this.checker.getPropertyOfType(
                     member,
                     name,
@@ -5489,7 +5489,7 @@ export class DataTypeRegistry {
         if (!promise || promises.length > 1) return undefined;
         const [argument] = this.checker.getTypeArguments(promise);
         if (!argument) return undefined;
-        const settled = argument.isUnion() ? argument.types : [argument];
+        const settled = unionMembers(argument);
         const values = type.types.filter((member) => member !== promise);
         // Two spellings of one object literal type are distinct checker types.
         const same = (left: ts.Type, right: ts.Type): boolean =>
@@ -6079,7 +6079,7 @@ export class DataTypeRegistry {
                 : tagConditions.flat();
             let mapped: DataType | undefined;
             const literalStrings = propertyTypes.flatMap((propertyType) =>
-                propertyType.isUnion() ? propertyType.types : [propertyType],
+                unionMembers(propertyType),
             );
             if (
                 literalStrings.every(
@@ -6710,7 +6710,7 @@ export class DataTypeRegistry {
         const assertedHandle = this.assertedHandleFieldStorage(node, property);
         if (assertedHandle) return assertedHandle;
         const resolved = this.resolveTypeParameter(type);
-        const members = resolved.isUnion() ? resolved.types : [resolved];
+        const members = unionMembers(resolved);
         // A required null-only field has storage before its record joins
         // another shape; the joined layout can then hold its null value.
         if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
@@ -8712,9 +8712,7 @@ export class DataTypeRegistry {
         const shapes = this.recordComponentOf(source.type)?.shapes ?? [
             source.type,
         ];
-        return shapes.flatMap((shape) =>
-            shape.isUnion() ? shape.types : [shape],
-        );
+        return shapes.flatMap((shape) => unionMembers(shape));
     }
 
     /** Membership cannot treat a declared property omitted by a common union layout as absent. */

@@ -14,7 +14,12 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { presentMembers, holdsOnly, arrayShape } from "./type-facts.js";
+import {
+    presentMembers,
+    holdsOnly,
+    arrayShape,
+    unionMembers,
+} from "./type-facts.js";
 import ts from "typescript";
 import {
     isEffectTaskMethodName,
@@ -2282,7 +2287,7 @@ export class PropertyAccessLowerer {
     /** Whether the checker types an owner as a canvas. */
     private declaresCanvas(ownerExpression: ts.Expression): boolean {
         const type = this.context.checker.getTypeAtLocation(ownerExpression);
-        return (type.isUnion() ? type.types : [type]).some(
+        return unionMembers(type).some(
             (member) =>
                 libraryName(member) === "HTMLCanvasElement" ||
                 libraryName(member) === "OffscreenCanvas",
@@ -3461,9 +3466,7 @@ export class PropertyAccessLowerer {
                     this.context.dataLowerer.dataTypeAt(expression);
                 const declaredTsType =
                     this.context.checker.getTypeAtLocation(expression);
-                const declaredMembers = declaredTsType.isUnion()
-                    ? declaredTsType.types
-                    : [declaredTsType];
+                const declaredMembers = unionMembers(declaredTsType);
                 const optionalProperty = this.context.checker
                     .getNonNullableType(
                         this.context.checker.getTypeAtLocation(

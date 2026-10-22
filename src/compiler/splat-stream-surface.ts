@@ -14,7 +14,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { isPinnedType } from "./data-types.js";
 import { resolvedSymbol, libraryName } from "./symbols.js";
-import { valueKindOf, holdsOnly } from "./type-facts.js";
+import { valueKindOf, holdsOnly, unionMembers } from "./type-facts.js";
 
 interface SplatStreamSurfaceContext extends Pick<
     LoweringServices,
@@ -80,7 +80,7 @@ function statsValue(
 ): Value {
     if (isNumber(type))
         return context.dataLowerer.leafValue(read, { kind: "number" });
-    const members = type.isUnion() ? type.types : [type];
+    const members = unionMembers(type);
     if (holdsOnly(type, ["string"]))
         return context.dataLowerer.leafValue(read, { kind: "string" });
     const present = members.filter(
@@ -93,7 +93,7 @@ function statsValue(
                 inner: { kind: "number" },
             });
         // The record stores `Error | null` as an empty js::Error for null.
-        if (libraryName(present[0]!) === "Error")
+        if (libraryName(present[0]) === "Error")
             return context.dataLowerer.leafValue(
                 `bbl::splat_stream::stats_error(${read})`,
                 { kind: "optional", inner: { kind: "error" } },

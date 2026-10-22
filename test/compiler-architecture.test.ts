@@ -934,3 +934,11 @@ test("class instances and inheritance are read through type-facts.ts", () => {
             name,
         );
 });
+
+test("a union's members are read through type-facts.ts", () => {
+    // unionMembers: a union's members, or the type itself.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).unionMemberRules > 0),
+        ["src/compiler/type-facts.ts"],
+    );
+});

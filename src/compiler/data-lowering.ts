@@ -79,6 +79,7 @@ import {
     holdsNoPayload,
     valueKindOf,
     callSignatures,
+    unionMembers,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -6140,8 +6141,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.declaredAsDictionary(access.expression) &&
                 !(
                     mode === "write" &&
-                    (keyTsType.isUnion() ? keyTsType.types : [keyTsType]).every(
-                        (member) => member.isStringLiteral(),
+                    unionMembers(keyTsType).every((member) =>
+                        member.isStringLiteral(),
                     )
                 )
             )

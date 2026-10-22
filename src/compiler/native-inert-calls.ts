@@ -13,6 +13,7 @@ import {
     libraryGlobal,
     type CompilerSymbols,
 } from "./symbols.js";
+import { unionMembers } from "./type-facts.js";
 
 /**
  * Pinned exports whose only effect the native realm does not represent.
@@ -273,7 +274,7 @@ class InertWalk {
 
     private isArray(expression: ts.Expression): boolean {
         const type = this.context.checker.getTypeAtLocation(expression);
-        const parts = type.isUnion() ? type.types : [type];
+        const parts = unionMembers(type);
         return parts.every(
             (part) =>
                 this.context.checker.isArrayType(part) ||

@@ -10,6 +10,7 @@ import {
     arrayElementType,
     callSignatures,
     classInstanceDeclaration,
+    unionMembers,
 } from "./type-facts.js";
 
 /**
@@ -368,9 +369,7 @@ export function recordComponents(
         const shapes = [
             ...new Map(
                 concrete
-                    .flatMap((member) =>
-                        member.isUnion() ? member.types : [member],
-                    )
+                    .flatMap((member) => unionMembers(member))
                     .map((shape) => [recordIdentity(checker, shape), shape]),
             ).values(),
         ];
@@ -565,9 +564,9 @@ function layoutsHoldBoth(
     if (dictionary(a, b) || dictionary(b, a)) return true;
     if (isRecordLike(checker, a) && isRecordLike(checker, b)) {
         const fields = (type: ts.Type, name: string): readonly ts.Type[] =>
-            type.isUnion()
-                ? type.types.flatMap((arm) => propertyTypes(checker, arm, name))
-                : propertyTypes(checker, type, name);
+            unionMembers(type).flatMap((arm) =>
+                propertyTypes(checker, arm, name),
+            );
         return recordProperties(checker, b).every((property) =>
             fields(a, property.name).every((held) =>
                 fields(b, property.name).every((field) =>

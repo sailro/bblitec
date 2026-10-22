@@ -112,6 +112,7 @@ import {
     isNullable,
     valueKindOf,
     callSignatures,
+    unionMembers,
 } from "../compiler/type-facts.js";
 export type { RecordShape } from "./record-shapes.js";
 
@@ -1682,7 +1683,7 @@ export class PinnedRecordModel {
         const { type, site } = this.recordSource(spec);
         if (ts.isClassDeclaration(site))
             return this.classMembers(spec, site, type);
-        const variants = type.isUnion() ? type.types : [type];
+        const variants = unionMembers(type);
         const collected = new Map<
             string,
             { shapes: RecordShape[]; everywhere: boolean }
@@ -6794,7 +6795,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         record: string,
     ): ResolvedMember[] {
         const type = this.typeAt(node.argumentExpression);
-        const literals = (type.isUnion() ? type.types : [type]).map((part) =>
+        const literals = unionMembers(type).map((part) =>
             part.isStringLiteral()
                 ? part.value
                 : this.refuse(

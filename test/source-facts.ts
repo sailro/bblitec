@@ -23,6 +23,8 @@ interface SourceFacts {
     symbolNameTests: number;
     /** `.declaration` / `.getDeclaration()` of a call's resolved signature, chained or through a binding. */
     resolvedDeclarationReads: number;
+    /** `t.isUnion() ? ... : ...`: a union's members taken by hand. */
+    unionMemberRules: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -131,6 +133,7 @@ export function sourceFacts(path: string): SourceFacts {
         memberScans: 0,
         symbolNameTests: 0,
         resolvedDeclarationReads: 0,
+        unionMemberRules: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -157,6 +160,13 @@ export function sourceFacts(path: string): SourceFacts {
             })(node.initializer)
         )
             signatures.add(scoped(node.name.text, node));
+        if (
+            ts.isConditionalExpression(node) &&
+            ts.isCallExpression(node.condition) &&
+            ts.isPropertyAccessExpression(node.condition.expression) &&
+            node.condition.expression.name.text === "isUnion"
+        )
+            facts.unionMemberRules++;
         if (ts.isPropertyAccessExpression(node)) {
             let owner: ts.Expression = node.expression;
             while (

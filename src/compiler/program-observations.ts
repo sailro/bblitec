@@ -21,7 +21,7 @@ import {
     patternSlots,
     equalityOperator,
 } from "./syntax.js";
-import { valueKindOf, arrayShape } from "./type-facts.js";
+import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
 export interface ObservedWrite {
@@ -232,20 +232,21 @@ function observe(program: ts.Program): ProgramObservations {
     const arrayLike = (node: ts.Node): boolean =>
         checker.isArrayLikeType(typeOf(node));
     const objectLike = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.some(objectLike)
-            : (type.flags &
-                  (ts.TypeFlags.Object |
-                      ts.TypeFlags.NonPrimitive |
-                      ts.TypeFlags.Intersection |
-                      ts.TypeFlags.Any |
-                      ts.TypeFlags.Unknown |
-                      ts.TypeFlags.TypeParameter |
-                      ts.TypeFlags.Index |
-                      ts.TypeFlags.IndexedAccess |
-                      ts.TypeFlags.Conditional |
-                      ts.TypeFlags.Substitution)) !==
-              0;
+        unionMembers(type).some(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Object |
+                        ts.TypeFlags.NonPrimitive |
+                        ts.TypeFlags.Intersection |
+                        ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.TypeParameter |
+                        ts.TypeFlags.Index |
+                        ts.TypeFlags.IndexedAccess |
+                        ts.TypeFlags.Conditional |
+                        ts.TypeFlags.Substitution)) !==
+                0,
+        );
     const addConsumer = (type: ts.Type, consumer: ts.Node): void => {
         if (ts.isExpression(consumer)) consumer = unwrapExpression(consumer);
         const types = identityConsumers.get(consumer);
@@ -357,9 +358,7 @@ function observe(program: ts.Program): ProgramObservations {
                 else arrayLocalElements.set(symbol, [own]);
             }
             if (own && contextual)
-                for (const member of contextual.isUnion()
-                    ? contextual.types
-                    : [contextual]) {
+                for (const member of unionMembers(contextual)) {
                     const wide = mutableElement(member);
                     if (wide !== undefined && wide !== own)
                         widenedArrays.push({

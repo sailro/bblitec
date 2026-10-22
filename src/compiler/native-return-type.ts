@@ -1,6 +1,11 @@
 import ts from "typescript";
 import { libraryGlobal } from "./symbols.js";
-import { nullability, undefinedOnly, callSignatures } from "./type-facts.js";
+import {
+    nullability,
+    undefinedOnly,
+    callSignatures,
+    unionMembers,
+} from "./type-facts.js";
 
 interface NativeReturnTypeOptions {
     /** Preserve the Promise object when the runtime owns asynchronous values. */
@@ -89,9 +94,7 @@ function settledUnion(
             const promised = checker.getPromisedTypeOfPromise(member);
             return (
                 !promised ||
-                (promised.isUnion() ? promised.types : [promised]).every(
-                    (each) => settled.includes(each),
-                )
+                unionMembers(promised).every((each) => settled.includes(each))
             );
         })
     )

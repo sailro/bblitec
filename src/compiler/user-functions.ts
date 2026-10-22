@@ -34,6 +34,7 @@ import {
     isNullable,
     holdsNoPayload,
     valueKindOf,
+    unionMembers,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -7245,10 +7246,7 @@ export class UserFunctionLowerer {
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&
                 !(
                     parameter.declaration.initializer &&
-                    (argumentType.isUnion()
-                        ? argumentType.types
-                        : [argumentType]
-                    ).every(
+                    unionMembers(argumentType).every(
                         (member) =>
                             (member.flags & ts.TypeFlags.Undefined) !== 0 ||
                             this.checker.isTypeAssignableTo(

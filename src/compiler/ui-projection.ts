@@ -146,7 +146,12 @@ import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
-import { presentMembers, valueKindOf, callSignatures } from "./type-facts.js";
+import {
+    presentMembers,
+    valueKindOf,
+    callSignatures,
+    unionMembers,
+} from "./type-facts.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -958,7 +963,7 @@ export class UiProjection {
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(expression),
         );
-        const members = type.isUnion() ? type.types : [type];
+        const members = unionMembers(type);
         return members.every((member) =>
             tags.includes(
                 elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",

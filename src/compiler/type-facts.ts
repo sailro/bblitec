@@ -97,7 +97,7 @@ function absentFlags(member: ts.Type): number {
 }
 
 /** A union's members, or the type itself. */
-function unionMembers(type: ts.Type): readonly ts.Type[] {
+export function unionMembers(type: ts.Type): readonly ts.Type[] {
     return type.isUnion() ? type.types : [type];
 }
 

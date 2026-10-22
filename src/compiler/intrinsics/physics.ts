@@ -50,6 +50,7 @@ import {
     requiredObjectNumber,
     type RequiredObjectNumberContext,
 } from "./engine-options.js";
+import { unionMembers } from "../type-facts.js";
 
 export interface PhysicsIntrinsicContext
     extends
@@ -638,7 +639,7 @@ function compileBodyEnum(
     const actual = context.checker.getTypeAtLocation(expression);
     const expected =
         parameter && context.checker.getTypeOfSymbolAtLocation(parameter, call);
-    const members = actual.isUnion() ? actual.types : [actual];
+    const members = unionMembers(actual);
     if (
         !expected ||
         !members.every((type) => type.isNumberLiteral()) ||

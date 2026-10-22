@@ -16,7 +16,7 @@ import {
     type FunctionWithBody,
     variableKind,
 } from "./syntax.js";
-import { callSignatures } from "./type-facts.js";
+import { callSignatures, unionMembers } from "./type-facts.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -736,7 +736,7 @@ export function typeMayHoldNullish(
     const type = checker.getTypeAtLocation(expression);
     const flag =
         literal === "null" ? ts.TypeFlags.Null : ts.TypeFlags.Undefined;
-    return (type.isUnion() ? type.types : [type]).some(
+    return unionMembers(type).some(
         (member) =>
             (member.flags &
                 (flag |

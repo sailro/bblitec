@@ -64,7 +64,7 @@ import {
 } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { isComposedAudioEnum } from "./audio-surface.js";
-import { holdsOnly, callSignatures } from "./type-facts.js";
+import { holdsOnly, callSignatures, unionMembers } from "./type-facts.js";
 
 interface ResourceLoopContext
     extends
@@ -202,7 +202,7 @@ function structuralDomRead(
     const type = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(node.expression),
     );
-    return (type.isUnion() ? type.types : [type]).every(
+    return unionMembers(type).every(
         (member) =>
             (member.flags & ts.TypeFlags.Object) !== 0 &&
             !declaredInDomLibrary(member.aliasSymbol ?? member.getSymbol()),

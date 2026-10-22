@@ -247,6 +247,7 @@ import {
     undefinedOnly,
     callSignatures,
     inheritsFrom,
+    unionMembers,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -3065,7 +3066,7 @@ class Compiler implements LoweringServices {
                     const key = this.checker.getTypeAtLocation(
                         parent.argumentExpression,
                     );
-                    const keys = key.isUnion() ? key.types : [key];
+                    const keys = unionMembers(key);
                     if (
                         keys.every(
                             (member) =>
@@ -8875,7 +8876,7 @@ class Compiler implements LoweringServices {
      */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
-        const members = type.isUnion() ? type.types : [type];
+        const members = unionMembers(type);
         return (
             members.length > 0 &&
             members.every((member) => {
@@ -10400,7 +10401,7 @@ class Compiler implements LoweringServices {
             const type = this.checker.getNonNullableType(
                 this.checker.getTypeAtLocation(expression),
             );
-            return (type.isUnion() ? type.types : [type]).some((member) => {
+            return unionMembers(type).some((member) => {
                 const symbol = member.getSymbol();
                 return (
                     declaredInDomLibrary(symbol) &&

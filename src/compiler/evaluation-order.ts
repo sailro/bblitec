@@ -32,6 +32,7 @@ import {
     valueKinds,
     valueKindOf,
     callSignatures,
+    unionMembers,
 } from "./type-facts.js";
 
 /**
@@ -97,7 +98,7 @@ function platformMethodEffect(
     receiver: ts.Type,
     method: string,
 ): PlatformMethodEffect | undefined {
-    for (const member of receiver.isUnion() ? receiver.types : [receiver]) {
+    for (const member of unionMembers(receiver)) {
         const symbol = member.getSymbol();
         if (!symbol || !declaredInDomLibrary(symbol)) continue;
         const effect = PLATFORM_METHOD_EFFECTS.get(symbol.name)?.get(method);
