@@ -175,6 +175,7 @@ import {
 } from "./compressed-json.js";
 import { compileArrayPredicateOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
+import { isBinaryDataType } from "./data-types/typed-arrays.js";
 import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
@@ -2312,6 +2313,23 @@ export class ExpressionLowerer {
                 this.context.fail(
                     unwrapped,
                     `'${callee.getText()}' would erase on a receiver that is not browser state; lower or remove the call.`,
+                );
+            // Web IDL converts every argument at the call except a buffer
+            // source, which the browser receives by reference and may fill
+            // (`crypto.getRandomValues(bytes)`): erasing would drop the write.
+            const shared = unwrapped.arguments.find(
+                (argument) =>
+                    isBinaryDataType(
+                        this.context.dataLowerer.dataTypeAt(argument),
+                    ) &&
+                    !this.context.browserErasure.isBrowserOnlyExpression(
+                        argument,
+                    ),
+            );
+            if (shared)
+                this.context.fail(
+                    shared,
+                    `'${callee.getText()}' would erase a call handed the program's own binary data, which the browser may write; lower or remove the call.`,
                 );
             for (const argument of unwrapped.arguments) {
                 if (

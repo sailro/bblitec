@@ -13798,6 +13798,20 @@ test("refuses to erase a DOM call on a receiver erasure cannot classify", () => 
         );
 });
 
+test("refuses to erase a browser call handed the program's own binary data", () => {
+    // The browser fills the buffer it is handed; erasing the call left the
+    // bytes zero.
+    assert.throws(
+        () =>
+            compileSource(`
+                const bytes = new Uint8Array(16);
+                crypto.getRandomValues(bytes);
+                console.log(bytes[0]);
+            `),
+        /'crypto\.getRandomValues' would erase a call handed the program's own binary data/,
+    );
+});
+
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
     const result = compileSource(`
         import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";
