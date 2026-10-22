@@ -52,6 +52,7 @@ import {
 import { caughtErrorValue } from "./error-values.js";
 import {
     isPromiseResultUsed,
+    promiseStatic,
     rejectionOnlyPromiseCpp,
     settlesNever,
 } from "./promises.js";
@@ -286,11 +287,10 @@ export class AsyncLowerer {
             return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "resolve"
-        ) {
+        const statics = promiseStatic(node, (expression) =>
+            context.libraryGlobal(expression),
+        );
+        if (statics === "resolve") {
             if (node.arguments.length > 1)
                 return context.fail(
                     node,
@@ -298,11 +298,7 @@ export class AsyncLowerer {
                 );
             return this.asPromise(this.resolvedValue(node), node);
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "reject"
-        ) {
+        if (statics === "reject") {
             if (node.arguments.length !== 1)
                 return context.fail(
                     node,
@@ -330,19 +326,10 @@ export class AsyncLowerer {
                     : {}),
             };
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            ["all", "allSettled"].includes(callee.name.text)
-        ) {
-            return this.compileAll(node, callee.name.text === "allSettled");
-        }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            (callee.name.text === "race" || callee.name.text === "any")
-        )
-            return this.compileRace(node, callee.name.text);
+        if (statics === "all" || statics === "allSettled")
+            return this.compileAll(node, statics === "allSettled");
+        if (statics === "race" || statics === "any")
+            return this.compileRace(node, statics);
         if (this.isPromiseMethod(callee)) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes

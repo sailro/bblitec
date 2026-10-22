@@ -1050,3 +1050,13 @@ test("a counted loop's shape is parsed by counted-loops.ts", () => {
     ])
         assert.ok(sourceFacts(path).calls.has("countedLoopShape"), path);
 });
+
+test("a Promise static call is recognized by promises.ts", () => {
+    // promiseStatic names Promise.all / allSettled / any / race / reject /
+    // resolve with the callee resolved as the library global; the immediate
+    // and the worker realm each lower the kinds they support.
+    assert.deepEqual(declarationOwners("promiseStatic"), [
+        "src/compiler/promises.ts",
+    ]);
+    assert.ok(sourceFacts("src/compiler/async.ts").calls.has("promiseStatic"));
+});

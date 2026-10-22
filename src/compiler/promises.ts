@@ -1,7 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { caughtErrorValue } from "./error-values.js";
-import { argumentAt, outermostWrapper } from "./syntax.js";
+import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import { yieldsNewArray } from "./fresh-records.js";
@@ -64,15 +64,36 @@ function rejectionClause(
     };
 }
 
+/** A static of the library's Promise a call names. */
+export type PromiseStatic =
+    "all" | "allSettled" | "any" | "race" | "reject" | "resolve";
+
+const PROMISE_STATICS: ReadonlyMap<string, PromiseStatic> = new Map(
+    (["all", "allSettled", "any", "race", "reject", "resolve"] as const).map(
+        (name) => [name, name],
+    ),
+);
+
+/** `Promise.all(...)` and its siblings, the callee resolved as the library global. */
+export function promiseStatic(
+    call: ts.CallExpression,
+    libraryGlobal: (expression: ts.Expression) => string | undefined,
+): PromiseStatic | undefined {
+    const callee = unwrapExpression(call.expression);
+    return ts.isPropertyAccessExpression(callee) &&
+        libraryGlobal(callee.expression) === "Promise"
+        ? PROMISE_STATICS.get(callee.name.text)
+        : undefined;
+}
+
 export function compileImmediatePromise(
     context: PromiseLoweringContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "resolve"
-    ) {
+    const statics = promiseStatic(call, (expression) =>
+        context.libraryGlobal(expression),
+    );
+    if (statics === "resolve") {
         // A void settlement needs an owned promise: there is no immediate
         // payload to retain, and its reactions still run in a later microtask.
         if (call.arguments.length === 0) throw new ApplicationRealmRequired();
@@ -88,17 +109,9 @@ export function compileImmediatePromise(
         return value;
     }
     // The other combinators settle in later microtasks: the realm's queue.
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        ["race", "allSettled", "any"].includes(call.expression.name.text)
-    )
+    if (statics === "race" || statics === "allSettled" || statics === "any")
         throw new ApplicationRealmRequired();
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "all"
-    ) {
+    if (statics === "all") {
         if (call.arguments.length !== 1) {
             context.fail(call, "Promise.all requires one static iterable.");
         }
@@ -384,9 +397,9 @@ function isImmediateReactionResultUsed(
         if (
             ts.isCallExpression(aggregate) &&
             aggregate.arguments[0] === array &&
-            ts.isPropertyAccessExpression(aggregate.expression) &&
-            aggregate.expression.name.text === "all" &&
-            context.libraryGlobal(aggregate.expression.expression) === "Promise"
+            promiseStatic(aggregate, (expression) =>
+                context.libraryGlobal(expression),
+            ) === "all"
         )
             return isImmediateReactionResultUsed(context, aggregate);
     }
