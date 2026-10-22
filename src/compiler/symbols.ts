@@ -16,6 +16,7 @@ import {
     type FunctionWithBody,
     variableKind,
 } from "./syntax.js";
+import { callSignatures } from "./type-facts.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -211,7 +212,10 @@ export function ecmascriptGlobalTypeof(
         return undefined;
     if ((symbol!.flags & ts.SymbolFlags.Variable) === 0) return "object";
     const type = checker.getTypeOfSymbolAtLocation(symbol!, node);
-    if (type.getCallSignatures().length || type.getConstructSignatures().length)
+    if (
+        callSignatures(checker, type, "exact").length ||
+        type.getConstructSignatures().length
+    )
         return "function";
     return type.flags & ts.TypeFlags.NumberLike ? "number" : "object";
 }

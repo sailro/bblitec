@@ -10,6 +10,7 @@ import {
 } from "./regexp-grammar.js";
 import { valueForKind, type Value } from "./types.js";
 import { argumentAt, regularExpressionParts } from "./syntax.js";
+import { callSignatures } from "./type-facts.js";
 
 /** Both replacement overloads use the ordinary inline/stored callback invocation path. */
 export function replacementCallback(
@@ -57,9 +58,11 @@ export function replacementCallback(
                 lowerer.leafValue(`${packet}.input`, { kind: "string" }),
             ];
         } else {
-            const signature = context.checker
-                .getTypeAtLocation(argumentAt(call, 1))
-                .getCallSignatures()[0];
+            const signature = callSignatures(
+                context.checker,
+                context.checker.getTypeAtLocation(argumentAt(call, 1)),
+                "exact",
+            )[0];
             if (!signature)
                 return context.fail(
                     call,

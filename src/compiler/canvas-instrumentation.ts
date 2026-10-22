@@ -30,6 +30,7 @@ import {
     isVoid,
     holdsOnly,
     typeCanCarryReference,
+    callSignatures,
 } from "./type-facts.js";
 
 type ReportingValue =
@@ -73,12 +74,10 @@ export function hasOnlyReportingEffects(
         return false;
     if (
         fn &&
-        !checker
-            .getTypeAtLocation(fn)
-            .getCallSignatures()
-            .every((signature) =>
+        !callSignatures(checker, checker.getTypeAtLocation(fn), "exact").every(
+            (signature) =>
                 undefinedOnly(checker.getReturnTypeOfSignature(signature)),
-            )
+        )
     )
         return false;
     const locals = new Map<ts.Symbol, ReportingValue>();
@@ -183,9 +182,11 @@ export function hasOnlyReportingEffects(
                 owner === "console" &&
                 member?.declarations?.every(declarationInDefaultLibrary)
             ) {
-                const signatures = checker
-                    .getTypeAtLocation(node)
-                    .getCallSignatures();
+                const signatures = callSignatures(
+                    checker,
+                    checker.getTypeAtLocation(node),
+                    "exact",
+                );
                 if (
                     signatures.length &&
                     signatures.every((signature) =>
@@ -617,8 +618,11 @@ function hasOnlyInstrumentationEffects(
         if (isBrowserType(receiver) && confined(receiver)) {
             return (call.arguments ?? []).every(
                 (argument) =>
-                    checker.getTypeAtLocation(argument).getCallSignatures()
-                        .length === 0 || confined(argument),
+                    callSignatures(
+                        checker,
+                        checker.getTypeAtLocation(argument),
+                        "exact",
+                    ).length === 0 || confined(argument),
             );
         }
         return (

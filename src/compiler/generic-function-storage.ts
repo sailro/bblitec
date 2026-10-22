@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { isTypeReference } from "./type-facts.js";
+import { isTypeReference, callSignatures } from "./type-facts.js";
 
 /** One reached instantiation of a stored generic function. */
 export interface GenericFunctionDemand {
@@ -76,8 +76,8 @@ function samePolymorphicSignature(
                     )
                 );
             }
-            const aCalls = a.getCallSignatures(),
-                bCalls = b.getCallSignatures();
+            const aCalls = callSignatures(checker, a, "exact"),
+                bCalls = callSignatures(checker, b, "exact");
             return (
                 aCalls.length === 1 &&
                 bCalls.length === 1 &&

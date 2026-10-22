@@ -5,7 +5,7 @@ import {
     type DeclarationOrigin,
 } from "./symbols.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { holdsOnly, arrayElementType } from "./type-facts.js";
+import { holdsOnly, arrayElementType, callSignatures } from "./type-facts.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -124,7 +124,7 @@ export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
                 part.symbol?.declarations?.some(ts.isClassLike) === true,
         ) ||
         checker.isArrayLikeType(type) ||
-        type.getCallSignatures().length > 0 ||
+        callSignatures(checker, type, "exact").length > 0 ||
         type.getConstructSignatures().length > 0 ||
         checker.getIndexInfosOfType(type).length > 0
     )
@@ -455,8 +455,8 @@ function compatibleSignatures(
     left: ts.Type,
     right: ts.Type,
 ): [ts.Signature, ts.Signature] | undefined {
-    const [a, ...overloadsA] = left.getCallSignatures();
-    const [b, ...overloadsB] = right.getCallSignatures();
+    const [a, ...overloadsA] = callSignatures(checker, left, "exact");
+    const [b, ...overloadsB] = callSignatures(checker, right, "exact");
     return a &&
         b &&
         overloadsA.length === 0 &&

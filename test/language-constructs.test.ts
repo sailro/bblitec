@@ -15028,3 +15028,13 @@ check(
     if (kind !== "TypeError") throw new Error("kind " + kind);
     `,
 );
+check(
+    "an optional callback argument's writes order the arguments read before it",
+    `
+    function pair(a: number, b: number[]): number { return a; }
+    let n = 0;
+    function s(xs: number[], cmp?: (a: number, b: number) => number): number { return pair(n, xs.sort(cmp)); }
+    const before = s([2, 1], (a, b) => { n++; return a - b; });
+    if (before !== 0 || n === 0) throw new Error("order " + before + " " + n);
+    `,
+);

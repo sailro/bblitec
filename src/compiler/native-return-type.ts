@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { libraryGlobal } from "./symbols.js";
-import { nullability, undefinedOnly } from "./type-facts.js";
+import { nullability, undefinedOnly, callSignatures } from "./type-facts.js";
 
 interface NativeReturnTypeOptions {
     /** Preserve the Promise object when the runtime owns asynchronous values. */
@@ -36,7 +36,7 @@ export function nativeReturnTsType(
         // callback sink. Keep that sink's storage instead of lowering it as void.
         const contextual = checker.getContextualType(declaration);
         const signatures = contextual
-            ? checker.getNonNullableType(contextual).getCallSignatures()
+            ? callSignatures(checker, contextual, "present")
             : [];
         const result =
             signatures.length === 1

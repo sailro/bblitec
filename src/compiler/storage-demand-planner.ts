@@ -27,6 +27,7 @@ import { EnumRecordStorageRequired } from "./enum-record-storage.js";
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { callSignatures } from "./type-facts.js";
 
 type StorageDemand =
     | DynamicBindingStorageRequired
@@ -201,8 +202,11 @@ function independentGenericCall(
         }
         return (
             !expressionMayRunCode(value) &&
-            context.checker.getTypeAtLocation(value).getCallSignatures()
-                .length === 0
+            callSignatures(
+                context.checker,
+                context.checker.getTypeAtLocation(value),
+                "exact",
+            ).length === 0
         );
     });
 }

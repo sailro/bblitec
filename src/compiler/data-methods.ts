@@ -87,6 +87,7 @@ import {
     isTypeReference,
     slotHoldsOnlyNull,
     valueKindOf,
+    callSignatures,
 } from "./type-facts.js";
 
 /**
@@ -2555,9 +2556,11 @@ function narrowedFilterResult(
         const predicate = call.arguments[0];
         const signature =
             predicate &&
-            lowerer.context.checker
-                .getTypeAtLocation(predicate)
-                .getCallSignatures()[0];
+            callSignatures(
+                lowerer.context.checker,
+                lowerer.context.checker.getTypeAtLocation(predicate),
+                "exact",
+            )[0];
         if (
             signature &&
             lowerer.context.checker.getTypePredicateOfSignature(signature)
@@ -4377,7 +4380,11 @@ function compileStringDataMethod(
             replacementType.isUnion()
                 ? replacementType.types
                 : [replacementType]
-        ).some((type) => type.getCallSignatures().length !== 0);
+        ).some(
+            (type) =>
+                callSignatures(lowerer.context.checker, type, "exact")
+                    .length !== 0,
+        );
         const replacementMayChange =
             callbackReplacement || expressionMayRunCode(argumentAt(call, 1));
         const argumentsMayChange =

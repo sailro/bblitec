@@ -146,7 +146,7 @@ import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
-import { presentMembers, valueKindOf } from "./type-facts.js";
+import { presentMembers, valueKindOf, callSignatures } from "./type-facts.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -5212,7 +5212,11 @@ export class UiProjection {
             assignment.right,
         );
         const nullish = presentMembers(handlerType).length === 0;
-        if (!nullish && handlerType.getCallSignatures().length === 0)
+        if (
+            !nullish &&
+            callSignatures(this.context.checker, handlerType, "exact")
+                .length === 0
+        )
             this.context.fail(
                 assignment.right,
                 `Native UI event handler property '${property}' requires a function or null.`,

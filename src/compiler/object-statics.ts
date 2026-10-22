@@ -27,6 +27,7 @@ import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
+import { callSignatures } from "./type-facts.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -751,8 +752,7 @@ function compileObjectAssign(
         (context.checker.getAwaitedType(contextualType) ?? contextualType);
     const callable = context.dataTypes.fromStoredTsType(
         contextual &&
-            context.checker.getNonNullableType(contextual).getCallSignatures()
-                .length === 1
+            callSignatures(context.checker, contextual, "present").length === 1
             ? context.checker.getNonNullableType(contextual)
             : context.checker.getTypeAtLocation(call),
         call,

@@ -53,6 +53,7 @@ import {
     typeCanCarryReference,
     isVoid,
     arrayElementType,
+    callSignatures,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -2259,7 +2260,11 @@ export class DeclarationLowerer {
             return undefined;
         }
         const declaredType = this.context.checker.getTypeAtLocation(name);
-        const signatures = declaredType.getCallSignatures();
+        const signatures = callSignatures(
+            this.context.checker,
+            declaredType,
+            "exact",
+        );
         // A function object with properties is a callable record.
         if (
             signatures.length !== 1 ||

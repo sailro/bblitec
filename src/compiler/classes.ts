@@ -46,7 +46,12 @@ import {
     isGeneratorFunction,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
-import { nullability, isVoid, holdsOnly } from "./type-facts.js";
+import {
+    nullability,
+    isVoid,
+    holdsOnly,
+    callSignatures,
+} from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -1340,7 +1345,11 @@ export class ClassLowerer {
                     if (
                         members.some(
                             (candidate) =>
-                                candidate.getCallSignatures().length > 0,
+                                callSignatures(
+                                    this.context.checker,
+                                    candidate,
+                                    "exact",
+                                ).length > 0,
                         )
                     ) {
                         // An optional callback is compile-time wiring. Keep

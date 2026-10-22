@@ -19,7 +19,7 @@ import {
     type SupportedFunction,
     variableKind,
 } from "./syntax.js";
-import { presentMembers } from "./type-facts.js";
+import { presentMembers, callSignatures } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { libraryName } from "./symbols.js";
@@ -467,9 +467,11 @@ export class SharedClosureAnalysis {
             if (
                 ts.isVariableDeclaration(parent) &&
                 parent.type &&
-                this.context.checker
-                    .getTypeFromTypeNode(parent.type)
-                    .getCallSignatures().length > 0
+                callSignatures(
+                    this.context.checker,
+                    this.context.checker.getTypeFromTypeNode(parent.type),
+                    "exact",
+                ).length > 0
             )
                 return true;
             // Constructors and instance fields can retain the function for

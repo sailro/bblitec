@@ -64,6 +64,7 @@ import {
     presentMembers,
     isVoid,
     arrayElementType,
+    callSignatures,
 } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { propertyNeverObserved } from "./unread-properties.js";
@@ -410,11 +411,11 @@ export class AsyncLowerer {
                 }
                 let evaluated: Value | undefined;
                 if (
-                    context.checker
-                        .getNonNullableType(
-                            context.checker.getTypeAtLocation(callback),
-                        )
-                        .getCallSignatures().length === 0
+                    callSignatures(
+                        context.checker,
+                        context.checker.getTypeAtLocation(callback),
+                        "present",
+                    ).length === 0
                 ) {
                     evaluated = context.compileValue(callback);
                     if (
@@ -1554,9 +1555,11 @@ export class AsyncLowerer {
         const nonThenableCompletion =
             cleanup && hasNonThenableCompletion(context.checker, declaration);
         const asynchronous = declaration && isAsyncFunction(declaration);
-        const signature = context.checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()[0];
+        const signature = callSignatures(
+            context.checker,
+            context.checker.getTypeAtLocation(callback),
+            "exact",
+        )[0];
         const returnType =
             signature && context.checker.getReturnTypeOfSignature(signature);
         // A single fulfillment callback determines its own settlement. The
@@ -2703,7 +2706,11 @@ export class AsyncLowerer {
                 (propertyType.isUnion()
                     ? propertyType.types
                     : [propertyType]
-                ).some((member) => member.getCallSignatures().length > 0)
+                ).some(
+                    (member) =>
+                        callSignatures(this.context.checker, member, "exact")
+                            .length > 0,
+                )
             );
         };
         const customResult = (source: ts.Node): boolean =>

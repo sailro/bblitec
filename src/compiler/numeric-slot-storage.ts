@@ -11,6 +11,7 @@ import {
     isTypeReference,
     presentMembers,
     arrayShape,
+    callSignatures,
 } from "./type-facts.js";
 import {
     outermostWrapper,
@@ -122,7 +123,7 @@ function arrayLikeAt(
     for (const step of steps) {
         if (!current) return false;
         if (step === "result") {
-            const signatures = current.getCallSignatures();
+            const signatures = callSignatures(checker, current, "exact");
             if (signatures.length !== 1) return false;
             current = presentType(
                 checker.getReturnTypeOfSignature(signatures[0]!),
@@ -309,7 +310,7 @@ export function withNumericSlotStorage(
             ? storage
             : undefined;
     if (mapped.kind === "function") {
-        const signatures = present.getCallSignatures();
+        const signatures = callSignatures(checker, present, "exact");
         if (signatures.length !== 1 || !mapped.result) return undefined;
         const result = withNumericSlotStorage(
             checker,

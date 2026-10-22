@@ -27,7 +27,12 @@ import {
     writeSites,
     isSuspensionPoint,
 } from "./syntax.js";
-import { holdsOnly, valueKinds, valueKindOf } from "./type-facts.js";
+import {
+    holdsOnly,
+    valueKinds,
+    valueKindOf,
+    callSignatures,
+} from "./type-facts.js";
 
 /**
  * JavaScript evaluates the operands of one expression left to right. The
@@ -710,8 +715,11 @@ export class EvaluationOrder {
         if (
             call.arguments.some(
                 (argument) =>
-                    this.checker.getTypeAtLocation(argument).getCallSignatures()
-                        .length > 0,
+                    callSignatures(
+                        this.checker,
+                        this.checker.getTypeAtLocation(argument),
+                        "exact",
+                    ).length > 0,
             )
         )
             return false;
@@ -1058,7 +1066,11 @@ export class EvaluationOrder {
             array && this.checker.getTypeOfSymbol(array).getProperty("isArray");
         const signature =
             isArray &&
-            this.checker.getTypeOfSymbol(isArray).getCallSignatures()[0];
+            callSignatures(
+                this.checker,
+                this.checker.getTypeOfSymbol(isArray),
+                "exact",
+            )[0];
         return (
             signature && this.checker.getTypePredicateOfSignature(signature)
         )?.type;
@@ -1217,7 +1229,7 @@ export class EvaluationOrder {
                 continue;
             }
             const type = this.checker.getTypeAtLocation(argument);
-            if (type.getCallSignatures().length > 0) {
+            if (callSignatures(this.checker, type, "present").length > 0) {
                 // A library function handed on (`map(Number)`) runs as a
                 // library call over the values it is given.
                 if (this.isRandom(expression)) {

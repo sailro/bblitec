@@ -5,6 +5,7 @@ import {
     libraryGlobal,
     calledDeclaration,
 } from "./symbols.js";
+import { callSignatures } from "./type-facts.js";
 
 /**
  * The built-in methods that change the container they are called on, read
@@ -100,12 +101,11 @@ export function callbackTakesReceiver(
         method === "reduce" || method === "reduceRight" ? 3 : 2;
     return (
         callback !== undefined &&
-        checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()
-            .some(
-                (signature) => signature.parameters.length > receiverParameter,
-            )
+        callSignatures(
+            checker,
+            checker.getTypeAtLocation(callback),
+            "exact",
+        ).some((signature) => signature.parameters.length > receiverParameter)
     );
 }
 

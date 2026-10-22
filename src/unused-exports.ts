@@ -3,6 +3,7 @@ import ts from "typescript";
 import { aliasTarget, declaredSymbol } from "./compiler/symbols.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { bindingElementKey, specifierSourceName } from "./compiler/syntax.js";
+import { callSignatures } from "./compiler/type-facts.js";
 
 interface UnusedExport {
     file: string;
@@ -121,7 +122,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                     );
             }
             for (const signature of [
-                ...type.getCallSignatures(),
+                ...callSignatures(checker, type, "exact"),
                 ...type.getConstructSignatures(),
             ]) {
                 visitType(signature.getReturnType());

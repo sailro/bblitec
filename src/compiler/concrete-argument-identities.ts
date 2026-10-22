@@ -19,7 +19,11 @@ import {
     isFunctionWithBody,
     variableKind,
 } from "./syntax.js";
-import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    callSignatures,
+} from "./type-facts.js";
 
 type Path = readonly string[];
 interface SourceValue {
@@ -79,7 +83,7 @@ export function concreteArgumentIdentityPaths(
                         ts.TypeFlags.Unknown |
                         ts.TypeFlags.TypeParameter)) !==
                     0 ||
-                type.getCallSignatures().length > 0 ||
+                callSignatures(checker, type, "exact").length > 0 ||
                 type.getConstructSignatures().length > 0
             )
                 return false;

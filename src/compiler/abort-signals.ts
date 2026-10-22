@@ -9,6 +9,7 @@ import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { libraryName } from "./symbols.js";
+import { callSignatures } from "./type-facts.js";
 
 /**
  * AbortController, AbortSignal and DOMException as realm-owned native
@@ -257,9 +258,11 @@ export function compileAbortListenerCall(
             "An AbortSignal dispatches only 'abort' events.",
         );
     const callback = call.arguments[1]!;
-    const signature = context.checker
-        .getTypeAtLocation(callback)
-        .getCallSignatures()[0];
+    const signature = callSignatures(
+        context.checker,
+        context.checker.getTypeAtLocation(callback),
+        "exact",
+    )[0];
     if (signature && signature.getParameters().length > 0)
         return context.fail(
             callback,

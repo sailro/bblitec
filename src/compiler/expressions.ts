@@ -202,6 +202,7 @@ import {
     nullability,
     isVoid,
     valueKindOf,
+    callSignatures,
 } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -751,7 +752,9 @@ export class ExpressionLowerer {
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
             if (
-                contextual?.getCallSignatures().length === 1 &&
+                contextual !== undefined &&
+                callSignatures(this.context.checker, contextual, "exact")
+                    .length === 1 &&
                 contextual.getProperties().length > 0 &&
                 !mentionsTypeParameter(this.context.checker, contextual) &&
                 contextual
@@ -5714,9 +5717,11 @@ export class ExpressionLowerer {
                 : undefined);
         if (
             !inferred &&
-            (this.context.checker
-                .getTypeAtLocation(unwrapped)
-                .getCallSignatures().length > 0 ||
+            (callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(unwrapped),
+                "exact",
+            ).length > 0 ||
                 this.context.symbols.isNullishLiteral(
                     this.context.unwrap(unwrapped.whenTrue),
                 ) ||
@@ -6798,10 +6803,11 @@ export class ExpressionLowerer {
     /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
-            this.context.checker
-                .getTypeAtLocation(expression)
-                .getCallSignatures()
-                .some((signature) => signature.thisParameter)
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(expression),
+                "exact",
+            ).some((signature) => signature.thisParameter)
         )
             this.context.fail(
                 expression,
@@ -6884,9 +6890,11 @@ export class ExpressionLowerer {
     ): Value | undefined {
         if (
             callee.name.text === "bind" &&
-            this.context.checker
-                .getTypeAtLocation(callee.expression)
-                .getCallSignatures().length > 0
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(callee.expression),
+                "exact",
+            ).length > 0
         ) {
             const collection = compileBoundCollectionMethod(
                 this.context.dataLowerer,
@@ -7003,9 +7011,11 @@ export class ExpressionLowerer {
                     call,
                 );
                 if (objectCall) return objectCall;
-                const callable = this.context.checker
-                    .getTypeAtLocation(callee.expression)
-                    .getCallSignatures().length
+                const callable = callSignatures(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(callee.expression),
+                    "exact",
+                ).length
                     ? this.compileFunctionObject(callee.expression)
                     : this.compileValue(callee.expression);
                 if (

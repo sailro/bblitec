@@ -125,6 +125,7 @@ import {
     isVoid,
     holdsNoPayload,
     arrayShape,
+    callSignatures,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -1594,7 +1595,7 @@ export class DataTypeRegistry {
     private computePhantomBrandKey(type: ts.Type): string | undefined {
         if (
             type.isUnionOrIntersection() ||
-            type.getCallSignatures().length > 0 ||
+            callSignatures(this.checker, type, "exact").length > 0 ||
             type.getConstructSignatures().length > 0 ||
             this.checker.getIndexInfosOfType(type).length > 0
         )
@@ -1702,7 +1703,7 @@ export class DataTypeRegistry {
             return;
         const type = this.checker.getTypeAtLocation(node);
         if (
-            type.getCallSignatures().length ||
+            callSignatures(this.checker, type, "exact").length ||
             type.getConstructSignatures().length ||
             type.symbol?.declarations?.some(ts.isClassLike) ||
             this.checker.getPropertiesOfType(type).length === 0
@@ -3610,7 +3611,11 @@ export class DataTypeRegistry {
             // A stored function maps as a layout stores it; the joined
             // layout decides whether one storage holds both signatures.
             const callable = this.checker.getNonNullableType(propertyType);
-            if (callable.getCallSignatures().length > 0 && beforeJoin) continue;
+            if (
+                callSignatures(this.checker, callable, "exact").length > 0 &&
+                beforeJoin
+            )
+                continue;
             // A property only null or undefined is the field's empty state.
             if (
                 (field?.type.kind === "optional" ||
@@ -3620,7 +3625,7 @@ export class DataTypeRegistry {
                 continue;
             const own =
                 field &&
-                (callable.getCallSignatures().length > 0
+                (callSignatures(this.checker, callable, "exact").length > 0
                     ? this.fromFunctionType(callable, declaration ?? node)
                     : this.fromRecordFieldType(
                           propertyType,
@@ -3928,7 +3933,7 @@ export class DataTypeRegistry {
             ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
                 0 &&
             this.checker.getPropertiesOfType(type).length === 0 &&
-            type.getCallSignatures().length === 0 &&
+            callSignatures(this.checker, type, "exact").length === 0 &&
             type.getConstructSignatures().length === 0 &&
             this.checker.getIndexInfosOfType(type).length === 0
         );
@@ -3961,7 +3966,7 @@ export class DataTypeRegistry {
             const fields = this.checker.getPropertiesOfType(concrete);
             const owned = this.checker.getPropertiesOfType(owner);
             if (
-                concrete.getCallSignatures().length ||
+                callSignatures(this.checker, concrete, "exact").length ||
                 concrete.getConstructSignatures().length ||
                 this.checker.getIndexInfosOfType(concrete).length ||
                 fields.length !== owned.length ||
@@ -4655,7 +4660,7 @@ export class DataTypeRegistry {
         resultOverride?: ts.Signature,
         restArguments?: readonly ts.Type[],
     ): DataType | undefined {
-        const signatures = type.getCallSignatures();
+        const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length !== 1) return undefined;
         const signature = signatures[0]!;
         for (const origin of [node, signature.declaration]) {
@@ -4665,8 +4670,11 @@ export class DataTypeRegistry {
                     !storedClassField &&
                     ts.isPropertyDeclaration(owner) &&
                     ts.isClassLike(owner.parent) &&
-                    this.checker.getTypeAtLocation(owner).getCallSignatures()
-                        .length > 0
+                    callSignatures(
+                        this.checker,
+                        this.checker.getTypeAtLocation(owner),
+                        "exact",
+                    ).length > 0
                 ) {
                     // Class callback fields use the class lowerer's method-like binding,
                     // including `this`; they are not ordinary stored struct slots.
@@ -4714,16 +4722,17 @@ export class DataTypeRegistry {
                 const override = parameterOverrides?.[index];
                 const declaredCallable =
                     this.checker.getNonNullableType(declaredType);
-                const declaredSignature =
-                    declaredCallable.getCallSignatures()[0];
+                const declaredSignature = callSignatures(
+                    this.checker,
+                    declaredCallable,
+                    "exact",
+                )[0];
                 const actualSignature = override
-                    ? this.checker
-                          .getNonNullableType(override)
-                          .getCallSignatures()[0]
+                    ? callSignatures(this.checker, override, "present")[0]
                     : undefined;
                 const parameterType =
-                    declaredCallable.getCallSignatures().length &&
-                    !actualSignature
+                    callSignatures(this.checker, declaredCallable, "exact")
+                        .length && !actualSignature
                         ? declaredType
                         : (override ?? declaredType);
                 if (holdsNoPayload(parameterType)) {
@@ -4746,7 +4755,11 @@ export class DataTypeRegistry {
                               declaration ?? node,
                           )
                         : actualSignature &&
-                            declaredCallable.getCallSignatures().length === 1
+                            callSignatures(
+                                this.checker,
+                                declaredCallable,
+                                "exact",
+                            ).length === 1
                           ? this.fromFunctionType(
                                 declaredCallable,
                                 declaration ?? node,
@@ -5104,9 +5117,7 @@ export class DataTypeRegistry {
                     return declared;
                 if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
-                    !this.checker
-                        .getNonNullableType(declared)
-                        .getCallSignatures().length
+                    !callSignatures(this.checker, declared, "present").length
                 )
                     return undefined;
                 const argument = call.arguments[index];
@@ -5214,9 +5225,7 @@ export class DataTypeRegistry {
                 const declared = this.checker.getTypeOfSymbol(parameter);
                 if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
-                    !this.checker
-                        .getNonNullableType(declared)
-                        .getCallSignatures().length
+                    !callSignatures(this.checker, declared, "present").length
                 )
                     return undefined;
                 return (
@@ -5449,7 +5458,7 @@ export class DataTypeRegistry {
         if (
             !type.types.every(
                 (member) =>
-                    member.getCallSignatures().length > 0 &&
+                    callSignatures(this.checker, member, "exact").length > 0 &&
                     this.checker.getPropertiesOfType(member).length === 0,
             )
         )
@@ -5736,7 +5745,7 @@ export class DataTypeRegistry {
                     // Class instances retain their nominal owner; their fields
                     // alone cannot represent instanceof or private brands.
                     member.symbol?.declarations?.some(ts.isClassLike) ||
-                    member.getCallSignatures().length > 0 ||
+                    callSignatures(this.checker, member, "exact").length > 0 ||
                     member.getConstructSignatures().length > 0 ||
                     this.checker.getIndexInfosOfType(member).length > 0,
             )
@@ -6618,23 +6627,18 @@ export class DataTypeRegistry {
             return true;
         }
         if (
-            type
-                .getCallSignatures()
-                .some(
-                    (signature) =>
-                        signature
-                            .getParameters()
-                            .some((parameter) =>
-                                this.mentionsSubstitution(
-                                    this.checker.getTypeOfSymbol(parameter),
-                                    seen,
-                                ),
-                            ) ||
-                        this.mentionsSubstitution(
-                            signature.getReturnType(),
-                            seen,
-                        ),
-                )
+            callSignatures(this.checker, type, "exact").some(
+                (signature) =>
+                    signature
+                        .getParameters()
+                        .some((parameter) =>
+                            this.mentionsSubstitution(
+                                this.checker.getTypeOfSymbol(parameter),
+                                seen,
+                            ),
+                        ) ||
+                    this.mentionsSubstitution(signature.getReturnType(), seen),
+            )
         ) {
             return true;
         }
@@ -6892,8 +6896,8 @@ export class DataTypeRegistry {
             const callableType = this.checker.getNonNullableType(propertyType);
             // A callable record (a function with properties) is a record.
             const callable =
-                callableType.getCallSignatures().length > 0 &&
-                !this.isCallableRecordType(callableType);
+                callSignatures(this.checker, callableType, "exact").length >
+                    0 && !this.isCallableRecordType(callableType);
             const mapped = callable
                 ? allowStoredFunctions &&
                   declaration !== undefined &&
@@ -7186,7 +7190,7 @@ export class DataTypeRegistry {
      */
     private isCallableRecordType(type: ts.Type): boolean {
         return (
-            type.getCallSignatures().length === 1 &&
+            callSignatures(this.checker, type, "exact").length === 1 &&
             type.getConstructSignatures().length === 0 &&
             this.checker.getPropertiesOfType(type).length > 0
         );
@@ -7800,9 +7804,7 @@ export class DataTypeRegistry {
                 this.withDemandedNumericSlot(member, propertyType, declared);
             if (
                 !mapped &&
-                this.checker
-                    .getNonNullableType(propertyType)
-                    .getCallSignatures().length > 0
+                callSignatures(this.checker, propertyType, "present").length > 0
             ) {
                 this.fail(
                     member,

@@ -35,7 +35,7 @@ import {
     PANNER_PROPERTIES,
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
-import { presentMembers } from "./type-facts.js";
+import { presentMembers, callSignatures } from "./type-facts.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -559,9 +559,9 @@ function compileAudioListener(
             );
         } else {
             if (
-                callbackType
-                    .getCallSignatures()
-                    .some((signature) => signature.parameters.length > 0)
+                callSignatures(context.checker, callbackType, "exact").some(
+                    (signature) => signature.parameters.length > 0,
+                )
             )
                 context.fail(callback, refusals.payload);
             const compiled = context.callbacks.compilePlatformCallback(
@@ -1227,9 +1227,9 @@ export function emitAudioPropertyAssignment(
         const callbackType = context.checker.getTypeAtLocation(right);
         const absent = presentMembers(callbackType).length === 0;
         if (
-            callbackType
-                .getCallSignatures()
-                .some((signature) => signature.parameters.length > 0)
+            callSignatures(context.checker, callbackType, "exact").some(
+                (signature) => signature.parameters.length > 0,
+            )
         )
             context.fail(
                 right,

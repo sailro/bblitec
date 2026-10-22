@@ -900,3 +900,19 @@ test("a binding's rebinds are read through binding-rebinds.ts", () => {
     ])
         assert.deepEqual(declarationOwners(name), [], name);
 });
+
+test("call signatures are read through type-facts.ts", () => {
+    // callSignatures names each site's rule for an absent member: "present"
+    // reads a value's signatures once present (an optional callback is
+    // callable), "exact" gives a nullable type none.
+    assert.deepEqual(
+        sourcePaths.filter((path) => {
+            const facts = sourceFacts(path);
+            return (
+                facts.members.has("getCallSignatures") ||
+                facts.members.has("getSignaturesOfType")
+            );
+        }),
+        ["src/compiler/type-facts.ts"],
+    );
+});

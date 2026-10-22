@@ -78,6 +78,7 @@ import {
     holdsOnly,
     holdsNoPayload,
     valueKindOf,
+    callSignatures,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -3928,8 +3929,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             !arm ||
             arms.length > 1 ||
-            this.context.checker.getTypeAtLocation(callee).getCallSignatures()
-                .length === 0
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(callee),
+                "exact",
+            ).length === 0
         )
             return undefined;
         this.context.reachJsData();
@@ -8907,9 +8911,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         callback: ts.Expression,
     ): DataType<"function"> | undefined {
         if (!this.context.options.workers) return undefined;
-        const signature = this.context.checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()[0];
+        const signature = callSignatures(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(callback),
+            "exact",
+        )[0];
         if (
             !signature ||
             libraryName(
@@ -9214,9 +9220,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const signature =
             ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)
                 ? this.context.checker.getSignatureFromDeclaration(callback)
-                : this.context.checker
-                      .getTypeAtLocation(callback)
-                      .getCallSignatures()[0];
+                : callSignatures(
+                      this.context.checker,
+                      this.context.checker.getTypeAtLocation(callback),
+                      "exact",
+                  )[0];
         return (
             signature !== undefined &&
             valueKindOf(
@@ -9685,11 +9693,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.allocateTemporaryCppName("optional_callback");
         // A result that may itself be absent (`number | null`) is undefined
         // only where the call did not run (`Value.slotFoundCpp`).
-        const signatures = this.context.checker
-            .getNonNullableType(
-                this.context.checker.getTypeAtLocation(call.expression),
-            )
-            .getCallSignatures();
+        const signatures = callSignatures(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(call.expression),
+            "present",
+        );
         const signature =
             signatures.length === 1
                 ? signatures[0]
@@ -18202,7 +18210,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.checker.getTypeAtLocation(operand),
             );
             return (
-                type.getCallSignatures().length === 1 &&
+                callSignatures(this.context.checker, type, "exact").length ===
+                    1 &&
                 this.context.checker.getPropertiesOfType(type).length > 0
             );
         };

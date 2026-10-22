@@ -1,6 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, callSignatures } from "./type-facts.js";
 import { isRuntimeImport } from "../module-imports.js";
 import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
@@ -693,9 +693,10 @@ class ModuleInitializerPlanner {
                                 local !== undefined &&
                                 ts.isVariableDeclaration(local) &&
                                 owner(local) === called &&
-                                this.checker.getSignaturesOfType(
+                                callSignatures(
+                                    this.checker,
                                     this.checker.getTypeAtLocation(part),
-                                    ts.SignatureKind.Call,
+                                    "exact",
                                 ).length !== 0
                             );
                         },

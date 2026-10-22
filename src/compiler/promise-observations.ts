@@ -2,7 +2,11 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
 import { declarationOrigin, libraryName } from "./symbols.js";
-import { declaredContextualType, isTypeReference } from "./type-facts.js";
+import {
+    declaredContextualType,
+    isTypeReference,
+    callSignatures,
+} from "./type-facts.js";
 import {
     outermostWrapper,
     unwrapExpression,
@@ -101,7 +105,7 @@ export function requireObservedPromise(
         )
             return false;
         if (
-            source.getCallSignatures().length ||
+            callSignatures(context.checker, source, "exact").length ||
             source.getConstructSignatures().length
         )
             return false;

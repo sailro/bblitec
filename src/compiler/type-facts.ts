@@ -58,7 +58,7 @@ export function valueKindOf(member: ts.Type): ValueKind {
 /** The kinds of value a type's members hold; `never` holds none. */
 export function valueKinds(type: ts.Type): ReadonlySet<ValueKind> {
     if ((type.flags & ts.TypeFlags.Never) !== 0) return new Set();
-    return new Set((type.isUnion() ? type.types : [type]).map(valueKindOf));
+    return new Set(unionMembers(type).map(valueKindOf));
 }
 
 /** Whether every value of a type is of one of `kinds`. */
@@ -96,6 +96,11 @@ function absentFlags(member: ts.Type): number {
     );
 }
 
+/** A union's members, or the type itself. */
+function unionMembers(type: ts.Type): readonly ts.Type[] {
+    return type.isUnion() ? type.types : [type];
+}
+
 /**
  * The members of a type that stand for a present value: a union's members
  * less `null`, `undefined`, `void` and the intersections that distribute one
@@ -103,9 +108,28 @@ function absentFlags(member: ts.Type): number {
  * absent. The one statement of the nullable-union member rule.
  */
 export function presentMembers(type: ts.Type): readonly ts.Type[] {
-    return (type.isUnion() ? type.types : [type]).filter(
-        (member) => absentFlags(member) === 0,
-    );
+    return unionMembers(type).filter((member) => absentFlags(member) === 0);
+}
+
+/**
+ * The call signatures of a value of `type`. Its `null`, `undefined` and
+ * `void` members say nothing about calling it: `present` reads the value's
+ * signatures once present (an optional callback is callable after its
+ * test); `exact` gives a nullable type none, for a site that calls, binds
+ * or stores the value as it is. Several function members answer the
+ * checker's merged signature.
+ */
+export function callSignatures(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    absent: "present" | "exact",
+): readonly ts.Signature[] {
+    const members = presentMembers(type);
+    if (absent === "exact" && members.length !== unionMembers(type).length)
+        return [];
+    return members.length === 1
+        ? members[0]!.getCallSignatures()
+        : checker.getNonNullableType(type).getCallSignatures();
 }
 
 /**
@@ -275,7 +299,7 @@ export function holdsNoPayload(type: ts.Type): boolean {
  * `undefined`, and a call returning it completes without a value.
  */
 export function undefinedOnly(type: ts.Type): boolean {
-    return (type.isUnion() ? type.types : [type]).every((member) => {
+    return unionMembers(type).every((member) => {
         const flags = absentFlags(member);
         return (
             (flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 &&
@@ -286,7 +310,7 @@ export function undefinedOnly(type: ts.Type): boolean {
 
 /** See {@link Nullability}; members are those of {@link presentMembers}. */
 export function nullability(type: ts.Type): Nullability {
-    const flags = (type.isUnion() ? type.types : [type]).reduce(
+    const flags = unionMembers(type).reduce(
         (all, member) => all | absentFlags(member),
         0,
     );

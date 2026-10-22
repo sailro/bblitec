@@ -245,6 +245,7 @@ import {
     presentMembers,
     typeCanCarryReference,
     undefinedOnly,
+    callSignatures,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -9509,9 +9510,11 @@ class Compiler implements LoweringServices {
         imported: string,
         type: DataType<"function">,
     ): string {
-        const signature = this.checker
-            .getTypeAtLocation(expression)
-            .getCallSignatures()[0];
+        const signature = callSignatures(
+            this.checker,
+            this.checker.getTypeAtLocation(expression),
+            "exact",
+        )[0];
         const declaration = signature?.declaration;
         if (
             !signature ||

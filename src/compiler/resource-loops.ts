@@ -64,7 +64,7 @@ import {
 } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { isComposedAudioEnum } from "./audio-surface.js";
-import { holdsOnly } from "./type-facts.js";
+import { holdsOnly, callSignatures } from "./type-facts.js";
 
 interface ResourceLoopContext
     extends
@@ -428,9 +428,13 @@ export function walkReachedLoopNodes(
                                 if (
                                     !ts.isParameter(parameter) ||
                                     !ts.isIdentifier(parameter.name) ||
-                                    context.checker
-                                        .getTypeAtLocation(parameter)
-                                        .getCallSignatures().length === 0
+                                    callSignatures(
+                                        context.checker,
+                                        context.checker.getTypeAtLocation(
+                                            parameter,
+                                        ),
+                                        "exact",
+                                    ).length === 0
                                 )
                                     continue;
                                 const symbol = declaredSymbol(

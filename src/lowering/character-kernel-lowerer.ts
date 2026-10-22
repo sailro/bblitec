@@ -27,7 +27,11 @@ import {
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
 import { isSuspensionPoint, variableKind } from "../compiler/syntax.js";
-import { valueKindOf, holdsOnly } from "../compiler/type-facts.js";
+import {
+    valueKindOf,
+    holdsOnly,
+    callSignatures,
+} from "../compiler/type-facts.js";
 
 /** A pinned value with its represented storage and alias lifetime. */
 export interface KernelValue {
@@ -194,7 +198,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 ? { kind: "weakmap", value: value! }
                 : { kind: "map", key: key!, value: value! };
         }
-        const signatures = type.getCallSignatures();
+        const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length === 1 && signatures[0]!.parameters.length === 0)
             return {
                 kind: "function",

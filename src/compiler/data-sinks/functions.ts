@@ -2,7 +2,7 @@ import ts from "typescript";
 
 import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
 import { isTaggedStorageWidening } from "../data-types/operations.js";
-import { nullability } from "../type-facts.js";
+import { nullability, callSignatures } from "../type-facts.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
 import { hasFixedTupleRest } from "../user-functions.js";
@@ -246,9 +246,11 @@ function widenedTaggedResult(
         ? lowerer.context.unwrap(origin)
         : origin;
     const checker = lowerer.context.checker;
-    const signatures = checker
-        .getNonNullableType(checker.getTypeAtLocation(checkedNode))
-        .getCallSignatures();
+    const signatures = callSignatures(
+        checker,
+        checker.getTypeAtLocation(checkedNode),
+        "present",
+    );
     const mapped = lowerer.dataTypeAt(checkedNode);
     if (
         signatures.length !== 1 ||

@@ -58,7 +58,12 @@ import {
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
 import { nativeHostUiElements } from "../native-host-ui.js";
-import { isNullable, presentMembers, isVoid } from "./type-facts.js";
+import {
+    isNullable,
+    presentMembers,
+    isVoid,
+    callSignatures,
+} from "./type-facts.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -770,7 +775,11 @@ export class BrowserErasure {
                                 declaration,
                             );
                         return (
-                            propertyType.getCallSignatures().length === 0 &&
+                            callSignatures(
+                                this.context.checker,
+                                propertyType,
+                                "exact",
+                            ).length === 0 &&
                             this.context.dataTypes.fromTsType(
                                 propertyType,
                                 declaration,
@@ -795,9 +804,14 @@ export class BrowserErasure {
                             property.valueDeclaration ??
                             property.declarations?.[0];
                         if (!site) return false;
-                        const signatures = this.context.checker
-                            .getTypeOfSymbolAtLocation(property, site)
-                            .getCallSignatures();
+                        const signatures = callSignatures(
+                            this.context.checker,
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                site,
+                            ),
+                            "exact",
+                        );
                         return (
                             signatures.length > 0 &&
                             signatures.every((signature) =>

@@ -111,6 +111,7 @@ import {
     presentMembers,
     isNullable,
     valueKindOf,
+    callSignatures,
 } from "../compiler/type-facts.js";
 export type { RecordShape } from "./record-shapes.js";
 
@@ -636,7 +637,7 @@ export class PinnedRecordModel {
         if (
             (ts.isMethodSignature(declaration) ||
                 ts.isMethodDeclaration(declaration)) &&
-            type.getCallSignatures().length > 0
+            callSignatures(this.checker, type, "exact").length > 0
         )
             return this.functionShape(declaration);
         const annotation =
@@ -684,7 +685,7 @@ export class PinnedRecordModel {
         if (depth > 3) return false;
         if (type.isUnion())
             return type.types.some((member) => this.erased(member, depth + 1));
-        const signatures = type.getCallSignatures();
+        const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length === 1 && type.getProperties().length === 0) {
             const signature = signatures[0]!;
             return (
@@ -1050,7 +1051,7 @@ export class PinnedRecordModel {
                                 : record.spec.pinned[0]!,
                     };
             }
-            const signatures = type.getCallSignatures();
+            const signatures = callSignatures(this.checker, type, "exact");
             if (signatures.length === 1 && type.getProperties().length === 0) {
                 const signature = signatures[0]!;
                 return {
@@ -1160,7 +1161,7 @@ export class PinnedRecordModel {
         if (
             !anonymous ||
             properties.length === 0 ||
-            type.getCallSignatures().length > 0 ||
+            callSignatures(this.checker, type, "exact").length > 0 ||
             type.getConstructSignatures().length > 0
         )
             return undefined;
@@ -1268,7 +1269,10 @@ export class PinnedRecordModel {
         site: ts.Node,
     ): string | undefined {
         const properties = this.checker.getPropertiesOfType(type);
-        if (properties.length === 0 || type.getCallSignatures().length > 0)
+        if (
+            properties.length === 0 ||
+            callSignatures(this.checker, type, "exact").length > 0
+        )
             return undefined;
         const matches: string[] = [];
         for (const [anonymousType, name] of this.anonymous) {
@@ -3907,8 +3911,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 });
                 return;
             }
-            const [genericSignature] = generic.getCallSignatures();
-            const [actualSignature] = actual.getCallSignatures();
+            const [genericSignature] = callSignatures(
+                this.checker,
+                generic,
+                "exact",
+            );
+            const [actualSignature] = callSignatures(
+                this.checker,
+                actual,
+                "exact",
+            );
             if (genericSignature && actualSignature) {
                 genericSignature.getParameters().forEach((parameter, index) => {
                     const other = actualSignature.getParameters()[index];
@@ -8385,7 +8397,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     /** What a callback argument returns, as its checked signature says. */
     private callbackResult(argument: ts.Expression | undefined): RecordShape {
         if (!argument) return { kind: "void" };
-        const signature = this.typeAt(argument).getCallSignatures()[0];
+        const signature = callSignatures(
+            this.checker,
+            this.typeAt(argument),
+            "exact",
+        )[0];
         if (!signature)
             return this.refuse(argument, "Pinned callback is not a function.");
         return this.model.shapeOf(

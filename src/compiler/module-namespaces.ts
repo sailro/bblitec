@@ -22,6 +22,7 @@ import {
     planEntryModuleState,
     runtimeModuleDependencies,
 } from "./module-initializers.js";
+import { callSignatures } from "./type-facts.js";
 
 /** A reached lazy module needs its lexical homes before entry emission. */
 export class ModuleActivationRequired extends Error {
@@ -278,12 +279,13 @@ export class ModuleNamespaces {
             );
             if (constant) return constant;
             if (
-                !this.context.checker.getSignaturesOfType(
+                !callSignatures(
+                    this.context.checker,
                     this.context.checker.getTypeOfSymbolAtLocation(
                         target,
                         node,
                     ),
-                    ts.SignatureKind.Call,
+                    "exact",
                 ).length
             )
                 return this.context.fail(
@@ -377,9 +379,10 @@ export class ModuleNamespaces {
         const then = this.exports(type).get("then");
         if (
             then &&
-            this.context.checker.getSignaturesOfType(
+            callSignatures(
+                this.context.checker,
                 this.context.checker.getTypeOfSymbolAtLocation(then, call),
-                ts.SignatureKind.Call,
+                "exact",
             ).length
         )
             return this.context.fail(

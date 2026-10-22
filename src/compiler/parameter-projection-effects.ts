@@ -31,7 +31,11 @@ import {
     isSupportedFunction,
     isFunctionWithBody,
 } from "./syntax.js";
-import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    callSignatures,
+} from "./type-facts.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 
 type Path = readonly string[];
@@ -853,9 +857,11 @@ function parameterProjection(
                             (carries(node) && method !== "slice") ||
                             (node.arguments.some(
                                 (argument) =>
-                                    checker
-                                        .getTypeAtLocation(argument)
-                                        .getCallSignatures().length > 0,
+                                    callSignatures(
+                                        checker,
+                                        checker.getTypeAtLocation(argument),
+                                        "exact",
+                                    ).length > 0,
                             ) &&
                                 (!uses(owner) ||
                                     !element ||
