@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { declarationOwners, sourceFacts, sourcePaths } from "./source-facts.js";
@@ -960,4 +961,24 @@ test("what another owner keeps is read through kept-values.ts", () => {
             ["src/compiler/kept-values.ts"],
             name,
         );
+});
+
+test("a runtime index reads static storage through runtimeIndexedOwner", () => {
+    // Static tables, constant arrays and compile-time tuples materialize
+    // under a runtime index in one place, which the plain, guarded and
+    // materialized element reads share: a second chain is how `T[i] ?? d`
+    // lost its guard while `T[i]` read the table. The other two calls read
+    // a constant array whole (for-of, spread). Ratchet: never more.
+    const calls = sourcePaths.flatMap((path) =>
+        [
+            ...readFileSync(path, "utf8").matchAll(
+                /this[.]materializeConstantArray[(]/g,
+            ),
+        ].map(() => path),
+    );
+    assert.equal(calls.length, 3, calls.join());
+    assert.ok(
+        calls.every((path) => path === "src/compiler/data-lowering.ts"),
+        calls.join(),
+    );
 });

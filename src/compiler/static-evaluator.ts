@@ -316,6 +316,13 @@ export class StaticEvaluator {
         private readonly inlinedArgumentText: (
             identifier: ts.Identifier,
         ) => string | undefined,
+        /**
+         * `DataLowerer.compileGuardableElementAccess`: an element read whose
+         * absence the source tests, past the end a falsy value.
+         */
+        private readonly testedElement: (
+            access: ts.ElementAccessExpression,
+        ) => Value | undefined,
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -918,8 +925,16 @@ export class StaticEvaluator {
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
                 // Numeric `a || b`: JavaScript falls through on 0 and NaN,
-                // and evaluates the right operand only then.
-                const left = this.compileNumber(unwrapped.left, "double");
+                // and evaluates the right operand only then. An element
+                // past the end is undefined, so the left reads guarded.
+                const leftNode = this.unwrap(unwrapped.left);
+                const tested = ts.isElementAccessExpression(leftNode)
+                    ? this.testedElement(leftNode)
+                    : undefined;
+                const left =
+                    tested && isNumericValue(tested)
+                        ? this.castNumber(tested, "double")
+                        : this.compileNumber(unwrapped.left, "double");
                 const right = this.arms.compileArm(() =>
                     this.compileNumber(unwrapped.right, "double"),
                 );

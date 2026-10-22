@@ -3784,7 +3784,6 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return {begin, end};
 }
 
-
 /** ASCII lowercase of one byte; other bytes, UTF-8 included, are unchanged. */
 [[nodiscard]] constexpr char ascii_lower(char character) {
     return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
@@ -5318,6 +5317,13 @@ template <typename T, std::size_t Extent>
 [[nodiscard]] inline const T& array_at_or_default(std::span<T, Extent> values, double index) {
     return array_has_index(values, index) ? values[accepted_index(index)]
                                           : missing_array_value_readonly<std::remove_const_t<T>>();
+}
+
+/** A generated constant array or a table's rows. */
+template <typename T, std::size_t N>
+[[nodiscard]] inline const T& array_at_or_default(const std::array<T, N>& values, double index) {
+    return array_has_index(values, index) ? values[accepted_index(index)]
+                                          : missing_array_value_readonly<T>();
 }
 
 [[noreturn]] inline void throw_index_error(const char* site, const char* operation, double index,

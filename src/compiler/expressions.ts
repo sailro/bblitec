@@ -1680,7 +1680,13 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            const compiledOperand = this.context.compileValue(expression);
+            // typeof observes an element past the end as undefined.
+            const compiledOperand =
+                (ts.isElementAccessExpression(expression)
+                    ? this.context.dataLowerer.compileGuardableElementAccess(
+                          expression,
+                      )
+                    : undefined) ?? this.context.compileValue(expression);
             // An unchecked tuple lookup can be absent even when TypeScript's
             // flow type lists only its declared lanes. typeof observes the
             // stored value before narrowing it to one of those lanes.
@@ -5066,6 +5072,7 @@ export class ExpressionLowerer {
             const guardable =
                 this.context.dataLowerer.compileGuardableElementAccess(
                     unwrapped,
+                    false,
                 );
             if (guardable) return guardable;
         }

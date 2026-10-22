@@ -1149,6 +1149,7 @@ class Compiler implements LoweringServices {
             (expression) => this.generationText(expression),
             (object) => this.objectProperties(object),
             (identifier) => this.inlinedArgumentText(identifier),
+            (access) => this.dataLowerer.compileGuardableElementAccess(access),
         );
     }
 

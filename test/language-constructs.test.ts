@@ -15166,3 +15166,21 @@ check(
     if (M.get("a") !== 2 || M.get("b") !== 3) throw new Error("map aliases " + M.get("a") + " " + M.get("b"));
     `,
 );
+check(
+    "an element read the source tests for absence, on every owner kind",
+    `
+    function local(i: number): number { const L = [3, 0, 5]; return L[i] ?? 9; }
+    function truthy(i: number): number { const L = [3, 0, 5]; return L[i] || 7; }
+    function present(i: number): boolean { const L = [3, 4, 5]; return L[i] !== undefined; }
+    function kind(i: number): string { const L = [3, 4, 5]; return typeof L[i]; }
+    function table(i: number, j: number): number { const T = [[1, 2], [3, 4]]; return T[i]?.[j] ?? 9; }
+    const rows: number[][] = [];
+    rows.push([1, 2], [3, 4]);
+    function vectorRows(i: number, j: number): number { return rows[i]?.[j] ?? 9; }
+    let out = 1;
+    for (let k = 0; k < 2; k++) out += 2;
+    const results = [local(out), local(1), truthy(out), truthy(1), truthy(2), table(out, 0), table(1, 1), table(0, out), vectorRows(out, 0), vectorRows(1, 1)];
+    if (results.join() !== "9,0,7,7,5,9,4,9,9,4" || present(out) || !present(0) || kind(out) !== "undefined" || kind(0) !== "number")
+        throw new Error("absent elements " + results.join() + kind(out));
+    `,
+);

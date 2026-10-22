@@ -125,3 +125,28 @@ test("a module constant a rebound local only reads stays folded", (t) => {
     }
     runGeneratedProgram(tools, "module-rebound-reader", cpp, {});
 });
+
+test("an imported constant array read past its end yields the source's default", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/module-constant-default");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        resolve(directory, "hot.ts"),
+        "export enum B { A = 1, C = 2, D = 3 }\nexport const HOT: B[] = [B.A, B.C];",
+    );
+    const { cpp } = compileSource(
+        `import { B, HOT } from "./hot.js";
+        class Slots { slot = 0; pick(): B { return HOT[this.slot] ?? B.D; } }
+        const slots = new Slots();
+        slots.slot = 1;
+        const inRange = slots.pick();
+        slots.slot = 5;
+        if (slots.pick() !== B.D || inRange !== B.C) throw new Error("imported default " + slots.pick());`,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    runGeneratedProgram(tools, "module-constant-default", cpp, {});
+});

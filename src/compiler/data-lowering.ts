@@ -304,6 +304,26 @@ function namesStableOwner(owner: Value): boolean {
 }
 
 /**
+ * An owner whose element read can miss and say so (`array_has_index`): an
+ * Array, a span, a number index, a number tuple, a static table or a typed
+ * array.
+ */
+function guardableElementOwner(
+    type: DataType | undefined,
+): type is DataType<
+    "vector" | "span" | "numberindex" | "tuple" | "table" | TypedArrayKind
+> {
+    return (
+        type?.kind === "vector" ||
+        type?.kind === "span" ||
+        type?.kind === "numberindex" ||
+        type?.kind === "tuple" ||
+        type?.kind === "table" ||
+        isTypedArrayType(type)
+    );
+}
+
+/**
  * `left ?? null` (or `?? undefined`): absent, the result is the fallback,
  * so whether the left's slot existed no longer says which absent value it is.
  */
@@ -2405,17 +2425,10 @@ export class DataLowerer {
         if (ts.isPropertyAccessExpression(unwrapped)) {
             // Optional chaining is the one data path whose owner may be a
             // value-producing call (`map.get(key)?.field`) rather than a
-            // path itself. An unchecked object-array element also carries a
-            // separate existence predicate, so ask for its guarded form
-            // before the ordinary direct-index path loses that information.
+            // path itself.
             const receiver = this.context.unwrap(unwrapped.expression);
-            const guardedOwner =
-                unwrapped.questionDotToken &&
-                ts.isElementAccessExpression(receiver)
-                    ? this.compileGuardableElementAccess(receiver)
-                    : undefined;
             let owner =
-                guardedOwner ??
+                this.guardedChainReceiver(unwrapped) ??
                 this.compileDataPath(unwrapped.expression, mode, true) ??
                 (ts.isCallExpression(receiver) ||
                 ts.isElementAccessExpression(receiver) ||
@@ -2559,13 +2572,7 @@ export class DataLowerer {
             );
         }
         if (ts.isElementAccessExpression(unwrapped)) {
-            // Static tables materialize only under runtime indices; static
-            // indices keep the legacy compile-time tuple folding so existing
-            // generated scenes stay byte-identical.
             const receiver = this.context.unwrap(unwrapped.expression);
-            const bound = ts.isIdentifier(receiver)
-                ? this.context.bindings.lookupOptional(receiver)
-                : undefined;
             // A chain that stopped at generation is undefined.
             const stopped =
                 mode === "read" && ts.isOptionalChain(unwrapped)
@@ -2580,6 +2587,7 @@ export class DataLowerer {
                     ts.isOptionalChain(unwrapped) &&
                     ts.isCallExpression(receiver));
             const owner =
+                this.guardedChainReceiver(unwrapped) ??
                 this.compileDataPath(unwrapped.expression, mode, true) ??
                 (chainOwner && !this.namesHandleCollection(unwrapped.expression)
                     ? this.context.probeEmission(() => {
@@ -2591,13 +2599,10 @@ export class DataLowerer {
                           return value.kind === "json-null" ? undefined : value;
                       })
                     : undefined) ??
-                (this.isStaticIndex(unwrapped.argumentExpression)
-                    ? undefined
-                    : (this.materializeStaticTable(unwrapped.expression) ??
-                      this.materializeConstantArray(unwrapped.expression) ??
-                      (bound?.kind === "tuple"
-                          ? this.materializeKnownTuple(receiver, bound)
-                          : undefined)));
+                this.runtimeIndexedOwner(
+                    unwrapped.expression,
+                    unwrapped.argumentExpression,
+                );
             if (!owner) {
                 return undefined;
             }
@@ -3276,9 +3281,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (this.isStaticIndex(indexExpression)) {
             return undefined;
         }
+        // A selected arm need not be a name: any compile-time tuple indexes.
         const owner =
-            this.materializeStaticTable(ownerExpression) ??
-            this.materializeConstantArray(ownerExpression) ??
+            this.runtimeIndexedOwner(ownerExpression, indexExpression) ??
             this.materializeKnownTuple(ownerExpression);
         if (!owner) {
             return undefined;
@@ -7107,32 +7112,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * `observesAbsence`: the source tests the read (`??`, `?.`, truthiness,
+     * a comparison with undefined) rather than only using its value.
+     */
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
+        observesAbsence = true,
     ): Value | undefined {
         if (ts.isOptionalChain(access)) return undefined;
         // Resolving a computed owner can emit code. A declined guard must
         // discard that work before the ordinary element reader evaluates it.
         return this.context.probeEmission(() => {
-            let owner = this.compileDataPath(access.expression, "read");
+            let owner =
+                this.compileDataPath(access.expression, "read") ??
+                (observesAbsence
+                    ? this.runtimeIndexedOwner(
+                          access.expression,
+                          access.argumentExpression,
+                      )
+                    : undefined);
             if (!owner) {
                 if (this.namesHandleCollection(access.expression))
                     return undefined;
                 const declared = this.dataTypeAt(access.expression);
                 const type =
                     declared?.kind === "optional" ? declared.inner : declared;
-                if (
-                    type?.kind !== "vector" &&
-                    type?.kind !== "span" &&
-                    type?.kind !== "numberindex" &&
-                    !isTypedArrayType(type)
-                )
-                    return undefined;
+                if (!guardableElementOwner(type)) return undefined;
                 owner = this.context.compileValue(access.expression);
             }
             return this.guardableElementRead(
                 this.narrowOptional(owner, access.expression),
                 access,
+                observesAbsence,
             );
         });
     }
@@ -7201,21 +7213,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private guardableElementRead(
         owner: Value,
         access: ts.ElementAccessExpression,
+        observesAbsence = true,
     ): Value | undefined {
-        if (
-            owner?.kind !== "data" ||
-            (owner.dataType?.kind !== "vector" &&
-                owner.dataType?.kind !== "span" &&
-                owner.dataType?.kind !== "numberindex" &&
-                !isTypedArrayType(owner.dataType))
-        ) {
+        if (owner?.kind !== "data" || !guardableElementOwner(owner.dataType))
             return undefined;
-        }
         const ownerType = owner.dataType;
+        // Fixed storage keeps the checked read when it is read only for its
+        // value or at an index it always holds.
+        if (
+            (ownerType.kind === "tuple" || ownerType.kind === "table") &&
+            (!observesAbsence ||
+                this.indexProvenInBounds(owner, access, ownerType))
+        )
+            return undefined;
+        // A row of a table with more than one dimension is a table.
         const element: DataType =
             ownerType.kind === "vector" || ownerType.kind === "span"
                 ? ownerType.element
-                : { kind: "number" };
+                : ownerType.kind === "table" && ownerType.dimensions.length > 1
+                  ? { kind: "table", dimensions: ownerType.dimensions.slice(1) }
+                  : { kind: "number" };
         if (
             element.kind !== "optional" &&
             ![
@@ -7227,6 +7244,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "storage",
                 "vector",
                 "tuple",
+                "table",
                 "product",
                 "map",
                 "set",
@@ -7326,7 +7344,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
         this.context.reachJsData();
         const indexed =
-            ownerType.kind === "numberindex" || isTypedArrayType(ownerType)
+            ownerType.kind === "numberindex" ||
+            ownerType.kind === "tuple" ||
+            (ownerType.kind === "table" && element.kind === "number") ||
+            isTypedArrayType(ownerType)
                 ? `bbl::js::number_at(${owner.cpp}, ${indexTemporary})`
                 : `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
         const found = `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
@@ -7865,6 +7886,43 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             cpp: reference,
             dataType: { kind: "span", element },
         };
+    }
+
+    /**
+     * The receiver of `receiver[i]?.member` or `receiver[i]?.[k]`: the chain
+     * tests it, so it is read in its guarded form, whose existence predicate
+     * the ordinary direct-index path would lose.
+     */
+    private guardedChainReceiver(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): Value | undefined {
+        const receiver = this.context.unwrap(access.expression);
+        return access.questionDotToken && ts.isElementAccessExpression(receiver)
+            ? this.compileGuardableElementAccess(receiver)
+            : undefined;
+    }
+
+    /**
+     * The native storage an element access under a runtime index reads
+     * from a static table, a constant array or a compile-time tuple. A
+     * static index keeps the compile-time fold.
+     */
+    private runtimeIndexedOwner(
+        ownerExpression: ts.Expression,
+        indexExpression: ts.Expression,
+    ): Value | undefined {
+        if (this.isStaticIndex(indexExpression)) return undefined;
+        const receiver = this.context.unwrap(ownerExpression);
+        const bound = ts.isIdentifier(receiver)
+            ? this.context.bindings.lookupOptional(receiver)
+            : undefined;
+        return (
+            this.materializeStaticTable(ownerExpression) ??
+            this.materializeConstantArray(ownerExpression) ??
+            (bound?.kind === "tuple"
+                ? this.materializeKnownTuple(receiver, bound)
+                : undefined)
+        );
     }
 
     public materializeStaticTable(

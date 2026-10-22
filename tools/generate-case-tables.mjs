@@ -25,7 +25,8 @@ function mappings(map) {
         const mapped = map(text);
         if (mapped === text) continue;
         const points = [...mapped];
-        if (points.length === 1) singles.push([point, points[0].codePointAt(0)]);
+        if (points.length === 1)
+            singles.push([point, points[0].codePointAt(0)]);
         else specials.push([point, mapped]);
     }
     /** @type {Array<{first: number, last: number, delta: number, stride: number}>} */
@@ -119,6 +120,8 @@ struct CaseSpecial {
     const char* text;
 };
 
+// One entry per line keeps a Unicode upgrade's diff readable.
+// clang-format off
 ${runTable("upper_runs", upper.runs)}
 
 ${specialTable("upper_specials", upper.specials)}
@@ -130,22 +133,23 @@ ${specialTable("lower_specials", lower.specials)}
 ${rangeTable("cased_ranges", cased)}
 
 ${rangeTable("case_ignorable_ranges", ignorable)}
+// clang-format on
 
 template <std::size_t Count>
 [[nodiscard]] inline bool in_ranges(const std::array<std::pair<char32_t, char32_t>, Count>& table,
                                     char32_t point) {
-    const auto range = std::lower_bound(
-        table.begin(), table.end(), point,
-        [](const auto& entry, char32_t value) { return entry.second < value; });
+    const auto range =
+        std::lower_bound(table.begin(), table.end(), point,
+                         [](const auto& entry, char32_t value) { return entry.second < value; });
     return range != table.end() && range->first <= point;
 }
 
 /** The point's single-point mapping, or the point itself. */
 template <std::size_t Count>
 [[nodiscard]] inline char32_t mapped_point(const std::array<CaseRun, Count>& runs, char32_t point) {
-    const auto run = std::lower_bound(
-        runs.begin(), runs.end(), point,
-        [](const CaseRun& entry, char32_t value) { return entry.last < value; });
+    const auto run =
+        std::lower_bound(runs.begin(), runs.end(), point,
+                         [](const CaseRun& entry, char32_t value) { return entry.last < value; });
     if (run == runs.end() || run->first > point || (point - run->first) % run->stride != 0)
         return point;
     return static_cast<char32_t>(static_cast<std::int32_t>(point) + run->delta);
