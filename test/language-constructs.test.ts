@@ -15075,3 +15075,14 @@ check(
     if (first !== "b:12" || second !== "ab:1" || third !== "dc:123") throw new Error("case order " + first + " " + second + " " + third);
     `,
 );
+checkInRealm(
+    "Promise.all settles to a new array",
+    `
+    const arr = [1, 2];
+    void Promise.all(arr).then((out) => {
+        out.push(3);
+        if (arr.length !== 2 || out.length !== 3) throw new Error("all identity " + arr.length);
+        globalThis.close();
+    });
+    `,
+);

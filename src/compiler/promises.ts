@@ -4,6 +4,7 @@ import { caughtErrorValue } from "./error-values.js";
 import { argumentAt, outermostWrapper } from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import { yieldsNewArray } from "./fresh-records.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
@@ -24,6 +25,9 @@ export interface PromiseLoweringContext extends Pick<
     | "reachJson"
     | "thrownValueKinds"
     | "options"
+    | "dataValue"
+    | "dataTypes"
+    | "checker"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -115,9 +119,22 @@ export function compileImmediatePromise(
                 // Native array callbacks execute eagerly. By the time the
                 // vector reaches Promise.all every immediate promise in it
                 // has settled and all callback side effects have run.
-                return isPromiseResultUsed(call)
-                    ? iterable
-                    : { kind: "void", cpp: "" };
+                if (!isPromiseResultUsed(call))
+                    return { kind: "void", cpp: "" };
+                // The settled values arrive in a new array, never the input:
+                // an argument no other reference holds is that array already.
+                if (yieldsNewArray(context.checker, argument)) return iterable;
+                const source = context.allocateTemporaryCppName("all_values");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: source,
+                    initializer: iterable.cpp,
+                });
+                return context.dataValue(
+                    `${context.dataTypes.cppType(iterable.dataType)}(${source}.begin(), ${source}.end())`,
+                    iterable.dataType,
+                );
             }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
                 if (
