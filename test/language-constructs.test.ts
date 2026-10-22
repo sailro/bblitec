@@ -15117,3 +15117,12 @@ check(
     if (n !== 11) throw new Error("kept callback " + n);
     `,
 );
+check(
+    "a parsed string iterates its code points",
+    `
+    const s = JSON.parse('"a😀b"') as string;
+    let count = 0;
+    for (const c of s) count += c.length > 0 ? 1 : 0;
+    if ([...s].length !== 3 || count !== 3) throw new Error("parsed string " + count);
+    `,
+);

@@ -19156,6 +19156,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** A string's code points, each a string, as iteration yields them. */
+    /**
+     * A parsed document the program reads as a string (`JSON.parse(text)
+     * as string`) is that string: iterated, it yields its code points.
+     */
+    private documentAsDeclaredString(
+        value: Value,
+        expression: ts.Expression,
+    ): Value {
+        return isJsonValue(value) &&
+            this.dataTypeAt(expression)?.kind === "string"
+            ? this.leafValue(
+                  this.compileKnownValueForSink(
+                      value,
+                      { kind: "string" },
+                      expression,
+                  ),
+                  { kind: "string" },
+              )
+            : value;
+    }
+
     private stringCharacters(value: Value): Value {
         this.context.reachJsData();
         return {
@@ -19214,8 +19235,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       : undefined));
         const value =
             rawValue?.kind === "data"
-                ? this.presentForAccess(
-                      this.narrowOptional(rawValue, expression),
+                ? this.documentAsDeclaredString(
+                      this.presentForAccess(
+                          this.narrowOptional(rawValue, expression),
+                      ),
+                      expression,
                   )
                 : rawValue;
         if (value && isStringValue(value))
@@ -20263,10 +20287,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : undefined) ??
             this.compileDataPath(spread.expression, "read") ??
             this.context.compileValue(spread.expression);
-        const iterable = this.narrowOptional(
-            rawIterable,
+        const iterable = this.documentAsDeclaredString(
+            this.narrowOptional(rawIterable, spread.expression, true),
             spread.expression,
-            true,
         );
         // A copied array can keep linked record identities when its caller
         // retains every element. Otherwise the new alias escapes tracking.
