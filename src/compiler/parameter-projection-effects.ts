@@ -9,6 +9,7 @@ import {
     accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredSymbol,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -27,9 +28,10 @@ import {
     plainDataMembers,
     parameterForArgument,
     isSuspensionPoint,
+    isSupportedFunction,
+    isFunctionWithBody,
 } from "./syntax.js";
 import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
-import { isSupportedFunction } from "./user-functions.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 
 type Path = readonly string[];
@@ -281,7 +283,7 @@ function callProjection(
     active: Set<ts.FunctionLikeDeclaration>,
     identityPaths?: readonly Path[],
 ): boolean {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (!declaration) return false;
     const engine = isEngineDeclaration(declaration)
         ? engineBodies()
@@ -324,7 +326,7 @@ function parameterProjection(
     ownKeys?: readonly string[],
     freshScalarCapture = false,
 ): boolean {
-    if (!isSupportedFunction(declaration) || !declaration.body) return false;
+    if (!isFunctionWithBody(declaration)) return false;
     const parameter = declaration.parameters[index];
     if (
         !parameter ||
@@ -456,7 +458,7 @@ function parameterProjection(
             : undefined;
     };
     const arrayMethod = (node: ts.CallExpression): string | undefined => {
-        const called = checker.getResolvedSignature(node)?.declaration;
+        const called = calledDeclaration(checker, node);
         const owner = called?.parent;
         return called &&
             declarationInDefaultLibrary(called) &&

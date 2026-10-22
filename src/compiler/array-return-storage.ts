@@ -1,8 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
-import type { SupportedFunction } from "./user-functions.js";
+import { type SupportedFunction, unwrapExpression } from "./syntax.js";
 
 /** Prove storage provenance without inferring aliasing from a readonly type. */
 export function arrayReturnStorage(

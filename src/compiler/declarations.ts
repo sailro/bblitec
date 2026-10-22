@@ -74,6 +74,8 @@ import {
     declaredSymbol,
     libraryGlobal,
     resolvedSymbol,
+    calledDeclaration,
+    calledFunction,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -87,6 +89,9 @@ import {
     parameterForArgument,
     isAsyncFunction,
     expressionHasEffects,
+    isSupportedFunction,
+    type SupportedFunction,
+    isFunctionWithBody,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -113,12 +118,10 @@ import {
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
-    isSupportedFunction,
     recursiveStorageEscapes,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
     type AliasedMutationScan,
-    type SupportedFunction,
 } from "./user-functions.js";
 import {
     engineCallMutatesArgument,
@@ -238,13 +241,8 @@ export function initializerNamesBinding(
                 return "skip";
             }
             if (ts.isCallExpression(node)) {
-                const called = checker.getResolvedSignature(node)?.declaration;
-                if (
-                    called &&
-                    isSupportedFunction(called) &&
-                    called.body &&
-                    !scanned.has(called)
-                ) {
+                const called = calledFunction(checker, node);
+                if (called && !scanned.has(called)) {
                     scanned.add(called);
                     visit(called.body);
                     if (found) return "skip";
@@ -1866,12 +1864,8 @@ export class DeclarationLowerer {
             const unwrapped = this.context.unwrap(expression);
             if (ts.isObjectLiteralExpression(unwrapped)) return unwrapped;
             if (!ts.isCallExpression(unwrapped)) return undefined;
-            const callee =
-                this.context.checker.getResolvedSignature(
-                    unwrapped,
-                )?.declaration;
-            if (!callee || !("body" in callee) || !callee.body)
-                return undefined;
+            const callee = calledFunction(this.context.checker, unwrapped);
+            if (!callee) return undefined;
             if (!ts.isBlock(callee.body)) {
                 const bodyExpr = this.context.unwrap(callee.body);
                 return ts.isObjectLiteralExpression(bodyExpr)
@@ -1922,7 +1916,7 @@ export class DeclarationLowerer {
     ): boolean {
         if (!ts.isIdentifier(declaration.name)) return false;
         const owner = ts.findAncestor(declaration, ts.isFunctionLike);
-        if (!isSupportedFunction(owner) || !owner.body) return false;
+        if (!isFunctionWithBody(owner)) return false;
         const symbol = this.context.symbols.valueSymbol(declaration.name);
         const names = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
@@ -1979,7 +1973,7 @@ export class DeclarationLowerer {
             return true;
         if (!ts.isIdentifier(declaration.name)) return false;
         const owner = ts.findAncestor(declaration, ts.isFunctionLike);
-        if (!isSupportedFunction(owner) || !owner.body) return false;
+        if (!isFunctionWithBody(owner)) return false;
         const symbol = this.context.symbols.valueSymbol(declaration.name);
         const names = (expression: ts.Expression): boolean => {
             const target = this.context.unwrap(expression);
@@ -2116,11 +2110,11 @@ export class DeclarationLowerer {
                             )
                                 assigned.add(target.name.text);
                         if (ts.isCallExpression(node)) {
-                            const called =
-                                this.context.checker.getResolvedSignature(
-                                    node,
-                                )?.declaration;
-                            if (isSupportedFunction(called) && called.body) {
+                            const called = calledFunction(
+                                this.context.checker,
+                                node,
+                            );
+                            if (called) {
                                 node.arguments.forEach((argument, index) => {
                                     const bound = parameterForArgument(
                                         node,
@@ -2811,17 +2805,8 @@ export class DeclarationLowerer {
             );
         }
         if (ts.isCallExpression(unwrapped)) {
-            const declaration =
-                this.context.checker.getResolvedSignature(
-                    unwrapped,
-                )?.declaration;
-            if (
-                !declaration ||
-                !isSupportedFunction(declaration) ||
-                !declaration.body
-            ) {
-                return false;
-            }
+            const declaration = calledFunction(this.context.checker, unwrapped);
+            if (!declaration) return false;
             if (!ts.isBlock(declaration.body)) {
                 return this.initializerProducesAccessorRecord(
                     declaration.body,
@@ -4271,8 +4256,7 @@ export class DeclarationLowerer {
                                   this.context.checker,
                                   callee,
                               )
-                            : this.context.checker.getResolvedSignature(value)
-                                  ?.declaration
+                            : calledDeclaration(this.context.checker, value)
                         : ts.isPropertyAccessExpression(value)
                           ? resolvedSymbol(
                                 this.context.checker,
@@ -4554,14 +4538,8 @@ export class DeclarationLowerer {
             )
                 return isAlias(scan, node.expression, active, unwrap);
             if (!ts.isCallExpression(node)) return false;
-            const called =
-                this.context.checker.getResolvedSignature(node)?.declaration;
-            if (
-                !isSupportedFunction(called) ||
-                !called.body ||
-                active.has(called)
-            )
-                return false;
+            const called = calledFunction(this.context.checker, node);
+            if (!called || active.has(called)) return false;
             active.add(called);
             try {
                 return ts.isBlock(called.body)
@@ -4659,11 +4637,11 @@ export class DeclarationLowerer {
                             // otherwise snapshot the compile-time record.
                             return true;
                         }
-                        const called =
-                            this.context.checker.getResolvedSignature(
-                                node,
-                            )?.declaration;
-                        if (!isSupportedFunction(called) || !called.body)
+                        const called = calledFunction(
+                            this.context.checker,
+                            node,
+                        );
+                        if (!called)
                             return node.arguments.some(
                                 (argument, index) =>
                                     scan.containsAlias(argument) &&

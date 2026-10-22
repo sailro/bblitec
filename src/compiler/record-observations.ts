@@ -15,6 +15,7 @@ import {
     declaredSymbol,
     resolvedSymbol,
     nullishLiteral,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     expressionMayRunCode,
@@ -506,8 +507,7 @@ function identityUses(
                 parent.expression !== use
             ) {
                 const position = parent.arguments?.indexOf(use) ?? -1;
-                const callee =
-                    checker.getResolvedSignature(parent)?.declaration;
+                const callee = calledDeclaration(checker, parent);
                 // The engine takes what it is handed in its own storage:
                 // a record or array converts at the call.
                 if (
@@ -552,7 +552,7 @@ function storedIdentity(
     const callee =
         (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
         call.expression !== holder
-            ? checker.getResolvedSignature(call)?.declaration
+            ? calledDeclaration(checker, call)
             : undefined;
     if (callee && declarationOrigin(callee) === "babylon") return undefined;
     const slot = checker.getNonNullableType(

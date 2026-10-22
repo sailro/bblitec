@@ -9,6 +9,7 @@ import {
     declarationApi,
     declarationOrigin,
     resolvedSymbol,
+    calledDeclaration,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -72,8 +73,8 @@ export function deferredCapabilityDescriptor(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): Descriptor | undefined {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
+    const declaration = calledDeclaration(checker, call);
+    if (!declaration) return undefined;
     const origin = declarationOrigin(declaration);
     return descriptors.get(`${origin}:${declarationApi(declaration)}`);
 }
@@ -299,7 +300,9 @@ export class DeferredCapabilities {
                 throw new ApplicationRealmRequired();
             const signature = context.checker.getResolvedSignature(call)!;
             const required = requiredParameterCount(
-                signature.declaration!.parameters.filter(ts.isParameter),
+                calledDeclaration(context.checker, call)!.parameters.filter(
+                    ts.isParameter,
+                ),
             );
             if (call.arguments.length < required)
                 return context.fail(

@@ -15,6 +15,7 @@ import {
     declaredSymbol,
     resolvedSymbol,
     staticPropertyKey,
+    calledDeclaration,
 } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -2967,10 +2968,7 @@ export class ClassLowerer {
                     );
                     return called !== undefined && reaches(called);
                 }
-                const called =
-                    this.context.checker.getResolvedSignature(
-                        node,
-                    )?.declaration;
+                const called = calledDeclaration(this.context.checker, node);
                 if (
                     node.expression.expression.kind ===
                     ts.SyntaxKind.SuperKeyword

@@ -4,6 +4,7 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
     resolvedSymbol,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -15,9 +16,9 @@ import {
     ANY_KEY,
     plainDataMembers,
     functionKind,
+    isFunctionWithBody,
 } from "./syntax.js";
 import { typeCanCarryReference, arrayElementType } from "./type-facts.js";
-import { isSupportedFunction } from "./user-functions.js";
 
 type Path = readonly string[];
 interface SourceValue {
@@ -246,7 +247,7 @@ export function concreteArgumentIdentityPaths(
             return paths;
         }
         if (ts.isNewExpression(node)) {
-            const declaration = checker.getResolvedSignature(node)?.declaration;
+            const declaration = calledDeclaration(checker, node);
             return declaration &&
                 declarationInDefaultLibrary(declaration) &&
                 ts.isInterfaceDeclaration(declaration.parent) &&
@@ -263,7 +264,7 @@ export function concreteArgumentIdentityPaths(
             excludesSelected(checker.getTypeAtLocation(node))
         )
             return [];
-        const declaration = checker.getResolvedSignature(node)?.declaration;
+        const declaration = calledDeclaration(checker, node);
         // Default-library scalar arrays cannot carry the selected record.
         // Resolve the declaration so an authored method with the same name
         // cannot acquire this rule.
@@ -280,8 +281,7 @@ export function concreteArgumentIdentityPaths(
             return receiver?.length === 0 ? [] : undefined;
         }
         if (
-            !isSupportedFunction(declaration) ||
-            !declaration.body ||
+            !isFunctionWithBody(declaration) ||
             functionKind(declaration) !== "plain" ||
             active.has(declaration) ||
             node.arguments.some(ts.isSpreadElement) ||

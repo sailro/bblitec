@@ -7,6 +7,7 @@ import {
     libraryGlobal,
     resolvedSymbol,
     staticAccessKey,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     outermostWrapper,
@@ -59,7 +60,7 @@ function builtinCall(checker: ts.TypeChecker, node: ts.Node): boolean {
         (target.name.text !== "test" && target.name.text !== "exec")
     )
         return false;
-    const declaration = checker.getResolvedSignature(node)?.declaration;
+    const declaration = calledDeclaration(checker, node);
     if (
         !declaration ||
         !declarationInDefaultLibrary(declaration) ||
@@ -214,8 +215,7 @@ function onlyObserved(
             ) {
                 // The prototype only supplies the builtin method. The call's
                 // receiver is its first argument, and the result is boolean.
-                const declaration =
-                    checker.getResolvedSignature(call)?.declaration;
+                const declaration = calledDeclaration(checker, call);
                 if (declaration && declarationInDefaultLibrary(declaration))
                     return true;
             }

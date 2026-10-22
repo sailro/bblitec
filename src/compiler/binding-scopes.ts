@@ -17,6 +17,8 @@ import {
     literalMember,
     unwrapExpression,
     isExpressionWrapper,
+    functionOfDeclaration,
+    isSupportedFunction,
 } from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -63,10 +65,6 @@ import {
     type VariableBinding,
 } from "./types.js";
 import {
-    functionOfDeclaration,
-    isSupportedFunction,
-} from "./user-functions.js";
-import {
     parameterIsMutated,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
@@ -75,6 +73,7 @@ import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
+import { calledFunction } from "./symbols.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -627,12 +626,11 @@ export class BindingScopes {
             code,
             (node) => {
                 if (ts.isCallExpression(node)) {
-                    const declaration =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
-                    if (isSupportedFunction(declaration) && declaration.body)
-                        calls.add(declaration);
+                    const declaration = calledFunction(
+                        this.context.checker,
+                        node,
+                    );
+                    if (declaration) calls.add(declaration);
                     return;
                 }
                 if (!ts.isIdentifier(node)) return;

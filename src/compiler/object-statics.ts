@@ -1,7 +1,7 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyKey } from "./syntax.js";
+import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -18,7 +18,6 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";

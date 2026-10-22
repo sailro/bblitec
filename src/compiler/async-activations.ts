@@ -4,14 +4,12 @@ import { framePollExecutor } from "./frame-poll.js";
 import { PendingActivations } from "./pending-activations.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { DataType } from "./data-types.js";
-import {
-    tryResolveFunctionDeclaration,
-    type SupportedFunction,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     unwrapExpression,
     outermostWrapper,
     isAsyncFunction,
+    type SupportedFunction,
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type {

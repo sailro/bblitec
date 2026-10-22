@@ -808,3 +808,54 @@ test("write sites are read through syntax.ts", () => {
         pending,
     );
 });
+
+test("a call's target is read through symbols.ts", () => {
+    // calledDeclaration names the declaration a call resolves to and
+    // calledFunction the authored body it runs (a `const` callee's literal
+    // whatever annotates it); syntax.ts owns the function shapes.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) => sourceFacts(path).resolvedDeclarationReads > 0,
+        ),
+        ["src/compiler/symbols.ts"],
+    );
+    for (const name of ["calledDeclaration", "calledFunction"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/symbols.ts"],
+            name,
+        );
+    for (const name of [
+        "SupportedFunction",
+        "isSupportedFunction",
+        "isFunctionWithBody",
+        "functionOfDeclaration",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    // The rest read a resolved signature's parameters, return type or type
+    // arguments; no other file may start.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("getResolvedSignature"),
+            )
+            .sort(),
+        [
+            "src/api-usage.ts",
+            "src/compiler.ts",
+            "src/compiler/data-lowering.ts",
+            "src/compiler/deferred-capabilities.ts",
+            "src/compiler/intrinsics/physics.ts",
+            "src/compiler/intrinsics/splat-stream.ts",
+            "src/compiler/symbols.ts",
+            "src/compiler/type-arguments.ts",
+            "src/compiler/undefined-values.ts",
+            "src/compiler/user-functions.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+        ],
+    );
+});

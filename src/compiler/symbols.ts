@@ -11,6 +11,10 @@ import {
     equalityOperator,
     argumentForParameter,
     type ParameterInput,
+    functionOfDeclaration,
+    isConstVariable,
+    isFunctionWithBody,
+    type FunctionWithBody,
 } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
@@ -407,6 +411,45 @@ export function resolvedSymbol(
         ts.isPropertyAccessExpression(node) ? node.name : node,
     );
     return symbol && aliasTarget(checker, symbol);
+}
+
+/**
+ * The declaration a call, construction or tag resolves to: a function,
+ * method, constructor or signature; a JSDoc signature declares none.
+ */
+export function calledDeclaration(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): ts.SignatureDeclaration | undefined {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration && !ts.isJSDocSignature(declaration)
+        ? declaration
+        : undefined;
+}
+
+/**
+ * The authored function a call runs: the declaration it resolves to when
+ * that has a body, else the function literal its `const` callee was
+ * initialized with, whatever type annotates the binding.
+ */
+export function calledFunction(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): FunctionWithBody | undefined {
+    const declaration = calledDeclaration(checker, call);
+    if (isFunctionWithBody(declaration)) return declaration;
+    const callee = ts.isCallExpression(call)
+        ? unwrapExpression(call.expression)
+        : undefined;
+    const binding =
+        callee && ts.isIdentifier(callee)
+            ? resolvedSymbol(checker, callee)?.valueDeclaration
+            : undefined;
+    return binding &&
+        ts.isVariableDeclaration(binding) &&
+        isConstVariable(binding)
+        ? functionOfDeclaration(binding)
+        : undefined;
 }
 
 /** The member a dotted access or a literal-typed computed key names. */

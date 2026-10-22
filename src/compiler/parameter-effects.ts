@@ -13,6 +13,7 @@ import {
     declaredSymbol,
     libraryGlobal,
     nullishComparison,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -507,8 +508,7 @@ class EffectWalker {
         )
             return undefined;
         const callee = unwrapExpression(call.expression);
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         return declaration !== undefined &&
             declarationInDefaultLibrary(declaration) &&
             ts.isPropertyAccessExpression(callee) &&
@@ -1173,7 +1173,7 @@ function callTarget(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): CallTarget {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (!declaration) return { kind: "unknown" };
     if (isEngineDeclaration(declaration)) {
         const engine = engineBodies();
@@ -1486,7 +1486,7 @@ function argumentVisiblyWritten(
     use: Extract<ParameterUse, { kind: "argument" }>,
 ): boolean {
     if (isStoringDataCall(use.call, checker)) return true;
-    const declaration = checker.getResolvedSignature(use.call)?.declaration;
+    const declaration = calledDeclaration(checker, use.call);
     if (
         declaration &&
         isEngineDeclaration(declaration) &&

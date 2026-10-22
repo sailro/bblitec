@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { declaredSymbol, libraryName } from "./symbols.js";
+import { declaredSymbol, libraryName, calledDeclaration } from "./symbols.js";
 import {
     unwrapExpression,
     wrappedParent,
@@ -418,7 +418,7 @@ export function declaredContextualType(
         parent.arguments?.some(
             (argument) => unwrapExpression(argument) === expression,
         )
-            ? checker.getResolvedSignature(parent)?.getDeclaration()
+            ? calledDeclaration(checker, parent)
             : undefined;
     // A constructor's signature carries its class's type parameters.
     return callee &&

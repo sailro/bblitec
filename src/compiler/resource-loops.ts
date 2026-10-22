@@ -24,13 +24,12 @@ import {
     type CompilerSymbols,
     parameterInput,
     libraryName,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     aliasedMutationScan,
-    isSupportedFunction,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
-    type SupportedFunction,
 } from "./user-functions.js";
 import {
     callArgumentIsReadOnly,
@@ -47,6 +46,9 @@ import {
     propertyKey,
     plainDataMembers,
     isSuspensionPoint,
+    isSupportedFunction,
+    type SupportedFunction,
+    isFunctionWithBody,
 } from "./syntax.js";
 import {
     nativeDataIterationIntrinsics,
@@ -117,7 +119,7 @@ function resolvedLoopCallee(
 ): ts.Signature["declaration"] {
     return (
         resolvedLoopFunction(context, unwrapExpression(call.expression)) ??
-        context.checker.getResolvedSignature(call)?.declaration
+        calledDeclaration(context.checker, call)
     );
 }
 
@@ -383,7 +385,7 @@ export function walkReachedLoopNodes(
             const called = invocation
                 ? symbol && callbacks.has(symbol)
                     ? (callbacks.get(symbol) ??
-                      context.checker.getResolvedSignature(node)?.declaration)
+                      calledDeclaration(context.checker, node))
                     : resolvedLoopCallee(context, node)
                 : undefined;
             if (visit(node, called) === false) {
@@ -516,7 +518,7 @@ export function walkReachedLoopNodes(
         ? resolvedLoopFunction(context, root)
         : undefined;
     walk(
-        callbackRoot && isSupportedFunction(callbackRoot) && callbackRoot.body
+        callbackRoot && isFunctionWithBody(callbackRoot)
             ? callbackRoot.body
             : root,
         new Map(),
@@ -836,7 +838,7 @@ export function reachesOpaqueCallee(
         if (
             resolved &&
             !resolved.getSourceFile().isDeclarationFile &&
-            !(isSupportedFunction(resolved) && resolved.body) &&
+            !isFunctionWithBody(resolved) &&
             !dispatchesToBodies(context, resolved)
         )
             opaque = true;
@@ -1140,7 +1142,7 @@ export function parameterizedResourceLoop(
         });
         if (ts.isCallExpression(node)) {
             const called = resolvedLoopCallee(context, node);
-            if (isSupportedFunction(called) && called.body) {
+            if (isFunctionWithBody(called)) {
                 node.arguments.forEach((argument, index) => {
                     if (!callArgumentIsReadOnly(context.checker, node, index)) {
                         markMutation(argument);
@@ -1578,7 +1580,7 @@ export function parameterizedResourceLoop(
                 return;
             }
             const called = resolvedLoopCallee(context, node);
-            if (isSupportedFunction(called) && called.body) {
+            if (isFunctionWithBody(called)) {
                 visitFunction(node, called, conditional);
                 return;
             }

@@ -13,6 +13,8 @@ import {
     nullishLiteral,
     parameterInput,
     libraryName,
+    calledDeclaration,
+    calledFunction,
 } from "./symbols.js";
 import {
     isObjectIdentityFunction,
@@ -34,11 +36,9 @@ import {
     lastWriter,
     objectLiteralMembers,
     testsTruthinessOnly,
-} from "./syntax.js";
-import {
     functionOfDeclaration,
     type SupportedFunction,
-} from "./user-functions.js";
+} from "./syntax.js";
 import { valueKindOf } from "./type-facts.js";
 
 type Context = Pick<
@@ -134,23 +134,6 @@ function memberWritePath(
     return ts.isIdentifier(node) && path.length > 0
         ? { root: node, path }
         : undefined;
-}
-
-/** The function a name declares: a declaration, or a `const` bound to one. */
-function declaredFunction(
-    symbol: ts.Symbol | undefined,
-): SupportedFunction | undefined {
-    const declaration = symbol?.valueDeclaration;
-    if (!declaration) return undefined;
-    if (ts.isFunctionDeclaration(declaration)) return declaration;
-    if (
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer))
-    )
-        return declaration.initializer;
-    return undefined;
 }
 
 /**
@@ -348,35 +331,6 @@ function isLibraryObject(checker: ts.TypeChecker, type: ts.Type): boolean {
     );
 }
 
-function calledFunction(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-): SupportedFunction | undefined {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    // A `const` binding typed by a function type resolves to that type; the
-    // call reaches the one function the binding holds.
-    if (declaration && ts.isFunctionTypeNode(declaration)) {
-        const callee = unwrapExpression(call.expression);
-        const symbol = ts.isIdentifier(callee)
-            ? resolvedSymbol(checker, callee)
-            : undefined;
-        const binding = symbol?.valueDeclaration;
-        return binding &&
-            ts.isVariableDeclaration(binding) &&
-            ts.getCombinedNodeFlags(binding) & ts.NodeFlags.Const
-            ? declaredFunction(symbol)
-            : undefined;
-    }
-    return (
-        declaration &&
-        (ts.isArrowFunction(declaration) ||
-        ts.isFunctionExpression(declaration) ||
-        (ts.isMethodDeclaration(declaration) && declaration.body)
-            ? declaration
-            : functionOfDeclaration(declaration))
-    );
-}
-
 function sourceGraph(
     checker: ts.TypeChecker,
     sourceFiles: readonly ts.SourceFile[],
@@ -449,9 +403,12 @@ function sourceGraph(
             source,
             (node) => {
                 if (ts.isIdentifier(node) && !directFunctionUse(node)) {
-                    const used = declaredFunction(
-                        resolvedSymbol(checker, node),
-                    );
+                    const declaration = resolvedSymbol(
+                        checker,
+                        node,
+                    )?.valueDeclaration;
+                    const used =
+                        declaration && functionOfDeclaration(declaration);
                     if (used) escaped.add(used);
                 }
                 if (
@@ -499,13 +456,8 @@ function sourceGraph(
                 }
                 if (ts.isCallExpression(node)) {
                     const declaration = calledFunction(checker, node);
-                    const signature =
-                        checker.getResolvedSignature(node)?.declaration;
-                    if (
-                        !declaration &&
-                        signature &&
-                        !ts.isJSDocSignature(signature)
-                    ) {
+                    const signature = calledDeclaration(checker, node);
+                    if (!declaration && signature) {
                         // A property typed as a function type resolves to
                         // that type's signature; the member names it.
                         const member = ts.isFunctionTypeNode(signature)
@@ -518,9 +470,10 @@ function sourceGraph(
                     // A call through a rebindable binding typed by a function
                     // type resolves to that type: the function it held runs
                     // unseen.
-                    const named = ts.isIdentifier(callee)
-                        ? declaredFunction(resolvedSymbol(checker, callee))
+                    const binding = ts.isIdentifier(callee)
+                        ? resolvedSymbol(checker, callee)?.valueDeclaration
                         : undefined;
+                    const named = binding && functionOfDeclaration(binding);
                     if (named && named !== declaration) escaped.add(named);
                     // `xs.push(v)` / `xs.unshift(v)` store elements: plain
                     // writes at the array's element path.

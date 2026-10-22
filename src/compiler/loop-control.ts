@@ -23,6 +23,7 @@ import {
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
+import { calledDeclaration } from "./symbols.js";
 
 /** Emit one body until its lowered control flow proves the remainder unreachable. */
 export function emitReachableStatements(
@@ -135,7 +136,7 @@ export function callsNever(
 ): boolean {
     const call = unwrapExpression(expression, { await: true });
     if (!ts.isCallExpression(call)) return false;
-    const declaration = checker.getResolvedSignature(call)?.getDeclaration();
+    const declaration = calledDeclaration(checker, call);
     return (
         declaration !== undefined &&
         "type" in declaration &&

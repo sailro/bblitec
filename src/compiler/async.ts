@@ -17,10 +17,7 @@ import {
     type CapturedClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import {
-    tryResolveFunctionDeclaration,
-    type SupportedFunction,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     unwrapExpression,
     argumentAt,
@@ -30,6 +27,7 @@ import {
     positionalParameter,
     functionKind,
     isAsyncFunction,
+    type SupportedFunction,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,

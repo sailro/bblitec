@@ -5,6 +5,7 @@ import {
     libraryGlobal,
     resolvedSymbol,
     isNullishLiteral,
+    calledFunction,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -121,14 +122,9 @@ function fresh(
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
         return returnsOnlyFresh(checker, expression, active);
     if (ts.isCallExpression(expression)) {
-        const declaration =
-            checker.getResolvedSignature(expression)?.declaration;
+        const declaration = calledFunction(checker, expression);
         return (
             declaration !== undefined &&
-            (ts.isFunctionDeclaration(declaration) ||
-                ts.isArrowFunction(declaration) ||
-                ts.isFunctionExpression(declaration) ||
-                ts.isMethodDeclaration(declaration)) &&
             returnsOnlyFresh(checker, declaration, active)
         );
     }

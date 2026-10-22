@@ -16,6 +16,7 @@ import {
     libraryGlobal,
     pinnedConstantProperty,
     resolvedSymbol,
+    calledDeclaration,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -451,8 +452,7 @@ export class EvaluationOrder {
     private moduleLocalLibraryCall(
         call: ts.CallExpression | ts.NewExpression,
     ): boolean {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration || declarationOrigin(declaration) !== "default-lib")
             return false;
         if (this.libraryAnswersFromArguments(call)) {
@@ -1117,8 +1117,7 @@ export class EvaluationOrder {
             merge(access.writes, engine.writes);
             return;
         }
-        const declaration =
-            this.checker.getResolvedSignature(node)?.declaration;
+        const declaration = calledDeclaration(this.checker, node);
         const tag = unwrapExpression(node.tag);
         const named =
             declaration &&
@@ -1141,8 +1140,7 @@ export class EvaluationOrder {
             ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression,
     ): Access | undefined {
         if (!this.engine || ts.isNewExpression(call)) return undefined;
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration || !isEngineDeclaration(declaration)) return undefined;
         const engine = this.engine();
         const bodies = engine.bodies(declaration);
@@ -1292,14 +1290,12 @@ export class EvaluationOrder {
             );
             if (declaration && !declaration.getSourceFile().isDeclarationFile)
                 return this.construction(declaration);
-            return this.checker
-                .getResolvedSignature(call)
-                ?.declaration?.getSourceFile().isDeclarationFile || declaration
+            return calledDeclaration(this.checker, call)?.getSourceFile()
+                .isDeclarationFile || declaration
                 ? "library"
                 : undefined;
         }
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration) return undefined;
         if (declaration.getSourceFile().isDeclarationFile) return "library";
         const callee = unwrapExpression(call.expression);

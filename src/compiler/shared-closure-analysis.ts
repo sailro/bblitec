@@ -7,10 +7,6 @@ import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { collectReboundSymbols } from "./module-initializers.js";
 import {
-    isSupportedFunction,
-    type SupportedFunction,
-} from "./user-functions.js";
-import {
     choosesOperand,
     outermostWrapper,
     rootIdentifier,
@@ -19,6 +15,8 @@ import {
     containsSuspension,
     isAsyncFunction,
     isGeneratorFunction,
+    isSupportedFunction,
+    type SupportedFunction,
 } from "./syntax.js";
 import { presentMembers } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";

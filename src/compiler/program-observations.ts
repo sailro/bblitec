@@ -8,6 +8,7 @@ import {
     libraryGlobal,
     nullishComparison,
     libraryName,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -388,7 +389,7 @@ function observe(program: ts.Program): ProgramObservations {
         // object it is handed: an ambient declaration's, or the engine's
         // unless its pinned bodies only read that parameter.
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-            const declaration = checker.getResolvedSignature(node)?.declaration;
+            const declaration = calledDeclaration(checker, node);
             const origin = declaration && declarationOrigin(declaration);
             if (
                 declaration &&

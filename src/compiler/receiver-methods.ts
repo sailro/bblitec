@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { EmissionSet } from "./emission-transaction.js";
-import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    libraryGlobal,
+    calledDeclaration,
+} from "./symbols.js";
 
 /**
  * The built-in methods that change the container they are called on, read
@@ -124,7 +128,7 @@ export function isStoringDataCall(
     checker: ts.TypeChecker,
 ): node is ts.CallExpression | ts.NewExpression {
     if (ts.isCallExpression(node)) {
-        const signature = checker.getResolvedSignature(node)?.declaration;
+        const signature = calledDeclaration(checker, node);
         // Resolver signatures originate in the default library constructor,
         // including when the source renames or forwards its executor parameter.
         const parameter = signature?.parent;

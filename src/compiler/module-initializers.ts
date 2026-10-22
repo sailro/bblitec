@@ -6,7 +6,6 @@ import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
-import { isSupportedFunction } from "./user-functions.js";
 import {
     callArgumentIsReadOnly,
     libraryArgumentIsReadOnly,
@@ -18,6 +17,7 @@ import {
     aliasTarget,
     declaredSymbol,
     type CompilerSymbols,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     ClassHierarchy,
@@ -30,6 +30,7 @@ import {
     unwrapExpression,
     writeSites,
     positionalParameter,
+    isSupportedFunction,
 } from "./syntax.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
@@ -337,7 +338,7 @@ function collectMutatedContainerSymbols(
             if (alias && origin) aliases.set(alias, origin);
         }
         if (ts.isCallExpression(node)) {
-            const called = checker.getResolvedSignature(node)?.declaration;
+            const called = calledDeclaration(checker, node);
             node.arguments.forEach((argument, index) => {
                 if (
                     !typeCanCarryReference(

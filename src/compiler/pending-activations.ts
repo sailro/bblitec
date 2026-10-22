@@ -7,7 +7,7 @@
 // not have; reaching one compiles the program in the application realm.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { libraryGlobal, resolvedSymbol } from "./symbols.js";
+import { libraryGlobal, resolvedSymbol, calledDeclaration } from "./symbols.js";
 import { outermostWrapper, referenceSite, unwrapExpression } from "./syntax.js";
 
 type Activation = ts.SignatureDeclaration;
@@ -132,7 +132,7 @@ export class PendingActivations {
                 if (!ts.isCallExpression(node)) return;
                 calls.push(node);
                 const use = promiseUse(node);
-                const callee = this.calledActivation(node);
+                const callee = calledDeclaration(this.checker, node);
                 const owner = owningActivation(node);
                 if (
                     callee &&
@@ -155,7 +155,7 @@ export class PendingActivations {
         }
         if (this.suspending.size === 0) return;
         for (const call of calls) {
-            const callee = this.calledActivation(call);
+            const callee = calledDeclaration(this.checker, call);
             if (
                 callee &&
                 this.suspending.has(callee) &&
@@ -190,16 +190,8 @@ export class PendingActivations {
      */
     public discards(statement: ts.ExpressionStatement): boolean {
         const call = chainedCall(statement.expression);
-        const callee = call && this.calledActivation(call);
+        const callee = call && calledDeclaration(this.checker, call);
         return callee !== undefined && this.suspending.has(callee);
-    }
-
-    private calledActivation(call: ts.CallExpression): Activation | undefined {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
-        return declaration && !ts.isJSDocSignature(declaration)
-            ? declaration
-            : undefined;
     }
 
     /** A suspending function used as a value rather than called. */

@@ -69,6 +69,7 @@ import {
     typeMayHoldNullish,
     libraryName,
     isLibraryNumberFormatter,
+    calledDeclaration,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
@@ -1943,9 +1944,7 @@ export class ExpressionLowerer {
         });
         // A rest parameter takes the arguments from its position on; the
         // strings array is the first argument.
-        const declaration = this.context.checker
-            .getResolvedSignature(expression)
-            ?.getDeclaration();
+        const declaration = calledDeclaration(this.context.checker, expression);
         const rest = declaration && restParameterIndex(declaration);
         const arguments_: Value[] = [stringsValue, ...substitutions];
         const values =

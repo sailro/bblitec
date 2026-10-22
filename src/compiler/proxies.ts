@@ -7,11 +7,10 @@ import {
 } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { propertyKey } from "./syntax.js";
+import { propertyKey, type SupportedFunction } from "./syntax.js";
 import {
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
-    type SupportedFunction,
 } from "./user-functions.js";
 
 /** Finite record proxies keep the target's typed slots and their own object identity. */

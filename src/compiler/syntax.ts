@@ -1673,6 +1673,69 @@ export function soleReturnedExpression(
         : undefined;
 }
 
+export type SupportedFunction =
+    | ts.FunctionDeclaration
+    | ts.FunctionExpression
+    | ts.ArrowFunction
+    | ts.MethodDeclaration;
+
+/** The four declaration shapes this compiler inlines, as one narrowing. */
+export function isSupportedFunction(
+    node: ts.Node | undefined,
+): node is SupportedFunction {
+    return (
+        node !== undefined &&
+        (ts.isFunctionDeclaration(node) ||
+            ts.isFunctionExpression(node) ||
+            ts.isArrowFunction(node) ||
+            ts.isMethodDeclaration(node))
+    );
+}
+
+/** A supported function with the body a call runs. */
+export type FunctionWithBody = SupportedFunction & {
+    readonly body: ts.ConciseBody;
+};
+
+/** Whether a node is a supported function with a body: an overload or abstract member has none. */
+export function isFunctionWithBody(
+    node: ts.Node | undefined,
+): node is FunctionWithBody {
+    return isSupportedFunction(node) && node.body !== undefined;
+}
+
+/** Whether a variable is declared `const`: it holds its initializer's value for good. */
+export function isConstVariable(declaration: ts.VariableDeclaration): boolean {
+    return (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0;
+}
+
+/**
+ * The function a declaration binds: a function declaration with a body, a
+ * named function expression (its own name), or a variable initialized with a
+ * function literal, through parentheses and type assertions.
+ */
+export function functionOfDeclaration(
+    declaration: ts.Declaration,
+): Exclude<FunctionWithBody, ts.MethodDeclaration> | undefined {
+    if (
+        ts.isFunctionDeclaration(declaration) &&
+        isFunctionWithBody(declaration)
+    )
+        return declaration;
+    // A named function expression is its own name's declaration.
+    if (ts.isFunctionExpression(declaration) && declaration.name)
+        return declaration;
+    const initializer =
+        ts.isVariableDeclaration(declaration) && declaration.initializer
+            ? unwrapExpression(declaration.initializer)
+            : undefined;
+    return initializer &&
+        (ts.isArrowFunction(initializer) ||
+            ts.isFunctionExpression(initializer))
+        ? initializer
+        : undefined;
+}
+
 /**
  * The synchronous, non-generator source function a declaration names: a
  * function declaration, or a `const` bound to a function literal.
@@ -1686,15 +1749,15 @@ export function localSyncFunction(
     | undefined {
     if (!declaration || declaration.getSourceFile().isDeclarationFile)
         return undefined;
-    const fn =
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
-            ? unwrapExpression(declaration.initializer)
-            : declaration;
-    return (ts.isFunctionDeclaration(fn) ||
-        ts.isArrowFunction(fn) ||
-        ts.isFunctionExpression(fn)) &&
+    const fn = ts.isVariableDeclaration(declaration)
+        ? isConstVariable(declaration)
+            ? functionOfDeclaration(declaration)
+            : undefined
+        : declaration;
+    return fn &&
+        (ts.isFunctionDeclaration(fn) ||
+            ts.isArrowFunction(fn) ||
+            ts.isFunctionExpression(fn)) &&
         fn.body !== undefined &&
         functionKind(fn) === "plain"
         ? fn

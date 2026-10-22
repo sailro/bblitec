@@ -10,6 +10,7 @@ import {
     resolvedSymbol,
     staticAccessKey,
     libraryName,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     choosesOperand,
@@ -134,7 +135,7 @@ export function hasOnlyReportingEffects(
         return staticAccessKey(checker, node);
     };
     const libraryCall = (call: ts.CallExpression): boolean => {
-        const declaration = checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(checker, call);
         return (
             declaration !== undefined &&
             declarationInDefaultLibrary(declaration)
@@ -572,7 +573,7 @@ function hasOnlyInstrumentationEffects(
     };
     const safeCall = (call: ts.CallExpression | ts.NewExpression): boolean => {
         if (isFetchBinding(call)) return true;
-        const signature = checker.getResolvedSignature(call)?.declaration;
+        const signature = calledDeclaration(checker, call);
         if (!signature) return false;
         const fn = functions(signature);
         if (fn?.body) return prove(fn);
@@ -714,7 +715,7 @@ export function writesUnobservedCanvasMetadata(
     argumentIndex: number,
     host: NativeHostUi | undefined,
 ): boolean {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (
         !declaration ||
         !ts.isFunctionDeclaration(declaration) ||

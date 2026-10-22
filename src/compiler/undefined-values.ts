@@ -4,11 +4,13 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
     libraryGlobal,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     unwrapExpression,
     isAsyncFunction,
     isGeneratorFunction,
+    functionOfDeclaration,
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
@@ -23,7 +25,7 @@ function undefinedLibraryCall(
     if (!ts.isCallExpression(expression)) return false;
     const callee = unwrapExpression(expression.expression);
     const signature = checker.getResolvedSignature(expression);
-    const declaration = signature?.declaration;
+    const declaration = calledDeclaration(checker, expression);
     const global = libraryGlobal(checker, callee);
     const consoleMethod =
         ts.isPropertyAccessExpression(callee) &&
@@ -166,8 +168,7 @@ export function provenUndefinedValue(
         }
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
-        const signature = context.checker.getResolvedSignature(expression);
-        const declaration = signature?.declaration;
+        const declaration = calledDeclaration(context.checker, expression);
         if (undefinedLibraryCall(context.checker, expression)) return true;
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
@@ -198,15 +199,10 @@ export function provenUndefinedValue(
                 return false;
             // A name bound to a function literal calls that literal, whatever
             // signature its annotation declares (`const f: () => void = ...`).
-            const literal =
-                ts.isVariableDeclaration(binding) && binding.initializer
-                    ? unwrapExpression(binding.initializer)
-                    : undefined;
-            if (
-                literal &&
-                (ts.isArrowFunction(literal) ||
-                    ts.isFunctionExpression(literal))
-            )
+            const literal = ts.isVariableDeclaration(binding)
+                ? functionOfDeclaration(binding)
+                : undefined;
+            if (literal)
                 return hasUndefinedCompletion(
                     context.checker,
                     literal,

@@ -14,6 +14,8 @@ import {
     functionKind,
     isGeneratorFunction,
     isSuspensionPoint,
+    isSupportedFunction,
+    type SupportedFunction,
 } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
@@ -25,6 +27,8 @@ import {
     isNullishLiteral,
     libraryGlobal,
     resolvedSymbol,
+    calledDeclaration,
+    calledFunction,
 } from "./symbols.js";
 import {
     dataTypesEqual,
@@ -48,11 +52,9 @@ import {
     bindingIsOnlyCalledDirectly,
     generationKnownStringArgument,
     borrowsReferenceParameter,
-    isSupportedFunction,
     requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
     snapshotArrayLiteral,
-    type SupportedFunction,
 } from "./user-functions.js";
 import {
     fixedLengthParameterWrites,
@@ -1469,9 +1471,8 @@ export class NativeFunctionLowerer {
     private directCallDeclaration(
         call: ts.CallExpression,
     ): SupportedFunction | undefined {
-        const declared =
-            this.context.checker.getResolvedSignature(call)?.declaration;
-        if (declared && isSupportedFunction(declared)) return declared;
+        const declared = calledDeclaration(this.context.checker, call);
+        if (isSupportedFunction(declared)) return declared;
         const callee = unwrapExpression(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
         const receiver = unwrapExpression(callee.expression);
@@ -2206,10 +2207,10 @@ export class NativeFunctionLowerer {
                             ts.isPropertyAccessExpression(callee) &&
                             callee.expression.kind !== ts.SyntaxKind.ThisKeyword
                         ) {
-                            const called =
-                                this.context.checker.getResolvedSignature(
-                                    node,
-                                )?.declaration;
+                            const called = calledDeclaration(
+                                this.context.checker,
+                                node,
+                            );
                             if (
                                 called &&
                                 (ts.isMethodDeclaration(called) ||
@@ -2353,12 +2354,9 @@ export class NativeFunctionLowerer {
                     ) {
                         return true;
                     }
-                    const called =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
+                    const called = calledFunction(this.context.checker, node);
                     if (
-                        isSupportedFunction(called) &&
+                        called &&
                         this.containsGenerationTimeFetch(called, active)
                     ) {
                         return true;
@@ -2470,10 +2468,10 @@ export class NativeFunctionLowerer {
                     ) {
                         return true;
                     }
-                    const called =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
+                    const called = calledDeclaration(
+                        this.context.checker,
+                        node,
+                    );
                     if (
                         called?.getSourceFile().isDeclarationFile &&
                         ts.isFunctionDeclaration(called) &&
@@ -2624,12 +2622,12 @@ export class NativeFunctionLowerer {
                         }
                     }
                     if (ts.isCallExpression(node)) {
-                        const called =
-                            this.context.checker.getResolvedSignature(
-                                node,
-                            )?.declaration;
+                        const called = calledFunction(
+                            this.context.checker,
+                            node,
+                        );
                         if (
-                            isSupportedFunction(called) &&
+                            called &&
                             this.capturesEnclosingBindings(
                                 called,
                                 root,

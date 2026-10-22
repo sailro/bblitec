@@ -21,6 +21,8 @@ interface SourceFacts {
     memberScans: number;
     /** `type.symbol?.name === "Promise"`: a library type identified by its name. */
     symbolNameTests: number;
+    /** `.declaration` / `.getDeclaration()` of a call's resolved signature, chained or through a binding. */
+    resolvedDeclarationReads: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -128,12 +130,48 @@ export function sourceFacts(path: string): SourceFacts {
         propertyNameRules: 0,
         memberScans: 0,
         symbolNameTests: 0,
+        resolvedDeclarationReads: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
             file.statements.every(ts.isExportDeclaration),
     };
+    // Bindings initialized from a resolved signature: name and function.
+    const signatures = new Set<string>();
+    const scoped = (name: string, node: ts.Node): string =>
+        `${ts.findAncestor(node.parent, ts.isFunctionLike)?.pos ?? -1}:${name}`;
+    const resolvesSignature = (node: ts.Node): boolean =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "getResolvedSignature";
     const visit = (node: ts.Node): void => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer &&
+            (function contains(child: ts.Node): boolean {
+                return (
+                    resolvesSignature(child) ||
+                    ts.forEachChild(child, contains) === true
+                );
+            })(node.initializer)
+        )
+            signatures.add(scoped(node.name.text, node));
+        if (ts.isPropertyAccessExpression(node)) {
+            let owner: ts.Expression = node.expression;
+            while (
+                ts.isNonNullExpression(owner) ||
+                ts.isParenthesizedExpression(owner)
+            )
+                owner = owner.expression;
+            if (
+                ["declaration", "getDeclaration"].includes(node.name.text) &&
+                (resolvesSignature(owner) ||
+                    (ts.isIdentifier(owner) &&
+                        signatures.has(scoped(owner.text, owner))))
+            )
+                facts.resolvedDeclarationReads++;
+        }
         if (
             ts.isImportDeclaration(node) &&
             ts.isStringLiteral(node.moduleSpecifier)

@@ -237,6 +237,8 @@ import {
     libraryName,
     computedEnumMember,
     isLibraryNumberFormatter,
+    calledDeclaration,
+    calledFunction,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -254,7 +256,6 @@ import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
-    isSupportedFunction,
     resolveFunctionDeclaration,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
@@ -297,6 +298,7 @@ import {
     plainDataMembers,
     containsSuspension,
     functionKind,
+    isSupportedFunction,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -1859,7 +1861,7 @@ class Compiler implements LoweringServices {
             ts.isIdentifier(expression.expression) &&
             this.symbols.valueSymbol(expression.expression)
                 ?.valueDeclaration === main &&
-            signature?.declaration === main &&
+            calledDeclaration(this.checker, expression) === main &&
             returned !== undefined &&
             undefinedOnly(returned)
         );
@@ -1886,15 +1888,9 @@ class Compiler implements LoweringServices {
                 (node) => {
                     if (isEntryReference(node)) return true;
                     if (!ts.isCallExpression(node)) return false;
-                    const callee =
-                        this.checker.getResolvedSignature(node)?.declaration;
+                    const callee = calledFunction(this.checker, node);
                     if (callee === entry) return true;
-                    if (
-                        !isSupportedFunction(callee) ||
-                        !callee.body ||
-                        visited.has(callee)
-                    )
-                        return false;
+                    if (!callee || visited.has(callee)) return false;
                     visited.add(callee);
                     return referencesEntry(callee.body);
                 },
@@ -4413,8 +4409,7 @@ class Compiler implements LoweringServices {
                 if (passedExplicitly) return "skip";
                 if (
                     ts.isCallExpression(candidate) &&
-                    (this.checker.getResolvedSignature(candidate)
-                        ?.declaration === owner ||
+                    (calledDeclaration(this.checker, candidate) === owner ||
                         (ownerSymbol !== undefined &&
                             this.unwrappedValueSymbol(candidate.expression) ===
                                 ownerSymbol))

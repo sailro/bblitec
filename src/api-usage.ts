@@ -10,7 +10,11 @@ import {
     specifierSourceName,
 } from "./compiler/syntax.js";
 import { sourceLocation } from "./source-location.js";
-import { declaredSymbol, resolvedSymbol } from "./compiler/symbols.js";
+import {
+    calledDeclaration,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./compiler/symbols.js";
 
 export interface ApiUse {
     id: string;
@@ -202,7 +206,7 @@ export function scanApiUsage(
         }
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
             const signature = checker.getResolvedSignature(node);
-            const declaration = signature?.declaration;
+            const declaration = calledDeclaration(checker, node);
             if (declaration)
                 add(
                     surface.byDeclaration.get(declarationKey(declaration)) ??

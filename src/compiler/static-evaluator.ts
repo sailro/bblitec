@@ -50,6 +50,7 @@ import {
     isGlobalUndefined,
     libraryGlobal,
     type LibraryGlobal,
+    calledDeclaration,
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
@@ -64,10 +65,7 @@ import {
     staticNumberValue,
     type StaticFoldContext,
 } from "./option-helpers.js";
-import {
-    resolveFunctionDeclaration,
-    type SupportedFunction,
-} from "./user-functions.js";
+import { resolveFunctionDeclaration } from "./user-functions.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
@@ -93,6 +91,7 @@ import {
     rootExpression,
     writeSites,
     functionKind,
+    type SupportedFunction,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -1643,8 +1642,7 @@ export class StaticEvaluator {
      * body for the inliner to reach; anything declared in source does.
      */
     private callReachesABody(call: ts.CallExpression): boolean {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         return (
             declaration !== undefined &&
             !declaration.getSourceFile().isDeclarationFile

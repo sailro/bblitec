@@ -97,6 +97,8 @@ import {
     libraryGlobal,
     resolvedSymbol,
     libraryName,
+    calledDeclaration,
+    calledFunction,
 } from "./symbols.js";
 import {
     isDeclaredInside,
@@ -119,6 +121,9 @@ import {
     isAsyncFunction,
     isGeneratorFunction,
     isSuspensionPoint,
+    isSupportedFunction,
+    functionOfDeclaration,
+    type SupportedFunction,
 } from "./syntax.js";
 import {
     firstReturn,
@@ -504,25 +509,6 @@ export function functionUsesDynamicThis(
     return uses;
 }
 
-export type SupportedFunction =
-    | ts.FunctionDeclaration
-    | ts.FunctionExpression
-    | ts.ArrowFunction
-    | ts.MethodDeclaration;
-
-/** The four declaration shapes this compiler inlines, as one narrowing. */
-export function isSupportedFunction(
-    node: ts.Node | undefined,
-): node is SupportedFunction {
-    return (
-        node !== undefined &&
-        (ts.isFunctionDeclaration(node) ||
-            ts.isFunctionExpression(node) ||
-            ts.isArrowFunction(node) ||
-            ts.isMethodDeclaration(node))
-    );
-}
-
 /**
  * The three shapes that write through a target this walk is tracking: an
  * assignment, an increment, and a method call that mutates.
@@ -783,11 +769,8 @@ function writesSharedBinding(
             return true;
         }
         if (ts.isCallExpression(node)) {
-            const called = checker.getResolvedSignature(node)?.declaration;
-            if (
-                isSupportedFunction(called) &&
-                returnedValueCanMove(checker, called, active)
-            ) {
+            const called = calledFunction(checker, node);
+            if (called && returnedValueCanMove(checker, called, active)) {
                 return true;
             }
         }
@@ -795,33 +778,6 @@ function writesSharedBinding(
     });
 
     return writes;
-}
-
-/**
- * The function a declaration binds: a function declaration with a body, a
- * named function expression (its own name), or a variable initialized with a
- * function literal.
- */
-export function functionOfDeclaration(
-    declaration: ts.Declaration,
-):
-    | ts.FunctionDeclaration
-    | ts.ArrowFunction
-    | ts.FunctionExpression
-    | undefined {
-    if (ts.isFunctionDeclaration(declaration) && declaration.body)
-        return declaration;
-    // A named function expression is its own name's declaration.
-    if (ts.isFunctionExpression(declaration) && declaration.name)
-        return declaration;
-    if (
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer))
-    )
-        return declaration.initializer;
-    return undefined;
 }
 
 /**
@@ -1009,10 +965,11 @@ export function recursiveStorageEscapes(
                     return resolved !== undefined && members.has(resolved);
                 }
                 if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                    const called =
-                        checker.getResolvedSignature(node)?.declaration;
+                    const called = ts.isNewExpression(node)
+                        ? calledDeclaration(checker, node)
+                        : calledFunction(checker, node);
                     if (
-                        called !== undefined &&
+                        called &&
                         (ts.isConstructorDeclaration(called) ||
                             (isSupportedFunction(called) &&
                                 !members.has(called))) &&
@@ -1152,7 +1109,7 @@ function reassignedRecordFields(
                 if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
                     return;
                 const callee = unwrapExpression(node.expression);
-                const called = checker.getResolvedSignature(node)?.declaration;
+                const called = calledDeclaration(checker, node);
                 if (called && called.getSourceFile().isDeclarationFile) {
                     if (
                         ts.isPropertyAccessExpression(callee) &&
@@ -1373,8 +1330,7 @@ export class UserFunctionLowerer {
             !invocation ||
             !argument ||
             scopeOf(identifier) !== invocation.scope ||
-            this.checker.getResolvedSignature(invocation.call)?.declaration !==
-                declaration ||
+            calledDeclaration(this.checker, invocation.call) !== declaration ||
             invocation.call.arguments
                 .slice(0, index + 1)
                 .some(ts.isSpreadElement) ||
@@ -6769,8 +6725,7 @@ export class UserFunctionLowerer {
         const consumer = argument.parent;
         if (!ts.isCallExpression(consumer)) return undefined;
         const index = consumer.arguments.indexOf(argument);
-        const declaration =
-            context.checker.getResolvedSignature(consumer)?.declaration;
+        const declaration = calledDeclaration(context.checker, consumer);
         if (index < 0 || !isSupportedFunction(declaration)) return undefined;
         if (positionalParameter(consumer, declaration, index) === undefined)
             return undefined;
@@ -7139,14 +7094,11 @@ export class UserFunctionLowerer {
         // A direct generic call carries its instantiated result. Callback
         // lowering may instead name the enclosing collection call, whose
         // signature belongs to the collection method, not this function.
-        const resolved =
-            ir.declaration.typeParameters?.length &&
-            ts.isCallExpression(callNode)
-                ? this.checker.getResolvedSignature(callNode)
-                : undefined;
         const signature =
-            resolved?.declaration === ir.declaration
-                ? resolved
+            ir.declaration.typeParameters?.length &&
+            ts.isCallExpression(callNode) &&
+            calledDeclaration(this.checker, callNode) === ir.declaration
+                ? this.checker.getResolvedSignature(callNode)
                 : this.checker.getSignatureFromDeclaration(ir.declaration);
         let type = signature
             ? context.dataTypes.fromTsType(
@@ -7259,7 +7211,7 @@ export class UserFunctionLowerer {
         const rest = restParameterIndex(ir.declaration);
         const resolved = this.checker.getResolvedSignature(call);
         const parameters =
-            resolved?.getDeclaration()?.parameters ??
+            calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
         const minimum = requiredParameterCount(parameters);
         if (
@@ -7503,9 +7455,7 @@ export class UserFunctionLowerer {
         // Contextual methods can implement an optional signature without a
         // question token in their own syntax. Omission is decided by the call's
         // signature; the implementation still owns default evaluation.
-        const parameters = this.checker
-            .getResolvedSignature(call)
-            ?.getDeclaration()?.parameters;
+        const parameters = calledDeclaration(this.checker, call)?.parameters;
         while (values.length < ir.parameters.length) {
             const parameter = parameters?.[values.length];
             if (!parameter || !this.checker.isOptionalParameter(parameter))

@@ -117,7 +117,11 @@ import {
 } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    declaredSymbol,
+    calledDeclaration,
+} from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import {
@@ -6482,8 +6486,7 @@ export class UiProjection {
      * bounded IR rather than the retained element tree.
      */
     private isNativeUiHelperCall(call: ts.CallExpression): boolean {
-        const declaration =
-            this.context.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.context.checker, call);
         if (
             !declaration ||
             (!ts.isFunctionDeclaration(declaration) &&

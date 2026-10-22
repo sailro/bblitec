@@ -3,7 +3,6 @@ import ts from "typescript";
 import { emitReachableStatements } from "./loop-control.js";
 import {
     bindingIsOnlyCalledDirectly,
-    functionOfDeclaration,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
 import type {
@@ -29,6 +28,7 @@ import type {
     LoweringStatement,
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
+import { functionOfDeclaration } from "./syntax.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<

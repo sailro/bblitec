@@ -9,6 +9,7 @@ import {
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
+import { calledFunction } from "./symbols.js";
 
 /** A function expression, or a call whose source returns only new functions. */
 function freshCallable(
@@ -24,13 +25,9 @@ function freshCallable(
             freshCallable(checker, operand, active),
         );
     if (!ts.isCallExpression(source)) return false;
-    const declaration = checker.getResolvedSignature(source)?.declaration;
+    const declaration = calledFunction(checker, source);
     return (
         declaration !== undefined &&
-        (ts.isFunctionDeclaration(declaration) ||
-            ts.isArrowFunction(declaration) ||
-            ts.isFunctionExpression(declaration) ||
-            ts.isMethodDeclaration(declaration)) &&
         returnsOnly(declaration, active, (returned) =>
             freshCallable(checker, returned, active),
         )

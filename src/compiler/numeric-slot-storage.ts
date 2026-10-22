@@ -4,6 +4,7 @@ import {
     resolvedSymbol,
     staticPropertyKey,
     libraryName,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     contextualProperty,
@@ -188,9 +189,9 @@ function storageDeclaration(
         parent.expression !== node
     ) {
         const index = parent.arguments?.indexOf(node as ts.Expression) ?? -1;
-        const callee = checker.getResolvedSignature(parent)?.declaration;
+        const callee = calledDeclaration(checker, parent);
         // A spread or a rest leaves no one parameter slot.
-        return index >= 0 && callee && !ts.isJSDocSignature(callee)
+        return index >= 0 && callee
             ? positionalParameter(parent, callee, index)
             : undefined;
     }
