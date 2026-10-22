@@ -1,7 +1,7 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { typeCanCarryReference } from "./type-facts.js";
-import { moduleImportKind } from "../module-imports.js";
+import { isRuntimeImport } from "../module-imports.js";
 import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
@@ -110,7 +110,7 @@ export function runtimeModuleDependencies(
             (!ts.isImportDeclaration(statement) &&
                 !ts.isExportDeclaration(statement)) ||
             !statement.moduleSpecifier ||
-            moduleImportKind(statement) === "type"
+            !isRuntimeImport(checker, statement)
         )
             return [];
         const dependency = declaredSymbol(

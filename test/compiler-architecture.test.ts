@@ -740,6 +740,22 @@ test("what an expression's evaluation runs is read through syntax.ts", () => {
         assert.deepEqual(declarationOwners(name), [], name);
 });
 
+test("whether an import runs its module has one reader", () => {
+    // isRuntimeImport (module-imports.ts): TypeScript's elision, an import
+    // used only as a type does not run its module. The executed graph's
+    // package test and the bake's import test read the syntactic kind.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).calls.has("moduleImportKind"))
+            .sort(),
+        [
+            "src/compiler/browser-texture-function.ts",
+            "src/executed-module-graph.ts",
+            "src/module-imports.ts",
+        ],
+    );
+});
+
 test("write sites are read through syntax.ts", () => {
     // What a node writes (assignment and pattern leaves, compound, logical,
     // update, delete, loop targets) is writeSites/writeSiteOf. The
