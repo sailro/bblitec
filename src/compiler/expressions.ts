@@ -3843,6 +3843,20 @@ export class ExpressionLowerer {
             );
             if (called) return called;
         }
+        if (
+            ts.isElementAccessExpression(callee) &&
+            ts.isOptionalChain(callee)
+        ) {
+            // `owner?.[key](...)`: the chain's absence skips the call.
+            const called = this.context.probeEmission(() =>
+                this.context.dataLowerer.optionalElementCall(
+                    this.compileValue(callee.expression),
+                    call,
+                    callee,
+                ),
+            );
+            if (called) return called;
+        }
         if (ts.isElementAccessExpression(callee)) {
             let callable = this.compileValue(call.expression);
             if (callable.kind === "callback" && callable.callbackDeclaration) {

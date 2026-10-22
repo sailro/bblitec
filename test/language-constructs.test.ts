@@ -15086,3 +15086,15 @@ checkInRealm(
     });
     `,
 );
+check(
+    "an optional chain skips an element call on an absent owner",
+    `
+    const pick = (present: boolean): Record<string, () => number> | undefined => (present ? { m: () => 1 } : undefined);
+    const k = "m";
+    const absent = pick(Math.random() > 2)?.[k]();
+    const present = pick(Math.random() < 2)?.[k]();
+    const lists: (() => number)[] | undefined = Math.random() > 2 ? [() => 2] : undefined;
+    const none = lists?.[0]();
+    if (absent !== undefined || present !== 1 || none !== undefined) throw new Error("optional element call " + absent + " " + present + " " + none);
+    `,
+);

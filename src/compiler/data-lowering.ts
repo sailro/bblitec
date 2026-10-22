@@ -3214,6 +3214,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * `owner?.[key](...)` calling a stored function: the chain's absence
+     * skips the call (undefined); a present owner reads the element and
+     * calls it, a missing one throwing as JavaScript's call does.
+     */
+    public optionalElementCall(
+        owner: Value,
+        call: ts.CallExpression,
+        access: ts.ElementAccessExpression,
+    ): Value | undefined {
+        return this.optionalAccess(owner, call, (presentOwner) => {
+            const member =
+                this.guardableElementRead(presentOwner, access) ??
+                this.elementRead(presentOwner, access, "read");
+            return member?.kind === "data" &&
+                member.dataType?.kind === "function"
+                ? this.compileStoredCall(call, member.cpp, member.dataType)
+                : undefined;
+        });
+    }
+
     private optionalPropertyRead(
         owner: Value,
         access: ts.PropertyAccessExpression,
