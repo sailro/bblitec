@@ -9,6 +9,7 @@ import {
     isSuspensionPoint,
     variableKind,
 } from "./syntax.js";
+import { inheritsFrom } from "./type-facts.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -543,14 +544,8 @@ function derivesFrom(
     base: ts.Type,
 ): boolean {
     const type = checker.getTypeAtLocation(node);
-    const pending = [
-        ...(type.isClassOrInterface() ? checker.getBaseTypes(type) : []),
-    ];
-    while (pending.length > 0) {
-        const next = pending.pop()!;
-        if (next.symbol === base.symbol) return true;
-        if (next.isClassOrInterface())
-            pending.push(...checker.getBaseTypes(next));
-    }
-    return false;
+    return inheritsFrom(
+        type,
+        (candidate) => candidate !== type && candidate.symbol === base.symbol,
+    );
 }

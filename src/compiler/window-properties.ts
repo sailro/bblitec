@@ -8,7 +8,7 @@ import {
     declaredInDomLibrary,
     resolvedSymbol,
 } from "./symbols.js";
-import { nullability } from "./type-facts.js";
+import { nullability, inheritsFrom } from "./type-facts.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { isAbsentWindowMember } from "./browser-erasure.js";
 import { boundRecordValue } from "./bound-record-value.js";
@@ -64,17 +64,18 @@ export class WindowProperties {
     >();
     constructor(private readonly context: Context) {}
 
-    private targetType(type: ts.Type, seen = new Set<ts.Type>()): boolean {
-        if (seen.has(type)) return false;
-        seen.add(type);
-        if (type.isUnion() || type.isIntersection())
-            return type.types.some((member) => this.targetType(member, seen));
-        if (declaredInDomLibrary(type.symbol))
-            return ["Window", "Document", "EventTarget"].includes(
-                type.symbol.name,
-            );
-        return (type.getBaseTypes() ?? []).some((base) =>
-            this.targetType(base, seen),
+    private targetType(type: ts.Type): boolean {
+        return inheritsFrom(
+            type,
+            (candidate) =>
+                declaredInDomLibrary(candidate.symbol) &&
+                ["Window", "Document", "EventTarget"].includes(
+                    candidate.symbol.name,
+                ),
+            {
+                unions: "some",
+                through: (candidate) => !declaredInDomLibrary(candidate.symbol),
+            },
         );
     }
 

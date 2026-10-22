@@ -35,6 +35,7 @@ import {
     typeCanCarryReference,
     arrayElementType,
     callSignatures,
+    inheritsFrom,
 } from "./type-facts.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 
@@ -402,22 +403,22 @@ function parameterProjection(
     const nativeHandle = (
         type: ts.Type,
     ): ReturnType<typeof pinnedSourceHandleKind> => {
-        const candidate = checker.getNonNullableType(type);
-        const direct = pinnedSourceHandleKind(candidate);
-        if (direct) return direct;
-        if (
-            !candidate.symbol?.declarations?.every(
-                (item) =>
-                    isEngineDeclaration(item) ||
-                    isPinnedSource(item.getSourceFile()),
-            )
-        )
-            return undefined;
-        for (const base of candidate.getBaseTypes() ?? []) {
-            const inherited = nativeHandle(base);
-            if (inherited) return inherited;
-        }
-        return undefined;
+        let handle: ReturnType<typeof pinnedSourceHandleKind>;
+        inheritsFrom(
+            checker.getNonNullableType(type),
+            (candidate) =>
+                (handle = pinnedSourceHandleKind(candidate)) !== undefined,
+            {
+                // Only an engine type's bases are engine handles.
+                through: (candidate) =>
+                    candidate.symbol?.declarations?.every(
+                        (item) =>
+                            isEngineDeclaration(item) ||
+                            isPinnedSource(item.getSourceFile()),
+                    ) === true,
+            },
+        );
+        return handle;
     };
 
     const aliases = new Map<ts.Symbol, readonly Projection[]>([

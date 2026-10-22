@@ -126,6 +126,8 @@ import {
     holdsNoPayload,
     arrayShape,
     callSignatures,
+    classInstanceDeclaration,
+    inheritsFrom,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -731,9 +733,7 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
         case "HTMLAudioElement":
             return "audio-element";
     }
-    return (type.getBaseTypes() ?? []).some(
-        (base) => domAudioHandleKind(base) === "audio-node",
-    )
+    return inheritsFrom(type, (base) => libraryName(base) === "AudioNode")
         ? "audio-node"
         : undefined;
 }
@@ -795,19 +795,14 @@ function isDomEventType(
 ): boolean {
     if (seen.has(candidate)) return false;
     seen.add(candidate);
-    return (
-        (libraryName(candidate) === "Event" &&
-            checker.isTypeAssignableTo(type, candidate)) ||
-        (candidate.isIntersection() &&
-            candidate.types.some((member) =>
-                isDomEventType(checker, type, member, seen),
-            )) ||
-        (candidate.getBaseTypes() ?? []).some((base) =>
-            isDomEventType(checker, type, base, seen),
-        ) ||
-        (candidate.aliasTypeArguments ?? []).some((argument) =>
-            isDomEventType(checker, type, argument, seen),
-        )
+    return inheritsFrom(
+        candidate,
+        (inherited) =>
+            (libraryName(inherited) === "Event" &&
+                checker.isTypeAssignableTo(type, inherited)) ||
+            (inherited.aliasTypeArguments ?? []).some((argument) =>
+                isDomEventType(checker, type, argument, seen),
+            ),
     );
 }
 
@@ -1705,7 +1700,7 @@ export class DataTypeRegistry {
         if (
             callSignatures(this.checker, type, "exact").length ||
             type.getConstructSignatures().length ||
-            type.symbol?.declarations?.some(ts.isClassLike) ||
+            classInstanceDeclaration(type) !== undefined ||
             this.checker.getPropertiesOfType(type).length === 0
         )
             return;
@@ -5744,7 +5739,7 @@ export class DataTypeRegistry {
                 (member) =>
                     // Class instances retain their nominal owner; their fields
                     // alone cannot represent instanceof or private brands.
-                    member.symbol?.declarations?.some(ts.isClassLike) ||
+                    classInstanceDeclaration(member) !== undefined ||
                     callSignatures(this.checker, member, "exact").length > 0 ||
                     member.getConstructSignatures().length > 0 ||
                     this.checker.getIndexInfosOfType(member).length > 0,
@@ -8115,7 +8110,7 @@ export class DataTypeRegistry {
                 : owned;
         }
         const symbol = concrete.symbol;
-        const declaration = symbol?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(concrete);
         if (
             !symbol ||
             !declaration ||

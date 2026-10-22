@@ -246,6 +246,7 @@ import {
     typeCanCarryReference,
     undefinedOnly,
     callSignatures,
+    inheritsFrom,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -2209,27 +2210,11 @@ class Compiler implements LoweringServices {
         type: ts.Type,
         name: string,
         declaredBy: (symbol: ts.Symbol) => boolean,
-        visited = new EmissionSet<ts.Type>(),
     ): boolean {
-        if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
-        if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
-            return false;
-        }
-        visited.add(type);
-        const objectType = type as ts.ObjectType;
-        if (
-            (objectType.objectFlags &
-                (ts.ObjectFlags.Class | ts.ObjectFlags.Interface)) ===
-            0
-        ) {
-            return false;
-        }
-        return (
-            this.checker
-                .getBaseTypes(type as ts.InterfaceType)
-                ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, declaredBy, visited),
-                ) ?? false
+        return inheritsFrom(
+            type,
+            (candidate) =>
+                candidate.symbol?.name === name && declaredBy(candidate.symbol),
         );
     }
 

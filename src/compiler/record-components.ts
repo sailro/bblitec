@@ -5,7 +5,12 @@ import {
     type DeclarationOrigin,
 } from "./symbols.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { holdsOnly, arrayElementType, callSignatures } from "./type-facts.js";
+import {
+    holdsOnly,
+    arrayElementType,
+    callSignatures,
+    classInstanceDeclaration,
+} from "./type-facts.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -121,7 +126,7 @@ export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
         parts.some(
             (part) =>
                 (part.flags & ts.TypeFlags.Object) === 0 ||
-                part.symbol?.declarations?.some(ts.isClassLike) === true,
+                classInstanceDeclaration(part) !== undefined,
         ) ||
         checker.isArrayLikeType(type) ||
         callSignatures(checker, type, "exact").length > 0 ||

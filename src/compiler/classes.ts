@@ -51,6 +51,7 @@ import {
     isVoid,
     holdsOnly,
     callSignatures,
+    classInstanceDeclaration,
 } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -2073,10 +2074,9 @@ export class ClassLowerer {
     public compileIterableIterator(
         expression: ts.Expression,
     ): Value | undefined {
-        const declaration = this.context.checker
-            .getTypeAtLocation(expression)
-            .getSymbol()
-            ?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(
+            this.context.checker.getTypeAtLocation(expression),
+        );
         if (!declaration) return undefined;
         const declared = classIteratorMethod(
             this.context.checker,
@@ -3641,7 +3641,7 @@ export class ClassLowerer {
         if (value.dataType?.kind !== "error" && !isJsonValue(value))
             return undefined;
         const type = this.context.checker.getTypeAtLocation(node);
-        const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(type);
         if (isJsonValue(value))
             value = this.context.dataValue(
                 `bbl::js::json_error(${value.cpp})`,

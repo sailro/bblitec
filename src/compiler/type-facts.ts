@@ -211,6 +211,55 @@ export function absenceKind(
     );
 }
 
+/**
+ * The class whose instances a type describes: a class's instance type (a
+ * generic one's instantiation, its `this`). Undefined for the constructor
+ * (`typeof C`), which shares the class's symbol, and any other type.
+ */
+export function classInstanceDeclaration(
+    type: ts.Type,
+): ts.ClassLikeDeclaration | undefined {
+    const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+    return declaration && type.getConstructSignatures().length === 0
+        ? declaration
+        : undefined;
+}
+
+/**
+ * Whether a type, or a class or interface type it extends at any depth,
+ * passes `test`. An intersection passes when one of its members does; a
+ * union when `unions` says ("some" member, "every" member, or "none").
+ * `through` keeps a type that fails it from lending its bases.
+ */
+export function inheritsFrom(
+    type: ts.Type,
+    test: (type: ts.Type) => boolean,
+    options: {
+        readonly unions?: "some" | "every" | "none";
+        readonly through?: (type: ts.Type) => boolean;
+    } = {},
+): boolean {
+    const seen = new Map<ts.Type, boolean>();
+    const visit = (candidate: ts.Type): boolean => {
+        const known = seen.get(candidate);
+        if (known !== undefined) return known;
+        seen.set(candidate, false);
+        const result =
+            test(candidate) ||
+            (candidate.isIntersection() && candidate.types.some(visit)) ||
+            (candidate.isUnion() &&
+                (options.unions === "some"
+                    ? candidate.types.some(visit)
+                    : options.unions === "every" &&
+                      candidate.types.every(visit))) ||
+            ((options.through?.(candidate) ?? true) &&
+                (candidate.getBaseTypes() ?? []).some(visit));
+        seen.set(candidate, result);
+        return result;
+    };
+    return visit(type);
+}
+
 /** Whether a type is a generic instantiation (`Map<K, V>`, `Array<T>`). */
 export function isTypeReference(type: ts.Type): type is ts.TypeReference {
     return (

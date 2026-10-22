@@ -916,3 +916,21 @@ test("call signatures are read through type-facts.ts", () => {
         ["src/compiler/type-facts.ts"],
     );
 });
+
+test("class instances and inheritance are read through type-facts.ts", () => {
+    // classInstanceDeclaration: the class a type's instances belong to (not
+    // `typeof C`, which shares its symbol); inheritsFrom: a type or anything
+    // it extends, with each site's union rule.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).members.has("getBaseTypes"),
+        ),
+        ["src/compiler/type-facts.ts"],
+    );
+    for (const name of ["classInstanceDeclaration", "inheritsFrom"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/type-facts.ts"],
+            name,
+        );
+});
