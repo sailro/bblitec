@@ -303,6 +303,7 @@ import {
     functionKind,
     isSupportedFunction,
     variableKind,
+    unwrapExpression,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -366,6 +367,7 @@ import {
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
+import { keptArguments } from "./compiler/kept-values.js";
 
 export type {
     CompileAsset,
@@ -3306,7 +3308,15 @@ class Compiler implements LoweringServices {
                                         index,
                                     ) &&
                                     writesArgument(node, index),
-                            ))
+                            )) ||
+                        // A member kept past the call (a construction of a
+                        // program class, a storing call) is written through
+                        // its new owner; the binding itself escapes whole.
+                        keptArguments(this.checker, node).some(
+                            (argument) =>
+                                !ts.isIdentifier(unwrapExpression(argument)) &&
+                                mentions(argument),
+                        )
                     );
                 });
                 if (written) return true;

@@ -43,3 +43,31 @@ test("an import used only as a type does not run its module", (t) => {
     );
     runGeneratedProgram(tools, "module-evaluation", cpp, {});
 });
+
+test("an imported record's member kept by another owner is the same object", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/module-kept-members");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        resolve(directory, "config.ts"),
+        "export const CFG = { a: { n: 1 }, b: { n: 1 }, c: { n: 1 } };",
+    );
+    const { cpp } = compileSource(
+        `import { CFG } from "./config.js";
+        class H { constructor(public o: { n: number }) {} bump(): void { this.o.n++; } }
+        new H(CFG.a).bump();
+        const holder = { o: CFG.b };
+        holder.o.n = 3;
+        const list: { n: number }[] = [];
+        list.push(CFG.c);
+        list[0]!.n = 4;
+        if (CFG.a.n !== 2 || CFG.b.n !== 3 || CFG.c.n !== 4)
+            throw new Error("kept members " + CFG.a.n + CFG.b.n + CFG.c.n);`,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    runGeneratedProgram(tools, "module-kept-members", cpp, {});
+});

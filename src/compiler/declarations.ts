@@ -132,6 +132,7 @@ import {
     parameterMutatedPaths,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
+import { keptArguments, literalHeldValues } from "./kept-values.js";
 
 /** What declaration lowering reads of the compiler. */
 interface DeclarationContext
@@ -254,21 +255,6 @@ export function initializerNamesBinding(
         });
     visit(initializer);
     return found;
-}
-
-/** Whether `new` builds an instance of a class the program declares. */
-function constructsProgramClass(
-    checker: ts.TypeChecker,
-    construction: ts.NewExpression,
-): boolean {
-    const declaration = resolvedSymbol(
-        checker,
-        unwrapExpression(construction.expression),
-    )?.declarations?.find(ts.isClassLike);
-    return (
-        declaration !== undefined &&
-        !declaration.getSourceFile().isDeclarationFile
-    );
 }
 
 export class DeclarationLowerer {
@@ -4590,43 +4576,24 @@ export class DeclarationLowerer {
             typeCanCarryReference(
                 this.context.checker.getTypeAtLocation(value),
             );
-        // `{ o: record.inner }` and `[record.inner]` hold a member of the
-        // object: a write through the holder's member writes it. (A holder of
-        // the binding itself materializes it as it escapes.)
-        const holdsAliasMember = (
+        // A member of the object kept alone -- by a literal (`{ o: record.inner }`)
+        // or past a call (a construction, a storing call) -- is that object;
+        // the binding itself materializes as it escapes.
+        const holdsMember = (
             scan: AliasedMutationScan,
-            initializer: ts.Expression,
-        ): boolean => {
-            const literal = this.context.unwrap(initializer);
-            const values = ts.isObjectLiteralExpression(literal)
-                ? literal.properties.flatMap((property) =>
-                      ts.isPropertyAssignment(property)
-                          ? [property.initializer]
-                          : ts.isShorthandPropertyAssignment(property)
-                            ? [property.name]
-                            : [],
-                  )
-                : ts.isArrayLiteralExpression(literal)
-                  ? literal.elements.filter(
-                        (element) =>
-                            !ts.isSpreadElement(element) &&
-                            !ts.isOmittedExpression(element),
-                    )
-                  : [];
-            return values.some(
-                (value) =>
-                    (!scan.namesAlias(this.context.unwrap(value)) &&
-                        holdsIdentity(scan, value)) ||
-                    holdsAliasMember(scan, value),
-            );
-        };
+            value: ts.Expression,
+        ): boolean =>
+            !scan.namesAlias(unwrapExpression(value)) &&
+            holdsIdentity(scan, value);
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
             {
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer) ||
-                    holdsAliasMember(scan, initializer),
+                    literalHeldValues(initializer).some((value) =>
+                        holdsMember(scan, value),
+                    ),
                 // `const { inner } = record` holds a member, as
                 // `const inner = record.inner` does.
                 // Queries record no await: read through it without counting.
@@ -4686,19 +4653,9 @@ export class DeclarationLowerer {
                         isStoringDataCall(node, this.context.checker)
                     )
                         return true;
-                    // A class of the program keeps a construction argument (a
-                    // parameter property, a field) for its methods to write.
-                    // The binding itself is materialized as it escapes; one
-                    // of its members escapes alone, so the binding needs
-                    // the storage that member lives in.
                     if (
-                        ts.isNewExpression(node) &&
-                        constructsProgramClass(this.context.checker, node) &&
-                        node.arguments?.some(
-                            (argument) =>
-                                !scan.namesAlias(
-                                    this.context.unwrap(argument),
-                                ) && holdsIdentity(scan, argument),
+                        keptArguments(this.context.checker, node).some(
+                            (argument) => holdsMember(scan, argument),
                         )
                     )
                         return true;

@@ -34,6 +34,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { isRebound } from "./binding-rebinds.js";
+import { keptArguments, literalHeldValues } from "./kept-values.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
 export function moduleContainerSymbol(
@@ -278,11 +279,14 @@ function collectMutatedContainerSymbols(
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
-    const aliases = new Map<ts.Symbol, ts.Symbol>();
+    const aliases = new Map<ts.Symbol, ts.Symbol[]>();
     const record = (target: ts.Expression): void => {
         const symbol = moduleContainerSymbol(target, checker, symbols);
         if (symbol) mutated.add(symbol);
     };
+    const heldMember = (value: ts.Expression): boolean =>
+        !ts.isIdentifier(unwrapExpression(value)) &&
+        typeCanCarryReference(checker.getTypeAtLocation(value));
     const recordThrough = (target: ts.Expression): void => {
         // A write to the name itself is a rebinding, not a write through it.
         const current = unwrapExpression(target);
@@ -300,13 +304,21 @@ function collectMutatedContainerSymbols(
             typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
         ) {
             const alias = symbols.valueSymbol(node.name);
-            const origin = moduleContainerSymbol(
+            // The container itself, or (a literal holding them) its members.
+            const origins = [
                 node.initializer,
-                checker,
-                symbols,
-            );
-            if (alias && origin) aliases.set(alias, origin);
+                ...literalHeldValues(node.initializer).filter(heldMember),
+            ].flatMap((value) => {
+                const origin = moduleContainerSymbol(value, checker, symbols);
+                return origin ? [origin] : [];
+            });
+            if (alias && origins.length > 0) aliases.set(alias, origins);
         }
+        // A member kept past a call (a construction of a program class, a
+        // storing call) is written through its new owner; the container
+        // itself escapes whole.
+        for (const argument of keptArguments(checker, node))
+            if (heldMember(argument)) record(argument);
         if (ts.isCallExpression(node)) {
             const called = calledDeclaration(checker, node);
             node.arguments.forEach((argument, index) => {
@@ -332,10 +344,8 @@ function collectMutatedContainerSymbols(
             if (target) record(target);
         }
     });
-    for (const symbol of mutated) {
-        const origin = aliases.get(symbol);
-        if (origin) mutated.add(origin);
-    }
+    for (const symbol of mutated)
+        for (const origin of aliases.get(symbol) ?? []) mutated.add(origin);
     return mutated;
 }
 

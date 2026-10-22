@@ -942,3 +942,19 @@ test("a union's members are read through type-facts.ts", () => {
         ["src/compiler/type-facts.ts"],
     );
 });
+
+test("what another owner keeps is read through kept-values.ts", () => {
+    // literalHeldValues (a literal's values at any depth) and keptArguments
+    // (a construction of a program class, a storing call) serve every
+    // "is this object written after its initializer" scan.
+    for (const name of [
+        "literalHeldValues",
+        "keptArguments",
+        "constructsProgramClass",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/kept-values.ts"],
+            name,
+        );
+});
