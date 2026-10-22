@@ -41,6 +41,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { valueKindOf } from "./type-facts.js";
+import { bindingRebinds, fileRebinds } from "./binding-rebinds.js";
 
 type Context = Pick<
     LoweringServices,
@@ -90,8 +91,6 @@ interface SourceGraph {
         readonly ts.CallExpression[]
     >;
     readonly writes: ReadonlyMap<ts.Symbol, readonly ts.Expression[]>;
-    /** Every assignment or update of a binding itself, by the binding. */
-    readonly bindingWrites: ReadonlyMap<ts.Symbol, readonly ts.Node[]>;
     readonly mutated: ReadonlySet<ts.Symbol>;
     /**
      * Plain `x.a[i].b = v` writes into a binding's object graph, by the
@@ -350,15 +349,6 @@ function sourceGraph(
     const implementations = new Map<ts.Node, SupportedFunction[]>();
     const memberCalls: [ts.Node, ts.CallExpression][] = [];
     const writes = new Map<ts.Symbol, ts.Expression[]>();
-    const bindingWrites = new Map<ts.Symbol, ts.Node[]>();
-    const writeBinding = (target: ts.Expression, write: ts.Node): void => {
-        const name = unwrapExpression(target);
-        const symbol = ts.isIdentifier(name) && resolvedSymbol(checker, name);
-        if (!symbol) return;
-        const list = bindingWrites.get(symbol) ?? [];
-        list.push(write);
-        bindingWrites.set(symbol, list);
-    };
     const mutated = new Set<ts.Symbol>();
     const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
     const alias = (target: ts.Node, source: ts.Expression): void => {
@@ -514,20 +504,11 @@ function sourceGraph(
                         mutate(callee.expression);
                 }
                 for (const { target, kind, stored } of writeSites(node)) {
-                    writeBinding(target, node);
+                    // A name's own rebinds come from fileRebinds below.
+                    if (ts.isIdentifier(target)) continue;
                     // Only a plain `=` stores a value this domain can read;
                     // every other write leaves the binding's value unknown.
                     const value = kind === "assign" ? stored : undefined;
-                    if (ts.isIdentifier(target)) {
-                        const symbol = resolvedSymbol(checker, target);
-                        if (!symbol) continue;
-                        if (value) {
-                            const values = writes.get(symbol) ?? [];
-                            values.push(value);
-                            writes.set(symbol, values);
-                        } else mutated.add(symbol);
-                        continue;
-                    }
                     const written = value && memberWritePath(target);
                     const symbol =
                         written && resolvedSymbol(checker, written.root);
@@ -541,6 +522,15 @@ function sourceGraph(
             },
             { types: "skip" },
         );
+        for (const [symbol, sites] of fileRebinds(checker, source))
+            for (const { kind, stored } of sites) {
+                const value = kind === "assign" ? stored : undefined;
+                if (value) {
+                    const values = writes.get(symbol) ?? [];
+                    values.push(value);
+                    writes.set(symbol, values);
+                } else mutated.add(symbol);
+            }
     }
     for (const [member, call] of memberCalls)
         for (const implementation of implementations.get(member) ?? [])
@@ -562,7 +552,6 @@ function sourceGraph(
     const graph: SourceGraph = {
         calls,
         writes,
-        bindingWrites,
         mutated,
         memberWrites,
         otherwiseMutated,
@@ -1407,11 +1396,11 @@ export function writtenOnlyInDeadFunctions(
     symbol: ts.Symbol,
 ): boolean {
     const graph = sourceGraph(checker, sourceFiles);
-    const writes = graph.bindingWrites.get(symbol) ?? [];
+    const writes = bindingRebinds(checker, sourceFiles, symbol);
     return (
         writes.length > 0 &&
         writes.every((write) => {
-            const owner = ts.findAncestor(write.parent, ts.isFunctionLike);
+            const owner = ts.findAncestor(write.node.parent, ts.isFunctionLike);
             return owner !== undefined && neverRuns(graph, owner);
         })
     );

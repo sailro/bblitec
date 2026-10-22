@@ -33,6 +33,7 @@ import {
     isSupportedFunction,
     variableKind,
 } from "./syntax.js";
+import { isRebound } from "./binding-rebinds.js";
 
 /** The owning binding beneath ordinary members and imported namespace exports. */
 export function moduleContainerSymbol(
@@ -145,38 +146,6 @@ export function isModuleInitializerStatement(
         ts.isEnumDeclaration(statement) ||
         ts.isModuleDeclaration(statement)
     );
-}
-
-/**
- * Every name `sourceFile` rebinds, resolved in one walk for the whole file.
- *
- * `countUpdateOperators` decides whether `++`/`--` joins the set. The
- * module-state planner counts it -- `count++` at module scope is what makes
- * the name storage rather than a folded constant -- and the declaration
- * lowering's `identifierIsRebound` does not. The two answers are different
- * answers, so sharing one walk keeps the arm a parameter rather than merging
- * it: a caller that gains `++`/`--` here changes what every scene emits.
- */
-export function collectReboundSymbols(
-    sourceFile: ts.SourceFile,
-    symbols: CompilerSymbols,
-    countUpdateOperators: boolean,
-): Set<ts.Symbol> {
-    const rebound = new EmissionSet<ts.Symbol>();
-    const record = (target: ts.Expression): void => {
-        if (!ts.isIdentifier(target)) return;
-        const symbol = symbols.valueSymbol(target);
-        if (symbol) rebound.add(symbol);
-    };
-    forEachAnalysisNode(sourceFile, (node) => {
-        for (const site of writeSites(node))
-            if (
-                site.kind !== "delete" &&
-                (countUpdateOperators || site.kind !== "update")
-            )
-                record(site.target);
-    });
-    return rebound;
 }
 
 /** The initializers that create a container a later write can reach into. */
@@ -560,11 +529,10 @@ class ModuleInitializerPlanner {
     ): readonly ts.Statement[] {
         const retained = new Set(retainedDeclarations);
         // `true`: at module scope an incremented name is storage too.
-        const rebound = collectReboundSymbols(
-            this.sourceFile,
-            this.symbols,
-            true,
-        );
+        const rebound = (symbol: ts.Symbol): boolean =>
+            isRebound(this.checker, this.program.getSourceFiles(), symbol, {
+                updates: true,
+            });
         const mutated = collectMutatedContainerSymbols(
             this.sourceFile,
             this.checker,
@@ -591,7 +559,7 @@ class ModuleInitializerPlanner {
                     if (!ts.isIdentifier(declaration.name)) return false;
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol === undefined) return false;
-                    if (!isConst) return rebound.has(symbol);
+                    if (!isConst) return rebound(symbol);
                     // A record carrying methods binds here too, so its
                     // methods have a receiver to run against.
                     return (

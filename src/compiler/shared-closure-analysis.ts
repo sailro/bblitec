@@ -5,7 +5,7 @@ import {
 } from "./analysis-walk.js";
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
-import { collectReboundSymbols } from "./module-initializers.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
     choosesOperand,
     outermostWrapper,
@@ -99,14 +99,6 @@ interface SharedClosureContext extends Pick<
 export class SharedClosureAnalysis {
     constructor(private readonly context: SharedClosureContext) {}
 
-    /**
-     * One rebound-name walk per file, shared by every `identifierIsRebound`.
-     * @unjournaled The answer depends on the file's syntax alone.
-     */
-    private readonly reboundSymbolsByFile = new WeakMap<
-        ts.SourceFile,
-        ReadonlySet<ts.Symbol>
-    >();
     /** @unjournaled The answers depend on the program's syntax and types alone. */
     private readonly sharedClosureSymbols = new WeakMap<
         ts.Node,
@@ -700,24 +692,19 @@ export class SharedClosureAnalysis {
 
     /**
      * A non-literal inferred struct needs storage only when its binding
-     * changes.
-     *
-     * The answer is a property of the file, not of the identifier, so the
-     * file's assigned names are resolved once and every later question is a
-     * set membership -- a scene asks this for most of its declarations, and
-     * a walk each turned that into a scan of the whole file per name.
-     * `false` keeps `++`/`--` out of the set, which is the answer every
-     * caller here has always had.
+     * changes. `++`/`--` stay out: the answer every caller here has always
+     * had (the module-state planner counts them).
      */
     public identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.context.symbols.valueSymbol(identifier);
-        if (!symbol) return false;
-        const file = identifier.getSourceFile();
-        let rebound = this.reboundSymbolsByFile.get(file);
-        if (!rebound) {
-            rebound = collectReboundSymbols(file, this.context.symbols, false);
-            this.reboundSymbolsByFile.set(file, rebound);
-        }
-        return rebound.has(symbol);
+        return (
+            symbol !== undefined &&
+            isRebound(
+                this.context.checker,
+                this.context.program.getSourceFiles(),
+                symbol,
+                { updates: false },
+            )
+        );
     }
 }

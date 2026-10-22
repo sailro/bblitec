@@ -882,3 +882,21 @@ test("a variable's keyword is read through syntax.ts", () => {
         "src/compiler/syntax.ts",
     ]);
 });
+
+test("a binding's rebinds are read through binding-rebinds.ts", () => {
+    // fileRebinds indexes every write that gives a name a new value, once
+    // per file; bindingRebinds and isRebound read it for a binding (its
+    // module, or every source for a global).
+    for (const name of ["fileRebinds", "bindingRebinds", "isRebound"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/binding-rebinds.ts"],
+            name,
+        );
+    for (const name of [
+        "collectReboundSymbols",
+        "reboundSymbolsByFile",
+        "writeBinding",
+    ])
+        assert.deepEqual(declarationOwners(name), [], name);
+});

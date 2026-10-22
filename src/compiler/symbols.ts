@@ -414,6 +414,26 @@ export function resolvedSymbol(
 }
 
 /**
+ * The binding a value name stands for: {@link resolvedSymbol}, with a
+ * constructor parameter-property canonicalized to its parameter. The
+ * checker may expose the parameter's symbol at the declaration and a
+ * property-flavoured one at a use in the constructor body; lexical lookup
+ * must not depend on which view a given identifier got.
+ */
+export function valueSymbolOf(
+    checker: ts.TypeChecker,
+    identifier: ts.MemberName,
+): ts.Symbol | undefined {
+    const resolved = resolvedSymbol(checker, identifier);
+    const parameter = resolved?.declarations?.find(ts.isParameter);
+    return parameter &&
+        ts.isIdentifier(parameter.name) &&
+        ts.isParameterPropertyDeclaration(parameter, parameter.parent)
+        ? (declaredSymbol(checker, parameter.name) ?? resolved)
+        : resolved;
+}
+
+/**
  * The declaration a call, construction or tag resolves to: a function,
  * method, constructor or signature; a JSDoc signature declares none.
  */
@@ -886,25 +906,7 @@ export class CompilerSymbols {
     }
 
     public valueSymbol(identifier: ts.MemberName): ts.Symbol | undefined {
-        const resolved = resolvedSymbol(this.checker, identifier);
-        if (!resolved) {
-            return undefined;
-        }
-        // A constructor parameter-property has one declaration but the
-        // checker may expose its declaration-name symbol at the parameter
-        // and its property-flavoured symbol at a use in the constructor
-        // body. Canonicalize both through that shared parameter declaration
-        // so lexical lookup does not depend on which view the checker gave
-        // the particular identifier.
-        const parameter = resolved.declarations?.find(ts.isParameter);
-        if (
-            parameter &&
-            ts.isIdentifier(parameter.name) &&
-            ts.isParameterPropertyDeclaration(parameter, parameter.parent)
-        ) {
-            return declaredSymbol(this.checker, parameter.name) ?? resolved;
-        }
-        return resolved;
+        return valueSymbolOf(this.checker, identifier);
     }
 
     /** A value's defining module and an export of that same resolved symbol. */

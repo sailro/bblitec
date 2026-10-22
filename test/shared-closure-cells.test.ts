@@ -7,9 +7,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { collectReboundSymbols } from "../src/compiler/module-initializers.js";
+import { fileRebinds, isRebound } from "../src/compiler/binding-rebinds.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
-import { CompilerSymbols } from "../src/compiler/symbols.js";
+
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -313,7 +313,7 @@ test("an inline entry-level animation-frame callback borrows the entry scope", (
 });
 
 /**
- * One walk answers "does this file rebind this name", for the declaration
+ * One index answers "is this name rebound", for the declaration
  * lowering's `identifierIsRebound` and for the module-state planner. The two
  * ask deliberately different questions and the parameter is what keeps them
  * apart: the planner counts `++`/`--`, because an incremented module-scope
@@ -325,18 +325,17 @@ const reboundNames = (
     countUpdateOperators: boolean,
 ): string[] => {
     const { checker, sourceFile } = createCompilerProgram(source, "input.ts");
-    return [
-        ...collectReboundSymbols(
-            sourceFile,
-            new CompilerSymbols(checker),
-            countUpdateOperators,
-        ),
-    ]
+    return [...fileRebinds(checker, sourceFile).keys()]
+        .filter((symbol) =>
+            isRebound(checker, [sourceFile], symbol, {
+                updates: countUpdateOperators,
+            }),
+        )
         .map((symbol) => symbol.name)
         .sort();
 };
 
-test("the shared rebound-name walk counts ++ and -- only when asked to", () => {
+test("the shared rebind index counts ++ and -- only when asked to", () => {
     const source = `
         let assigned = 0;
         let compound = 0;
