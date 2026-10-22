@@ -128,10 +128,11 @@ import {
     variableKind,
 } from "./syntax.js";
 import {
+    emitReachableStatements,
+    finalReturn,
     firstReturn,
     forEachReturn,
     returnsNever,
-    emitReachableStatements,
 } from "./loop-control.js";
 import {
     FunctionSpecializations,
@@ -704,9 +705,7 @@ function finalReturnExpression(
 ): ts.Expression | undefined {
     const body = declaration.body;
     if (!body) return undefined;
-    if (!ts.isBlock(body)) return body;
-    const final = body.statements.at(-1);
-    return final && ts.isReturnStatement(final) ? final.expression : undefined;
+    return ts.isBlock(body) ? finalReturn(body)?.expression : body;
 }
 
 /**
@@ -6881,12 +6880,8 @@ export class UserFunctionLowerer {
         // needs actual function control flow, so the call lowers through an
         // immediately-invoked native lambda. Earlier bare returns in a void
         // helper retain the lighter breakable-wrapper path.
-        const finalStatement = body.statements.at(-1);
-        const finalReturn =
-            finalStatement && ts.isReturnStatement(finalStatement)
-                ? finalStatement
-                : undefined;
-        const leadingStatements = finalReturn
+        const trailingReturn = finalReturn(body);
+        const leadingStatements = trailingReturn
             ? body.statements.slice(0, -1)
             : body.statements;
         const needsValueLambda =
@@ -6914,9 +6909,9 @@ export class UserFunctionLowerer {
             : this.classifyEarlyReturns(statements, fail);
         const needsWrapper = earlyReturns === "wrapper";
         const needsLocalNative = earlyReturns === "native";
-        if (needsWrapper && finalReturn?.expression) {
+        if (needsWrapper && trailingReturn?.expression) {
             fail(
-                finalReturn,
+                trailingReturn,
                 "Inlined functions cannot combine a bare early return with a final return value.",
             );
         }
@@ -6936,9 +6931,9 @@ export class UserFunctionLowerer {
                 this.checker,
                 declaration,
             ),
-            ...(!needsValueLambda && finalReturn?.expression
+            ...(!needsValueLambda && trailingReturn?.expression
                 ? {
-                      returnExpression: finalReturn.expression,
+                      returnExpression: trailingReturn.expression,
                   }
                 : {}),
         };

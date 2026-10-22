@@ -38,7 +38,7 @@ import {
 } from "./dynamic-binding-storage.js";
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
-import { emitReachableStatements } from "./loop-control.js";
+import { emitReachableStatements, finalReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     captureDataFunctionBody,
@@ -1881,12 +1881,9 @@ export class DeclarationLowerer {
                     ? bodyExpr
                     : undefined;
             }
-            const statements = callee.body.statements;
-            const last = statements.at(-1);
+            const last = finalReturn(callee.body);
             if (
-                !last ||
-                !ts.isReturnStatement(last) ||
-                !last.expression ||
+                !last?.expression ||
                 someAnalysisNode(
                     callee.body,
                     (part) => part !== last && ts.isReturnStatement(part),

@@ -106,6 +106,15 @@ interface ReturnQuery {
     readonly valued?: boolean;
 }
 
+/** The `return` a block body ends with, or undefined (a concise body, another statement). */
+export function finalReturn(
+    body: ts.Node | undefined,
+): ts.ReturnStatement | undefined {
+    if (!body || !ts.isBlock(body)) return undefined;
+    const last = body.statements.at(-1);
+    return last && ts.isReturnStatement(last) ? last : undefined;
+}
+
 /** The first `return` below the roots, in source order, or undefined. */
 export function firstReturn(
     roots: readonly ts.Node[],

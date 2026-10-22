@@ -18,7 +18,7 @@ import {
     isSupportedFunction,
     type SupportedFunction,
 } from "./syntax.js";
-import { emitReachableStatements } from "./loop-control.js";
+import { emitReachableStatements, finalReturn } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
@@ -128,10 +128,9 @@ function returnsFreshRecord(body: ts.ConciseBody): boolean {
         expression !== undefined &&
         ts.isObjectLiteralExpression(unwrapExpression(expression));
     if (!ts.isBlock(body)) return record(body);
-    const last = body.statements.at(-1);
+    const last = finalReturn(body);
     return (
         last !== undefined &&
-        ts.isReturnStatement(last) &&
         record(last.expression) &&
         !someAnalysisNode(
             body,

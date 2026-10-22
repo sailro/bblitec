@@ -35,7 +35,7 @@ import {
     type UserFunctionContext,
 } from "./user-functions.js";
 import { parameterIsReadOnly, parameterOnlyRead } from "./parameter-effects.js";
-import { firstReturn } from "./loop-control.js";
+import { finalReturn, firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     isAssignmentOperator,
@@ -2453,14 +2453,12 @@ export class ClassLowerer {
                 : mappedReturnType
                   ? this.context.dataTypes.ownReturnedArray(mappedReturnType)
                   : undefined;
-        const lastStatement = method.body.statements.at(-1);
+        const lastReturn = finalReturn(method.body);
         const inlineOwnerReturn =
             returnType?.kind === "handle" &&
             !returnType.ownedEngine &&
             isEngineScopedHandleKind(returnType.handle) &&
-            lastStatement !== undefined &&
-            ts.isReturnStatement(lastStatement) &&
-            lastStatement.expression !== undefined &&
+            lastReturn?.expression !== undefined &&
             !firstReturn(method.body.statements.slice(0, -1), {
                 valued: true,
             }) &&
@@ -2476,12 +2474,8 @@ export class ClassLowerer {
         // A final resource return keeps the actual field owner alongside its
         // handle instead of reducing it to the declared raw return type.
         if (!returnsVoid && (!returnType || inlineOwnerReturn)) {
-            const finalStatement = lastStatement;
-            if (
-                !finalStatement ||
-                !ts.isReturnStatement(finalStatement) ||
-                !finalStatement.expression
-            ) {
+            const finalStatement = lastReturn;
+            if (!finalStatement?.expression) {
                 this.context.fail(
                     method,
                     `Method '${methodLabel(method)}' returns a value outside the native data model and requires a final value return.`,

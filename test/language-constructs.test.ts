@@ -15219,3 +15219,12 @@ check(
     if (run() !== "a,b,c:523" || same() !== 3) throw new Error("assign " + run() + same());
     `,
 );
+check(
+    "a folded if that breaks leaves the switch clause, not the switch",
+    `
+    const T = true;
+    function f(k: number): number { switch (k) { case 0: if (T) break; default: return 2; } return 1; }
+    function g(n: number): number { let s = 0; for (let i = 0; i < n; i++) { switch (i) { case 0: if (T) break; default: s += 10; } s += 1; } return s; }
+    if (f(0) !== 1 || f(5) !== 2 || g(3) !== 23) throw new Error("folded break " + f(0) + f(5) + g(3));
+    `,
+);

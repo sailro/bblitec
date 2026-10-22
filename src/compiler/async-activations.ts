@@ -1,5 +1,6 @@
 import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
+import { finalReturn } from "./loop-control.js";
 import { framePollExecutor } from "./frame-poll.js";
 import { PendingActivations } from "./pending-activations.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -291,15 +292,9 @@ export class AsyncActivations {
             ? tryResolveFunctionDeclaration(this.context.checker, target)
             : target;
         if (!declaration?.body || isAsyncFunction(declaration)) return body();
-        const returned = ts.isBlock(declaration.body)
-            ? declaration.body.statements.at(-1)
+        const expression = ts.isBlock(declaration.body)
+            ? finalReturn(declaration.body)?.expression
             : declaration.body;
-        const expression =
-            returned && ts.isReturnStatement(returned)
-                ? returned.expression
-                : returned && ts.isExpression(returned)
-                  ? returned
-                  : undefined;
         return expression
             ? this.withOrderedSetupInput(expression, body)
             : body();

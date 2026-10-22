@@ -1017,3 +1017,21 @@ test("library schedulers are named in schedulers.ts", () => {
         "src/compiler/workers.ts",
     ]);
 });
+
+test("a body's final return is read through loop-control.ts", () => {
+    // finalReturn answers "the return a block body ends with" for every
+    // inlining, outlining and shape question. The other last-statement reads
+    // ask about a switch clause, a try block or a pinned body's shape.
+    // Ratchet: never more.
+    assert.deepEqual(declarationOwners("finalReturn"), [
+        "src/compiler/loop-control.ts",
+    ]);
+    const reads = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [...readFileSync(path, "utf8").matchAll(/statements[.]at[(]-1[)]/g)]
+                .length,
+        0,
+    );
+    assert.ok(reads <= 28, `statements.at(-1) reads: ${reads}`);
+});

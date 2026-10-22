@@ -147,7 +147,7 @@ import {
 } from "./media-streams.js";
 import { CompileError } from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
-import { firstReturn } from "./loop-control.js";
+import { finalReturn, firstReturn } from "./loop-control.js";
 import {
     regexpCaptureCount,
     regexpCapturesMayBeUnmatched,
@@ -4943,12 +4943,8 @@ export class ExpressionLowerer {
             });
             if (ts.isBlock(callback.body)) {
                 const statements = callback.body.statements;
-                const finalStatement = statements.at(-1);
-                if (
-                    finalStatement &&
-                    ts.isReturnStatement(finalStatement) &&
-                    finalStatement.expression
-                ) {
+                const finalStatement = finalReturn(callback.body);
+                if (finalStatement?.expression) {
                     const earlierReturn = firstReturn(statements.slice(0, -1));
                     if (earlierReturn) {
                         this.context.fail(

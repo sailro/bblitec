@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { finalReturn } from "./loop-control.js";
 import { resolvedSymbol } from "./symbols.js";
 import {
     isOperandSelection,
@@ -113,10 +114,8 @@ export function uiMarkupValueShape(
             };
             visit(called.body);
             // A trailing return ensures that a normal fallthrough cannot produce undefined.
-            const last = called.body.statements.at(-1);
             if (
-                last &&
-                ts.isReturnStatement(last) &&
+                finalReturn(called.body) &&
                 returns.length &&
                 returns.every((value) => sameShape(value, returns[0]!))
             )

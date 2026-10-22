@@ -525,6 +525,13 @@ export class StatementLowerer {
         return undefined;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
+    /**
+     * Statements lowering showed leave only through a `break` (a folded `if`
+     * whose taken branch breaks): they leave a switch clause's statements,
+     * not the switch.
+     */
+    private readonly loweredBreakTerminators =
+        new EmissionWeakSet<ts.Statement>();
     /** Expression statements of a never-typed expression: they throw. */
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     /** The constructs jumps can bind, innermost last. */
@@ -962,8 +969,11 @@ export class StatementLowerer {
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
-        return terminatesFlow(statement, (node) =>
-            this.loweredTerminators.has(node),
+        return terminatesFlow(
+            statement,
+            (node, breakLeaves) =>
+                this.loweredTerminators.has(node) ||
+                (breakLeaves && this.loweredBreakTerminators.has(node)),
         );
     }
 
@@ -1795,6 +1805,7 @@ export class StatementLowerer {
         // iteration-local result: a `continue` taken by one element must
         // not make a later element skip the statement following the `if`.
         this.loweredTerminators.delete(statement);
+        this.loweredBreakTerminators.delete(statement);
         const guard = context.unwrap(statement.expression);
         const identityRead = (expression: ts.Expression): boolean => {
             const value = context.unwrap(expression);
@@ -1850,14 +1861,12 @@ export class StatementLowerer {
             } else if (statement.elseStatement) {
                 this.emitScopedBody(context, statement.elseStatement, true);
             }
-            if (
-                selected &&
-                terminatesFlow(selected, (node) =>
-                    this.neverTerminators.has(node),
-                )
-            ) {
+            const never = (node: ts.Statement) =>
+                this.neverTerminators.has(node);
+            if (selected && terminatesFlow(selected, never, false))
                 this.loweredTerminators.add(statement);
-            }
+            else if (selected && terminatesFlow(selected, never))
+                this.loweredBreakTerminators.add(statement);
             return;
         }
         if (this.jumpTargets.some(({ iteration }) => iteration)) {
@@ -5816,11 +5825,12 @@ function switchFallthroughRun(
  */
 function terminatesFlow(
     statement: ts.Statement,
-    lowered: (node: ts.Statement) => boolean = () => false,
+    lowered: (node: ts.Statement, breakLeaves: boolean) => boolean = () =>
+        false,
     breakLeaves = true,
 ): boolean {
     if (
-        lowered(statement) ||
+        lowered(statement, breakLeaves) ||
         ts.isContinueStatement(statement) ||
         ts.isReturnStatement(statement) ||
         ts.isThrowStatement(statement)
