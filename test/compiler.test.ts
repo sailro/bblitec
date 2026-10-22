@@ -3486,7 +3486,7 @@ test("stores and mutates a runtime string local", () => {
         result.cpp,
         /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/,
     );
-    assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
+    assert.match(result.cpp, /v_\w*name = bbl::js::string_to_upper_case/);
 });
 
 test("preserves undefined in typeof for maybe-absent runtime values", () => {
@@ -5364,7 +5364,7 @@ test("indexes runtime strings as one-character strings", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::string_index\([^\r\n]+/);
-    assert.match(result.cpp, /bbl::js::string_lower\(v_fn\d+_text\)/);
+    assert.match(result.cpp, /bbl::js::string_to_lower_case\(v_fn\d+_text\)/);
 });
 
 test("narrows guarded optional strings before trim", () => {

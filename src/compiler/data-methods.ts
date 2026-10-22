@@ -4256,7 +4256,7 @@ function compileStringDataMethod(
         }
         return {
             kind: "data",
-            cpp: `bbl::js::string_upper(${narrowed.cpp})`,
+            cpp: `bbl::js::string_to_upper_case(${narrowed.cpp})`,
             dataType: { kind: "string" },
         };
     }
@@ -4269,7 +4269,7 @@ function compileStringDataMethod(
         }
         return {
             kind: "data",
-            cpp: `bbl::js::string_lower(${narrowed.cpp})`,
+            cpp: `bbl::js::string_to_lower_case(${narrowed.cpp})`,
             dataType: { kind: "string" },
         };
     }

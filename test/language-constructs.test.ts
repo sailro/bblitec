@@ -15118,11 +15118,38 @@ check(
     `,
 );
 check(
+    "string case maps every script as JavaScript does",
+    `
+    const words = JSON.parse('["é","ÉÀ","ß","ΟΔΟΣ","αβγ","привет","İstanbul","ﬀ","Σ","ΑΣ.Β","abc"]') as string[];
+    const up = words.map((w) => w.toUpperCase()).join("|");
+    const low = words.map((w) => w.toLowerCase()).join("|");
+    if (up !== "É|ÉÀ|SS|ΟΔΟΣ|ΑΒΓ|ПРИВЕТ|İSTANBUL|FF|Σ|ΑΣ.Β|ABC" || low !== "é|éà|ß|οδος|αβγ|привет|i̇stanbul|ﬀ|σ|ασ.β|abc") throw new Error("case " + up + " " + low);
+    `,
+);
+check(
+    "an empty split separates UTF-16 code units",
+    `
+    const s = String.fromCodePoint(97, Math.floor(Math.random() * 0) + 0x1f600, 98);
+    const parts = s.split("");
+    if (parts.length !== 4 || parts[1]!.charCodeAt(0) !== 0xd83d || parts[1]! + parts[2]! !== s.slice(1, 3)) throw new Error("split " + parts.length);
+    `,
+);
+check(
     "a parsed string iterates its code points",
     `
     const s = JSON.parse('"a😀b"') as string;
     let count = 0;
     for (const c of s) count += c.length > 0 ? 1 : 0;
     if ([...s].length !== 3 || count !== 3) throw new Error("parsed string " + count);
+    `,
+);
+check(
+    "slice and padding count UTF-16 units",
+    `
+    const s = String.fromCodePoint(Math.floor(Math.random() * 0) + 0xe9, 0x1f600, 98);
+    if (s.slice(1, 3) !== s.substring(1, 3) || s.slice(-1) !== "b" || s.slice(2, 3).charCodeAt(0) !== 0xde00)
+        throw new Error("slice " + s.slice(1, 3).length);
+    if (s.padStart(6, "-") !== "--" + s || s.padEnd(5, "é") !== s + "é" || "x".padStart(3, "é") !== "ééx")
+        throw new Error("pad " + s.padStart(6, "-"));
     `,
 );

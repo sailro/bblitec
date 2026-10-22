@@ -8544,7 +8544,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "toLowerCase":
             case "toUpperCase":
                 arity(0);
-                return `bbl::js::string_${name === "toLowerCase" ? "lower" : "upper"}(${receiver()})`;
+                return `bbl::js::string_to_${name === "toLowerCase" ? "lower" : "upper"}_case(${receiver()})`;
             case "slice":
             case "substring": {
                 if (node.arguments.length < 1 || node.arguments.length > 2)
