@@ -15038,3 +15038,18 @@ check(
     if (before !== 0 || n === 0) throw new Error("order " + before + " " + n);
     `,
 );
+check(
+    "a record's member kept by a constructed instance or a literal is the same object",
+    `
+    class H { constructor(public o: { n: number }) {} bump(): void { this.o.n++; } }
+    const CFG = { a: { n: 1 }, b: { n: 1 } };
+    new H(CFG.a).bump();
+    const holder = { o: CFG.b, list: [CFG.b] };
+    holder.o.n = 3;
+    holder.list[0]!.n += 1;
+    const scalar = { speed: 2 };
+    const opts = { s: scalar.speed };
+    opts.s = 9;
+    if (CFG.a.n !== 2 || CFG.b.n !== 4 || scalar.speed !== 2) throw new Error("kept member " + CFG.a.n + " " + CFG.b.n);
+    `,
+);
