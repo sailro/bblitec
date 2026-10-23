@@ -166,7 +166,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                 ],
             ]),
             forOf(iterated, element) {
-                return iterated === "loaded" && element === "lg"
+                return sameSource(iterated, "loaded") && element === "lg"
                     ? {
                           range: "loaded",
                           bindings: new Map([
@@ -643,8 +643,9 @@ export function lowerFlowGraphMembership(context: LoweringContext): string {
                                 value,
                                 "Expected one flow registration lookup.",
                             );
-                        const target =
-                            value.expression.expression.getText(file);
+                        const target = propertyPath(
+                            value.expression.expression,
+                        )?.join(".");
                         const collection =
                             target === "list"
                                 ? "list"

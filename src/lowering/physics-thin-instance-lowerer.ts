@@ -411,7 +411,7 @@ export function lowerPhysicsThinInstances(
                 return undefined;
             },
             forOf: (iterated, element) =>
-                iterated === "state[1]"
+                sameSource(iterated, "state[1]")
                     ? {
                           range: "state->handles",
                           bindings: new Map([[element, binding(element)]]),
@@ -713,7 +713,7 @@ export function lowerPhysicsThinInstances(
                 return undefined;
             },
             forOf: (iterated, element) =>
-                iterated === "state[1]"
+                sameSource(iterated, "state[1]")
                     ? {
                           range: "state->handles",
                           bindings: new Map([[element, binding(element)]]),
@@ -753,7 +753,7 @@ export function lowerPhysicsThinInstances(
         ]),
         calls: new Map([...calls, ["Number", (args) => args[0]!]]),
         forOf: (iterated, element) =>
-            iterated === "states.values()"
+            sameSource(iterated, "states.values()")
                 ? {
                       range: "world.thin_states | std::views::values",
                       bindings: new Map([[element, binding(element)]]),

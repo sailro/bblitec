@@ -17,6 +17,7 @@ import {
     sameSource,
     soleBindingName,
     isOneOfSources,
+    propertyPath,
 } from "../compiler/syntax.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
@@ -453,18 +454,19 @@ function thinScope(
                                     n.expression.expression.name.text ===
                                         "destroy"
                                 ) {
-                                    const owner =
-                                        n.expression.expression.expression.getText(
-                                            file,
-                                        );
                                     if (
-                                        owner !== "retiredMatrix" &&
-                                        owner !== "retiredColor"
+                                        !isOneOfSources(
+                                            n.expression.expression.expression,
+                                            ["retiredMatrix", "retiredColor"],
+                                        )
                                     )
                                         return context.contractError(
                                             n,
                                             "Unrepresented retired thin-instance owner.",
                                         );
+                                    const owner = propertyPath(
+                                        n.expression.expression.expression,
+                                    )!.join(".");
                                     return [
                                         `${i}if (${owner}) ${owner}->destroy();`,
                                     ];

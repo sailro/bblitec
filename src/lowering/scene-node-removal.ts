@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The non-mesh SceneNode removal tail and snapshot recursion, over retained handles. */
 export function lowerSceneNodeRemoval(context: LoweringContext): string {
@@ -33,7 +34,7 @@ export function lowerSceneNodeRemoval(context: LoweringContext): string {
             ],
         ]),
         forOf(iterated, element) {
-            if (iterated !== "[...kids]") return undefined;
+            if (!sameSource(iterated, "[...kids]")) return undefined;
             return {
                 range: "js::array_from_iterable<SceneNodeHandle>(kids)",
                 bindings: new Map([

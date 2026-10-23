@@ -75,7 +75,7 @@ import {
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -3918,7 +3918,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             ["toWorld", ["x", "y", "z"]],
         ]);
         layoutScope.forOf = (iterated, element) => ({
-            range: iterated,
+            range: propertyPath(iterated)?.join(".") ?? "",
             bindings: new Map<string, PinnedBinding>([
                 [element, { cpp: element, type: "scalar" }],
             ]),

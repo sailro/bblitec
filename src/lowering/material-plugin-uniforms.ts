@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Invoke retained scene callbacks in the pin's prepared plugin order. */
 export function lowerMaterialPluginUniformBody(
@@ -20,7 +21,7 @@ export function lowerMaterialPluginUniformBody(
                 ["offsets", { cpp: "offsets", type: "opaque" }],
             ]),
             forOf(iterated, element) {
-                if (iterated !== "plugins") return undefined;
+                if (!sameSource(iterated, "plugins")) return undefined;
                 return {
                     range: "*plugins",
                     bindings: new Map([

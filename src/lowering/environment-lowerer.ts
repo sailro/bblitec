@@ -993,9 +993,9 @@ ${spec.tail}}
                     ["isFinite", ([value]) => `std::isfinite(${value})`],
                 ]),
                 forOf: (iterated, element) =>
-                    iterated === "scene.meshes"
+                    sameSource(iterated, "scene.meshes")
                         ? {
-                              range: iterated,
+                              range: "scene.meshes",
                               bindings: new Map([
                                   [element, { cpp: element, type: "opaque" }],
                               ]),

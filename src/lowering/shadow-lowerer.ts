@@ -411,7 +411,7 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
             ]),
             matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
             forOf: (iterated, element) => {
-                if (iterated !== "casterMeshes") return undefined;
+                if (!sameSource(iterated, "casterMeshes")) return undefined;
                 return {
                     range: "casters",
                     bindings: new Map<string, PinnedBinding>([

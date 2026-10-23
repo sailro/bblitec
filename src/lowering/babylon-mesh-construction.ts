@@ -7,6 +7,7 @@ import type {
 } from "./pinned-numeric-lowerer.js";
 import { babylonNodeTransformScope } from "./babylon-node-transforms.js";
 import { babylonSubmeshMaterialScope } from "./babylon-submesh-material.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Source control flow with native geometry upload and node-storage adapters. */
 export function lowerBabylonMeshConstruction(context: LoweringContext): string {
@@ -134,12 +135,11 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                 ],
             ]),
             forOf(iterated, element) {
-                const range =
-                    iterated === "data.meshes"
-                        ? "mesh_sources"
-                        : iterated === "subMeshes"
-                          ? "subMeshes"
-                          : undefined;
+                const range = sameSource(iterated, "data.meshes")
+                    ? "mesh_sources"
+                    : sameSource(iterated, "subMeshes")
+                      ? "subMeshes"
+                      : undefined;
                 return range
                     ? {
                           range,

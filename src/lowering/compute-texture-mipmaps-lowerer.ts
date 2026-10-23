@@ -189,14 +189,14 @@ export function lowerComputeTextureMipmaps(
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
-            const iterated = context.matchingExpressionShape(
-                syntax.expression,
-                ["textures", "prepared"],
-            );
-            if (iterated === undefined) return undefined;
+        forOf(iterated, element) {
+            const range = context.matchingExpressionShape(iterated, [
+                "textures",
+                "prepared",
+            ]);
+            if (range === undefined) return undefined;
             return {
-                range: iterated,
+                range,
                 bindings: new Map([
                     ...[...bindings].filter(([name]) =>
                         name.startsWith(`${element}.`),

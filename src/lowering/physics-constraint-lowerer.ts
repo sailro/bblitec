@@ -6,6 +6,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const module = "src/physics/havok.ts";
 
@@ -316,7 +317,7 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                     ],
                 ]),
                 forOf: (range, name) =>
-                    range === "limits" && name === "l"
+                    sameSource(range, "limits") && name === "l"
                         ? {
                               range: "limits",
                               bindings: new Map([

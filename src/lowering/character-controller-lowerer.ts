@@ -13,6 +13,7 @@ import {
     isUpdateExpression,
     sameSource,
     soleBindingName,
+    declaredKey,
 } from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
@@ -275,7 +276,7 @@ export function lowerCharacterControllerKernel(
         );
     const methods = methodNames.map(method);
     const methodName = (declaration: KernelDeclaration): string =>
-        declaration.name!.getText(file);
+        declaredKey(declaration.name!);
     const signature = (declaration: KernelDeclaration): KernelFunction => {
         const name = methodName(declaration);
         if (!declaration.type)

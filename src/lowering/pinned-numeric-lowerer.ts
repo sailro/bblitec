@@ -667,11 +667,12 @@ export interface PinnedNumericScope {
      * by name rather than guessing a range.
      */
     forOf?: (
-        iterated: string,
+        /** The iterated expression, matched by its syntax. */
+        iterated: ts.Expression,
         element: string,
         /** What the iterated expression is bound to, where it is bound. */
         binding: PinnedBinding | undefined,
-        syntax: { expression: ts.Expression; binding: ts.BindingName },
+        syntax: { binding: ts.BindingName },
     ) =>
         | {
               /** The C++ range expression, e.g. `scene.caster_meshes`. */
@@ -1196,18 +1197,21 @@ export class PinnedNumericLowerer {
                       return entry.name.text;
                   })
                   .join(", ")}]`;
-        const iterated = statement.expression.getText(this.file);
         const resolved =
             this.scope.forOf?.(
-                iterated,
+                statement.expression,
                 element,
                 this.binding(statement.expression),
-                { expression: statement.expression, binding },
+                { binding },
             ) ??
             (ts.isIdentifier(binding)
                 ? this.recordListForOf(statement.expression, element)
                 : undefined);
-        if (!resolved) return this.fail(statement, `for-of over '${iterated}'`);
+        if (!resolved)
+            return this.fail(
+                statement,
+                `for-of over '${statement.expression.getText(this.file)}'`,
+            );
         this.bindPorts(resolved.bindings, statement.statement);
         return { header: `const auto& ${element} : ${resolved.range}` };
     }

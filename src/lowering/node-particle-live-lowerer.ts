@@ -90,6 +90,7 @@ import {
     declaredKey,
     propertyPath,
     sourceEntry,
+    isOneOfSources,
 } from "../compiler/syntax.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
@@ -1583,19 +1584,18 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         if (sourceEntry(calls, call) !== undefined) return;
         // The call site's own source is its shape key in both tables.
         const text = call.getText(file);
-        const annotations = fn.declaration.parameters.map(
-            (parameter) => parameter.type?.getText(fn.file) ?? "",
-        );
-        const returns = fn.declaration.type?.getText(fn.file);
         // What `sharedFunction` cannot take: a getter parameter, or a
         // record result.
         const perCallSite =
-            annotations.includes("NpeGetter") ||
-            annotations.includes("ParticleSystem") ||
-            annotations.includes("ParticleBuffer") ||
-            (returns !== "void" && returns !== "number");
+            fn.declaration.parameters.some((parameter) =>
+                isOneOfSources(parameter.type, [
+                    "NpeGetter",
+                    "ParticleSystem",
+                    "ParticleBuffer",
+                ]),
+            ) || !isOneOfSources(fn.declaration.type, ["void", "number"]);
         if (!perCallSite) {
-            const shared = this.owner.sharedFunction(fn, annotations);
+            const shared = this.owner.sharedFunction(fn);
             calls.set(name, (args) => `${shared}(${args.join(", ")})`);
             return;
         }
@@ -1614,7 +1614,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                     `argument ${index} of '${name}'`,
                 );
             }
-            if (annotations[index] === "number") {
+            if (sameSource(fn.declaration.parameters[index]?.type, "number")) {
                 numeric.push(parameter.name.text);
                 positions.push(index);
                 return;
@@ -1639,7 +1639,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             fn.module,
             instance,
             numeric,
-            returns === "void" ? "void" : undefined,
+            sameSource(fn.declaration.type, "void") ? "void" : undefined,
             `${fn.module}#${fn.declaration.name!.text}`,
         );
         calls.set(
@@ -1777,17 +1777,18 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             extra: ReadonlyArray<readonly [pinned: string, cpp: string]>,
             returns: "void" | "double",
         ): void => {
-            const { file, declaration } = this.context.functionDeclaration(
+            const { declaration } = this.context.functionDeclaration(
                 module,
                 name,
             );
             const first = declaration.parameters[0];
-            const annotation = first?.type?.getText(file);
+            const annotation = (
+                ["ParticleSystem", "ParticleBuffer"] as const
+            ).find((shape) => sameSource(first?.type, shape));
             if (
                 !first ||
                 !ts.isIdentifier(first.name) ||
-                (annotation !== "ParticleSystem" &&
-                    annotation !== "ParticleBuffer")
+                annotation === undefined
             ) {
                 this.context.contractError(
                     declaration,
@@ -2601,34 +2602,31 @@ export class NodeParticleLiveLowerer {
      * whole through `lowerPinnedFunction` the first time any system reaches
      * it. Returns the C++ name.
      */
-    public sharedFunction(
-        fn: PinnedFunction,
-        annotations: readonly string[],
-    ): string {
+    public sharedFunction(fn: PinnedFunction): string {
         const name = fn.declaration.name!.text;
         const cpp = `npe_${snakeCase(name)}`;
         if (this.shared.has(cpp)) return cpp;
         const parameters: PinnedFunctionParameter[] =
-            fn.declaration.parameters.map((parameter, index) => {
+            fn.declaration.parameters.map((parameter) => {
                 const pinned = soleBindingName(parameter.name);
-                const annotation = annotations[index]!;
-                if (annotation === "number") {
+                const annotation = parameter.type;
+                if (sameSource(annotation, "number")) {
                     return { pinned, kind: "number", cpp: snakeCase(pinned) };
                 }
-                if (annotation === "Mat4") {
+                if (sameSource(annotation, "Mat4")) {
                     return {
                         pinned,
                         kind: "mat4Const",
                         cpp: snakeCase(pinned),
                     };
                 }
-                const record = recordTypeOfAnnotation(annotation);
+                const record = annotation && recordTypeOfAnnotation(annotation);
                 if (record) {
                     return {
                         pinned,
                         kind: "record",
                         cpp: snakeCase(pinned),
-                        annotation,
+                        annotation: RECORD_SHAPES.get(record)!.annotation,
                         cppType: RECORD_SHAPES.get(record)!.storage,
                         mutableRecord: true,
                         binding: { cpp: snakeCase(pinned), type: record },
@@ -2636,7 +2634,7 @@ export class NodeParticleLiveLowerer {
                 }
                 return this.context.contractError(
                     parameter,
-                    `The live node-particle lowering has no binding for a '${annotation}' parameter.`,
+                    `The live node-particle lowering has no binding for a '${annotation?.getText(fn.file) ?? "untyped"}' parameter.`,
                 );
             });
         this.shared.set(

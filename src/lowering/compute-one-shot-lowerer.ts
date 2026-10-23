@@ -180,9 +180,9 @@ function bodyScope(
         calls,
 
         foldConditions: false,
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
-                !context.expressionMatchesShape(syntax.expression, "batch") ||
+                !context.expressionMatchesShape(iterated, "batch") ||
                 element !== "[oneShot, generation]"
             )
                 return undefined;

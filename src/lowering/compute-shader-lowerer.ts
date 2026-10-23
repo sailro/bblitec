@@ -306,9 +306,9 @@ function scope(
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
-                !context.expressionMatchesShape(syntax.expression, "decls") ||
+                !context.expressionMatchesShape(iterated, "decls") ||
                 element !== "decl"
             )
                 return undefined;

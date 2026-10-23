@@ -29,7 +29,7 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
         ]),
         calls: new Map(),
         forOf(iterated, element) {
-            return iterated === "prepared" && element === "item"
+            return sameSource(iterated, "prepared") && element === "item"
                 ? {
                       range: "prepared",
                       bindings: new Map([

@@ -375,7 +375,7 @@ export function lowerUniformBuffer(context: LoweringContext): LoweredSource {
                 ],
             ]),
             forOf(iterated, element) {
-                if (iterated !== "[...(_buffers?.get(engine) ?? [])]")
+                if (!sameSource(iterated, "[...(_buffers?.get(engine) ?? [])]"))
                     return undefined;
                 return {
                     range: "snapshot",

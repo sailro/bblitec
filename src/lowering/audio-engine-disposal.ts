@@ -64,8 +64,8 @@ export function lowerEngineSoundsDisposal(name: string): Array<{
                     [`engine.${member}.clear`, () => `${cpp}.clear()`] as const,
             ),
         ]),
-        forOf: (_iterated, element, _binding, syntax) => ({
-            range: `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${sets.get(setOf(syntax.expression)!)!})`,
+        forOf: (iterated, element) => ({
+            range: `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${sets.get(setOf(iterated)!)!})`,
             bindings: new Map([[element, { cpp: element, type: "opaque" }]]),
         }),
     });

@@ -58,7 +58,7 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
         calls: new Map(),
 
         forOf(iterated, element) {
-            if (iterated !== "assetFragments" || element !== "frag")
+            if (!sameSource(iterated, "assetFragments") || element !== "frag")
                 return undefined;
             return {
                 range: "assetFragments",

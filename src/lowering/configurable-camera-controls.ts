@@ -19,6 +19,7 @@ import {
     cameraControlPublication,
     lowerCameraControlLifecycle,
 } from "./camera-control-attachment.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const configurableModule = "src/camera/configurable-free-camera-controls.ts";
 const freeModule = "src/camera/free-camera-controls.ts";
@@ -440,7 +441,7 @@ export function lowerConfigurableCameraControls(
         calls: freeCameraCalls(),
         expression: stringLiteral,
         forOf: (source, element) =>
-            source === "codes"
+            sameSource(source, "codes")
                 ? {
                       range: "codes",
                       bindings: new Map([

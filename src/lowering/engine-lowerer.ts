@@ -54,13 +54,16 @@ export class EngineLowerer {
             modulePath,
             "stopEngine",
         ).declaration;
-        const stopText = stop.getText(this.context.sourceFile(modulePath));
         for (const fragment of [
             "cancelAnimationFrame(engine._animFrameId)",
             "engine._animFrameId = 0",
             "engine._renderFn = null",
         ]) {
-            if (!stopText.includes(fragment)) {
+            if (
+                !this.context.hasNode(stop, (node) =>
+                    sameSource(node, fragment),
+                )
+            ) {
                 this.context.contractError(
                     stop,
                     `Expected stopEngine to carry '${fragment}'. The ` +

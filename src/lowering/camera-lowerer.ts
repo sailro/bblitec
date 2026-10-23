@@ -753,7 +753,7 @@ CameraHandle create_banked_free_camera(
             ]),
 
             forOf: (iterated, element) =>
-                iterated === "scene.meshes"
+                sameSource(iterated, "scene.meshes")
                     ? {
                           range: "scene.meshes",
                           bindings: new Map<string, PinnedBinding>([

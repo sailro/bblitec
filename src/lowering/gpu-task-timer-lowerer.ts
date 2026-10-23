@@ -297,7 +297,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
 
             expression,
             forOf: (source, element) =>
-                source === "pending.records"
+                sameSource(source, "pending.records")
                     ? {
                           range: "pending.records",
                           bindings: new Map([

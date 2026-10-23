@@ -145,7 +145,7 @@ export function lowerPhysicsEvents(
                 return undefined;
             },
             forOf(iterated, element) {
-                return iterated === "deferred"
+                return sameSource(iterated, "deferred")
                     ? {
                           range: "*deferred",
                           bindings: new Map([[element, binding(element)]]),

@@ -8,6 +8,7 @@ import type {
     PinnedCallSpelling,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/navigation/navigation.ts";
 
@@ -85,7 +86,7 @@ export function navigationMeshMergeDefinition(
             ]),
             calls: new Map(),
             forOf(iterated, element) {
-                if (iterated !== "meshes") return undefined;
+                if (!sameSource(iterated, "meshes")) return undefined;
                 const record = recordAt("engine.meshes", element);
                 const streams = `navigation_mesh_cpu_streams(engine, ${element})`;
                 return {
@@ -195,7 +196,7 @@ export function navigationSourceQueryDefinitions(
             statement: (node, lowerer, indent) =>
                 mergedStorageStatement(context, node, lowerer, indent),
             forOf(iterated, element) {
-                if (iterated !== "sources") return undefined;
+                if (!sameSource(iterated, "sources")) return undefined;
                 return {
                     range: "sources",
                     bindings: new Map<string, PinnedBinding>([

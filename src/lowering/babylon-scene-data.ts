@@ -6,7 +6,7 @@ import {
 } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { bindingElementKey } from "../compiler/syntax.js";
+import { bindingElementKey, sameSource } from "../compiler/syntax.js";
 
 export function lowerBabylonSceneData(
     context: LoweringContext,
@@ -80,7 +80,7 @@ export function lowerBabylonSceneData(
             ]),
 
             forOf(iterated, element) {
-                if (iterated !== "data.lights") return undefined;
+                if (!sameSource(iterated, "data.lights")) return undefined;
                 return {
                     range: 'document.at("lights")',
                     bindings: new Map([

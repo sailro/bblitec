@@ -102,7 +102,7 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             calls,
             foldConditions: false,
             forOf(iterated, element) {
-                return iterated === "hooks"
+                return sameSource(iterated, "hooks")
                     ? {
                           range: "hooks",
                           bindings: new Map([

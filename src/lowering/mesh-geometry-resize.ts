@@ -239,12 +239,11 @@ function lowerMeshFactoryFunction(
             ["owners.has", "bool"],
         ]),
         forOf(iterated, element) {
-            const range =
-                iterated === "meshes"
-                    ? "meshes"
-                    : iterated === "engine._renderingContexts"
-                      ? "engine.scenes()"
-                      : undefined;
+            const range = sameSource(iterated, "meshes")
+                ? "meshes"
+                : sameSource(iterated, "engine._renderingContexts")
+                  ? "engine.scenes()"
+                  : undefined;
             return range
                 ? {
                       range,

@@ -1580,7 +1580,7 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
         sourcePaths.filter(
             (path) =>
                 path.startsWith("src/lowering/") &&
-                /\.name\??\.getText\(|\.(?:get|has|delete|includes)\((?!\$\{)(?:[^()]|\([^()]*\))*\.getText\(/.test(
+                /\.name[?!]?\.getText\(|\.(?:get|has|delete|includes)\((?!\$\{)(?:[^()]|\([^()]*\))*\.getText\(/.test(
                     readFileSync(path, "utf8"),
                 ),
         ),

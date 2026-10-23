@@ -48,7 +48,11 @@ import {
     shaderUniformRecoveryPublication,
     shaderUniformRecoveryReset,
 } from "./shader-uniforms.js";
-import { soleBindingName } from "../compiler/syntax.js";
+import {
+    soleBindingName,
+    sameSource,
+    propertyPath,
+} from "../compiler/syntax.js";
 
 const recoveryModule = "src/engine/device-lost-recovery.ts";
 const testingModule = "src/engine/device-lost-recovery-testing.ts";
@@ -398,7 +402,7 @@ function continuationsCpp(context: LoweringContext): string {
         element,
         list,
     ) =>
-        iterated === "registrations" && list
+        sameSource(iterated, "registrations") && list
             ? {
                   range: list.cpp,
                   bindings: new Map([
@@ -748,7 +752,7 @@ function contextKindAssertionCpp(context: LoweringContext): string {
             cppName: "assert_every_active_context_kind_is_recoverable",
             returns: "void",
             forOf: (iterated, element) => {
-                if (iterated === "engine.surfaces") {
+                if (sameSource(iterated, "engine.surfaces")) {
                     return {
                         range: "std::views::single(&engine)",
                         bindings: new Map([
@@ -756,9 +760,10 @@ function contextKindAssertionCpp(context: LoweringContext): string {
                         ]),
                     };
                 }
-                if (iterated.endsWith("._renderingContexts")) {
+                const path = propertyPath(iterated);
+                if (path?.at(-1) === "_renderingContexts") {
                     return {
-                        range: `${iterated.slice(0, -"._renderingContexts".length)}->rendering_contexts`,
+                        range: `${path.slice(0, -1).join(".")}->rendering_contexts`,
                         bindings: new Map([
                             [
                                 `${element}._kind`,

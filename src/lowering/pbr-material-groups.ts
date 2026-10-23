@@ -9,6 +9,7 @@ import {
     materialPublicationTransport,
 } from "./material-publication.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 
@@ -674,7 +675,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
             calls: new Map(),
 
             forOf: (iterated, element) =>
-                iterated === "q"
+                sameSource(iterated, "q")
                     ? {
                           range: "queue",
                           bindings: new Map([
@@ -886,7 +887,7 @@ function lowerPbrGroupReconciliation(context: LoweringContext): string {
                 calls: new Map(),
 
                 forOf: (iterated, element) =>
-                    iterated === "scene.meshes"
+                    sameSource(iterated, "scene.meshes")
                         ? {
                               range: "scene.meshes",
                               bindings: new Map([
@@ -1457,7 +1458,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
         ]),
         calls: new Map(),
         forOf: (iterated, element) =>
-            iterated === "meshes"
+            sameSource(iterated, "meshes")
                 ? {
                       range: "meshes",
                       bindings: new Map([
