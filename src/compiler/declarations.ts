@@ -3052,7 +3052,11 @@ export class DeclarationLowerer {
                         ? { sharedStorageCpp: cell.sharedStorageCpp }
                         : {}),
                 };
-                if (resourceRecordSnapshot) {
+                // The initializer's fields describe the binding only while it
+                // names that object: a binding rebound anywhere carries none.
+                const rebound =
+                    this.context.sharedClosures.identifierIsRebound(name);
+                if (resourceRecordSnapshot && !rebound) {
                     const properties = this.projectReadonlyResourceProperties(
                         bound.cpp,
                         type,
@@ -3063,6 +3067,7 @@ export class DeclarationLowerer {
                         writable(bound).recordProperties = properties;
                 }
                 if (
+                    !rebound &&
                     plainRecordSnapshot?.kind === "record" &&
                     this.context.bindings.recordPropertiesAreCurrent(
                         plainRecordSnapshot,
@@ -3828,8 +3833,10 @@ export class DeclarationLowerer {
                 ? "owned"
                 : "copy",
         );
+        // The initializer's fields describe the binding only while it names
+        // that object: a binding rebound anywhere carries none.
         const staticRecordProperties: Record<string, Value> = {
-            ...(readonlyResourceCall
+            ...(readonlyResourceCall || rebound
                 ? {}
                 : (spreadRecordProperties ??
                   initializerSnapshot?.recordProperties ??
@@ -3855,7 +3862,7 @@ export class DeclarationLowerer {
                         member.staticBoolean !== undefined)
                 )
                     staticRecordProperties[key] = member;
-        if (readonlyResourceCall && initializerSnapshot)
+        if (readonlyResourceCall && initializerSnapshot && !rebound)
             Object.assign(
                 staticRecordProperties,
                 this.projectReadonlyResourceProperties(

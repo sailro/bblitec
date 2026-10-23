@@ -16,6 +16,19 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-rebound-object-binding-reads-its-current-object",
+    `
+    let cfg = { n: 1, s: "a" };
+    const read = () => cfg.n;
+    cfg = { n: 2, s: "b" };
+    if (cfg.n !== 2 || cfg.s !== "b" || read() !== 2) throw new Error("rebound let");
+    let last = { n: 0 };
+    for (let i = 1; i <= 3; i++) last = { n: i };
+    if (last.n !== 3) throw new Error("rebound in a loop");
+`,
+);
+
+check(
     "an-array-literal-of-runtime-elements-joins-at-run-time",
     `
     const s = Math.random() > 2 ? "a" : "b";
