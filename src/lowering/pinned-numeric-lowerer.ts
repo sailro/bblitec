@@ -27,6 +27,7 @@ import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
+import { enclosingLoopControl } from "../compiler/loop-control.js";
 import { pinnedCheckerOf, pinnedLibraryGlobal } from "../pinned-program.js";
 import { declaredSymbol } from "../compiler/symbols.js";
 import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
@@ -4032,6 +4033,47 @@ export class PinnedNumericLowerer {
      * given a different meaning.
      */
     private switchStatement(
+        statement: ts.SwitchStatement,
+        indent: string,
+    ): string[] {
+        // A `break` before a clause's end leaves the switch; the if-chain is
+        // then one pass of a loop, so that `break` leaves the pass and not
+        // the enclosing loop. A `continue` there would continue the pass.
+        const clauses = statement.caseBlock.clauses;
+        const earlyBreak = clauses.some((clause) => {
+            const [only] = clause.statements;
+            const statements = [
+                ...(clause.statements.length === 1 && only && ts.isBlock(only)
+                    ? only.statements
+                    : clause.statements),
+            ];
+            if (statements.at(-1) && ts.isBreakStatement(statements.at(-1)!))
+                statements.pop();
+            return statements.some(
+                (inner) =>
+                    enclosingLoopControl(inner, { continues: false }) !==
+                    undefined,
+            );
+        });
+        if (!earlyBreak) return this.switchChain(statement, indent);
+        const continued = clauses
+            .flatMap((clause) => clause.statements)
+            .find(
+                (inner) =>
+                    enclosingLoopControl(inner, { breaks: false }) !==
+                    undefined,
+            );
+        if (continued)
+            this.fail(continued, "switch with an early break and a continue");
+        return [
+            `${indent}do {`,
+            ...this.switchChain(statement, indent + "    "),
+            `${indent}} while (false);`,
+        ];
+    }
+
+    /** The if-chain (or the selected clause) a switch lowers to. */
+    private switchChain(
         statement: ts.SwitchStatement,
         indent: string,
     ): string[] {

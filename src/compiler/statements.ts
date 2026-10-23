@@ -1686,9 +1686,14 @@ export class StatementLowerer {
         this.withSwitchBreakTarget(context, statement, () => {
             clauses.forEach((clause, index) => {
                 if (clause.statements.length === 0) return;
+                // With a `default`, every selection reaches the last clause:
+                // an unguarded block says so to the C++ compiler too.
                 context.emit({
                     kind: "open",
-                    code: `if (${selected} <= ${index}) {`,
+                    code:
+                        defaultIndex !== -1 && index === clauses.length - 1
+                            ? "{"
+                            : `if (${selected} <= ${index}) {`,
                 });
                 this.inRuntimeControlFlow(context, () =>
                     this.emitScopedStatements(context, clause.statements),
@@ -1820,7 +1825,13 @@ export class StatementLowerer {
                 this.inRuntimeControlFlow(context, () => {
                     this.emitScopedBody(context, branch);
                 });
-            if (terminatesFlow(branch))
+            if (
+                terminatesFlow(
+                    branch,
+                    undefined,
+                    breakLeavesIteration(statement),
+                )
+            )
                 context.dataLowerer.withPreservedAliasState(emit);
             else emit();
         };
@@ -5750,6 +5761,36 @@ function switchFallthroughRun(
 }
 
 /**
+ * Whether an unlabelled `break` at `node` leaves an iteration: false when
+ * the innermost construct it would leave is a switch, whose following code
+ * still runs in the same iteration and observes the branch's effects.
+ */
+function breakLeavesIteration(node: ts.Node): boolean {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isCaseBlock(current)) return false;
+        if (
+            ts.isIterationStatement(current, false) ||
+            ts.isFunctionLike(current)
+        )
+            return true;
+    }
+    return true;
+}
+
+/**
+ * Whether a `break` anywhere in these statements (not only the last, and
+ * not one an inner loop or switch owns) leaves the enclosing switch: the
+ * switch then completes normally, whatever the last statement does.
+ */
+function leavesSwitch(statements: readonly ts.Statement[]): boolean {
+    return statements.some(
+        (statement) =>
+            ts.isBreakStatement(statement) ||
+            enclosingLoopControl(statement, { continues: false }) !== undefined,
+    );
+}
+
+/**
  * True when a branch always leaves the surrounding iteration or
  * function, so code after the branch never observes its effects.
  */
@@ -5770,7 +5811,11 @@ function terminatesFlow(
     if (ts.isBreakStatement(statement)) return breakLeaves;
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
-        return last ? terminatesFlow(last, lowered, breakLeaves) : false;
+        return (
+            !!last &&
+            (breakLeaves || !leavesSwitch(statement.statements)) &&
+            terminatesFlow(last, lowered, breakLeaves)
+        );
     }
     if (ts.isIfStatement(statement)) {
         return (
@@ -5810,18 +5855,16 @@ function terminatesFlow(
         });
     }
     if (ts.isSwitchStatement(statement)) {
-        // Every path leaves when a `default` exists and each clause ends
-        // in control that leaves: an empty clause falls into the next one,
-        // and a `break` there leaves only the switch itself.
+        // A clause that does not leave falls into the next one, so with a
+        // `default` and no `break` out of the switch, control leaves exactly
+        // when the last clause does.
         const clauses = statement.caseBlock.clauses;
+        const last = clauses.at(-1)?.statements.at(-1);
         return (
             clauses.some(ts.isDefaultClause) &&
-            clauses.every((clause, index) => {
-                const last = clause.statements.at(-1);
-                return last
-                    ? terminatesFlow(last, lowered, false)
-                    : index < clauses.length - 1;
-            })
+            !clauses.some((clause) => leavesSwitch(clause.statements)) &&
+            last !== undefined &&
+            terminatesFlow(last, lowered, false)
         );
     }
     return false;

@@ -15293,3 +15293,32 @@ check(
     if (order !== "rs1") throw new Error("const key setter " + order);
     `,
 );
+check(
+    "a switch clause's early break reaches the code after the switch",
+    `
+    function grade(k: number, x: boolean): number {
+        switch (k) { case 1: if (x) break; return 10; default: return 20; }
+        return 30;
+    }
+    let n = 0;
+    function run(k: number, x: boolean): number {
+        try { switch (k) { case 1: if (x) break; return 1; default: return 2; } }
+        finally { n++; }
+        return 3;
+    }
+    const k = Date.now() > 0 ? 1 : 2;
+    if (grade(k, true) !== 30 || grade(k, false) !== 10 || grade(k + 1, true) !== 20) throw new Error("grade");
+    if (run(k, true) + run(k, false) * 10 !== 13 || n !== 2) throw new Error("try break " + n);
+    `,
+);
+check(
+    "a clause that falls into a returning default ends the function",
+    `
+    function fail(m: string): never { throw new Error(m); }
+    function f(n: number): number { switch (n) { case 0: fail("zero"); default: return n * 2; } }
+    function g(n: number): string { switch (n) { case 1: n += 1; case 2: n += 1; default: return "v" + n; } }
+    let caught = "";
+    try { f(Date.now() > 0 ? 0 : 1); } catch (e) { caught = (e as Error).message; }
+    if (caught !== "zero" || f(3) !== 6 || g(1) !== "v3" || g(5) !== "v5") throw new Error("fallthrough end " + caught);
+    `,
+);

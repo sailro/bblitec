@@ -154,7 +154,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
     };
     const lower = (name: string): string => {
         const { declaration } = context.functionDeclaration(module, name);
-        let loweringSwitch = false;
         const arrays = new Map([
             ["nodes", "target.nodes"],
             ["target.nodes", "target.nodes"],
@@ -303,26 +302,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 return undefined;
             },
             statement(statement, lowerer, indent) {
-                if (ts.isSwitchStatement(statement) && !loweringSwitch) {
-                    if (
-                        context.findNodes(statement, ts.isContinueStatement)
-                            .length
-                    )
-                        context.contractError(
-                            statement,
-                            "Weighted switch continuation needs its outer-loop identity preserved.",
-                        );
-                    loweringSwitch = true;
-                    try {
-                        return [
-                            `${indent}do {`,
-                            ...lowerer.statement(statement, indent + "    "),
-                            `${indent}} while (false);`,
-                        ];
-                    } finally {
-                        loweringSwitch = false;
-                    }
-                }
                 if (
                     ts.isVariableStatement(statement) &&
                     statement.declarationList.declarations.length === 1
