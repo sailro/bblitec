@@ -8,7 +8,7 @@ import {
 import { bufferAlignmentCpp } from "./gpu-buffer-adapters.js";
 import { meshCpuStreamFields } from "./mesh-cpu-streams.js";
 import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 /** The source's separate GPU allocations, retained beside native interleaved lanes. */
 export function lowerMeshAttributeCapacities(
@@ -115,7 +115,7 @@ export function lowerMeshAttributeCapacities(
         expression(node, lowerer) {
             if (node.kind === ts.SyntaxKind.NullKeyword) return "0.0";
             if (!ts.isCallExpression(node)) return undefined;
-            const call = node.expression.getText(file);
+            const call = propertyPath(node.expression)?.join(".");
             if (call === "createMappedBuffer") {
                 if (node.arguments.length !== 3)
                     return context.contractError(

@@ -1574,12 +1574,15 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
         [],
     );
     // propertyPath names a member chain (`this` included) for both;
-    // soleBindingName and declaredKey read a declared name.
+    // soleBindingName and declaredKey read a declared name; sourceEntry and
+    // isOneOfSources read a table keyed by source shapes.
     assert.deepEqual(
         sourcePaths.filter(
             (path) =>
                 path.startsWith("src/lowering/") &&
-                /\.name\??\.getText\(/.test(readFileSync(path, "utf8")),
+                /\.name\??\.getText\(|\.(?:get|has|delete|includes)\((?!\$\{)(?:[^()]|\([^()]*\))*\.getText\(/.test(
+                    readFileSync(path, "utf8"),
+                ),
         ),
         [],
     );
@@ -1589,6 +1592,8 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
         "propertyPath",
         "soleBindingName",
         "declaredKey",
+        "sourceEntry",
+        "isOneOfSources",
     ])
         assert.deepEqual(
             declarationOwners(name),

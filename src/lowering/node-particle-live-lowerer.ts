@@ -88,6 +88,8 @@ import {
     sameSource,
     soleBindingName,
     declaredKey,
+    propertyPath,
+    sourceEntry,
 } from "../compiler/syntax.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
@@ -1443,7 +1445,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             const value = assigned.get(name);
             const shape = value
                 ? ts.isCallExpression(value)
-                    ? callShapeOf(callShapes, value, file)
+                    ? callShapeOf(callShapes, value)
                     : ts.isIdentifier(value)
                       ? bindings.get(value.text)?.type
                       : undefined
@@ -1576,10 +1578,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         callShapes: Map<string, PinnedBinding["type"]>,
         file: ts.SourceFile,
     ): void {
-        const text = call.getText(file);
         if (fn.module === "src/lite-error.ts" && name === "ThrowLiteError")
             return;
-        if (calls.has(text)) return;
+        if (sourceEntry(calls, call) !== undefined) return;
+        // The call site's own source is its shape key in both tables.
+        const text = call.getText(file);
         const annotations = fn.declaration.parameters.map(
             (parameter) => parameter.type?.getText(fn.file) ?? "",
         );
@@ -1708,7 +1711,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             if (named && named.type !== "opaque") return named.type;
             return (
                 (ts.isCallExpression(node)
-                    ? callShapeOf(scope.callShapes, node, file)
+                    ? callShapeOf(scope.callShapes, node)
                     : undefined) ?? "scalar"
             );
         };
@@ -2656,7 +2659,7 @@ export class NodeParticleLiveLowerer {
      */
     private bufferColumns(): ColumnSpec[] {
         if (this.columns) return this.columns;
-        const { file, declaration } = this.context.functionDeclaration(
+        const { declaration } = this.context.functionDeclaration(
             bufferModule,
             "createParticleBuffer",
         );
@@ -2698,7 +2701,7 @@ export class NodeParticleLiveLowerer {
             this.context.contractError(all, "createParticleBuffer _all");
         }
         this.columns = all.elements.map((element) => {
-            const name = element.getText(file);
+            const name = propertyPath(element)?.join(".") ?? "";
             const width = declared.get(name);
             if (!width) {
                 this.context.contractError(

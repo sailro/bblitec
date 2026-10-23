@@ -8,7 +8,7 @@ import type {
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 /**
  * The refreshed execute's rebind guard as `static bool <name>(task)`: a
@@ -489,7 +489,7 @@ export function renderTaskMeshRefreshCpp(
                 expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
             )
                 return undefined;
-            const name = expression.left.getText(file);
+            const name = propertyPath(expression.left)?.join(".");
             if (name === "replacedRenderables") {
                 context.assertExpressionShape(
                     expression.right,

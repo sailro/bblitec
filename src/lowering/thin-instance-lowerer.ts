@@ -13,7 +13,11 @@ import {
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 import { absentDrawRangeBinding } from "./mesh-draw-range.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import {
+    sameSource,
+    soleBindingName,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
 const gpuModule = "src/mesh/thin-instance-gpu.ts";
@@ -806,7 +810,7 @@ function lowerUnpairedThinInstanceDetach(context: LoweringContext): string {
                 ts.isBinaryExpression(node.expression) &&
                 node.expression.operatorToken.kind ===
                     ts.SyntaxKind.EqualsToken &&
-                absentStores.has(node.expression.left.getText(file))
+                isOneOfSources(node.expression.left, absentStores)
             )
                 return [];
             return undefined;

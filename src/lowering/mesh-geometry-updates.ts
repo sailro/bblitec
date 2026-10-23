@@ -15,7 +15,7 @@ import {
     absentDrawRangeBinding,
     assertDrawRangesUnreached,
 } from "./mesh-draw-range.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 const modulePath = "src/mesh/mesh-factories.ts";
 const optionalStreams = new Set(["uvs", "uvs2", "tangents", "colors"]);
@@ -370,7 +370,7 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                             return undefined;
                         const source = lowerer.binding(choice.left.expression);
                         const length = bindings.get(
-                            `${choice.right.getText(file)}?.length`,
+                            `${propertyPath(choice.right)?.join(".")}?.length`,
                         );
                         if (!source?.staticallyAbsent || !length?.nullish)
                             return context.contractError(
@@ -482,7 +482,9 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                         ]);
                         const member = members.get(field);
                         if (member) {
-                            const owner = node.left.expression.getText(file);
+                            const owner =
+                                propertyPath(node.left.expression)?.join(".") ??
+                                "";
                             if (!["gpu", "oldGpu", "mesh._gpu"].includes(owner))
                                 return context.contractError(
                                     node.left,

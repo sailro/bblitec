@@ -11,7 +11,11 @@ import {
     pinnedRecordSchema,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
-import { sameSource } from "../compiler/syntax.js";
+import {
+    sameSource,
+    propertyPath,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 const modulePath = "src/engine/gpu-task-timer.ts";
 const recordSchema = pinnedRecordSchema("GpuTaskTimingRecord", {
@@ -158,7 +162,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             if (ts.isArrayLiteralExpression(node) && !node.elements.length)
                 return "std::vector<GpuTaskTimingEntry>{}";
             if (ts.isCallExpression(node)) {
-                const name = node.expression.getText(file);
+                const name = propertyPath(node.expression)?.join(".");
                 if (name === "Number" && node.arguments.length === 1)
                     return `static_cast<double>(${lowerer.expression(node.arguments[0]!)})`;
                 if (
@@ -211,9 +215,10 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                         node.arguments.length !== 3 ||
                         !sameSource(timer, "timer") ||
                         !publisher ||
-                        !["publish", "pending.publish"].includes(
-                            publisher.getText(file),
-                        ) ||
+                        !isOneOfSources(publisher, [
+                            "publish",
+                            "pending.publish",
+                        ]) ||
                         !snapshot
                     )
                         return fail(node);

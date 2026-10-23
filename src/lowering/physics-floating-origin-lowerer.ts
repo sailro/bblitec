@@ -40,7 +40,12 @@ import {
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { variableKind, sameSource } from "../compiler/syntax.js";
+import {
+    variableKind,
+    sameSource,
+    isOneOfSources,
+    propertyPath,
+} from "../compiler/syntax.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -305,16 +310,13 @@ const PAL_RESULTS: ReadonlyMap<
 /** `hknp.HP_Name(...)`, whatever local holds the solver module. */
 function solverCall(
     node: ts.Expression,
-    file: ts.SourceFile,
 ): { name: string; call: ts.CallExpression } | undefined {
     const call = ts.isElementAccessExpression(node) ? node.expression : node;
     if (
         !ts.isCallExpression(call) ||
         !ts.isPropertyAccessExpression(call.expression) ||
         !call.expression.name.text.startsWith("HP_") ||
-        !["hknp", "world._hknp"].includes(
-            call.expression.expression.getText(file),
-        )
+        !isOneOfSources(call.expression.expression, ["hknp", "world._hknp"])
     ) {
         return undefined;
     }
@@ -342,7 +344,6 @@ function floatingOriginScope(
     vec3Literal: NonNullable<PinnedNumericScope["vec3Literal"]>;
     recordLiteral: NonNullable<PinnedNumericScope["recordLiteral"]>;
 } {
-    const file = context.sourceFile(havokFloatingOriginModule);
     const memberBindings = new Map<string, PinnedBinding>([
         ...worldMembers(),
         ...contextMembers(),
@@ -382,7 +383,7 @@ function floatingOriginScope(
         const access = context.unwrapExpression(node);
         if (
             !ts.isElementAccessExpression(access) ||
-            !RECORD_LIST_NAMES.has(access.expression.getText(file))
+            !isOneOfSources(access.expression, RECORD_LIST_NAMES)
         ) {
             return undefined;
         }
@@ -440,16 +441,9 @@ function floatingOriginScope(
         indent,
     ) =>
         ts.isVariableStatement(node)
-            ? declaration(context, file, node, lowerer, indent, engine)
+            ? declaration(context, node, lowerer, indent, engine)
             : ts.isExpressionStatement(node)
-              ? expressionStatement(
-                    context,
-                    file,
-                    node,
-                    lowerer,
-                    indent,
-                    engine,
-                )
+              ? expressionStatement(context, node, lowerer, indent, engine)
               : undefined;
     return {
         memberBindings,
@@ -479,7 +473,6 @@ function floatingOriginScope(
 /** A declaration the platform answers, or undefined for an ordinary one. */
 function declaration(
     context: LoweringContext,
-    file: ts.SourceFile,
     node: ts.VariableStatement,
     lowerer: PinnedNumericLowerer,
     indent: string,
@@ -502,9 +495,10 @@ function declaration(
     // A region the module looks up or creates.
     if (
         ts.isCallExpression(initializer) &&
-        ["_findRegion", "_getOrCreateRegion"].includes(
-            initializer.expression.getText(file),
-        )
+        isOneOfSources(initializer.expression, [
+            "_findRegion",
+            "_getOrCreateRegion",
+        ])
     ) {
         const value = lowerer.expression(initializer);
         bind(regionMembers(name, name));
@@ -520,7 +514,7 @@ function declaration(
         return [`${indent}const auto ${name} = ${value};`];
     }
     // A solver call whose tuple result the pin reads.
-    const solver = solverCall(initializer, file);
+    const solver = solverCall(initializer);
     const result = solver ? PAL_RESULTS.get(solver.name) : undefined;
     if (solver && result) {
         if (result.indexed !== ts.isElementAccessExpression(initializer)) {
@@ -537,10 +531,9 @@ function declaration(
             `${indent}${qualifier}${result.type} ${name} = ${result.cpp(args)};`,
         ];
     }
-    const text = initializer.getText(file);
     // `const node = body.node`: the node's arena reference; its pose is
     // read where the pin reads a member off it.
-    if (text.endsWith(".node")) {
+    if (propertyPath(initializer)?.at(-1) === "node") {
         const owner = lowerer.expression(initializer);
         const pose = `physics_node_pose(${engine}, ${owner})`;
         bind([
@@ -577,7 +570,7 @@ function declaration(
     // in place.
     if (
         ts.isElementAccessExpression(initializer) &&
-        RECORD_LIST_NAMES.has(initializer.expression.getText(file))
+        isOneOfSources(initializer.expression, RECORD_LIST_NAMES)
     ) {
         const owner = lowerer.expression(initializer.expression);
         const kind = RECORD_LISTS.get(owner);
@@ -609,7 +602,6 @@ function declaration(
 /** An expression statement the platform answers, or undefined. */
 function expressionStatement(
     context: LoweringContext,
-    file: ts.SourceFile,
     node: ts.ExpressionStatement,
     lowerer: PinnedNumericLowerer,
     indent: string,
@@ -623,7 +615,7 @@ function expressionStatement(
         return undefined;
     }
     const callee = call.expression;
-    const solver = solverCall(call, file);
+    const solver = solverCall(call);
     // `hknp.HP_Body_SetQTransform(body, [position, rotation])`.
     if (solver?.name === "HP_Body_SetQTransform") {
         const [body, transform] = call.arguments;

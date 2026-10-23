@@ -64,6 +64,7 @@ import {
     propertyPath,
     soleBindingName,
     declaredKey,
+    isOneOfSources,
 } from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -187,7 +188,7 @@ function callsOutside(
         (node) =>
             ts.isCallExpression(node) &&
             !spelledMathCall(node, pinnedLibraryGlobal) &&
-            !allowed.has(node.expression.getText()),
+            !isOneOfSources(node.expression, allowed),
     );
 }
 

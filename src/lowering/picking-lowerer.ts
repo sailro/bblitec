@@ -18,7 +18,11 @@ import {
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import {
+    sameSource,
+    soleBindingName,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -1122,7 +1126,7 @@ ${this.lowerPickedNormalImpl(calls)}
             // optional members dereference where the guard above proved
             // them present.
             const named = lowerer.expression(inner);
-            return PICK_INFO_NORMAL_MEMBERS.has(inner.getText())
+            return isOneOfSources(inner, PICK_INFO_NORMAL_MEMBERS)
                 ? `js::Tuple<3>{*${named}}`
                 : `js::Tuple<3>{${named}}`;
         };

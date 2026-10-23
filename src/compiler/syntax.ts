@@ -1994,8 +1994,15 @@ function shapeKindOf(node: ts.Node): ShapeKind {
           : "expression";
 }
 
-/** The fingerprint of `shape` parsed as `context`. */
-function shapeFingerprint(shape: string, context: ShapeKind): string {
+/**
+ * The fingerprint of `shape` parsed as `context`. A table key that is no
+ * expression (`strict` false) matches nothing.
+ */
+function shapeFingerprint(
+    shape: string,
+    context: ShapeKind,
+    strict = true,
+): string {
     const key = `${context}\u0000${shape}`;
     const cached = shapeFingerprints.get(key);
     if (cached !== undefined) return cached;
@@ -2022,7 +2029,7 @@ function shapeFingerprint(shape: string, context: ShapeKind): string {
               : declaration?.initializer;
     // A shape that is no type or binding pattern matches no node there; an
     // expression shape that does not parse is a lowering's own mistake.
-    if (!parsed && context === "expression")
+    if (!parsed && context === "expression" && strict)
         throw new Error(`Invalid expected expression '${shape}'.`);
     const fingerprint = parsed ? sourceFingerprint(parsed) : "";
     shapeFingerprints.set(key, fingerprint);
@@ -2054,6 +2061,39 @@ export function sameSource(
     )
         return false;
     return sourceFingerprint(node) === expected;
+}
+
+/**
+ * The value `table` keeps under the source shape `node` is, or undefined:
+ * how a lowering reads a table keyed by pinned source shapes.
+ */
+export function sourceEntry<T>(
+    table: ReadonlyMap<string, T> | undefined,
+    node: ts.Node | undefined,
+    kind?: ShapeKind,
+): T | undefined {
+    if (table === undefined || node === undefined) return undefined;
+    const fingerprint = sourceFingerprint(node);
+    const context = kind ?? shapeKindOf(node);
+    for (const [shape, value] of table)
+        if (shapeFingerprint(shape, context, false) === fingerprint)
+            return value;
+    return undefined;
+}
+
+/** Whether `node` is one of the source shapes `shapes`. */
+export function isOneOfSources(
+    node: ts.Node | undefined,
+    shapes: Iterable<string>,
+    kind?: ShapeKind,
+): boolean {
+    if (node === undefined) return false;
+    const fingerprint = sourceFingerprint(node);
+    const context = kind ?? shapeKindOf(node);
+    for (const shape of shapes)
+        if (shapeFingerprint(shape, context, false) === fingerprint)
+            return true;
+    return false;
 }
 
 /** Whether two nodes, perhaps of different files, are the same syntax. */

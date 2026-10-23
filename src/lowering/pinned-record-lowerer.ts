@@ -61,6 +61,7 @@ import {
     sameSource,
     soleBindingName,
     declaredKey,
+    sourceEntry,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -4779,7 +4780,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
               : undefined;
         return (
             (key ? this.model.schema.adapters.get(key) : undefined) ??
-            this.model.schema.adapters.get(callee.getText(this.source))
+            sourceEntry(this.model.schema.adapters, callee)
         );
     }
 

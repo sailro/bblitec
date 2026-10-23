@@ -28,7 +28,7 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource, sameSyntax } from "../compiler/syntax.js";
+import { sameSource, sameSyntax, isOneOfSources } from "../compiler/syntax.js";
 
 const CONTACT = screenSpaceFactsOfKind("scalar");
 const GI = screenSpaceFactsOfKind("color");
@@ -1396,10 +1396,11 @@ class FrameWalker {
             matrixCalls: new Set(["getViewProjectionMatrix", "getViewMatrix"]),
             recordCalls: new Map([["getCameraPosition", ["x", "y", "z"]]]),
             returnValue: (expression: ts.Expression | undefined) => {
-                const text = expression?.getText(this.file) ?? "";
                 if (
-                    text !== "composite?.execute?.() ?? 0" &&
-                    text !== "draws + (composite?.execute?.() ?? 0)"
+                    !isOneOfSources(expression, [
+                        "composite?.execute?.() ?? 0",
+                        "draws + (composite?.execute?.() ?? 0)",
+                    ])
                 ) {
                     return this.context.contractError(
                         expression ?? this.file,

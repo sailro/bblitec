@@ -10,7 +10,11 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import {
+    sameSource,
+    soleBindingName,
+    propertyPath,
+} from "../compiler/syntax.js";
 
 const module = "src/particle/node/npe-emitter-provider.ts";
 
@@ -187,7 +191,7 @@ export function lowerNodeParticleProviderState(
             ts.isBinaryExpression(expression) &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
         ) {
-            const target = expression.left.getText(file);
+            const target = propertyPath(expression.left)?.join(".") ?? "";
             if (links.delete(target)) {
                 context.assertExpressionShape(
                     expression.right,

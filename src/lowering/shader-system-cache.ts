@@ -7,7 +7,7 @@ import {
     type PinnedCallSpelling,
 } from "./pinned-numeric-lowerer.js";
 import { isShaderSystemMatrix, shaderSystemMatrixTable } from "../shader-ir.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 const rendererModule = "src/material/shader/shader-renderable.ts";
 const dependencyModule = "src/material/shader/shader-system-dependencies.ts";
@@ -502,7 +502,7 @@ export function lowerShaderSystemWriter(context: LoweringContext): string {
                     ts.SyntaxKind.QuestionQuestionEqualsToken
             )
                 return undefined;
-            const name = node.left.getText(file);
+            const name = propertyPath(node.left)?.join(".") ?? "";
             if (!memos.has(name))
                 return context.contractError(
                     node,

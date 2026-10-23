@@ -152,10 +152,11 @@ export function lightParameterHeader(context: LoweringContext): string {
                     node.expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken
                 ) {
-                    const target = node.expression.left.getText(file);
+                    const target = node.expression.left;
                     if (
-                        target === "light.intensity" ||
-                        target.startsWith("light.diffuse[")
+                        sameSource(target, "light.intensity") ||
+                        (ts.isElementAccessExpression(target) &&
+                            sameSource(target.expression, "light.diffuse"))
                     )
                         return [
                             `${indent}${lowerer.expression(node.expression.left)}=${lowerer.expression(node.expression.right)};`,

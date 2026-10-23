@@ -42,7 +42,7 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, isOneOfSources } from "../compiler/syntax.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -1419,9 +1419,8 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
             ) {
                 const initializer =
                     statement.declarationList.declarations[0]!.initializer;
-                const text = initializer?.getText(file) ?? "";
                 if (
-                    gpuPrologue.includes(text) ||
+                    isOneOfSources(initializer, gpuPrologue) ||
                     (initializer !== undefined &&
                         ts.isArrayLiteralExpression(
                             this.context.unwrapExpression(initializer),

@@ -401,8 +401,11 @@ export function lowerPhysicsThinInstances(
             },
             expression(expression, lowerer) {
                 if (ts.isElementAccessExpression(expression)) {
-                    const owner = expression.expression.getText(file);
-                    if (owner === "state[1]" || owner === "handles")
+                    const owner = expression.expression;
+                    if (
+                        sameSource(owner, "state[1]") ||
+                        sameSource(owner, "handles")
+                    )
                         return `state->handles.at(static_cast<std::size_t>(${lowerer.expression(expression.argumentExpression)}))`;
                 }
                 return undefined;

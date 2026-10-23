@@ -13,7 +13,7 @@ import {
     type KernelSchema,
     type KernelValue,
 } from "./character-kernel-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 export const queryResultType = tupleOf([
     recordScalars.number,
@@ -45,7 +45,7 @@ export function characterTransportSchema(
         return body;
     };
     const collector = (expression: ts.Expression): string => {
-        const path = expression.getText(expression.getSourceFile());
+        const path = propertyPath(expression)?.join(".");
         if (path === "this._startCollector") return "_start_hits()";
         if (path === "this._castCollector") return "_cast_hits()";
         return context.contractError(
@@ -151,7 +151,7 @@ export function characterTransportSchema(
                     ts.isPropertyAccessExpression(node.expression.expression)
                 ) {
                     const call = node.expression,
-                        path = call.expression.getText(call.getSourceFile());
+                        path = propertyPath(call.expression)?.join(".") ?? "";
                     const name = (
                         call.expression as ts.PropertyAccessExpression
                     ).name.text;
@@ -236,10 +236,10 @@ export function characterTransportSchema(
                 }
             }
             if (ts.isCallExpression(node)) {
-                const path = node.expression.getText(node.getSourceFile());
+                const path = propertyPath(node.expression)?.join(".") ?? "";
                 const thin = new Map<string, readonly [string, RecordShape]>([
                     [
-                        "this._world._thin?.resolve",
+                        "this._world._thin.resolve",
                         [
                             "_thin_resolve",
                             optionalOf(
@@ -251,9 +251,9 @@ export function characterTransportSchema(
                             ),
                         ],
                     ],
-                    ["this._world._thin?.com", ["_thin_com", recordOf("Vec3")]],
+                    ["this._world._thin.com", ["_thin_com", recordOf("Vec3")]],
                     [
-                        "this._world._thin?.matrix",
+                        "this._world._thin.matrix",
                         [
                             "_thin_matrix",
                             optionalOf(arrayOf(recordScalars.number)),

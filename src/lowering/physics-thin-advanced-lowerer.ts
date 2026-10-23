@@ -82,20 +82,20 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
                     !sameSource(assignment.left.expression, "result")
                 )
                     return undefined;
-                const index = assignment.left.argumentExpression.getText();
-                if (index === "1")
+                const index = assignment.left.argumentExpression;
+                if (sameSource(index, "1"))
                     return [
                         `${indent}result.mass = ${numeric.expression(assignment.right)};`,
                     ];
                 if (
-                    (index === "0" || index === "2") &&
+                    (sameSource(index, "0") || sameSource(index, "2")) &&
                     ts.isArrayLiteralExpression(assignment.right)
                 ) {
                     const lanes = assignment.right.elements.map((lane) =>
                         numeric.expression(lane),
                     );
                     return [
-                        `${indent}result.${index === "0" ? "center_of_mass" : "inertia"} = {${lanes.map((lane) => (index === "2" ? `(${lane}) * result.mass` : lane)).join(", ")}};`,
+                        `${indent}result.${sameSource(index, "0") ? "center_of_mass" : "inertia"} = {${lanes.map((lane) => (sameSource(index, "2") ? `(${lane}) * result.mass` : lane)).join(", ")}};`,
                     ];
                 }
                 return undefined;

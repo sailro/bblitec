@@ -5,7 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { soleBindingName } from "../compiler/syntax.js";
+import { soleBindingName, propertyPath } from "../compiler/syntax.js";
 
 /**
  * An expression hook lowering shader-renderable.ts's inactive-packet test,
@@ -123,7 +123,9 @@ export function lowerShaderBindingUpdate(context: LoweringContext): string {
                         ts.isExpressionStatement(node) &&
                         ts.isCallExpression(node.expression)
                     ) {
-                        const target = node.expression.expression.getText(file);
+                        const target = propertyPath(
+                            node.expression.expression,
+                        )?.join(".");
                         if (target === "updateCustomUbo")
                             return [`${indent}update_custom();`];
                         if (target === "updatePacket")

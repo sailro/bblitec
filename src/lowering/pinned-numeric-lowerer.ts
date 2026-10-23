@@ -46,7 +46,9 @@ import {
     declarationNamed,
     isSuspensionPoint,
     variableKind,
-    sameSource,
+    sameSyntax,
+    sourceEntry,
+    isOneOfSources,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -311,11 +313,10 @@ function recordBindings(
 export function callShapeOf(
     callShapes: ReadonlyMap<string, PinnedBinding["type"]> | undefined,
     call: ts.CallExpression,
-    file: ts.SourceFile,
 ): PinnedBinding["type"] | undefined {
     return (
-        callShapes?.get(call.getText(file)) ??
-        callShapes?.get(call.expression.getText(file))
+        sourceEntry(callShapes, call) ??
+        sourceEntry(callShapes, call.expression)
     );
 }
 
@@ -1519,10 +1520,11 @@ export class PinnedNumericLowerer {
         declaration: ts.VariableDeclaration,
         source: ts.Expression,
     ): boolean {
-        const text = source.getText();
         return (
             findAnalysisNode(enclosingFunction(declaration), (node) =>
-                writeSites(node).some(({ target }) => sameSource(target, text)),
+                writeSites(node).some(({ target }) =>
+                    sameSyntax(target, source),
+                ),
             ) !== undefined
         );
     }
@@ -2019,8 +2021,10 @@ export class PinnedNumericLowerer {
             }
             if (
                 ts.isCallExpression(initializer) &&
-                this.scope.nullableMatrixCalls?.has(
-                    initializer.expression.getText(this.file),
+                this.scope.nullableMatrixCalls !== undefined &&
+                isOneOfSources(
+                    initializer.expression,
+                    this.scope.nullableMatrixCalls,
                 )
             ) {
                 this.bindLocal(declaration.name, {
@@ -2039,9 +2043,7 @@ export class PinnedNumericLowerer {
             if (
                 this.scope.matrixCalls &&
                 ts.isCallExpression(initializer) &&
-                this.scope.matrixCalls.has(
-                    initializer.expression.getText(this.file),
-                )
+                isOneOfSources(initializer.expression, this.scope.matrixCalls)
             ) {
                 this.bindLocal(declaration.name, { cpp, type: "f32" });
                 lines.push(
@@ -2511,10 +2513,7 @@ export class PinnedNumericLowerer {
         ) {
             return undefined;
         }
-        const receiver = unwrapExpression(call.expression.expression).getText(
-            this.file,
-        );
-        if (receiver !== unwrapExpression(expression.left).getText(this.file)) {
+        if (!sameSyntax(call.expression.expression, expression.left)) {
             return undefined;
         }
         return this.expression(call);
@@ -2820,11 +2819,7 @@ export class PinnedNumericLowerer {
             return [];
         }
         if (ts.isCallExpression(initializer)) {
-            const shape = callShapeOf(
-                this.scope.callShapes,
-                initializer,
-                this.file,
-            );
+            const shape = callShapeOf(this.scope.callShapes, initializer);
             if (shape === "f32" || shape === "f64-buffer") {
                 if (!isConst)
                     this.fail(declaration, "mutable buffer call binding");
@@ -4241,7 +4236,7 @@ export class PinnedNumericLowerer {
         }
         if (
             ts.isCallExpression(node) &&
-            callShapeOf(this.scope.callShapes, node, this.file) === "bool"
+            callShapeOf(this.scope.callShapes, node) === "bool"
         )
             return "boolean";
         if (
@@ -4491,7 +4486,7 @@ export class PinnedNumericLowerer {
         // keeps the pin's numeric arguments and drops the getters and
         // scratch it was specialized over. Only the caller can give that
         // spelling, so it is keyed by the call rather than the callee.
-        const site = this.scope.calls.get(node.getText(this.file));
+        const site = sourceEntry(this.scope.calls, node);
         if (site) {
             const result = site(args);
             this.translationActivity?.request("call", node, this.file);

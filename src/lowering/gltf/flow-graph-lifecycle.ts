@@ -6,7 +6,7 @@ import type {
     PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
-import { sameSource } from "../../compiler/syntax.js";
+import { sameSource, propertyPath } from "../../compiler/syntax.js";
 
 const featureModule = "src/loader-gltf/gltf-feature-interactivity.ts";
 const sceneModule = "src/flow-graph/scene-flow-graph.ts";
@@ -688,7 +688,9 @@ export function lowerFlowGraphMembership(context: LoweringContext): string {
                     !ts.isPropertyAccessExpression(expression.expression)
                 )
                     return undefined;
-                const target = expression.expression.expression.getText(file),
+                const target = propertyPath(
+                        expression.expression.expression,
+                    )?.join("."),
                     method = expression.expression.name.text;
                 if (
                     target === "list" &&
