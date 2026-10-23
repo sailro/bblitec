@@ -25,17 +25,23 @@ import {
 import { unwrapExpression } from "./syntax.js";
 import { calledDeclaration } from "./symbols.js";
 
-/** Emit one body until its lowered control flow proves the remainder unreachable. */
+/**
+ * Emit one body until its lowered control flow leaves (true) or, given
+ * `staticIterationCompleted`, a static unrolled iteration completes (false):
+ * what follows either is unreachable in this emission.
+ */
 export function emitReachableStatements(
     context: {
         emitStatement(statement: ts.Statement): void;
         statementTerminatesAfterLowering(statement: ts.Statement): boolean;
+        staticIterationCompleted?(): boolean;
     },
     statements: readonly ts.Statement[],
 ): boolean {
     for (const statement of statements) {
         context.emitStatement(statement);
         if (context.statementTerminatesAfterLowering(statement)) return true;
+        if (context.staticIterationCompleted?.()) return false;
     }
     return false;
 }

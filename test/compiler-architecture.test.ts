@@ -1299,3 +1299,19 @@ test("a Promise reaction call is recognized by promises.ts", () => {
     ])
         assert.ok(sourceFacts(path).calls.has("promiseReactionOf"), path);
 });
+
+test("a statement list's reachable prefix is emitted by loop-control.ts", () => {
+    // emitReachableStatements stops at a lowered terminator and, when asked,
+    // at a completed static iteration: no hand-copied emit-then-test loop.
+    assert.deepEqual(declarationOwners("emitReachableStatements"), [
+        "src/compiler/loop-control.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /this\.emit\(\w+, (\w+)\);\s*if \(\s*this\.terminatesAfterLowering\(\1\)/.test(
+                readFileSync(path, "utf8"),
+            ),
+        ),
+        [],
+    );
+});

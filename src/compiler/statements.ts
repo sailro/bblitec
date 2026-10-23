@@ -901,25 +901,6 @@ export class StatementLowerer {
         return result;
     }
 
-    /**
-     * Emit statements until one's lowered control flow leaves (true) or, with
-     * `stopAtIteration`, a static unrolled iteration completes (false): what
-     * follows either is unreachable in this emission.
-     */
-    private emitReachable(
-        context: StatementLoweringContext,
-        statements: readonly ts.Statement[],
-        stopAtIteration = true,
-    ): boolean {
-        for (const statement of statements) {
-            this.emit(context, statement);
-            if (this.terminatesAfterLowering(statement)) return true;
-            if (stopAtIteration && this.staticIterationCompleted())
-                return false;
-        }
-        return false;
-    }
-
     public terminatesAfterLowering(statement: ts.Statement): boolean {
         return terminatesFlow(
             statement,
@@ -929,15 +910,23 @@ export class StatementLowerer {
         );
     }
 
-    private emitReachableBody(
+    /** Emit `statements` while reachable; `stopAtIteration` also stops at a completed static iteration. */
+    private emitReachable(
         context: StatementLoweringContext,
         statements: readonly ts.Statement[],
+        stopAtIteration = true,
     ): boolean {
         return emitReachableStatements(
             {
                 emitStatement: (nested) => this.emit(context, nested),
                 statementTerminatesAfterLowering: (nested) =>
                     this.terminatesAfterLowering(nested),
+                ...(stopAtIteration
+                    ? {
+                          staticIterationCompleted: () =>
+                              this.staticIterationCompleted(),
+                      }
+                    : {}),
             },
             statements,
         );
@@ -1742,7 +1731,7 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            this.emitReachableBody(context, statements);
+            this.emitReachable(context, statements, false);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
@@ -2747,9 +2736,10 @@ export class StatementLowerer {
                         );
                         try {
                             this.inRuntimeControlFlow(context, () => {
-                                terminates = this.emitReachableBody(
+                                terminates = this.emitReachable(
                                     context,
                                     bodyStatements(statement),
+                                    false,
                                 );
                             });
                         } finally {
@@ -4255,9 +4245,10 @@ export class StatementLowerer {
                         loopContext,
                         () => {
                             this.inRuntimeControlFlow(loopContext, () => {
-                                this.emitReachableBody(
+                                this.emitReachable(
                                     loopContext,
                                     bodyStatements(statement),
+                                    false,
                                 );
                             });
                         },
@@ -4499,7 +4490,7 @@ export class StatementLowerer {
                     context,
                     () => {
                         this.inRuntimeControlFlow(context, () => {
-                            this.emitReachableBody(context, statements);
+                            this.emitReachable(context, statements, false);
                         });
                     },
                     statement,
