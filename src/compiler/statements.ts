@@ -4427,19 +4427,15 @@ export class StatementLowerer {
         const span =
             container?.kind === "span" &&
             target.container.nativeCollectionCppType === undefined;
-        // The element is bound per iteration by value: a loop variable a
-        // stored closure captures and code writes would need a shared cell.
-        if (
-            ts.isIdentifier(declaration.name) &&
-            context.sharedClosures.needsSharedClosureStorage(declaration) &&
-            context.sharedClosures.identifierIsReboundInClosure(
-                declaration.name,
-            )
-        )
-            context.fail(
-                declaration.name,
-                "A for-of variable that a stored closure captures and code writes is not supported; copy it into a `let` declared in the body.",
-            );
+        // A loop variable a stored closure captures and another closure
+        // writes is one cell per iteration (CreatePerIterationEnvironment),
+        // which every closure of that iteration shares.
+        const sharedCell = (identifier: ts.Identifier): boolean =>
+            context.sharedClosures.needsSharedClosureStorage(
+                declaration,
+                identifier,
+            ) &&
+            context.sharedClosures.identifierIsReboundInClosure(identifier);
         // An array element is read in place while the body can change no
         // array and never reassigns the loop variable; otherwise the loop
         // yields a snapshot the body's writes cannot change.
@@ -4461,11 +4457,40 @@ export class StatementLowerer {
         const lines = context.captureEmittedStatements(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             try {
-                context.bindDataIterationVariable(
+                context.dataLowerer.bindIterationVariable(
                     declaration.name,
                     item,
                     target.element,
                     target.template,
+                    (identifier, value) => {
+                        if (!sharedCell(identifier)) {
+                            context.bindings.defineVariable(identifier, value);
+                            return;
+                        }
+                        if (!value.dataType)
+                            context.fail(
+                                identifier,
+                                "A for-of variable shared by closures needs a represented element type.",
+                            );
+                        context.reachJsData();
+                        const cell =
+                            context.allocateTemporaryCppName("iteration_cell");
+                        context.emit({
+                            kind: "declaration",
+                            type: "auto",
+                            name: cell,
+                            initializer: `bbl::js::make_gc_shared<${context.dataTypes.cppType(value.dataType)}>(${value.cpp})`,
+                        });
+                        const bound = `(*${cell})`;
+                        context.dataLowerer.registerLocal(bound, "owned");
+                        context.bindings.defineVariable(identifier, {
+                            ...context.dataLowerer.leafValue(
+                                bound,
+                                value.dataType,
+                            ),
+                            sharedStorageCpp: cell,
+                        });
+                    },
                 );
                 const statements = ts.isBlock(statement.statement)
                     ? statement.statement.statements
