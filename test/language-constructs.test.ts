@@ -37,6 +37,13 @@ check(
     fs.push(() => c.m());
     fs[0]!(); fs[0]!();
     if (n !== 2) throw new Error("method write through a stored closure");
+    let reads = 0, made = 0;
+    class G { get v(): number { reads++; return 1; } }
+    class K { constructor() { made++; } }
+    const g = new G();
+    const more: Array<() => void> = [() => { void g.v; }, () => { new K(); }];
+    more[0]!(); more[1]!();
+    if (reads !== 1 || made !== 1) throw new Error("getter or constructor write through a stored closure");
 `,
 );
 

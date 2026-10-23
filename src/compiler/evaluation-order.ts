@@ -1283,6 +1283,17 @@ export class EvaluationOrder {
      * chain with its field initializers -- "library" for a declaration
      * file's function, or undefined when it cannot be named.
      */
+    /**
+     * The repository code a call or construction runs: function bodies, a
+     * class chain's constructors and field initializers. "library" for a
+     * declaration file's function; undefined when the target is unknown.
+     */
+    public callUnits(
+        call: ts.CallExpression | ts.NewExpression,
+    ): readonly Unit[] | "library" | undefined {
+        return this.callees(call);
+    }
+
     private callees(
         call: ts.CallExpression | ts.NewExpression,
     ): readonly Unit[] | "library" | undefined {

@@ -25,6 +25,7 @@ import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { promiseReactionOf } from "./promises.js";
 import { keptArguments } from "./kept-values.js";
+import { memberAccessors } from "./symbols.js";
 
 interface SharedClosureBindings {
     captured: ReadonlySet<ts.Symbol>;
@@ -395,7 +396,7 @@ export class SharedClosureAnalysis {
                 }
             }
         }
-        const roots: ts.FunctionLikeDeclaration[] = [];
+        const roots: ts.Node[] = [];
         const rootSet = new EmissionSet<ts.Node>();
         const isClosure = (
             node: ts.Node,
@@ -510,7 +511,7 @@ export class SharedClosureAnalysis {
             }
             return ts.isArrayLiteralExpression(parent);
         };
-        const addRoot = (node: ts.FunctionLikeDeclaration): void => {
+        const addRoot = (node: ts.Node): void => {
             roots.push(node);
             rootSet.add(node);
         };
@@ -615,27 +616,35 @@ export class SharedClosureAnalysis {
         for (const symbol of storedLocalFunctions)
             localFunctions.get(symbol)?.forEach(addRoot);
         // A local function a root calls runs from that stored callback, as
-        // does any body declared in the owner that a root's call reaches (a
-        // method of a local class, each override included).
+        // does any code declared in the owner that a root reaches: a call's
+        // bodies (each override included), a construction's constructors and
+        // field initializers, an accessed property's getter and setter.
         const visitedRoots = new EmissionSet<ts.Node>();
         for (let index = 0; index < roots.length; ++index) {
             const root = roots[index]!;
             if (visitedRoots.has(root)) continue;
             visitedRoots.add(root);
             forEachAnalysisNode(root, (node) => {
-                if (ts.isCallExpression(node)) {
-                    const bodies =
-                        this.context.evaluationOrder.callBodies(node);
-                    if (bodies !== "library")
-                        for (const body of bodies ?? [])
-                            if (
-                                !rootSet.has(body) &&
-                                body.pos >= owner.pos &&
-                                body.end <= owner.end &&
-                                body.getSourceFile() === owner.getSourceFile()
+                const reached =
+                    ts.isCallExpression(node) || ts.isNewExpression(node)
+                        ? this.context.evaluationOrder.callUnits(node)
+                        : ts.isPropertyAccessExpression(node) ||
+                            ts.isElementAccessExpression(node)
+                          ? memberAccessors(
+                                this.context.checker,
+                                node,
+                                "either",
                             )
-                                addRoot(body);
-                }
+                          : undefined;
+                if (reached !== undefined && reached !== "library")
+                    for (const unit of reached)
+                        if (
+                            !rootSet.has(unit) &&
+                            unit.pos >= owner.pos &&
+                            unit.end <= owner.end &&
+                            unit.getSourceFile() === owner.getSourceFile()
+                        )
+                            addRoot(unit);
                 if (
                     ts.isIdentifier(node) &&
                     localFunctionNames.has(node.text)
