@@ -11,6 +11,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { inheritsFrom } from "./type-facts.js";
+import { classChain, classMemberTable } from "./class-members.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -431,11 +432,17 @@ class ReachedReferences {
                 ? this.overridesReach(declaration)
                 : false;
         }
+        // A construction runs every class of the chain, bases included.
         if (
             ts.isClassDeclaration(declaration) ||
             ts.isClassExpression(declaration)
         )
-            return ts.isNewExpression(site) && this.bodyReaches(declaration);
+            return (
+                ts.isNewExpression(site) &&
+                classChain(classMemberTable(this.checker, declaration)).some(
+                    (link) => this.bodyReaches(link.declaration),
+                )
+            );
         if (
             ts.isVariableDeclaration(declaration) &&
             declaration.initializer &&
