@@ -493,6 +493,51 @@ export function accessedPropertySymbol(
 }
 
 /**
+ * The user accessors a member access runs: getters for a read (`"get"`),
+ * setters for a write (`"set"`), both for `"either"`. A dotted access reads
+ * its symbol, whose declarations a union receiver's members all supply; a
+ * computed one the property the checker's key names
+ * ({@link staticAccessKey}) on the non-nullish receiver. Inherited and
+ * static accessors count. Empty for a run-time key or a plain property.
+ */
+export function memberAccessors(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    half: "get" | "set" | "either",
+): readonly ts.AccessorDeclaration[] {
+    let property: ts.Symbol | undefined;
+    if (ts.isPropertyAccessExpression(access))
+        property = resolvedSymbol(checker, access);
+    else {
+        const key = staticAccessKey(checker, access);
+        property =
+            key === undefined
+                ? undefined
+                : checker.getPropertyOfType(
+                      checker.getNonNullableType(
+                          checker.getTypeAtLocation(access.expression),
+                      ),
+                      key,
+                  );
+    }
+    const found: ts.AccessorDeclaration[] = [];
+    for (const declaration of property?.declarations ?? []) {
+        const accessor =
+            ts.isGetAccessorDeclaration(declaration) ||
+            ts.isSetAccessorDeclaration(declaration)
+                ? declaration
+                : undefined;
+        if (
+            accessor &&
+            (half === "either" ||
+                (half === "get") === ts.isGetAccessorDeclaration(accessor))
+        )
+            found.push(accessor);
+    }
+    return found;
+}
+
+/**
  * The first member of an enum the checker cannot fold to a constant: its
  * enum object would have to be built when the declaration runs.
  */

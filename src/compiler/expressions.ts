@@ -59,7 +59,6 @@ import { mentionsTypeParameter } from "./type-arguments.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
-    accessedPropertySymbol,
     declaredSymbol,
     enumMemberConstant,
     isAbsentTypeofIdentifier,
@@ -70,6 +69,7 @@ import {
     libraryName,
     isLibraryNumberFormatter,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
 import {
@@ -2329,13 +2329,8 @@ export class ExpressionLowerer {
                         (node) =>
                             (ts.isPropertyAccessExpression(node) ||
                                 ts.isElementAccessExpression(node)) &&
-                            (accessedPropertySymbol(
-                                this.context.checker,
-                                node,
-                            )?.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ) ??
-                                false),
+                            memberAccessors(this.context.checker, node, "get")
+                                .length > 0,
                         { functions: "skip", types: "skip" },
                     )
                 ) {

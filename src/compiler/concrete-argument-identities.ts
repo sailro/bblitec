@@ -1,10 +1,10 @@
 import ts from "typescript";
 import {
-    accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredSymbol,
     resolvedSymbol,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -173,14 +173,7 @@ export function concreteArgumentIdentityPaths(
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
         ) {
-            const property = accessedPropertySymbol(checker, node);
-            if (
-                property?.declarations?.some(
-                    (declaration) =>
-                        ts.isGetAccessorDeclaration(declaration) ||
-                        ts.isSetAccessorDeclaration(declaration),
-                )
-            )
+            if (memberAccessors(checker, node, "either").length > 0)
                 return undefined;
             return scalarArray(node) ||
                 excludesSelected(checker.getTypeAtLocation(node))

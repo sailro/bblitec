@@ -56,6 +56,7 @@ import {
     staticAccessKey,
     nullishLiteral,
     libraryName,
+    memberAccessors,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -6959,10 +6960,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ((ts.isPropertyAccessExpression(target) &&
                     target.name.text === "length") ||
                     // A setter runs code the loop cannot see.
-                    (
-                        accessedPropertySymbol(this.context.checker, target)
-                            ?.declarations ?? []
-                    ).some(ts.isSetAccessorDeclaration)));
+                    memberAccessors(this.context.checker, target, "set")
+                        .length > 0));
         return !someAnalysisNode(
             body,
             (node) =>
@@ -16705,17 +16704,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         name: ts.Expression,
         readForTarget: (type: DataType) => Value,
     ): void {
-        const symbol =
-            ts.isPropertyAccessExpression(name) ||
-            ts.isElementAccessExpression(name)
-                ? resolvedSymbol(this.context.checker, name)
-                : undefined;
         if (
-            symbol?.declarations?.some(
-                (declaration) =>
-                    ts.isGetAccessorDeclaration(declaration) ||
-                    ts.isSetAccessorDeclaration(declaration),
-            )
+            (ts.isPropertyAccessExpression(name) ||
+                ts.isElementAccessExpression(name)) &&
+            memberAccessors(this.context.checker, name, "either").length > 0
         ) {
             if (
                 !ts.isPropertyAccessExpression(name) &&
@@ -18096,10 +18088,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.isIdentifier(node) ||
             node.kind === ts.SyntaxKind.ThisKeyword ||
             (ts.isPropertyAccessExpression(node) &&
-                !accessedPropertySymbol(
-                    this.context.checker,
-                    node,
-                )?.declarations?.some(ts.isGetAccessorDeclaration) &&
+                memberAccessors(this.context.checker, node, "get").length ===
+                    0 &&
                 plainRead(this.context.unwrap(node.expression)));
         return first &&
             second &&

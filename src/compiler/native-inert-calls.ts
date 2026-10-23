@@ -9,9 +9,9 @@ import {
     variableKind,
 } from "./syntax.js";
 import {
-    accessedPropertySymbol,
     libraryGlobal,
     type CompilerSymbols,
+    memberAccessors,
 } from "./symbols.js";
 import { unionMembers } from "./type-facts.js";
 
@@ -285,13 +285,8 @@ class InertWalk {
     private readsAccessor(
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): boolean {
-        const symbol = accessedPropertySymbol(this.context.checker, access);
         return (
-            symbol?.declarations?.some(
-                (declaration) =>
-                    ts.isGetAccessorDeclaration(declaration) ||
-                    ts.isSetAccessorDeclaration(declaration),
-            ) === true
+            memberAccessors(this.context.checker, access, "either").length > 0
         );
     }
 

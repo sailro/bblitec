@@ -6,10 +6,10 @@ import { pinnedSourceHandleKind } from "./data-types.js";
 import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
-    accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredSymbol,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -701,13 +701,8 @@ function parameterProjection(
             expression.parent.expression === expression
         ) {
             const access = expression.parent;
-            const property = accessedPropertySymbol(checker, access);
             if (
-                property?.declarations?.some(
-                    (item) =>
-                        ts.isGetAccessorDeclaration(item) ||
-                        ts.isSetAccessorDeclaration(item),
-                ) ||
+                memberAccessors(checker, access, "either").length > 0 ||
                 (!independentFields &&
                     ts.isCallExpression(access.parent) &&
                     access.parent.expression === access)
@@ -811,14 +806,7 @@ function parameterProjection(
                             ts.isElementAccessExpression(node)) &&
                         flow(node.expression).length > 0
                     ) {
-                        const property = accessedPropertySymbol(checker, node);
-                        if (
-                            property?.declarations?.some(
-                                (item) =>
-                                    ts.isGetAccessorDeclaration(item) ||
-                                    ts.isSetAccessorDeclaration(item),
-                            )
-                        )
+                        if (memberAccessors(checker, node, "either").length > 0)
                             return true;
                     }
                     // Independent fields reach a constructor as they reach a

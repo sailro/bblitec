@@ -11,6 +11,7 @@ import {
     staticAccessKey,
     libraryName,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import {
     choosesOperand,
@@ -169,11 +170,8 @@ export function hasOnlyReportingEffects(
             if (!name) return undefined;
             const member = accessedPropertySymbol(checker, node);
             if (
-                member?.declarations?.some(
-                    (declaration) =>
-                        !declarationInDefaultLibrary(declaration) &&
-                        (ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)),
+                memberAccessors(checker, node, "either").some(
+                    (declaration) => !declarationInDefaultLibrary(declaration),
                 )
             )
                 return undefined;
@@ -668,15 +666,11 @@ function hasOnlyInstrumentationEffects(
         )
             return false;
         // Accessors and dynamic dispatch can hide arbitrary native effects.
-        if (ts.isPropertyAccessExpression(node)) {
-            const target = valueDeclaration(node);
-            if (
-                target &&
-                (ts.isGetAccessorDeclaration(target) ||
-                    ts.isSetAccessorDeclaration(target))
-            )
-                return false;
-        }
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            memberAccessors(checker, node, "either").length > 0
+        )
+            return false;
         if (ts.isElementAccessExpression(node) && !confined(node.expression))
             return false;
         if (ts.isForOfStatement(node) && !confined(node.expression))

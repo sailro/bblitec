@@ -18,6 +18,7 @@ import {
     pinnedConstantProperty,
     resolvedSymbol,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -426,10 +427,8 @@ export class EvaluationOrder {
                                         .getTypeAtLocation(current.expression)
                                         .getSymbol(),
                                 ) ||
-                                (symbol?.declarations?.some(
-                                    ts.isGetAccessorDeclaration,
-                                ) ??
-                                    false) ||
+                                memberAccessors(this.checker, current, "get")
+                                    .length > 0 ||
                                 root === "globalThis" ||
                                 root === "window" ||
                                 root === "self";
@@ -970,12 +969,13 @@ export class EvaluationOrder {
                             (symbol.flags & ts.SymbolFlags.Method) !== 0))))
         )
             return "skip";
-        const getter = symbol?.declarations?.find(
-            (declaration): declaration is ts.GetAccessorDeclaration =>
-                ts.isGetAccessorDeclaration(declaration) &&
-                !declaration.getSourceFile().isDeclarationFile,
-        );
-        if (getter) this.runs(access, getter);
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        )
+            for (const getter of memberAccessors(this.checker, node, "get"))
+                if (!getter.getSourceFile().isDeclarationFile)
+                    this.runs(access, getter);
         if (!this.isFresh(node, unit)) access.reads.heap = true;
     }
 
@@ -997,15 +997,9 @@ export class EvaluationOrder {
                 ? node
                 : undefined;
         if (member) {
-            const setter = resolvedSymbol(
-                this.checker,
-                member,
-            )?.declarations?.find(
-                (declaration): declaration is ts.SetAccessorDeclaration =>
-                    ts.isSetAccessorDeclaration(declaration) &&
-                    !declaration.getSourceFile().isDeclarationFile,
-            );
-            if (setter) this.runs(access, setter);
+            for (const setter of memberAccessors(this.checker, member, "set"))
+                if (!setter.getSourceFile().isDeclarationFile)
+                    this.runs(access, setter);
         }
         if (this.isFresh(node, unit)) return;
         access.writes.heap = true;

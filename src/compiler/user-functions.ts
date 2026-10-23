@@ -100,6 +100,7 @@ import {
     libraryName,
     calledDeclaration,
     calledFunction,
+    memberAccessors,
 } from "./symbols.js";
 import {
     isDeclaredInside,
@@ -400,12 +401,9 @@ function dataArgumentMayRunCode(
                 return true;
             }
             if (!ts.isPropertyAccessExpression(node)) return false;
-            const symbol = resolvedSymbol(checker, node);
             return (
-                !symbol ||
-                (symbol.declarations ?? []).some((declaration) =>
-                    ts.isGetAccessorDeclaration(declaration),
-                )
+                !resolvedSymbol(checker, node) ||
+                memberAccessors(checker, node, "get").length > 0
             );
         },
         { functions: "skip", types: "skip" },
@@ -1131,14 +1129,12 @@ function reassignedRecordFields(
                     writes.length === 0 &&
                     ts.isPropertyAccessExpression(node)
                 ) {
-                    for (const accessor of declaredSymbol(checker, node.name)
-                        ?.declarations ?? []) {
-                        if (
-                            ts.isGetAccessorDeclaration(accessor) ||
-                            ts.isSetAccessorDeclaration(accessor)
-                        )
-                            follow(accessor);
-                    }
+                    for (const accessor of memberAccessors(
+                        checker,
+                        node,
+                        "either",
+                    ))
+                        follow(accessor);
                 }
                 if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
                     return;

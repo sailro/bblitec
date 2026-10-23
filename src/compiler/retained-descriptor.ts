@@ -2,7 +2,7 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
-import { accessedPropertySymbol } from "./symbols.js";
+import { memberAccessors } from "./symbols.js";
 import {
     propertyKey,
     rootIdentifier,
@@ -181,14 +181,7 @@ export function requireStableRetainedDescriptor(
                             ts.isElementAccessExpression(node)) &&
                         namesRoot(node)
                     ) {
-                        const property = accessedPropertySymbol(checker, node);
-                        if (
-                            property?.declarations?.some(
-                                (declaration) =>
-                                    ts.isGetAccessorDeclaration(declaration) ||
-                                    ts.isSetAccessorDeclaration(declaration),
-                            )
-                        )
+                        if (memberAccessors(checker, node, "either").length > 0)
                             return true;
                     }
                     if (ts.isNewExpression(node))

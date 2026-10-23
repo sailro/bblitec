@@ -74,9 +74,9 @@ import {
     type CompilerSymbols,
     declaredSymbol,
     libraryGlobal,
-    resolvedSymbol,
     calledDeclaration,
     calledFunction,
+    memberAccessors,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -4275,10 +4275,11 @@ export class DeclarationLowerer {
                               )
                             : calledDeclaration(this.context.checker, value)
                         : ts.isPropertyAccessExpression(value)
-                          ? resolvedSymbol(
+                          ? memberAccessors(
                                 this.context.checker,
                                 value,
-                            )?.declarations?.find(ts.isGetAccessorDeclaration)
+                                "get",
+                            )[0]
                           : undefined;
                     if (
                         (!isSupportedFunction(called) &&

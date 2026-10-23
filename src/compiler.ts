@@ -226,7 +226,7 @@ import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer, propertyRules } from "./compiler/properties.js";
 import {
     CompilerSymbols,
-    accessedPropertySymbol,
+    memberAccessors,
     staticAccessKey,
     declaredIn,
     declaredInDomLibrary,
@@ -3351,12 +3351,8 @@ class Compiler implements LoweringServices {
                         ((ts.isPropertyAccessExpression(node) ||
                             ts.isElementAccessExpression(node)) &&
                             mentions(node.expression) &&
-                            accessedPropertySymbol(
-                                this.checker,
-                                node,
-                            )?.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ) &&
+                            memberAccessors(this.checker, node, "get").length >
+                                0 &&
                             this.evaluationOrder.writesStorage(node)) ||
                         writesThroughTrackedRoot(
                             node,

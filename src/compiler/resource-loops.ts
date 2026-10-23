@@ -26,6 +26,7 @@ import {
     parameterInput,
     libraryName,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import {
     aliasedMutationScan,
@@ -493,18 +494,16 @@ export function walkReachedLoopNodes(
                             edges.push(...functionEdge(declaration, callbacks));
                     }
                 }
-                if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of resolvedSymbol(
+                if (
+                    ts.isPropertyAccessExpression(node) ||
+                    ts.isElementAccessExpression(node)
+                )
+                    for (const accessor of memberAccessors(
                         context.checker,
                         node,
-                    )?.declarations ?? []) {
-                        if (
-                            ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)
-                        )
-                            edges.push(...functionEdge(declaration, callbacks));
-                    }
-                }
+                        "either",
+                    ))
+                        edges.push(...functionEdge(accessor, callbacks));
                 expansion = { called, edges };
                 (row.expansions ??= new Map()).set(key, expansion);
             }
@@ -1449,12 +1448,10 @@ export function parameterizedResourceLoop(
             return;
         }
         if (
-            ts.isPropertyAccessExpression(node) &&
-            resolvedSymbol(context.checker, node)?.declarations?.some(
-                (declaration) =>
-                    (ts.isGetAccessorDeclaration(declaration) ||
-                        ts.isSetAccessorDeclaration(declaration)) &&
-                    declaration.body !== undefined,
+            (ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)) &&
+            memberAccessors(context.checker, node, "either").some(
+                (accessor) => accessor.body !== undefined,
             )
         ) {
             safe = false;

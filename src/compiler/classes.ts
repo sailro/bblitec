@@ -16,6 +16,7 @@ import {
     resolvedSymbol,
     staticPropertyKey,
     calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -3494,12 +3495,12 @@ export class ClassLowerer {
     public storedSetterOwner(
         target: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const setter = resolvedSymbol(
+        const setter = memberAccessors(
             this.context.checker,
             target,
-        )?.declarations?.some(
+            "set",
+        ).some(
             (declaration) =>
-                ts.isSetAccessorDeclaration(declaration) &&
                 ts.isClassLike(declaration.parent) &&
                 !declaration.getSourceFile().isDeclarationFile,
         );

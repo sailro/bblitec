@@ -8,10 +8,10 @@ import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     declaredSymbol,
-    resolvedSymbol,
     libraryGlobal,
     calledDeclaration,
     calledFunction,
+    memberAccessors,
 } from "./symbols.js";
 import { isSupportedFunction } from "./syntax.js";
 
@@ -274,16 +274,16 @@ function dependencyIdentifiers(
                     )
                         visitFunction(called);
                 }
-                if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of resolvedSymbol(checker, node)
-                        ?.declarations ?? []) {
-                        if (
-                            ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)
-                        )
-                            visitFunction(declaration);
-                    }
-                }
+                if (
+                    ts.isPropertyAccessExpression(node) ||
+                    ts.isElementAccessExpression(node)
+                )
+                    for (const accessor of memberAccessors(
+                        checker,
+                        node,
+                        "either",
+                    ))
+                        visitFunction(accessor);
             },
             { types: "skip", names: "references" },
         );

@@ -1224,6 +1224,33 @@ test("a number's C++ width is always the caller's choice", () => {
     );
 });
 
+test("an access's accessors are read through memberAccessors", () => {
+    // memberAccessors names the getters / setters an access runs through the
+    // checker's key on every non-nullish union member: a const key, a union
+    // and an optional receiver no longer escape one copy or another.
+    assert.deepEqual(declarationOwners("memberAccessors"), [
+        "src/compiler/symbols.ts",
+    ]);
+    for (const path of [
+        "src/compiler.ts",
+        "src/compiler/canvas-instrumentation.ts",
+        "src/compiler/classes.ts",
+        "src/compiler/concrete-argument-identities.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/declarations.ts",
+        "src/compiler/engine-lifecycle.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/function-specializations.ts",
+        "src/compiler/native-inert-calls.ts",
+        "src/compiler/parameter-projection-effects.ts",
+        "src/compiler/resource-loops.ts",
+        "src/compiler/retained-descriptor.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("memberAccessors"), path);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.
