@@ -374,6 +374,7 @@ import {
     initializerNamesBinding,
 } from "./compiler/declarations.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
+import { emitSharedCell } from "./compiler/shared-cells.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
 import {
@@ -6670,24 +6671,7 @@ class Compiler implements LoweringServices {
             ? this.compileValue(initializer)
             : undefined;
         if (nullableResource && nullableInitializer?.kind === "json-null") {
-            const cppName = this.allocateTemporaryCppName(
-                `class_field_${name.text}`,
-            );
-            const storage = sharedStorage ? `(*${cppName})` : cppName;
-            this.emit({
-                kind: "declaration",
-                type: sharedStorage
-                    ? `std::shared_ptr<std::optional<${nullableResource.cppType}>>`
-                    : `std::optional<${nullableResource.cppType}>`,
-                name: cppName,
-                initializer: sharedStorage
-                    ? `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`
-                    : "{}",
-            });
-            this.bindings.defineVariable(name, {
-                ...this.nullableResourceValue(nullableResource, storage),
-                ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-            });
+            this.bindNullableClassField(name);
             return;
         }
         if (this.bindClassDataField(name, initializer, declared)) {
@@ -6726,24 +6710,23 @@ class Compiler implements LoweringServices {
     public bindNullableClassField(name: ts.MemberName): Value | undefined {
         const resource = this.nullableResourceKind(name);
         if (!resource) return undefined;
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
-        this.emit({
-            kind: "declaration",
-            type: sharedStorage
-                ? `std::shared_ptr<std::optional<${resource.cppType}>>`
-                : `std::optional<${resource.cppType}>`,
-            name: cppName,
-            initializer: sharedStorage
-                ? `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`
-                : "{}",
-        });
+        const type = `std::optional<${resource.cppType}>`;
+        const cell = this.classFieldNeedsSharedStorage(name)
+            ? emitSharedCell(this, cppName, { type })
+            : undefined;
+        if (!cell)
+            this.emit({
+                kind: "declaration",
+                type,
+                name: cppName,
+                initializer: "{}",
+            });
         const value: Value = {
-            ...this.nullableResourceValue(resource, storage),
-            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
+            ...this.nullableResourceValue(resource, cell?.cpp ?? cppName),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
         };
         this.bindings.defineVariable(name, value);
         return value;
@@ -6778,23 +6761,7 @@ class Compiler implements LoweringServices {
         ) {
             return undefined;
         }
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
-        );
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
-        const cppType = this.dataTypes.cppType(dataType);
-        this.emit(
-            sharedStorage
-                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>();`
-                : `${cppType} ${cppName}{};`,
-        );
-        this.dataLowerer.registerLocal(storage, "owned");
-        const value = this.dataLowerer.leafValue(storage, dataType);
-        writable(value).nativeLvalue = true;
-        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
-        this.bindings.defineVariable(name, value);
-        return value;
+        return this.bindClassDataStorage(name, dataType, undefined);
     }
 
     /** Predeclare optional storage for a resource-valued expression. */
@@ -6837,8 +6804,6 @@ class Compiler implements LoweringServices {
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
         const cpp = knownValue
             ? this.dataLowerer.compileKnownValueForSink(
                   knownValue,
@@ -6846,18 +6811,36 @@ class Compiler implements LoweringServices {
                   initializer,
               )
             : this.dataLowerer.compileForSink(initializer, dataType);
+        return this.bindClassDataStorage(name, dataType, cpp, cppName);
+    }
+
+    /** A class data field's storage, value-initialized without `initializerCpp`. */
+    private bindClassDataStorage(
+        name: ts.MemberName,
+        dataType: DataType,
+        initializerCpp: string | undefined,
+        cppName = this.allocateTemporaryCppName(`class_field_${name.text}`),
+    ): Value {
         const cppType = this.dataTypes.cppType(dataType);
-        this.emit(
-            sharedStorage
-                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${cpp});`
-                : `${cppType} ${cppName} = ${cpp};`,
-        );
+        const cell = this.classFieldNeedsSharedStorage(name)
+            ? emitSharedCell(this, cppName, {
+                  type: cppType,
+                  initializer: initializerCpp,
+              })
+            : undefined;
+        if (!cell)
+            this.emit(
+                initializerCpp === undefined
+                    ? `${cppType} ${cppName}{};`
+                    : `${cppType} ${cppName} = ${initializerCpp};`,
+            );
+        const storage = cell?.cpp ?? cppName;
         this.dataLowerer.registerLocal(storage, "owned");
         // Leaves use the same surface as a container read: numbers stay
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(storage, dataType);
         writable(value).nativeLvalue = true;
-        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
+        if (cell) writable(value).sharedStorageCpp = cell.sharedStorageCpp;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -7152,25 +7135,14 @@ class Compiler implements LoweringServices {
                 ],
             };
         }
-        const owner = `${cppName}_owner`;
-        this.emit({
-            kind: "declaration",
-            type: "auto",
-            name: owner,
-            initializer: `bbl::js::make_gc_shared<${type}>()`,
-        });
+        const owner = emitSharedCell(this, `${cppName}_owner`, { type });
         return {
             kind: "callback",
-            cpp: `(*${owner})`,
-            runtimeCallbackIdentityCpp: `(*${owner}).identity()`,
-            sharedStorageCpp: owner,
+            cpp: owner.cpp,
+            runtimeCallbackIdentityCpp: `${owner.cpp}.identity()`,
+            sharedStorageCpp: owner.sharedStorageCpp,
             nativeCaptures: [
-                this.registerNativeBinding(
-                    owner,
-                    false,
-                    false,
-                    `std::shared_ptr<${type}>`,
-                ),
+                this.registerNativeBinding(owner.sharedStorageCpp),
             ],
         };
     }

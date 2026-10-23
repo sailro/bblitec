@@ -117,6 +117,7 @@ import {
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
+import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import {
     inferPromiseRejectStorage,
     inferUninitializedStorage,
@@ -309,31 +310,26 @@ export class DeclarationLowerer {
         initializer = "",
     ): void {
         const type = `std::optional<${resource.cppType}>`;
-        this.context.emit(
-            shared
-                ? {
-                      kind: "declaration",
-                      type: `std::shared_ptr<${type}>`,
-                      name: cppName,
-                      initializer: `bbl::js::make_gc_shared<${type}>(${initializer})`,
-                  }
-                : {
-                      kind: "declaration",
-                      type,
-                      name: cppName,
-                      initializer,
-                      ...(initializer === ""
-                          ? { initialization: "default" as const }
-                          : {}),
-                      attributes: "[[maybe_unused]] ",
-                  },
-        );
+        const cell = shared
+            ? emitSharedCell(this.context, cppName, { type, initializer })
+            : undefined;
+        if (!cell)
+            this.context.emit({
+                kind: "declaration",
+                type,
+                name: cppName,
+                initializer,
+                ...(initializer === ""
+                    ? { initialization: "default" as const }
+                    : {}),
+                attributes: "[[maybe_unused]] ",
+            });
         const stored = this.context.nullableResourceValue(
             resource,
-            shared ? `(*${cppName})` : cppName,
+            cell?.cpp ?? cppName,
             value,
         );
-        if (shared) writable(stored).sharedStorageCpp = cppName;
+        if (cell) writable(stored).sharedStorageCpp = cell.sharedStorageCpp;
         else delete writable(stored).sharedStorageCpp;
         this.context.bindings.defineVariable(name, stored);
     }
@@ -421,21 +417,16 @@ export class DeclarationLowerer {
         type: DataType,
     ): string {
         const cppName = this.context.bindings.cppIdentifier(name.text);
-        const cppType = this.context.dataTypes.cppType(type);
         this.context.reachJsData();
-        this.context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: cppName,
-            initializer: `bbl::js::make_gc_shared<bbl::js::LexicalBinding<${cppType}>>()`,
+        const cell = emitSharedCell(this.context, cppName, {
+            type: `bbl::js::LexicalBinding<${this.context.dataTypes.cppType(type)}>`,
         });
-        this.context.registerNativeBindingType(
-            cppName,
-            `std::shared_ptr<bbl::js::LexicalBinding<${cppType}>>`,
-        );
         this.context.bindings.defineVariable(name, {
-            ...this.context.dataLowerer.leafValue(`${cppName}->get()`, type),
-            sharedStorageCpp: cppName,
+            ...this.context.dataLowerer.leafValue(
+                `${cell.sharedStorageCpp}->get()`,
+                type,
+            ),
+            sharedStorageCpp: cell.sharedStorageCpp,
             nativeBinding: true,
         });
         this.context.staticConstants.delete(symbol);
@@ -578,35 +569,35 @@ export class DeclarationLowerer {
                   type,
               )
             : undefined;
-        this.context.emit(
-            sharedClosureStorage
-                ? {
-                      kind: "declaration",
-                      type: "auto",
-                      name: cppName,
-                      initializer: `bbl::js::make_gc_shared<${cppType}>(${initializer ?? ""})`,
-                  }
-                : initializer !== undefined
-                  ? {
-                        kind: "declaration",
-                        type: cppType,
-                        name: cppName,
-                        initializer,
-                    }
-                  : {
-                        kind: "declaration",
-                        type: cppType,
-                        name: cppName,
-                        initializer: "",
-                        initialization: "default",
-                        attributes: "[[maybe_unused]] ",
-                    },
-        );
-        const bound = sharedClosureStorage ? `(*${cppName})` : cppName;
+        const cell = sharedClosureStorage
+            ? emitSharedCell(this.context, cppName, {
+                  type: cppType,
+                  initializer,
+              })
+            : undefined;
+        if (!cell)
+            this.context.emit(
+                initializer !== undefined
+                    ? {
+                          kind: "declaration",
+                          type: cppType,
+                          name: cppName,
+                          initializer,
+                      }
+                    : {
+                          kind: "declaration",
+                          type: cppType,
+                          name: cppName,
+                          initializer: "",
+                          initialization: "default",
+                          attributes: "[[maybe_unused]] ",
+                      },
+            );
+        const bound = cell?.cpp ?? cppName;
         this.context.dataLowerer.registerLocal(bound, "owned");
         this.context.bindings.defineVariable(declaration.name, {
             ...this.context.dataLowerer.leafValue(bound, type),
-            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
         });
         return true;
     }
@@ -850,30 +841,25 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
             }
             const cppType = this.context.dataTypes.cppType(dataType);
-            this.context.emit(
-                sharedClosureStorage
-                    ? {
-                          kind: "declaration",
-                          type: "auto",
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<${cppType}>()`,
-                      }
-                    : {
-                          kind: "declaration",
-                          type: cppType,
-                          name: cppName,
-                          initializer: "",
-                          initialization: "default",
-                          attributes: "[[maybe_unused]] ",
-                      },
-            );
-            const boundCpp = sharedClosureStorage ? `(*${cppName})` : cppName;
+            const cell = sharedClosureStorage
+                ? emitSharedCell(this.context, cppName, { type: cppType })
+                : undefined;
+            if (!cell)
+                this.context.emit({
+                    kind: "declaration",
+                    type: cppType,
+                    name: cppName,
+                    initializer: "",
+                    initialization: "default",
+                    attributes: "[[maybe_unused]] ",
+                });
+            const boundCpp = cell?.cpp ?? cppName;
             if (dataType.kind !== "number" && dataType.kind !== "boolean") {
                 this.context.dataLowerer.registerLocal(boundCpp, "owned");
             }
             this.context.bindings.defineVariable(declaration.name, {
                 ...this.context.dataLowerer.leafValue(boundCpp, dataType),
-                ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+                ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
             });
             return;
         }
@@ -1480,7 +1466,9 @@ export class DeclarationLowerer {
                 this.context.sharedClosures.identifierIsRebound(
                     declaration.name,
                 );
-            const boundCpp = sharedDataBinding ? `(*${cppName})` : cppName;
+            const boundCpp = sharedDataBinding
+                ? sharedCellCpp(cppName)
+                : cppName;
             const selectedCpp = narrowed.ownedCpp ?? narrowed.cpp;
             // A borrowing local reads its owner; only an owning one takes a
             // temporary.
@@ -1522,19 +1510,23 @@ export class DeclarationLowerer {
                 reference && referenceStruct && narrowed.readOnly
                     ? "const "
                     : "";
-            this.context.emit({
-                kind: "declaration",
-                name: cppName,
-                type: sharedDataBinding
-                    ? "auto"
-                    : stableOwnerAlias && narrowed.dataType.kind === "string"
-                      ? "auto&"
-                      : `${constant}${localType}${reference ? "&" : ""}`,
-                initializer: sharedDataBinding
-                    ? `bbl::js::make_gc_shared<${localType}>(${initializerCpp})`
-                    : initializerCpp,
-                attributes: "[[maybe_unused]] ",
-            });
+            if (sharedDataBinding)
+                emitSharedCell(this.context, cppName, {
+                    type: localType,
+                    initializer: initializerCpp,
+                    attributes: "[[maybe_unused]] ",
+                });
+            else
+                this.context.emit({
+                    kind: "declaration",
+                    name: cppName,
+                    type:
+                        stableOwnerAlias && narrowed.dataType.kind === "string"
+                            ? "auto&"
+                            : `${constant}${localType}${reference ? "&" : ""}`,
+                    initializer: initializerCpp,
+                    attributes: "[[maybe_unused]] ",
+                });
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
                 // pointer as their safe missing value. Test the stored local
@@ -1769,7 +1761,7 @@ export class DeclarationLowerer {
                 this.context.sharedClosures.isSharedClosureScalar(
                     value.dataType?.kind === "enum" ? "enum" : value.kind,
                 ));
-        const boundCpp = sharedBinding ? `(*${cppName})` : cppName;
+        const boundCpp = sharedBinding ? sharedCellCpp(cppName) : cppName;
         const valueFound = presenceFlagCpp(value);
         const optionalFoundCpp =
             valueFound === undefined ||
@@ -1778,19 +1770,20 @@ export class DeclarationLowerer {
                 ? undefined
                 : this.context.allocateTemporaryCppName("element_found");
         // Source bindings can be consumed entirely through generation metadata.
-        this.context.emit({
-            kind: "declaration",
-            name: cppName,
-            type: sharedBinding
-                ? "auto"
-                : stableOwnerAlias
-                  ? "auto&"
-                  : nativeType,
-            initializer: sharedBinding
-                ? `bbl::js::make_gc_shared<${nativeType === "auto" ? `std::decay_t<decltype(${initializerCpp})>` : nativeType}>(${initializerCpp})`
-                : initializerCpp,
-            attributes: "[[maybe_unused]] ",
-        });
+        if (sharedBinding)
+            emitSharedCell(this.context, cppName, {
+                type: nativeType,
+                initializer: initializerCpp,
+                attributes: "[[maybe_unused]] ",
+            });
+        else
+            this.context.emit({
+                kind: "declaration",
+                name: cppName,
+                type: stableOwnerAlias ? "auto&" : nativeType,
+                initializer: initializerCpp,
+                attributes: "[[maybe_unused]] ",
+            });
         if (optionalFoundCpp) {
             // A local initialized from any maybe-absent handle snapshots both
             // the handle and whether it was present. Derive presence from the
@@ -2217,27 +2210,25 @@ export class DeclarationLowerer {
                     site,
                     "A mutable record method requires a concrete native function signature.",
                 );
-            const slot = this.context.allocateTemporaryCppName(
-                `record_method_${key}`,
+            const slot = emitSharedCell(
+                this.context,
+                this.context.allocateTemporaryCppName(`record_method_${key}`),
+                { type: this.context.dataTypes.cppType(type) },
             );
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: slot,
-                initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>()`,
-            });
-            const capture = this.context.registerNativeBinding(slot);
+            const capture = this.context.registerNativeBinding(
+                slot.sharedStorageCpp,
+            );
             writable((writable(owner).recordProperties ??= {}))[key] = {
-                ...this.context.dataLowerer.leafValue(`(*${slot})`, type),
+                ...this.context.dataLowerer.leafValue(slot.cpp, type),
                 nativeLvalue: true,
-                sharedStorageCpp: slot,
+                sharedStorageCpp: slot.sharedStorageCpp,
                 nativeCaptures: [capture],
             };
             if (owner.recordMethods) delete writable(owner.recordMethods)[key];
             initializers.push(() =>
                 this.context.emit({
                     kind: "expression",
-                    code: `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
+                    code: `${slot.cpp} = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
                 }),
             );
         }
@@ -2598,16 +2589,12 @@ export class DeclarationLowerer {
                     "Recursive async callback requires an owned function signature.",
                 );
             this.context.reachJsData();
-            const callbackType = this.context.dataTypes.cppType(type);
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cppName,
-                initializer: `bbl::js::make_gc_shared<${callbackType}>()`,
+            const cell = emitSharedCell(this.context, cppName, {
+                type: this.context.dataTypes.cppType(type),
             });
             const value = {
-                ...this.context.dataValue(`(*${cppName})`, type),
-                sharedStorageCpp: cppName,
+                ...this.context.dataValue(cell.cpp, type),
+                sharedStorageCpp: cell.sharedStorageCpp,
             };
             this.context.bindings.defineVariable(name, value);
             // Suspended invocations retain the recursive cell through the same
@@ -2883,19 +2870,24 @@ export class DeclarationLowerer {
         );
         this.context.reachFeature("data:json", source);
         this.context.reachJsData();
-        this.context.emit({
-            kind: "declaration",
-            type: shared ? "auto" : "bbl::js::JsonValue",
-            name: cppName,
-            initializer: shared
-                ? `bbl::js::make_gc_shared<bbl::js::JsonValue>(${initializer})`
-                : initializer,
-        });
-        const cpp = shared ? `(*${cppName})` : cppName;
+        const cell = shared
+            ? emitSharedCell(this.context, cppName, {
+                  type: "bbl::js::JsonValue",
+                  initializer,
+              })
+            : undefined;
+        if (!cell)
+            this.context.emit({
+                kind: "declaration",
+                type: "bbl::js::JsonValue",
+                name: cppName,
+                initializer,
+            });
+        const cpp = cell?.cpp ?? cppName;
         this.context.dataLowerer.registerLocal(cpp, "owned");
         this.context.bindings.defineVariable(name, {
             ...this.context.dataLowerer.leafValue(cpp, type),
-            ...(shared ? { sharedStorageCpp: cppName } : {}),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
         });
         return true;
     }
@@ -3038,19 +3030,22 @@ export class DeclarationLowerer {
                           declaration.initializer,
                           type,
                       );
-                this.context.emit({
-                    kind: "declaration",
-                    type: sharedClosureStorage
-                        ? "auto"
-                        : this.context.dataTypes.cppType(type),
-                    name: cppName,
-                    initializer: sharedClosureStorage
-                        ? `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>(${initializer})`
-                        : initializer,
-                });
+                const cell = sharedClosureStorage
+                    ? emitSharedCell(this.context, cppName, {
+                          type: this.context.dataTypes.cppType(type),
+                          initializer,
+                      })
+                    : undefined;
+                if (!cell)
+                    this.context.emit({
+                        kind: "declaration",
+                        type: this.context.dataTypes.cppType(type),
+                        name: cppName,
+                        initializer,
+                    });
                 const bound: Value = {
                     ...this.context.dataLowerer.leafValue(
-                        sharedClosureStorage ? `(*${cppName})` : cppName,
+                        cell?.cpp ?? cppName,
                         type,
                     ),
                     ...(type.kind === "struct" &&
@@ -3058,8 +3053,8 @@ export class DeclarationLowerer {
                     !this.context.sharedClosures.identifierIsRebound(name)
                         ? { optionalFoundCpp: "true" }
                         : {}),
-                    ...(sharedClosureStorage
-                        ? { sharedStorageCpp: cppName }
+                    ...(cell
+                        ? { sharedStorageCpp: cell.sharedStorageCpp }
                         : {}),
                 };
                 if (resourceRecordSnapshot) {
@@ -3243,16 +3238,12 @@ export class DeclarationLowerer {
                     annotated,
                     declaration.initializer,
                 );
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cppName,
-                initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
-            });
             this.context.bindings.defineVariable(name, {
                 kind: "data",
-                cpp: `(*${cppName})`,
-                sharedStorageCpp: cppName,
+                ...emitSharedCell(this.context, cppName, {
+                    type: cppType,
+                    initializer: initializerCpp,
+                }),
                 dataType: annotated,
             });
             return true;
@@ -3585,18 +3576,12 @@ export class DeclarationLowerer {
             // not over the empty value it has while that initializer is being
             // lowered. Keep the reference in a shared cell so the generated
             // lambda observes the assignment immediately below.
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cppName,
-                initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>()`,
+            const cell = emitSharedCell(this.context, cppName, {
+                type: this.context.dataTypes.cppType(annotated),
             });
             this.context.bindings.defineVariable(name, {
-                ...this.context.dataLowerer.leafValue(
-                    `(*${cppName})`,
-                    annotated,
-                ),
-                sharedStorageCpp: cppName,
+                ...this.context.dataLowerer.leafValue(cell.cpp, annotated),
+                sharedStorageCpp: cell.sharedStorageCpp,
             });
         }
         const initializerBoundary = this.context.nativeBindingCheckpoint();
@@ -3705,7 +3690,7 @@ export class DeclarationLowerer {
             staticElements = returnedElements;
         const boundCpp =
             sharedDataBinding || selfReferentialBinding
-                ? `(*${cppName})`
+                ? sharedCellCpp(cppName)
                 : cppName;
         let spreadRecordProperties: Record<string, Value> | undefined;
         if (
@@ -3725,19 +3710,16 @@ export class DeclarationLowerer {
                     initializer,
                     spreadTarget,
                 );
-            if (sharedDataBinding) {
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(std::move(${targetCpp}))`,
+            if (sharedDataBinding)
+                emitSharedCell(this.context, cppName, {
+                    type: this.context.dataTypes.cppType(annotated),
+                    initializer: `std::move(${targetCpp})`,
                 });
-            } else if (selfReferentialBinding) {
+            else if (selfReferentialBinding)
                 this.context.emit({
                     kind: "expression",
-                    code: `(*${cppName}) = std::move(${targetCpp});`,
+                    code: `${boundCpp} = std::move(${targetCpp});`,
                 });
-            }
         } else {
             const source = declaration.initializer;
             // A fresh array moves into this tracked local without creating
@@ -3804,26 +3786,24 @@ export class DeclarationLowerer {
                       ),
                   )
                 : initializerCpp;
-            if (!selfLiteral)
+            if (!selfLiteral && sharedDataBinding)
+                emitSharedCell(this.context, cppName, {
+                    type: this.context.dataTypes.cppType(annotated),
+                    initializer: ownedInitializer,
+                });
+            else if (!selfLiteral)
                 this.context.emit(
-                    sharedDataBinding
-                        ? {
+                    selfReferentialBinding
+                        ? `${boundCpp} = ${ownedInitializer};`
+                        : {
                               kind: "declaration",
-                              type: "auto",
+                              type: stableOwnerAlias
+                                  ? "auto&"
+                                  : this.context.dataTypes.cppType(annotated),
                               name: cppName,
-                              initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(${ownedInitializer})`,
-                          }
-                        : selfReferentialBinding
-                          ? `(*${cppName}) = ${ownedInitializer};`
-                          : {
-                                kind: "declaration",
-                                type: stableOwnerAlias
-                                    ? "auto&"
-                                    : this.context.dataTypes.cppType(annotated),
-                                name: cppName,
-                                initializer: ownedInitializer,
-                                attributes: "[[maybe_unused]] ",
-                            },
+                              initializer: ownedInitializer,
+                              attributes: "[[maybe_unused]] ",
+                          },
                 );
         }
         // A spread element contributes as many elements as its source holds.

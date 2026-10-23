@@ -141,6 +141,7 @@ import {
     functionDependencies,
 } from "./function-specializations.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 
 export interface CallbackInvocationOptions {
     coroutine?: true;
@@ -3351,17 +3352,14 @@ export class UserFunctionLowerer {
                             declaration,
                             "Async recursive groups require owned function signatures.",
                         );
-                    const name =
-                        context.allocateTemporaryCppName("recursive_callback");
-                    context.emit({
-                        kind: "declaration",
-                        type: "auto",
-                        name,
-                        initializer: `bbl::js::make_gc_shared<${context.dataTypes.cppType(type)}>()`,
-                    });
+                    const cell = emitSharedCell(
+                        context,
+                        context.allocateTemporaryCppName("recursive_callback"),
+                        { type: context.dataTypes.cppType(type) },
+                    );
                     const value = {
-                        ...context.dataValue(`(*${name})`, type),
-                        sharedStorageCpp: name,
+                        ...context.dataValue(cell.cpp, type),
+                        sharedStorageCpp: cell.sharedStorageCpp,
                     };
                     context.bindings.bindCompileTimeValue(
                         this.declarationIdentifier(declaration),
@@ -5278,12 +5276,7 @@ export class UserFunctionLowerer {
         const selfOwnerCpp = selfIdentifier ? `${cppName}_owner` : undefined;
         const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
         if (selfIdentifier) {
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: selfOwnerCpp!,
-                initializer: `bbl::js::make_gc_shared<${cppType}>()`,
-            });
+            emitSharedCell(context, selfOwnerCpp!, { type: cppType });
             if (!asynchronous)
                 context.emit({
                     kind: "declaration",
@@ -5294,7 +5287,7 @@ export class UserFunctionLowerer {
             const selfValue: Value = {
                 kind: "data",
                 cpp: asynchronous
-                    ? `(*${selfOwnerCpp})`
+                    ? sharedCellCpp(selfOwnerCpp!)
                     : `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
                 dataType,
                 nativeCaptures: [
@@ -5601,8 +5594,8 @@ export class UserFunctionLowerer {
         context.emit(
             selfIdentifier
                 ? dataType.identity
-                    ? `(*${selfOwnerCpp}) = ${cppType}${identity}${lambda}};`
-                    : `(*${selfOwnerCpp}) = ${lambda};`
+                    ? `${sharedCellCpp(selfOwnerCpp!)} = ${cppType}${identity}${lambda}};`
+                    : `${sharedCellCpp(selfOwnerCpp!)} = ${lambda};`
                 : `${cppType} ${cppName}${identity}${lambda}${dataType.identity ? "}" : ""};`,
         );
         if (selfIdentifier) {

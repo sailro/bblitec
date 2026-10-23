@@ -21395,7 +21395,7 @@ test("a storage buffer a nested callback replaces is read through its shared cel
     const engineAlias = /auto& (\w+) = v_engine;/.exec(result.cpp);
     assert.ok(engineAlias, "the palette borrows the entry engine");
     const buffer =
-        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/.exec(
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_cell\(bbl::create_storage_buffer\(/.exec(
             result.cpp,
         );
     assert.ok(buffer, "the replaceable buffer has shared storage");

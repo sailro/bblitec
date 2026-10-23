@@ -24,6 +24,7 @@ import {
     runtimeModuleDependencies,
 } from "./module-initializers.js";
 import { callSignatures } from "./type-facts.js";
+import { emitSharedCell } from "./shared-cells.js";
 
 /** A reached lazy module needs its lexical homes before entry emission. */
 export class ModuleActivationRequired extends Error {
@@ -118,18 +119,11 @@ export class ModuleNamespaces {
         required.forEach(visit);
         for (const [file, { cpp }] of this.activations) {
             context.reachJsData();
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cpp,
-                initializer: `bbl::js::make_gc_shared<bbl::js::ModuleActivation>(${context.cppString(file.fileName)})`,
+            emitSharedCell(context, cpp, {
+                type: "bbl::js::ModuleActivation",
+                initializer: context.cppString(file.fileName),
             });
-            context.registerNativeBinding(
-                cpp,
-                false,
-                false,
-                "std::shared_ptr<bbl::js::ModuleActivation>",
-            );
+            context.registerNativeBinding(cpp);
         }
         for (const [file, { prefix }] of this.activations) {
             context.bindings.pushScope(prefix);

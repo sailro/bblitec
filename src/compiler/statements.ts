@@ -12,6 +12,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { emitSharedCell, nextIterationCellCpp } from "./shared-cells.js";
 import { traceSourceNode } from "./source-trace.js";
 import { activeSurvey } from "./survey.js";
 import { activeStorageDemandPlanner } from "./storage-demand-planner.js";
@@ -2764,10 +2765,7 @@ export class StatementLowerer {
                         header = "";
                     else if (iterationCells.length > 0)
                         header = [
-                            ...iterationCells.map(
-                                (cell) =>
-                                    `${cell} = bbl::js::make_gc_shared<std::decay_t<decltype(*${cell})>>(*${cell})`,
-                            ),
+                            ...iterationCells.map(nextIterationCellCpp),
                             ...(header ? [header] : []),
                         ].join(", ");
                     context.emit({
@@ -4464,22 +4462,21 @@ export class StatementLowerer {
                                 "A for-of variable shared by closures needs a represented element type.",
                             );
                         context.reachJsData();
-                        const cell =
-                            context.allocateTemporaryCppName("iteration_cell");
-                        context.emit({
-                            kind: "declaration",
-                            type: "auto",
-                            name: cell,
-                            initializer: `bbl::js::make_gc_shared<${context.dataTypes.cppType(value.dataType)}>(${value.cpp})`,
-                        });
-                        const bound = `(*${cell})`;
-                        context.dataLowerer.registerLocal(bound, "owned");
+                        const cell = emitSharedCell(
+                            context,
+                            context.allocateTemporaryCppName("iteration_cell"),
+                            {
+                                type: context.dataTypes.cppType(value.dataType),
+                                initializer: value.cpp,
+                            },
+                        );
+                        context.dataLowerer.registerLocal(cell.cpp, "owned");
                         context.bindings.defineVariable(identifier, {
                             ...context.dataLowerer.leafValue(
-                                bound,
+                                cell.cpp,
                                 value.dataType,
                             ),
-                            sharedStorageCpp: cell,
+                            sharedStorageCpp: cell.sharedStorageCpp,
                         });
                     },
                 );

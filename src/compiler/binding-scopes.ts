@@ -49,6 +49,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import { recordAt } from "./record-access.js";
 import { ScopedValueIndex } from "./scoped-value-index.js";
+import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { retainTextValue } from "./text-surface.js";
 import {
     commonResourceValue,
@@ -1032,7 +1033,8 @@ export class BindingScopes {
                 value.dataType?.kind === "handle" && value.dataType.ownedEngine
             ) &&
             cppIdentifierPattern.test(handleStorage) &&
-            (value.cpp === handleStorage || value.cpp === `(*${handleStorage})`)
+            (value.cpp === handleStorage ||
+                value.cpp === sharedCellCpp(handleStorage))
         ) {
             // A materialized handle captures its own local, not the optional
             // slot from which its initializer selected the value.
@@ -1568,31 +1570,25 @@ export class BindingScopes {
             this.context.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
         }
-        if (sharedStorage) {
-            if (isHandleKind(value.kind)) {
-                const cppType = this.context.dataTypes.cppType(
-                    resourceStorage?.type ?? {
-                        kind: "handle",
-                        handle: value.kind,
-                    },
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            } else {
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_cell(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            }
-        } else {
+        // A shared handle cell declares its native type, so closures that
+        // capture it have a concrete environment.
+        const cell = sharedStorage
+            ? emitSharedCell(this.context, cppName, {
+                  ...(isHandleKind(value.kind)
+                      ? {
+                            type: this.context.dataTypes.cppType(
+                                resourceStorage?.type ?? {
+                                    kind: "handle",
+                                    handle: value.kind,
+                                },
+                            ),
+                        }
+                      : {}),
+                  initializer: initializerCpp,
+                  attributes: "[[maybe_unused]] ",
+              })
+            : undefined;
+        if (!cell) {
             this.context.emit({
                 kind: "declaration",
                 type: nativeType,
@@ -1604,29 +1600,15 @@ export class BindingScopes {
                 attributes: "[[maybe_unused]] ",
             });
         }
-        // A shared handle cell declares its native type, so closures that
-        // capture it have a concrete environment.
-        if (isHandleKind(value.kind) && sharedStorage) {
-            const handleType = this.context.dataTypes.cppType(
-                resourceStorage?.type ?? {
-                    kind: "handle",
-                    handle: value.kind,
-                },
-            );
-            this.context.registerNativeBindingType(
-                cppName,
-                `std::shared_ptr<${handleType}>`,
-            );
-        }
         // So does a shared cell of a resource whose native value has one type
         // (`defineVariable` types the plain local).
         const resourceType = resourceValueCppType(value.kind);
-        if (resourceType && sharedStorage)
+        if (resourceType && cell)
             this.context.registerNativeBindingType(
-                cppName,
+                cell.sharedStorageCpp,
                 `std::shared_ptr<${resourceType}>`,
             );
-        const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
+        const storedCpp = cell?.cpp ?? cppName;
         const constantParameter =
             readOnlyParameter &&
             ((value.kind === "number" && value.staticNumber !== undefined) ||
@@ -1645,7 +1627,7 @@ export class BindingScopes {
         const stored: Value = {
             ...bound,
             cpp: ownedResource ? bound.cpp : storedCpp,
-            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
             ...(parameter ? { parameterBinding: !constantParameter } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
@@ -2395,20 +2377,20 @@ export class BindingScopes {
     ): Value {
         const dataType =
             this.context.dataTypes.markStoredObjectReferences(mapped);
-        const storage = this.context.allocateTemporaryCppName(label);
-        const initial = this.context.dataLowerer.compileKnownValueForSink(
-            value,
-            dataType,
-            node,
+        const cell = emitSharedCell(
+            this.context,
+            this.context.allocateTemporaryCppName(label),
+            {
+                type: this.context.dataTypes.cppType(dataType),
+                initializer: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    node,
+                ),
+            },
         );
-        this.context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: storage,
-            initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(dataType)}>(${initial})`,
-        });
         const represented = this.context.dataLowerer.leafValue(
-            `(*${storage})`,
+            cell.cpp,
             dataType,
         );
         if (mapped.kind === "struct" && represented.kind !== "data")
@@ -2427,7 +2409,7 @@ export class BindingScopes {
                 writable(represented).recordOwnKeys = value.recordOwnKeys;
         }
         const metadata = {
-            sharedStorageCpp: storage,
+            sharedStorageCpp: cell.sharedStorageCpp,
             nativeLvalue: true as const,
         };
         return represented.kind === "data"
@@ -2994,7 +2976,7 @@ export class BindingScopes {
                 !(
                     classFields &&
                     property.sharedStorageCpp &&
-                    property.cpp === `(*${property.sharedStorageCpp})`
+                    property.cpp === sharedCellCpp(property.sharedStorageCpp)
                 ) &&
                 (property.kind === "number" ||
                     property.kind === "boolean" ||
@@ -3026,7 +3008,7 @@ export class BindingScopes {
                 property.sharedRecordScalar ||
                 (classFields &&
                     property.sharedStorageCpp &&
-                    property.cpp === `(*${property.sharedStorageCpp})`)
+                    property.cpp === sharedCellCpp(property.sharedStorageCpp))
             ) {
                 properties[name] = property;
                 continue;
@@ -3055,23 +3037,21 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 this.isMutableRecordContainer(property.dataType)
             ) {
-                const cppName = this.context.allocateTemporaryCppName(
-                    `${label}_${name}`,
-                );
-                const cppType = this.context.dataTypes.cppType(
-                    property.dataType,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...property,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(
+                        this.context,
+                        this.context.allocateTemporaryCppName(
+                            `${label}_${name}`,
+                        ),
+                        {
+                            type: this.context.dataTypes.cppType(
+                                property.dataType,
+                            ),
+                            initializer: property.cpp,
+                            attributes: "[[maybe_unused]] ",
+                        },
+                    ),
                     sharedRecordContainer: true,
                 };
                 continue;
@@ -3130,21 +3110,17 @@ export class BindingScopes {
             if (property.kind === "number") {
                 const { staticNumber: _staticNumber, ...dynamicProperty } =
                     property;
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<double>(${
-                        property.staticNumber === undefined
-                            ? property.cpp
-                            : numberConstantValue(property.staticNumber).cpp
-                    })`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...dynamicProperty,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.number,
+                        initializer:
+                            property.staticNumber === undefined
+                                ? property.cpp
+                                : numberConstantValue(property.staticNumber)
+                                      .cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
@@ -3152,33 +3128,27 @@ export class BindingScopes {
             if (property.kind === "boolean") {
                 const { staticBoolean: _staticBoolean, ...dynamicProperty } =
                     property;
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<bool>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...dynamicProperty,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.boolean,
+                        initializer: property.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
             }
             if (property.staticString !== undefined) {
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<std::string>(${this.context.cppString(property.staticString)})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     kind: "data",
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.string,
+                        initializer: this.context.cppString(
+                            property.staticString,
+                        ),
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     dataType: { kind: "string" },
                     sharedRecordScalar: true,
                 };
@@ -3206,20 +3176,13 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 !this.context.hasStableNativeBinding(property)
             ) {
-                const cppType = this.context.dataTypes.cppType(
-                    property.dataType,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...property,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: this.context.dataTypes.cppType(property.dataType),
+                        initializer: property.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
@@ -3227,21 +3190,20 @@ export class BindingScopes {
             properties[name] = property;
         }
         if (packedScalars.length) {
-            const storage = this.context.allocateTemporaryCppName(
-                `${label}_scalars`,
+            // One cell holds every packed scalar.
+            const cell = emitSharedCell(
+                this.context,
+                this.context.allocateTemporaryCppName(`${label}_scalars`),
+                {
+                    type: `std::tuple<${packedScalars.map((field) => field.type).join(", ")}>`,
+                    initializer: `std::tuple{${packedScalars.map((field) => field.cpp).join(", ")}}`,
+                },
             );
-            const type = `std::tuple<${packedScalars.map((field) => field.type).join(", ")}>`;
-            this.context.emit({
-                kind: "declaration",
-                type: `std::shared_ptr<${type}>`,
-                name: storage,
-                initializer: `bbl::js::make_gc_shared<${type}>(std::tuple{${packedScalars.map((field) => field.cpp).join(", ")}})`,
-            });
             packedScalars.forEach((field, index) => {
                 properties[field.name] = {
                     ...field.value,
-                    cpp: `std::get<${index}>(*${storage})`,
-                    sharedStorageCpp: storage,
+                    cpp: `std::get<${index}>(*${cell.sharedStorageCpp})`,
+                    sharedStorageCpp: cell.sharedStorageCpp,
                     sharedRecordScalar: true,
                 };
             });

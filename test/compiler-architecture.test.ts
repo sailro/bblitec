@@ -1300,6 +1300,29 @@ test("a Promise reaction call is recognized by promises.ts", () => {
         assert.ok(sourceFacts(path).calls.has("promiseReactionOf"), path);
 });
 
+test("a binding's shared cell is declared by shared-cells.ts", () => {
+    // emitSharedCell spells the gc-shared cell of a binding closures share,
+    // records its type and reaches the runtime; sharedCellCpp reads the
+    // binding it holds. Pinned lowerers allocating runtime records are
+    // another construct.
+    for (const name of ["emitSharedCell", "sharedCellCpp"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/shared-cells.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                path !== "src/compiler/shared-cells.ts" &&
+                /make_gc_(?:shared<|cell\()/.test(readFileSync(path, "utf8")),
+        ),
+        [],
+    );
+});
+
 test("a statement list's reachable prefix is emitted by loop-control.ts", () => {
     // emitReachableStatements stops at a lowered terminator and, when asked,
     // at a completed static iteration: no hand-copied emit-then-test loop.
