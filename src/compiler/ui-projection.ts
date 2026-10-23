@@ -5657,8 +5657,7 @@ export class UiProjection {
         if (
             this.context.hasFeature("engine:device-recovery") &&
             ts.isPropertyAccessExpression(globalLeft) &&
-            ts.isIdentifier(this.context.unwrap(globalLeft.expression)) &&
-            this.context.unwrap(globalLeft.expression).getText() ===
+            this.context.libraryGlobal(globalLeft.expression) ===
                 "globalThis" &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             (ts.isArrowFunction(expression.right) ||

@@ -15,6 +15,7 @@ import {
     isFunctionWithBody,
     type FunctionWithBody,
     variableKind,
+    writeSites,
 } from "./syntax.js";
 import { callSignatures, unionMembers } from "./type-facts.js";
 
@@ -524,6 +525,45 @@ export function sameReference(
             sameReference(checker, a.expression, b.expression)
         );
     }
+    return false;
+}
+
+/**
+ * Whether two expressions compute one value from the same references: the
+ * same operators over {@link sameReference} operands and equal literals. A
+ * call computes a new value each time, so it is never the same.
+ */
+export function sameExpression(
+    checker: ts.TypeChecker,
+    left: ts.Expression,
+    right: ts.Expression,
+): boolean {
+    const a = unwrapExpression(left);
+    const b = unwrapExpression(right);
+    if (sameReference(checker, a, b)) return true;
+    if (a.kind !== b.kind) return false;
+    if (ts.isLiteralExpression(a) && ts.isLiteralExpression(b))
+        return a.text === b.text;
+    if (
+        a.kind === ts.SyntaxKind.TrueKeyword ||
+        a.kind === ts.SyntaxKind.FalseKeyword ||
+        a.kind === ts.SyntaxKind.NullKeyword
+    )
+        return true;
+    if (ts.isBinaryExpression(a) && ts.isBinaryExpression(b))
+        return (
+            a.operatorToken.kind === b.operatorToken.kind &&
+            sameExpression(checker, a.left, b.left) &&
+            sameExpression(checker, a.right, b.right)
+        );
+    if (ts.isPrefixUnaryExpression(a) && ts.isPrefixUnaryExpression(b))
+        return (
+            a.operator === b.operator &&
+            writeSites(a).length === 0 &&
+            sameExpression(checker, a.operand, b.operand)
+        );
+    if (ts.isTypeOfExpression(a) && ts.isTypeOfExpression(b))
+        return sameExpression(checker, a.expression, b.expression);
     return false;
 }
 

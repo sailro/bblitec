@@ -1427,3 +1427,20 @@ test("a lowering binds `this` for a scope through withThis", () => {
     );
     assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
 });
+
+test("the compiler never decides by comparing source text", () => {
+    // A spelling names no binding: two equal spellings can read different
+    // bindings, and one binding has many spellings. sameReference,
+    // sameExpression, libraryGlobal and staticAccessKey decide instead.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /getText\([^)]*\)\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()/.test(
+                    readFileSync(path, "utf8"),
+                ),
+        ),
+        [],
+    );
+});

@@ -1,5 +1,10 @@
 import type { LoweringServices } from "./lowering-services.js";
-import { isGlobalUndefined, libraryGlobal, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    isGlobalUndefined,
+    libraryGlobal,
+    resolvedSymbol,
+} from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -581,11 +586,12 @@ function derivedJsonPass(
     declaration: ts.FunctionDeclaration,
 ): { value: unknown } | undefined {
     const returnType = declaration.type;
-    if (
-        !returnType ||
-        !ts.isTypeReferenceNode(returnType) ||
-        returnType.typeName.getText(returnType.getSourceFile()) !== "Record"
-    ) {
+    // The library's `Record`, however the file names it.
+    const record =
+        returnType && ts.isTypeReferenceNode(returnType)
+            ? resolvedSymbol(context.checker, returnType.typeName)
+            : undefined;
+    if (record?.name !== "Record" || !declaredInDefaultLibrary(record)) {
         return undefined;
     }
     const modulePath = declaration.getSourceFile().fileName;

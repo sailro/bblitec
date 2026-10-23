@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { accessKey, bindingElementKey } from "./syntax.js";
+import { bindingElementKey } from "./syntax.js";
+import { libraryGlobal, staticAccessKey } from "./symbols.js";
 import { unionMembers } from "./type-facts.js";
 
 const reflectiveObjectMethods = new Set([
@@ -47,7 +48,7 @@ export function propertyNeverObserved(
             return true;
         if (ts.isElementAccessExpression(node)) {
             // A key only the run time knows may be this one.
-            const key = accessKey(node);
+            const key = staticAccessKey(checker, node);
             if ((key === undefined || key === name) && carries(node.expression))
                 return true;
         }
@@ -71,15 +72,15 @@ export function propertyNeverObserved(
         if (ts.isForInStatement(node) && carries(node.expression)) return true;
         if (ts.isCallExpression(node)) {
             const callee = node.expression;
+            const global =
+                ts.isPropertyAccessExpression(callee) &&
+                libraryGlobal(checker, callee.expression);
             const reflective =
                 ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression) &&
-                ((callee.expression.text === "Object" &&
+                ((global === "Object" &&
                     reflectiveObjectMethods.has(callee.name.text)) ||
-                    (callee.expression.text === "JSON" &&
-                        callee.name.text === "stringify") ||
-                    (callee.expression.text === "Reflect" &&
-                        callee.name.text !== "apply"));
+                    (global === "JSON" && callee.name.text === "stringify") ||
+                    (global === "Reflect" && callee.name.text !== "apply"));
             if (reflective && node.arguments.some(carries)) return true;
         }
         return (

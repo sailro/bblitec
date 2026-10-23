@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { isStorageDemand } from "./storage-demand-planner.js";
 import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -171,8 +171,8 @@ function runtimeSelectors(
     context: CaseSplitContext,
     call: ts.CallExpression,
 ): Selector[] | undefined {
-    const conditions = new Map<string, ts.Expression>();
-    const sameTests = new Map<string, ts.Expression[]>();
+    // Each distinct test with every place it appears.
+    const groups: { test: ts.Expression; nodes: ts.Expression[] }[] = [];
     const calls: ts.CallExpression[] = [];
     let effects = false;
     const visit = (node: ts.Node): void => {
@@ -193,17 +193,16 @@ function runtimeSelectors(
             return;
         }
         if (ts.isConditionalExpression(node)) {
-            const text = node.condition.getText();
-            if (!conditions.has(text)) conditions.set(text, node.condition);
-            sameTests.set(text, [
-                ...(sameTests.get(text) ?? []),
-                node.condition,
-            ]);
+            const group = groups.find(({ test }) =>
+                sameExpression(context.checker, test, node.condition),
+            );
+            if (group) group.nodes.push(node.condition);
+            else groups.push({ test: node.condition, nodes: [node.condition] });
         }
         ts.forEachChild(node, visit);
     };
     call.arguments.forEach(visit);
-    if (effects || conditions.size === 0) return undefined;
+    if (effects || groups.length === 0) return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
     const roots = new Set<ts.Symbol>();
     const binding = (node: ts.Node): node is ts.Identifier =>
@@ -215,7 +214,7 @@ function runtimeSelectors(
         }
         ts.forEachChild(node, collect);
     };
-    for (const condition of conditions.values()) {
+    for (const { test: condition } of groups) {
         if (context.evaluationOrder.writesStorage(condition)) return undefined;
         collect(condition);
     }
@@ -233,18 +232,15 @@ function runtimeSelectors(
         (ts.forEachChild(node, receivesRoot) ?? false);
     if (calls.some((inner) => inner.arguments.some(receivesRoot)))
         return undefined;
-    const runtime = [...conditions.values()].filter((condition) => {
+    const runtime = groups.filter(({ test }) => {
         const folded = context.probeEmission(
-            () => context.conditions.compileCondition(condition),
+            () => context.conditions.compileCondition(test),
             () => false,
         );
         return folded !== "true" && folded !== "false";
     });
     return runtime.length > 0 && runtime.length <= MAX_CANDIDATE_SELECTORS
-        ? runtime.map((test) => ({
-              test,
-              nodes: sameTests.get(test.getText()) ?? [test],
-          }))
+        ? runtime
         : undefined;
 }
 
