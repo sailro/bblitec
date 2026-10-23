@@ -50,7 +50,11 @@ import {
 
 import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { stringLiteral } from "../cpp-literals.js";
-import { sameSource } from "../compiler/syntax.js";
+import {
+    sameSource,
+    soleBindingName,
+    declaredKey,
+} from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -90,7 +94,7 @@ function wrapperClass(className: string): ReadonlyMap<string, RawAccess> {
         if (!ts.isMethodDeclaration(member) || !member.body) continue;
         const access = methodAccess(member);
         if (!access) continue;
-        const name = member.name.getText();
+        const name = declaredKey(member.name);
         if (
             glueArray &&
             access.kind === "read" &&
@@ -553,7 +557,7 @@ function tileCacheMeshProcessTemplate(): LibraryTemplate {
         );
     }
     const names = callback.parameters.map((parameter) =>
-        parameter.name.getText(),
+        soleBindingName(parameter.name),
     );
     const classes = meshProcessArgumentClasses();
     if (names.length !== classes.length) {

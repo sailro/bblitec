@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 /**
  * An expression hook lowering shader-renderable.ts's inactive-packet test,
@@ -21,7 +22,7 @@ export function shaderPacketInactiveHook(
         "isPacketInactive",
     );
     const parameters = inactive.declaration.parameters.map((parameter) =>
-        parameter.name.getText(inactive.file),
+        soleBindingName(parameter.name),
     );
     if (parameters.join(",") !== "packet,material,isOverride")
         return context.contractError(

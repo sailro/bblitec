@@ -39,7 +39,7 @@ import {
     ySortHandleModule,
     ySortModule,
 } from "./sprite-y-sort-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -554,7 +554,7 @@ ${body}
         }
         const parameters = ["device", "fxBuffer", "timeSeconds", "params"];
         const pinned = declaration.parameters.map((parameter) =>
-            parameter.name.getText(file),
+            soleBindingName(parameter.name),
         );
         if (
             pinned.length !== parameters.length + 1 ||
@@ -826,7 +826,7 @@ inline void sort_sprite_renderer_layers(
         );
         const signature = declaration.parameters.map(
             (parameter) =>
-                `${parameter.name.getText(file)}: ${parameter.type?.getText(file)}`,
+                `${soleBindingName(parameter.name)}: ${parameter.type?.getText(file)}`,
         );
         const expected = [
             "layers: ReadonlyArray<Sprite2DLayer>",
@@ -867,7 +867,7 @@ inline void sort_sprite_renderer_layers(
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
-                const name = local.name.getText(file);
+                const name = soleBindingName(local.name);
                 if (name === "layer") {
                     const read = this.context.unwrapExpression(
                         local.initializer!,

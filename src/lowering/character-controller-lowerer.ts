@@ -12,6 +12,7 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     sameSource,
+    soleBindingName,
 } from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
@@ -641,10 +642,10 @@ export function lowerCharacterControllerKernel(
                         const value = parameter.initializer
                             ? body.value(parameter.initializer, type).cpp
                             : "{}";
-                        return `    ${lowerer.storage(type)} ${parameter.name.getText(file)} = ${value};`;
+                        return `    ${lowerer.storage(type)} ${soleBindingName(parameter.name)} = ${value};`;
                     });
                 overloads.push(
-                    `${prototype(declaration, false, count)} {\n${initializers.join("\n")}\n    return ${name}(${declaration.parameters.map((parameter) => parameter.name.getText(file)).join(", ")});\n}`,
+                    `${prototype(declaration, false, count)} {\n${initializers.join("\n")}\n    return ${name}(${declaration.parameters.map((parameter) => soleBindingName(parameter.name)).join(", ")});\n}`,
                 );
             }
         return `// ${context.provenance(characterControllerModule, ts.isMethodDeclaration(declaration) ? `PhysicsCharacterController.${name}` : name)}\n${prototype(declaration, ts.isMethodDeclaration(declaration))} {\n${source}\n}\n${overloads.join("\n")}`;

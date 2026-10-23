@@ -2,7 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 /** Native shape handles and keyed ownership adapt the pin's optional advanced seam. */
 export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
@@ -157,7 +157,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
         statement(statement, numeric, indent) {
             if (!ts.isVariableStatement(statement)) return undefined;
             const local = statement.declarationList.declarations[0]!;
-            const name = local.name.getText(file);
+            const name = soleBindingName(local.name);
             if (name === "scaledShapes") {
                 context.assertExpressionShape(
                     local.initializer!,

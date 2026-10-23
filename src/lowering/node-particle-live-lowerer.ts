@@ -83,7 +83,12 @@ import {
     lowerNodeParticleProviderShared,
     lowerNodeParticleProviderState,
 } from "./node-particle-provider-lowerer.js";
-import { variableKind, sameSource } from "../compiler/syntax.js";
+import {
+    variableKind,
+    sameSource,
+    soleBindingName,
+    declaredKey,
+} from "../compiler/syntax.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
 const systemModule = "src/particle/particle-system.ts";
@@ -501,8 +506,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         }
         const env: NpEnv = new Env(this.evaluator.moduleEnv(module));
         const [blockParameter, ctxParameter] = build.parameters;
-        env.declare(blockParameter!.name.getText(file), { k: "block", block });
-        env.declare(ctxParameter!.name.getText(file), { k: "ctx" });
+        env.declare(soleBindingName(blockParameter!.name), {
+            k: "block",
+            block,
+        });
+        env.declare(soleBindingName(ctxParameter!.name), { k: "ctx" });
         this.currentBlockId = block.id;
         const completion = this.evaluator.statements(
             build.body.statements,
@@ -1652,7 +1660,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             );
         }
         const params = closure.arrow.parameters.map((parameter) =>
-            parameter.name.getText(closure.file),
+            soleBindingName(parameter.name),
         );
         closure.shape = this.lowerBody(
             closure.arrow.body,
@@ -2599,7 +2607,7 @@ export class NodeParticleLiveLowerer {
         if (this.shared.has(cpp)) return cpp;
         const parameters: PinnedFunctionParameter[] =
             fn.declaration.parameters.map((parameter, index) => {
-                const pinned = parameter.name.getText(fn.file);
+                const pinned = soleBindingName(parameter.name);
                 const annotation = annotations[index]!;
                 if (annotation === "number") {
                     return { pinned, kind: "number", cpp: snakeCase(pinned) };
@@ -2776,7 +2784,7 @@ export class NodeParticleLiveLowerer {
                     ts.isPropertySignature(member) &&
                     member.questionToken !== undefined,
             )
-            .map((member) => member.name.getText(file));
+            .map((member) => declaredKey(member.name));
         if (optional.join(",") !== HOOK_NAMES.join(",")) {
             this.context.contractError(
                 declaration,

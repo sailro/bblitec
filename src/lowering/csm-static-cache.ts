@@ -12,6 +12,7 @@ import {
     recordOf,
     recordScalars,
 } from "./record-shapes.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const gateModule = "src/shadow/csm-refit-gate.ts";
 const cacheModule = "src/shadow/csm-shadow-cache.ts";
@@ -456,7 +457,7 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
         "enableCsmStaticCache",
     );
     const parameters = declaration.parameters.map((parameter) =>
-        parameter.name.getText(file),
+        soleBindingName(parameter.name),
     );
     if (parameters.join() !== "engine,sg,options")
         context.contractError(
@@ -499,8 +500,9 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
     ]);
     const platformKey = (statement: ts.Statement): string | undefined => {
         if (ts.isVariableStatement(statement)) {
-            const name =
-                statement.declarationList.declarations[0]?.name.getText(file);
+            const name = soleBindingName(
+                statement.declarationList.declarations[0]?.name,
+            );
             return name && (platformShapes.has(name) || name === "promise")
                 ? name
                 : undefined;

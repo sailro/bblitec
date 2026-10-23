@@ -15,6 +15,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-buffer-binding.ts";
 const bufferHelpers: Record<string, string> = {
@@ -341,7 +342,7 @@ function lowerBufferHelpers(context: LoweringContext): string {
                         "Expected compute buffer predicate expression.",
                     );
                 const parameters = node.parameters.map((parameter) =>
-                    parameter.name.getText(file),
+                    soleBindingName(parameter.name),
                 );
                 const types = parameters.map((parameter) =>
                     parameter === "owner"

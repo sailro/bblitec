@@ -10,7 +10,7 @@ import type {
     PinnedBinding,
     PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/physics/havok.ts";
 
@@ -109,9 +109,9 @@ export function lowerPhysicsContainer(context: LoweringContext): {
                 });
                 numeric.bindPorts(
                     shape.members.map((member) => [
-                        `${declaration.name.getText()}.${member.name}`,
+                        `${soleBindingName(declaration.name)}.${member.name}`,
                         {
-                            cpp: `${declaration.name.getText()}.${member.name}`,
+                            cpp: `${soleBindingName(declaration.name)}.${member.name}`,
                             type: "scalar",
                         },
                     ]),

@@ -2,6 +2,7 @@ import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 /** JSON map entries retain the pin's iteration order and replacement semantics. */
 export function lowerBabylonMaterialMaps(context: LoweringContext): string {
@@ -131,9 +132,9 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
                     lowerer.bindPorts(
                         [
                             [
-                                created.name.getText(file),
+                                soleBindingName(created.name),
                                 {
-                                    cpp: created.name.getText(file),
+                                    cpp: soleBindingName(created.name),
                                     type: "opaque",
                                 },
                             ],
@@ -141,7 +142,7 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
                         created,
                     );
                     return [
-                        `${indent}const auto ${created.name.getText(file)} = load_material(engine, md, base_path, scene_ambient, reflection_cubes, load_textures);`,
+                        `${indent}const auto ${soleBindingName(created.name)} = load_material(engine, md, base_path, scene_ambient, reflection_cubes, load_textures);`,
                     ];
                 }
                 if (

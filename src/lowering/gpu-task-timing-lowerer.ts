@@ -11,7 +11,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/engine/gpu-task-timing.ts";
 const timerPath = "src/engine/gpu-task-timer.ts";
@@ -217,7 +217,7 @@ export function lowerGpuTaskTiming(context: LoweringContext): LoweredSource {
                                 ) ||
                                 local.name.elements
                                     .map((element) =>
-                                        element.name.getText(file),
+                                        soleBindingName(element.name),
                                     )
                                     .join(",") !==
                                     "createGpuTaskTimer,installGpuTaskTimer"

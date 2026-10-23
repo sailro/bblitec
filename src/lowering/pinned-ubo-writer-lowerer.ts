@@ -505,7 +505,7 @@ function vectorPropertyLanes(
     }
     node = unwrapExpression(node);
     if (!ts.isPropertyAccessExpression(node)) return undefined;
-    return state.request.vectorProperties?.[node.name.getText()];
+    return state.request.vectorProperties?.[node.name.text];
 }
 
 /** Whether a read names a property our records do not carry. */
@@ -521,7 +521,7 @@ function readsAbsentProperty(
     ) {
         return false;
     }
-    const property = node.name.getText();
+    const property = node.name.text;
     return state.request.propertySources[property] === null;
 }
 
@@ -592,11 +592,11 @@ function aliasesRecord(state: WriterState, expression: ts.Expression): boolean {
     ) {
         return false;
     }
-    const source = state.request.propertySources[node.name.getText()];
+    const source = state.request.propertySources[node.name.text];
     return (
         typeof source === "string" &&
         !source.includes(".") &&
-        state.request.vectorProperties?.[node.name.getText()] === undefined
+        state.request.vectorProperties?.[node.name.text] === undefined
     );
 }
 
@@ -611,7 +611,7 @@ function vectorOriginProperty(expression: ts.Expression): string | undefined {
     }
     node = unwrapExpression(node);
     return ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)
-        ? node.name.getText()
+        ? node.name.text
         : undefined;
 }
 
@@ -633,7 +633,7 @@ function discardedProperty(
     }
     node = unwrapExpression(node);
     if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
-        return node.name.getText();
+        return node.name.text;
     }
     if (
         ts.isIdentifier(node) &&
@@ -918,7 +918,7 @@ function emitRecordExpression(
         // `thick?.max` — a native record member is never absent, so the
         // optional chain reads exactly like the plain access.
         const property = ts.isPropertyAccessChain(node)
-            ? node.name.getText()
+            ? node.name.text
             : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
@@ -937,7 +937,7 @@ function emitRecordExpression(
         (ts.isPropertyAccessExpression(node.expression) ||
             ts.isPropertyAccessChain(node.expression))
     ) {
-        const owner = node.expression.name.getText();
+        const owner = node.expression.name.text;
         const direct =
             state.request.laneSources?.[owner]?.[
                 Number(node.argumentExpression.text)
@@ -962,7 +962,7 @@ function emitRecordExpression(
         ts.isElementAccessExpression(node)
     ) {
         const property = ts.isPropertyAccessExpression(node)
-            ? node.name.getText()
+            ? node.name.text
             : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {

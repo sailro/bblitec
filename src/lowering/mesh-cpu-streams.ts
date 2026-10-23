@@ -5,7 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, declaredKey } from "../compiler/syntax.js";
 
 export const meshCpuStreamFields: ReadonlyMap<string, string> = new Map([
     ["_cpuPositions", "positions"],
@@ -149,7 +149,7 @@ export function lowerMeshCpuStreamRetainers(context: LoweringContext): string {
                             meshCpuStreamFields.has(node.name.text),
                     )) {
                         const field = meshCpuStreamFields.get(
-                            property.name.getText(file),
+                            declaredKey(property.name),
                         )!;
                         writes.push(
                             `    result->${field} = ${lowerer.expression(property.initializer)};`,

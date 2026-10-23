@@ -59,6 +59,8 @@ import {
     variableKind,
     isBlockScopedVariable,
     sameSource,
+    soleBindingName,
+    declaredKey,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -567,7 +569,7 @@ export class PinnedRecordModel {
             ...this.order.map((entry) => `${entry.module}#${entry.name}`),
             ...[...this.variables.values()].map(
                 (variable) =>
-                    `${modulePathOf(variable.declaration.getSourceFile())}#${variable.declaration.name.getText()}`,
+                    `${modulePathOf(variable.declaration.getSourceFile())}#${soleBindingName(variable.declaration.name)}`,
             ),
         ];
     }
@@ -2563,7 +2565,7 @@ export class PinnedRecordModel {
                 cpp: `${stem}_construct`,
                 exported: `${className}.constructor`,
             };
-        const member = declaration.name.getText();
+        const member = declaredKey(declaration.name);
         const snake = snakeCase(member);
         if (ts.isGetAccessorDeclaration(declaration))
             return {
@@ -2869,7 +2871,7 @@ export class PinnedRecordModel {
         const variables = [...this.variables.values()].filter((variable) =>
             emit({
                 module: modulePathOf(variable.declaration.getSourceFile()),
-                name: variable.declaration.name.getText(),
+                name: soleBindingName(variable.declaration.name),
             }),
         );
         const declarations = [
@@ -2902,7 +2904,7 @@ export class PinnedRecordModel {
                             initializer,
                             "Pinned module state starts from null, undefined, false, 0 or an empty string only.",
                         );
-                    const provenance = `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), variable.declaration.name.getText(), "realm state")}`;
+                    const provenance = `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), soleBindingName(variable.declaration.name), "realm state")}`;
                     const type = this.cppType(variable.shape);
                     return variable.initializer === undefined
                         ? `${provenance}\ninline thread_local ${type} ${variable.cpp}{};`
@@ -3351,7 +3353,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         )
                 )
                     continue;
-                const resolved = members.get(member.name.getText());
+                const resolved = members.get(declaredKey(member.name));
                 if (!resolved)
                     this.refuse(
                         member,

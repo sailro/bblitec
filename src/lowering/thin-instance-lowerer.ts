@@ -13,7 +13,7 @@ import {
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 import { absentDrawRangeBinding } from "./mesh-draw-range.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
 const gpuModule = "src/mesh/thin-instance-gpu.ts";
@@ -498,7 +498,7 @@ function lowerFunction(
             gpu,
             new Set(
                 declaration.parameters.map((parameter) =>
-                    parameter.name.getText(file),
+                    soleBindingName(parameter.name),
                 ),
             ),
         ),

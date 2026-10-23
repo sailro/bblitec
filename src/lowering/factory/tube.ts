@@ -33,7 +33,7 @@ import {
 } from "../pinned-numeric-lowerer.js";
 
 import { pinnedOptionNumber } from "../pinned-option-defaults.js";
-import { sameSource } from "../../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../../compiler/syntax.js";
 
 /** A pinned `Vec3` parameter, landing on the runtime's double record. */
 function vec3Parameter(pinned: string): PinnedFunctionParameter {
@@ -394,7 +394,7 @@ export class TubeLowerer {
                 ) {
                     return undefined;
                 }
-                const name = local.name.getText(file);
+                const name = soleBindingName(local.name);
                 const shape = frameLists.get(name);
                 if (!shape || initializer.arguments?.length !== 1) {
                     return this.context.contractError(
@@ -537,7 +537,7 @@ ${body}
                             initializer.elements.length === 0 &&
                             sameSource(local.type, "Vec3[][]")
                         ) {
-                            const name = local.name.getText(file);
+                            const name = soleBindingName(local.name);
                             lowerer.bindPorts(
                                 [
                                     [
@@ -560,7 +560,7 @@ ${body}
                             ts.isCallExpression(initializer) &&
                             sameSource(initializer.expression, "computePath3D")
                         ) {
-                            const name = local.name.getText(file);
+                            const name = soleBindingName(local.name);
                             if (initializer.arguments.length !== 1) {
                                 return this.context.contractError(
                                     initializer,
@@ -586,7 +586,7 @@ ${body}
                                 );
                             }
                             for (const element of local.name.elements) {
-                                const name = element.name.getText(file);
+                                const name = soleBindingName(element.name);
                                 if (
                                     element.propertyName ||
                                     element.initializer ||

@@ -3,6 +3,7 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/mesh/hierarchy-instance-pool.ts";
 
@@ -109,7 +110,7 @@ export function lowerHierarchyInstanceOperations(
         const bindings = new Map(members);
         const parameters = new Set(
             source.declaration.parameters.map((parameter) =>
-                parameter.name.getText(source.file),
+                soleBindingName(parameter.name),
             ),
         );
         for (const name of ["index", "count", "caller", "matrix", "rootMatrix"])

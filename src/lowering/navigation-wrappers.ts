@@ -6,7 +6,11 @@ import {
     variableInitializer,
     contractError,
 } from "./context.js";
-import { sameSource, propertyPath } from "../compiler/syntax.js";
+import {
+    sameSource,
+    propertyPath,
+    soleBindingName,
+} from "../compiler/syntax.js";
 
 export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
 export const WRAPPER_GENERATORS =
@@ -149,7 +153,7 @@ export function methodAccess(
     method: ts.MethodDeclaration,
 ): RawAccess | undefined {
     const parameters = method.parameters.map((parameter) =>
-        parameter.name.getText(),
+        soleBindingName(parameter.name),
     );
     const [only] = method.body?.statements ?? [];
     if (!only || method.body!.statements.length !== 1) return undefined;

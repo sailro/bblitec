@@ -1573,8 +1573,23 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
         ),
         [],
     );
-    // propertyPath names a member chain (`this` included) for both.
-    for (const name of ["sameSource", "sameSyntax", "propertyPath"])
+    // propertyPath names a member chain (`this` included) for both;
+    // soleBindingName and declaredKey read a declared name.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/lowering/") &&
+                /\.name\??\.getText\(/.test(readFileSync(path, "utf8")),
+        ),
+        [],
+    );
+    for (const name of [
+        "sameSource",
+        "sameSyntax",
+        "propertyPath",
+        "soleBindingName",
+        "declaredKey",
+    ])
         assert.deepEqual(
             declarationOwners(name),
             ["src/compiler/syntax.ts"],

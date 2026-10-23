@@ -4,7 +4,7 @@ import {
     characterControllerModule,
     lowerCharacterControllerKernel,
 } from "./character-controller-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 /** The pinned controller class above the existing physics/node APIs. */
 export function characterControllerHeader(
@@ -38,7 +38,7 @@ export function characterControllerHeader(
         createNode.parameters
             .slice(4)
             .map((parameter) => [
-                parameter.name.getText(),
+                soleBindingName(parameter.name),
                 context.floatLiteral(
                     context.numericValue(
                         parameter.initializer!,

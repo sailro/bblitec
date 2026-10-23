@@ -2073,3 +2073,32 @@ export function propertyPath(expression: ts.Expression): string[] | undefined {
     const owner = propertyPath(unwrapped.expression);
     return owner ? [...owner, unwrapped.name.text] : undefined;
 }
+
+/**
+ * The one name a binding declares: an identifier's text. A destructuring
+ * pattern declares several, so a reader that needs one refuses it.
+ */
+export function soleBindingName(name: ts.BindingName): string;
+export function soleBindingName(
+    name: ts.BindingName | undefined,
+): string | undefined;
+export function soleBindingName(
+    name: ts.BindingName | undefined,
+): string | undefined {
+    if (name === undefined) return undefined;
+    if (ts.isIdentifier(name)) return name.text;
+    throw new Error(
+        "Expected a binding with one name, found a destructuring pattern.",
+    );
+}
+
+/**
+ * The key a member declares, for a reader that needs one: refused for a
+ * computed key the syntax alone does not decide ({@link propertyKey}).
+ */
+export function declaredKey(name: ts.PropertyName): string {
+    const key = propertyKey(name);
+    if (key === undefined)
+        throw new Error("Expected a member with a literal name.");
+    return key;
+}

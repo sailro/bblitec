@@ -18,7 +18,7 @@ import {
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -401,7 +401,7 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
-                const name = local.name.getText(file);
+                const name = soleBindingName(local.name);
                 const initializer = local.initializer;
                 if (!initializer) return undefined;
                 if (name === "viewport") {

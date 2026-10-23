@@ -3,6 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const module = "src/effect/effect-renderer.ts";
 
@@ -159,7 +160,7 @@ export function lowerEffectWrapperDisposal(
                             ts.isPropertyAccessExpression(candidate) &&
                             context.expressionMatchesShape(
                                 candidate,
-                                `${local.name.getText()}?.texture`,
+                                `${soleBindingName(local.name)}?.texture`,
                             ),
                     ))
                         lowerer.bindLocal(read, {

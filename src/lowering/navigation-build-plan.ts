@@ -58,7 +58,13 @@ import {
 import { spelledMathCall } from "../compiler/math-intrinsics.js";
 import { pinnedLibraryGlobal } from "../pinned-program.js";
 import { doubleLiteral } from "../cpp-literals.js";
-import { writeSites, sameSource, propertyPath } from "../compiler/syntax.js";
+import {
+    writeSites,
+    sameSource,
+    propertyPath,
+    soleBindingName,
+    declaredKey,
+} from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -885,7 +891,7 @@ function wrapperCreateFields(className: string): readonly CreateField[] {
                 (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ) === true,
     );
-    const parameter = create?.parameters[0]?.name.getText();
+    const parameter = soleBindingName(create?.parameters[0]?.name);
     const statements = create?.body?.statements;
     if (
         !create ||
@@ -900,7 +906,7 @@ function wrapperCreateFields(className: string): readonly CreateField[] {
     const [first] = statements;
     const record =
         first && ts.isVariableStatement(first)
-            ? first.declarationList.declarations[0]?.name.getText()
+            ? soleBindingName(first.declarationList.declarations[0]?.name)
             : undefined;
     const fields: CreateField[] = [];
     for (const statement of statements.slice(1, -1)) {
@@ -959,7 +965,7 @@ function wrapperSetterFields(className: string): ReadonlyMap<string, string> {
         if (!ts.isMethodDeclaration(member)) continue;
         const access = methodAccess(member);
         if (access?.kind === "store" && !access.element)
-            setters.set(member.name.getText(), access.field);
+            setters.set(declaredKey(member.name), access.field);
     }
     return setters;
 }

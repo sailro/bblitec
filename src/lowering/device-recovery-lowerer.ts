@@ -48,6 +48,7 @@ import {
     shaderUniformRecoveryPublication,
     shaderUniformRecoveryReset,
 } from "./shader-uniforms.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const recoveryModule = "src/engine/device-lost-recovery.ts";
 const testingModule = "src/engine/device-lost-recovery-testing.ts";
@@ -184,7 +185,7 @@ function arrowBody(
     }
     return {
         parameters: arrow.parameters.map((parameter) =>
-            parameter.name.getText(),
+            soleBindingName(parameter.name),
         ),
         statements: arrow.body.statements,
     };

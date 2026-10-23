@@ -6,7 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/material/shader/shader-material.ts";
 
@@ -587,7 +587,7 @@ export function lowerShaderUniformRangeUpdates(
     const packed = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
         ["spec", "data", "buffer", "min", "max"].includes(
-            statement.declarationList.declarations[0]!.name.getText(file),
+            soleBindingName(statement.declarationList.declarations[0]!.name),
         );
     const gate = lowerPinnedBody(
         file,

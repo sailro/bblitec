@@ -10,7 +10,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const module = "src/particle/node/npe-emitter-provider.ts";
 
@@ -150,7 +150,7 @@ export function lowerNodeParticleProviderState(
     for (const statement of setup.statements) {
         if (ts.isVariableStatement(statement)) {
             for (const variable of statement.declarationList.declarations) {
-                const name = variable.name.getText(file);
+                const name = soleBindingName(variable.name);
                 if (!initializers.has(name))
                     context.contractError(
                         variable,

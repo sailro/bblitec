@@ -6,7 +6,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 /** The native shadow hook is fixed; retain the pin's wrapper state beside it. */
 export function lowerShadowEnabled(context: LoweringContext): string {
@@ -187,10 +187,9 @@ export function lowerShadowEnabled(context: LoweringContext): string {
                     ts.isVariableStatement(node) &&
                     node.declarationList.declarations.length === 1
                 ) {
-                    const name =
-                        node.declarationList.declarations[0]!.name.getText(
-                            sync.file,
-                        );
+                    const name = soleBindingName(
+                        node.declarationList.declarations[0]!.name,
+                    );
                     if (name === "csmData" || name === "callbacks")
                         lowerer.bindPorts(
                             [[name, syncBindings.get(name)!]],

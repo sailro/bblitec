@@ -7,7 +7,7 @@ import {
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { computeTextureSamplingCpp } from "./compute-texture-descriptor.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, declaredKey } from "../compiler/syntax.js";
 
 /** Source validation, level iteration and task closures over PAL-owned mip bindings. */
 export function lowerComputeTextureMipmaps(
@@ -355,7 +355,7 @@ export function lowerComputeTextureMipmaps(
     const methods = new Map<string, ts.MethodDeclaration>();
     for (const member of returned.properties) {
         if (ts.isMethodDeclaration(member))
-            methods.set(member.name.getText(factory.file), member);
+            methods.set(declaredKey(member.name), member);
         else if (
             ts.isShorthandPropertyAssignment(member) &&
             ["name", "engine"].includes(member.name.text)

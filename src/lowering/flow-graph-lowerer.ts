@@ -74,6 +74,7 @@ import {
     type ValueModel,
 } from "./pinned-partial-evaluator.js";
 import { recordAt } from "../compiler/record-access.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 /** A graph-authored name as one C++ identifier fragment. */
 function identifier(name: string): string {
@@ -756,7 +757,7 @@ class GraphLowering {
         const interpreter = new Interpreter(this, this.context, emitter);
         const env: FgEnv = new Env(interpreter.moduleEnv(definition.module));
         const params = declaration.parameters.map((parameter) =>
-            parameter.name.getText(definition.file),
+            soleBindingName(parameter.name),
         );
         const values: Val[] = [
             { k: "static", value: block },
