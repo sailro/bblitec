@@ -16,6 +16,18 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-discarded-getter-read-runs-the-getter-once",
+    `
+    let reads = 0;
+    class G { get v(): number { reads++; return 1; } }
+    const g = new G();
+    void g.v;
+    g.v;
+    if (reads !== 2) throw new Error("getter runs " + reads);
+`,
+);
+
+check(
     "a-stored-closure-calling-a-method-shares-the-bindings-it-writes",
     `
     let n = 0;

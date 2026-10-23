@@ -5109,21 +5109,16 @@ export class StatementLowerer {
             context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
-        // `await <barrier property>` -- a read whose only meaning is the
-        // wait, which this runtime satisfies by construction. Compiled
-        // rather than skipped so the property still has to exist and the
-        // owner still has to be the right kind; a value that names no
-        // native expression (a barrier, a container's own list) discards
-        // to nothing, as `emitDiscardedValue` discards it anywhere else.
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const value = context.compileValue(unwrapped);
-            if (value.cpp.length === 0) {
-                return;
-            }
-        }
-        // Any supported value expression can be evaluated for effects alone,
-        // including the value of a return in a contextually void function.
-        context.emitDiscardedValue(context.compileValue(unwrapped));
+        // Any supported value expression is evaluated for its effects alone
+        // (the value of a return in a contextually void function too),
+        // compiled once so a getter it reads runs once. A property read
+        // naming no native expression -- `await <barrier property>`, whose
+        // only meaning is a wait this runtime satisfies, or a container's
+        // own list -- still has to exist, and discards to nothing.
+        const value = context.compileValue(unwrapped);
+        if (ts.isPropertyAccessExpression(unwrapped) && value.cpp.length === 0)
+            return;
+        context.emitDiscardedValue(value);
     }
 
     /** Assigns a tuple result to definite-assignment resource bindings. */
