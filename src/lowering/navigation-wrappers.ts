@@ -6,7 +6,7 @@ import {
     variableInitializer,
     contractError,
 } from "./context.js";
-import { sameSource } from "../compiler/syntax.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
 export const WRAPPER_GENERATORS =
@@ -44,18 +44,6 @@ export function wrapperPackageVersion(name: string): string {
         throw new Error(`${name}'s package.json names no version.`);
     }
     return manifest.version;
-}
-
-/** `a.b.c` as its names, or undefined for anything but a property path. */
-export function propertyPath(expression: ts.Expression): string[] | undefined {
-    const unwrapped = unwrapExpression(expression);
-    if (ts.isIdentifier(unwrapped)) return [unwrapped.text];
-    if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) return ["this"];
-    if (ts.isPropertyAccessExpression(unwrapped)) {
-        const owner = propertyPath(unwrapped.expression);
-        return owner ? [...owner, unwrapped.name.text] : undefined;
-    }
-    return undefined;
 }
 
 export type BlockArrow = ts.ArrowFunction & { body: ts.Block };

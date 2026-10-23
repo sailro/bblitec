@@ -8,6 +8,7 @@ import {
     type WriteSite,
     lastWriter,
     objectLiteralMembers,
+    propertyPath,
     sameSource,
     sameSyntax,
     variableKind,
@@ -1020,15 +1021,7 @@ export class LoweringContext {
     }
 
     public propertyPath(expression: ts.Expression): string[] | undefined {
-        const unwrapped = this.unwrapExpression(expression);
-        if (ts.isIdentifier(unwrapped)) {
-            return [unwrapped.text];
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const owner = this.propertyPath(unwrapped.expression);
-            return owner ? [...owner, unwrapped.name.text] : undefined;
-        }
-        return undefined;
+        return propertyPath(expression);
     }
 
     /**

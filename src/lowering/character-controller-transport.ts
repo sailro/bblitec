@@ -13,6 +13,7 @@ import {
     type KernelSchema,
     type KernelValue,
 } from "./character-kernel-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export const queryResultType = tupleOf([
     recordScalars.number,
@@ -65,11 +66,7 @@ export function characterTransportSchema(
                 declaration.name.text !== "hknp"
             )
                 return;
-            if (
-                declaration.initializer?.getText(
-                    declaration.getSourceFile(),
-                ) === "world._hknp"
-            )
+            if (sameSource(declaration.initializer, "world._hknp"))
                 context.assertStatementShapes(
                     node,
                     [node],
@@ -87,9 +84,7 @@ export function characterTransportSchema(
         },
         expression(node, _expected, lowerer) {
             if (ts.isPropertyAccessExpression(node)) {
-                if (
-                    node.getText(node.getSourceFile()) === "this._world._bodies"
-                )
+                if (sameSource(node, "this._world._bodies"))
                     return {
                         cpp: "_world_bodies()",
                         type: arrayOf(recordOf("PhysicsBody")),
@@ -273,8 +268,7 @@ export function characterTransportSchema(
                 if (
                     path === "worldStepSeconds" &&
                     node.arguments.length === 1 &&
-                    node.arguments[0]!.getText(node.getSourceFile()) ===
-                        "this._world"
+                    sameSource(node.arguments[0], "this._world")
                 )
                     return {
                         cpp: "_world_step_seconds()",

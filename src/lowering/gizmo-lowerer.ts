@@ -1272,10 +1272,10 @@ export class GizmoLowerer {
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === member &&
-                // Matched by TEXT rather than as an identifier: the cage
+                // Matched by shape rather than as an identifier: the cage
                 // clears the flag on `c.meshes[1]!`, an element access,
                 // where the widgets clear it on a plain local.
-                node.left.expression.getText(node.getSourceFile()) === local &&
+                sameSource(node.left.expression, local) &&
                 node.right.kind === ts.SyntaxKind.FalseKeyword
             ) {
                 found = true;

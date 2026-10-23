@@ -2060,3 +2060,16 @@ export function sameSource(
 export function sameSyntax(left: ts.Node, right: ts.Node): boolean {
     return sourceFingerprint(left) === sourceFingerprint(right);
 }
+
+/**
+ * `a.b.c` (or `this.b.c`) as its names, read through wrappers: the path a
+ * lowering names a member chain by. Undefined for anything else.
+ */
+export function propertyPath(expression: ts.Expression): string[] | undefined {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isIdentifier(unwrapped)) return [unwrapped.text];
+    if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) return ["this"];
+    if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
+    const owner = propertyPath(unwrapped.expression);
+    return owner ? [...owner, unwrapped.name.text] : undefined;
+}

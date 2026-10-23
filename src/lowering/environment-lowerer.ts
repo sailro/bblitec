@@ -17,6 +17,7 @@ import {
 } from "./pinned-function-lowerer.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
 const DDS_BACKGROUND_MODULE = "src/material/pbr/background-dds-environment.ts";
@@ -560,8 +561,7 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
                     ts.isVariableDeclaration(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === "enableNoise" &&
-                    node.initializer?.getText(file).trim() ===
-                        "options.enableNoise ?? true",
+                    sameSource(node.initializer, "options.enableNoise ?? true"),
             )
         ) {
             this.context.contractError(
@@ -575,7 +575,7 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
         ]) {
             const call = this.context.callExpression(declaration, builder);
             const last = call.arguments[call.arguments.length - 1];
-            if (last?.getText(file).trim() !== "enableNoise") {
+            if (!sameSource(last, "enableNoise")) {
                 this.context.contractError(
                     call,
                     `Expected ${builder} to take enableNoise last.`,

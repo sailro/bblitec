@@ -5,7 +5,6 @@ import {
     WRAPPER_CORE,
     WRAPPER_GENERATORS,
     wrapperModule,
-    propertyPath,
     blockArrow,
     declarationOf,
     type BlockArrow,
@@ -59,7 +58,7 @@ import {
 import { spelledMathCall } from "../compiler/math-intrinsics.js";
 import { pinnedLibraryGlobal } from "../pinned-program.js";
 import { doubleLiteral } from "../cpp-literals.js";
-import { writeSites, sameSource } from "../compiler/syntax.js";
+import { writeSites, sameSource, propertyPath } from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
