@@ -156,11 +156,12 @@ check(
 `,
 );
 
-test("scalar compound value targets fail without recursive fallback", () => {
-    assert.throws(
-        () => compileSource("let value=1; console.log(value+=2);"),
-        /compound assignment target has no represented expression value/,
+test("a scalar compound assignment used as a value binds the number it stores", () => {
+    const { cpp } = compileSource("let value=1; console.log(value+=2);");
+    const next = /const double (\w+) = \(v_value \+ 2\.0\);\s+v_value = \1;/.exec(
+        cpp,
     );
+    assert.ok(next, cpp);
 });
 
 check(
