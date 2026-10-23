@@ -4887,28 +4887,10 @@ export class ExpressionLowerer {
             this.context.allocateUserFunctionPrefix(),
         );
         try {
-            const pattern = callback.parameters[0]!.name;
-            pattern.elements.forEach((binding, index) => {
-                if (ts.isOmittedExpression(binding)) return;
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer ||
-                    binding.dotDotDotToken
-                ) {
-                    this.context.fail(
-                        binding,
-                        "Static tuple callback bindings must be plain identifiers.",
-                    );
-                }
-                const value = tuple.tupleElements?.[index];
-                if (!value) {
-                    this.context.fail(
-                        binding,
-                        "Static tuple callback binding exceeds the tuple width.",
-                    );
-                }
-                this.context.bindings.bindLocalValue(binding.name, value);
-            });
+            this.context.declarations.bindPattern(
+                callback.parameters[0]!.name,
+                tuple,
+            );
             callback.parameters.slice(1).forEach((parameter, index) => {
                 if (
                     !ts.isIdentifier(parameter.name) ||

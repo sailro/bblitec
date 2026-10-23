@@ -4827,13 +4827,20 @@ export class DeclarationLowerer {
                     ? this.context.compileValue(element.initializer)
                     : present;
             if (!bound) {
-                this.context.fail(
-                    element,
-                    "The tuple has no element for this binding and it declares no default.",
+                // JavaScript binds a lane past the end to `undefined`.
+                if (!ts.isIdentifier(element.name))
+                    this.context.fail(
+                        element,
+                        "A nested pattern destructures a lane past the end of the tuple: a TypeError.",
+                    );
+                this.context.bindings.bindCompileTimeValue(
+                    element.name,
+                    undefinedValue(),
                 );
+                return;
             }
             if (!ts.isIdentifier(element.name)) {
-                this.bindNestedPattern(element.name, bound, element);
+                this.bindPattern(element.name, bound, element);
                 return;
             }
             let stored = this.context.dataLowerer.narrowBindingLane(
@@ -5125,7 +5132,7 @@ export class DeclarationLowerer {
         const copied = this.context.dataLowerer.leafValue(cppName, type);
         if (ts.isIdentifier(name))
             this.context.bindings.defineVariable(name, copied);
-        else this.bindNestedPattern(name, copied, name);
+        else this.bindPattern(name, copied, name);
         this.context.dataLowerer.registerLocal(cppName, "copy");
     }
 
@@ -5184,10 +5191,15 @@ export class DeclarationLowerer {
         }
     }
 
-    private bindNestedPattern(
+    /**
+     * Binds a binding pattern from a value: a destructuring declaration, a
+     * nested pattern and a destructured parameter are the same binding over
+     * different sources.
+     */
+    public bindPattern(
         pattern: ts.BindingPattern,
         value: Value,
-        source: ts.Node,
+        source: ts.Node = pattern,
     ): void {
         if (ts.isObjectBindingPattern(pattern))
             this.bindObjectPattern(pattern, value, source);
@@ -5377,7 +5389,7 @@ export class DeclarationLowerer {
                     field.type,
                 );
                 if (!ts.isIdentifier(name)) {
-                    this.bindNestedPattern(name, initialValue, element);
+                    this.bindPattern(name, initialValue, element);
                     continue;
                 }
                 const cppName = this.context.bindings.cppIdentifier(name.text);
@@ -5693,19 +5705,24 @@ export class DeclarationLowerer {
                     "module_export_snapshot",
                 );
             if (!ts.isIdentifier(name)) {
-                this.bindNestedPattern(name, propertyValue, element);
+                this.bindPattern(name, propertyValue, element);
                 continue;
             }
             if (this.context.mutableCapturedParameter(name, propertyValue)) {
                 this.context.bindings.bindParameterValue(name, propertyValue);
                 continue;
             }
+            const rebound =
+                this.context.sharedClosures.identifierIsRebound(name);
             if (propertyValue.kind !== "number") {
                 // Compile-time records and resource handles already carry
                 // their native expressions. Destructuring aliases the same
                 // value just as an ordinary identifier binding does; only a
-                // numeric property needs distinct mutable local storage.
-                this.context.bindings.defineVariable(name, propertyValue);
+                // numeric property, or a name code reassigns, needs
+                // distinct mutable local storage.
+                if (rebound)
+                    this.context.bindings.bindLocalValue(name, propertyValue);
+                else this.context.bindings.defineVariable(name, propertyValue);
                 continue;
             }
             const cppName = this.context.bindings.cppIdentifier(name.text);
@@ -5719,7 +5736,7 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(name, {
                 kind: "number",
                 cpp: cppName,
-                ...(propertyValue.staticNumber === undefined
+                ...(propertyValue.staticNumber === undefined || rebound
                     ? {}
                     : {
                           staticNumber: propertyValue.staticNumber,

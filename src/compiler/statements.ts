@@ -58,7 +58,6 @@ import {
     unwrappedIdentifier,
     writeSites,
     bindingNameIdentifiers,
-    patternSlots,
     equalityOperator,
     containsSuspension,
     isSuspensionPoint,
@@ -4100,56 +4099,6 @@ export class StatementLowerer {
         });
     }
 
-    /**
-     * `{ a, b: alias }` over one unrolled element: each name takes the
-     * element's property, a compile-time record's value or a struct's field.
-     */
-    private bindStaticObjectPattern(
-        context: StatementLoweringContext,
-        pattern: ts.ObjectBindingPattern,
-        value: Value,
-    ): void {
-        const struct =
-            value.kind === "data" && value.dataType?.kind === "struct"
-                ? value.dataType
-                : undefined;
-        if (value.kind !== "record" && !struct)
-            context.fail(
-                pattern,
-                "Object destructuring in static for...of requires record or struct elements.",
-            );
-        for (const { element, target, read, fallback } of patternSlots(
-            pattern,
-            (name) => context.propertyName(name),
-        )) {
-            const property =
-                read.kind === "member" && !fallback && ts.isIdentifier(target)
-                    ? read.key
-                    : undefined;
-            if (property === undefined || !ts.isIdentifier(target))
-                context.fail(
-                    element,
-                    "Object destructuring in static for...of binds plain or renamed identifiers.",
-                );
-            const field = struct
-                ? context.dataTypes.structField(struct.name, property, element)
-                : undefined;
-            const member =
-                struct && field
-                    ? context.dataLowerer.leafValue(
-                          `${value.cpp}${context.dataTypes.isReferenceStruct(struct.name) ? "->" : "."}${field.name}`,
-                          field.type,
-                      )
-                    : value.recordProperties?.[property];
-            if (!member)
-                context.fail(
-                    element,
-                    `The unrolled element has no property '${property}'.`,
-                );
-            context.bindings.bindLocalValue(target, member);
-        }
-    }
-
     /** Binds one statically unrolled element, including tuple and object patterns. */
     private bindStaticIterationValue(
         context: StatementLoweringContext,
@@ -4169,40 +4118,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (ts.isObjectBindingPattern(name)) {
-            this.bindStaticObjectPattern(context, name, value);
-            return;
-        }
-        if (value.kind !== "tuple" || !value.tupleElements) {
-            context.fail(
-                name,
-                "Array destructuring in static for...of requires tuple elements.",
-            );
-        }
-        name.elements.forEach((binding, index) => {
-            if (ts.isOmittedExpression(binding)) return;
-            if (
-                !ts.isIdentifier(binding.name) ||
-                binding.initializer ||
-                binding.dotDotDotToken
-            ) {
-                context.fail(
-                    binding,
-                    "Tuple destructuring supports plain identifiers.",
-                );
-            }
-            const element = value.tupleElements![index];
-            if (element) {
-                context.bindings.bindLocalValue(binding.name, element);
-            } else {
-                // JavaScript binds an omitted tuple lane to `undefined`;
-                // optional trailing tuple members use that path routinely.
-                context.bindings.bindCompileTimeValue(binding.name, {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                });
-            }
-        });
+        context.declarations.bindPattern(name, value);
     }
 
     /**

@@ -1518,10 +1518,17 @@ export class BindingScopes {
             this.defineVariable(identifier, value);
             return;
         }
+        // A local code reassigns holds no fact of its initializer, and a
+        // compile-time string binds as itself only until it is reassigned.
+        const reboundLocal =
+            !parameter &&
+            ts.isIdentifier(identifier) &&
+            this.context.sharedClosures.identifierIsRebound(identifier);
         if (
             (value.kind === "string" &&
-                (!parameter ||
-                    (readOnlyParameter && !readsNativeStorage(value)))) ||
+                (parameter
+                    ? readOnlyParameter && !readsNativeStorage(value)
+                    : !reboundLocal)) ||
             value.kind === "callback" ||
             (isCompileTimeOnlyValue(value.kind) && !nativeRecordOwner)
         ) {
@@ -1687,7 +1694,7 @@ export class BindingScopes {
                   }
                 : {}),
         };
-        if (parameter && !readOnlyParameter) {
+        if ((parameter && !readOnlyParameter) || reboundLocal) {
             delete writable(stored).staticNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;

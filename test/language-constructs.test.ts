@@ -16,6 +16,23 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-binding-pattern-binds-alike-in-every-position",
+    `
+    function f([a, b = 3]: [number, number?], { p: [x, y] }: { p: [number, number] }): number { return a * 10 + b + x - y; }
+    if (f([1], { p: [5, 2] }) !== 16 || f([1, 2], { p: [0, 0] }) !== 12) throw new Error("parameters");
+    const rows: [string, number?][] = [["a"], ["b", 2]];
+    if (rows.map(([k, v = 0]) => k + v).join() !== "a0,b2") throw new Error("callback");
+    let [text, amount] = ["before", 3] as [string, number];
+    text = "after";
+    amount += 2;
+    let { s, n } = { s: "a", n: 1 };
+    s = "b";
+    n++;
+    if (text + amount !== "after5" || s + n !== "b2") throw new Error("rebound " + text + amount + s + n);
+`,
+);
+
+check(
     "a-compound-assignment-reads-its-old-value-first-and-is-a-value",
     `
     let x = 1;

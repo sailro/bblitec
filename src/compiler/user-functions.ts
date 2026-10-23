@@ -868,25 +868,6 @@ export function resolveFunctionDeclaration(
                 "A rest parameter is the last parameter and an identifier or array pattern.",
             );
         }
-        if (ts.isArrayBindingPattern(parameter.name)) {
-            for (const element of parameter.name.elements) {
-                if (ts.isOmittedExpression(element)) continue;
-                if (
-                    !ts.isIdentifier(element.name) ||
-                    (element.dotDotDotToken &&
-                        element !==
-                            parameter.name.elements[
-                                parameter.name.elements.length - 1
-                            ]) ||
-                    element.initializer
-                ) {
-                    fail(
-                        element,
-                        "Array-bound parameters support plain identifier elements.",
-                    );
-                }
-            }
-        }
     }
     return declaration;
 }
@@ -1680,71 +1661,13 @@ export class UserFunctionLowerer {
             );
             return;
         }
-        if (ts.isObjectBindingPattern(parameter.name)) {
-            // `({ a, b = 1 }: Options)`: the pattern binds from the
-            // argument exactly as a destructuring declaration would.
-            context.declarations.bindObjectPattern(parameter.name, value);
-            return;
-        }
-        const elements =
-            value.kind === "tuple" ? value.tupleElements : undefined;
-        if (
-            !elements &&
-            (value.kind !== "data" ||
-                (value.dataType?.kind !== "tuple" &&
-                    value.dataType?.kind !== "product" &&
-                    value.dataType?.kind !== "vector"))
-        ) {
-            context.fail(
-                parameter.name,
-                "Array-bound callback parameters require a native tuple value.",
-            );
-        }
-        // The lane expressions read this owner inside the callee. In an
+        // `({ a, b = 1 }: Options)`, `([x, y = 0]: Pair)`: the pattern
+        // binds from the argument exactly as a destructuring declaration
+        // would. A tuple's lanes read this owner inside the callee; in an
         // async activation it must survive with the callee's other captures.
-        context.useNativeValue(value);
-        parameter.name.elements.forEach((element, index) => {
-            if (ts.isOmittedExpression(element)) return;
-            if (!ts.isIdentifier(element.name))
-                context.fail(
-                    element.name,
-                    "Callback tuple bindings require identifiers.",
-                );
-            if (element.dotDotDotToken) {
-                context.bindings.bindParameterValue(
-                    element.name,
-                    context.dataLowerer.arrayRestValue(
-                        value,
-                        index,
-                        element.name,
-                    ),
-                );
-                return;
-            }
-            const lane = elements
-                ? elements[index]
-                : value.dataType?.kind === "vector"
-                  ? context.dataLowerer.readVectorBindingElement(
-                        value,
-                        index,
-                        element,
-                    )
-                  : context.dataLowerer.fixedTupleElement(
-                        value,
-                        index,
-                        element,
-                    )!;
-            if (elements && !lane) {
-                context.fail(
-                    element,
-                    "Array-bound callback parameter reads beyond the supplied tuple.",
-                );
-            }
-            context.bindings.bindParameterValue(
-                element.name,
-                context.dataLowerer.narrowBindingLane(lane!, element.name),
-            );
-        });
+        if (ts.isArrayBindingPattern(parameter.name))
+            context.useNativeValue(value);
+        context.declarations.bindPattern(parameter.name, value);
     }
 
     /**
