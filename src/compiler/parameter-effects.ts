@@ -1511,11 +1511,27 @@ export function parameterMutatedPaths(
     fn: EffectFunction,
     binding: ts.Identifier,
 ): readonly EffectPath[] {
-    return visibleWrites(checker, fn, binding).map((use) =>
-        use.kind === "write" || use.kind === "rebind" || use.derived
-            ? []
-            : use.path,
-    );
+    return visibleWrites(checker, fn, binding).flatMap((use) => {
+        if (use.kind === "rebind") return [[]];
+        // A write's path is the slot: the object written holds it.
+        const object = use.kind === "write" ? use.path.slice(0, -1) : use.path;
+        // A value computed from the object may be any object below it.
+        return use.derived ? [object, [...object, ANY_KEY]] : [object];
+    });
+}
+
+/**
+ * Whether a callee handed, as its parameter `binding`, a container holding
+ * an object at `at` visibly writes that object or one below it, a store
+ * keeping it included.
+ */
+export function parameterHeldObjectWritten(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+    at: EffectPath,
+): boolean {
+    return heldObjectWritten(checker, fn, binding, at, true);
 }
 
 /**

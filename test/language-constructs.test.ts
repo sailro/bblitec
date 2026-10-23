@@ -15558,3 +15558,23 @@ check(
     main();
     `,
 );
+check(
+    "a callee writing a spread copy's member writes the source's object",
+    `
+    function write(q: { inner: { x: number } }): void { q.inner.x += 7; }
+    function pass(p: { inner: { x: number } }): void { write(p); }
+    function first(p: { a: { n: number }; b: { n: number } }): void { const v = Object.values(p)[0]!; v.n = 8; }
+    function setOwn(p: { x: number; inner: { y: number } }): number { p.x = 9; return p.x + p.inner.y; }
+    function main(): void {
+        const obj = { inner: { x: 1 } };
+        write({ ...obj });
+        pass({ ...obj });
+        const pair = { a: { n: 1 }, b: { n: 2 } };
+        first({ ...pair });
+        const own = { x: 1, inner: { y: 2 } };
+        const sum = setOwn({ ...own });
+        if (obj.inner.x !== 15 || pair.a.n !== 8 || own.x !== 1 || sum !== 11) throw new Error("copy writes " + obj.inner.x + " " + pair.a.n + " " + own.x);
+    }
+    main();
+    `,
+);

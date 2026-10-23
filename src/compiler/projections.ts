@@ -44,7 +44,11 @@ export function boundedKeyPath(path: KeyPath): KeyPath {
     return path.length > MAXIMUM_PATH ? path.slice(0, MAXIMUM_PATH) : path;
 }
 
-/** The projections of the value read at `key` inside a value holding `values`. */
+/**
+ * The projections of the value read at `key` inside a value holding
+ * `values`. A member of a derived value is no member of its source at that
+ * key: it may be any object below the source, as the value may.
+ */
 export function projectMember(
     values: readonly Projection[],
     key: string,
@@ -54,7 +58,9 @@ export function projectMember(
             ? keysMayMatch(value.at[0]!, key)
                 ? [{ ...value, at: value.at.slice(1) }]
                 : []
-            : [{ ...value, from: boundedKeyPath([...value.from, key]) }],
+            : value.derived
+              ? [value]
+              : [{ ...value, from: boundedKeyPath([...value.from, key]) }],
     );
 }
 

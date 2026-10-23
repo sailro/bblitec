@@ -137,6 +137,7 @@ import {
 import {
     engineCallMutatesArgument,
     libraryCallMayWriteArgument,
+    parameterHeldObjectWritten,
     parameterIsMutated,
     parameterMutatedPaths,
     parameterIsReadOnly,
@@ -4427,8 +4428,9 @@ export class DeclarationLowerer {
      * Whether handing `argument` to `called` can change a member of the object
      * literal `identifier` names. Passed itself, the callee's writes reach the
      * members its paths start at; passed as a copy (`{ ...it, extra }`), they
-     * reach only the members the copy shares with it, never the copy's own
-     * slots. Writes into an engine resource a member names change no member.
+     * reach only the objects the copy shares with it -- written by the callee
+     * or one it hands them to -- never the copy's own slots. Writes into an
+     * engine resource a member names change no member.
      */
     private argumentMutatesLiteral(
         identifier: ts.Identifier,
@@ -4474,17 +4476,29 @@ export class DeclarationLowerer {
                     !ts.isComputedPropertyName(property.name) &&
                     propertyKey(property.name) === key,
             );
+        const shared = (key: string): boolean =>
+            !definedByCopy(key) &&
+            this.literalMayHold(identifier, key) &&
+            !this.memberIsResource(identifier, key);
+        if (!direct)
+            return this.context.checker
+                .getTypeAtLocation(identifier)
+                .getProperties()
+                .some(
+                    (member) =>
+                        shared(member.name) &&
+                        parameterHeldObjectWritten(
+                            this.context.checker,
+                            called,
+                            parameter,
+                            [member.name],
+                        ),
+                );
         return parameterMutatedPaths(
             this.context.checker,
             called,
             parameter,
-        ).some((path) =>
-            path.length === 0
-                ? direct
-                : !definedByCopy(path[0]!) &&
-                  this.literalMayHold(identifier, path[0]!) &&
-                  !this.memberIsResource(identifier, path[0]!),
-        );
+        ).some((path) => path.length === 0 || shared(path[0]!));
     }
 
     /**
