@@ -4047,8 +4047,8 @@ export class PinnedNumericLowerer {
                     ? only.statements
                     : clause.statements),
             ];
-            if (statements.at(-1) && ts.isBreakStatement(statements.at(-1)!))
-                statements.pop();
+            const last = statements[statements.length - 1];
+            if (last && ts.isBreakStatement(last)) statements.pop();
             return statements.some(
                 (inner) =>
                     enclosingLoopControl(inner, { continues: false }) !==
