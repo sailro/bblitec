@@ -39,6 +39,11 @@ check(
     while ((t += 3) < 10) b |= 1;
     if ((m["a"] += 4) !== 5 || (b >>>= 1) !== 3 || (u[0] += 100) !== 300 || u[0] !== 44 || t !== 12)
         throw new Error("values");
+    let text = "a";
+    const rewrite = (): string => { text = "z"; return "b"; };
+    text += rewrite();
+    const label = { s: "x" };
+    if (text !== "ab" || (label.s += 1) !== "x1" || (text += "c") !== "abc") throw new Error("strings " + text);
 `,
 );
 

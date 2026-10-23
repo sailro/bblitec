@@ -75,7 +75,6 @@ import {
     errorConstructor,
     thrownMessage,
 } from "./error-values.js";
-import { emitStringAppend } from "./expressions.js";
 import {
     commonResourceValue,
     isStringValue,
@@ -4791,7 +4790,10 @@ export class StatementLowerer {
                         code: `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     });
                 } else if (operator === "+=" && isStringValue(target)) {
-                    emitStringAppend(context, target.cpp, unwrapped.right);
+                    context.dataLowerer.emitStringCompound(
+                        unwrapped,
+                        target.cpp,
+                    );
                 } else if (target.kind === "string" && operator === "=") {
                     // A literal union or parsed value spells its string.
                     const value = context.compileValue(unwrapped.right);

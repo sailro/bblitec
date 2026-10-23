@@ -17,7 +17,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
-import { emitStringAppend } from "./expressions.js";
+import { stringConcatPart } from "./expressions.js";
 import { BranchState } from "./branch-state.js";
 import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { FunctionStorageFlow } from "./function-storage-flow.js";
@@ -724,6 +724,11 @@ interface EntryUpdatePlace {
  */
 type AssignedRight = Value | "pending" | "evaluating";
 
+/** The C++ type of a compound assignment's old or stored value. */
+function compoundTemporaryType(kind: "number" | "string"): string {
+    return kind === "number" ? "const double" : "const auto";
+}
+
 /** The new value of `++`/`--` from the old one, already ToNumeric. */
 function updateStepCpp(
     expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
@@ -1004,7 +1009,7 @@ export class DataLowerer {
         if (this.context.browserErasure.isBrowserOnlyExpression(expression))
             return undefined;
         this.compoundValues.set(left, "pending");
-        let stored: string | undefined;
+        let stored: Value | "pending" | undefined;
         try {
             this.context.emitExpressionAsStatement(expression);
             stored = this.compoundValues.get(left);
@@ -1016,27 +1021,31 @@ export class DataLowerer {
                 expression,
                 "This compound assignment target has no represented expression value.",
             );
-        return this.leafValue(stored, { kind: "number" });
+        return stored;
     }
 
     /**
      * Each compound assignment used as a value whose store is lowering, by
-     * its unwrapped target: "pending" until its store binds the number it
+     * its unwrapped target: "pending" until its store binds the value it
      * stores.
      */
-    private readonly compoundValues = new EmissionMap<ts.Expression, string>();
+    private readonly compoundValues = new EmissionMap<
+        ts.Expression,
+        Value | "pending"
+    >();
 
     /**
-     * Stores the number `compound` computes for the compound assignment to
-     * `left` through `store`, or as `native` (C++'s own `op=`) when given.
-     * An assignment used as a value binds the number first: that binding is
-     * its value (`compileCompoundStoreValue`).
+     * Stores the `kind` value `compound` computes for the compound
+     * assignment to `left` through `store`, or as `native` (C++'s own `op=`
+     * or an in-place append) when given. An assignment used as a value binds
+     * the value first: that binding is its value (`compileCompoundStoreValue`).
      */
     public emitCompoundStore(
         left: ts.Expression,
         compound: string,
         store: (value: string) => string,
         native?: string,
+        kind: "number" | "string" = "number",
     ): void {
         const target = this.context.unwrap(left);
         if (this.compoundValues.get(target) !== "pending") {
@@ -1049,12 +1058,48 @@ export class DataLowerer {
         const next = this.context.allocateTemporaryCppName("compound_next");
         this.context.emit({
             kind: "declaration",
-            type: "const double",
+            type: compoundTemporaryType(kind),
             name: next,
             initializer: compound,
         });
         this.context.emit({ kind: "expression", code: store(next) });
-        this.compoundValues.set(target, next);
+        this.compoundValues.set(target, this.leafValue(next, { kind }));
+    }
+
+    /**
+     * `target += right` into the string `place`: appended in place, or,
+     * when the right side may write the target, onto its old value. The
+     * operand is spelled as a concatenation part (a chain of known parts is
+     * one literal, a number its JavaScript spelling) and the runtime's
+     * concatenation joins a surrogate pair split across the two strings,
+     * which a native `+=` would not.
+     */
+    public emitStringCompound(
+        expression: ts.BinaryExpression,
+        place: string,
+    ): void {
+        const target = this.compoundPlace(
+            expression.left,
+            expression.right,
+            place,
+            false,
+            "string",
+        );
+        const part = stringConcatPart(
+            this.context,
+            this.context.compileValue(expression.right),
+            expression.right,
+        );
+        this.context.reachJsData();
+        this.emitCompoundStore(
+            expression.left,
+            `bbl::js::concat(${target.previous}, ${part})`,
+            (value) => `${target.place} = ${value};`,
+            target.previous === target.place
+                ? `bbl::js::concat_append(${target.place}, ${part});`
+                : undefined,
+            "string",
+        );
     }
 
     /**
@@ -1069,6 +1114,7 @@ export class DataLowerer {
         right: ts.Expression,
         place: string,
         force = false,
+        kind: "number" | "string" = "number",
     ): { place: string; previous: string } {
         if (
             !force &&
@@ -1089,7 +1135,7 @@ export class DataLowerer {
             this.context.allocateTemporaryCppName("compound_previous");
         this.context.emit({
             kind: "declaration",
-            type: "const double",
+            type: compoundTemporaryType(kind),
             name: previous,
             initializer: held,
         });
@@ -16338,7 +16384,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             target.dataType
         ) {
             if (operator === "+=" && target.dataType.kind === "string") {
-                emitStringAppend(this.context, target.cpp, expression.right);
+                this.emitStringCompound(expression, target.cpp);
                 invalidateRootRecordSnapshot();
                 return true;
             }
@@ -17584,7 +17630,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         else this.context.emit({ kind: "expression", code: store(stored) });
         const target = this.context.unwrap(operand);
         if (this.compoundValues.get(target) === "pending")
-            this.compoundValues.set(target, stored);
+            this.compoundValues.set(
+                target,
+                this.leafValue(stored, { kind: "number" }),
+            );
         if (place.kind === "entry")
             this.context.bindings.invalidateRecordProperties(place.owner);
         else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));

@@ -1464,6 +1464,13 @@ test("a compound assignment's old value and store have one owner", () => {
     for (const path of callers)
         for (const name of ["compoundPlace", "emitCompoundStore"])
             assert.ok(sourceFacts(path).members.has(name), `${path} ${name}`);
+    // A string `+=` goes through the same owners (emitStringCompound).
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            readFileSync(path, "utf8").includes("concat_append("),
+        ),
+        ["src/compiler/data-lowering.ts"],
+    );
 });
 
 test("a folded condition is read through knownCondition", () => {
