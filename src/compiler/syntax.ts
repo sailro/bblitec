@@ -1193,6 +1193,18 @@ export function accessKey(
         : literalKey(access.argumentExpression);
 }
 
+/**
+ * The base a class's `extends` clause names, or undefined: an `implements`
+ * clause names no base, so a class that only implements is no subclass.
+ */
+export function classBaseExpression(
+    declaration: ts.ClassLikeDeclaration,
+): ts.ExpressionWithTypeArguments | undefined {
+    return declaration.heritageClauses?.find(
+        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )?.types[0];
+}
+
 /** A member access a call can name: `o.m`, or `o["m"]` with a literal key. */
 export type MemberAccess =
     ts.PropertyAccessExpression | ts.ElementAccessExpression;

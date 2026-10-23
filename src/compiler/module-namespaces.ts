@@ -12,6 +12,7 @@ import {
     unwrapExpression,
     containsSuspension,
     variableKind,
+    classBaseExpression,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { EmissionMap } from "./emission-transaction.js";
@@ -439,7 +440,7 @@ export class ModuleNamespaces {
                 if (
                     ts.isModuleDeclaration(statement) ||
                     (ts.isClassDeclaration(statement) &&
-                        (statement.heritageClauses?.length ||
+                        (classBaseExpression(statement) !== undefined ||
                             statement.members.some(
                                 (member) =>
                                     member.name &&

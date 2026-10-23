@@ -17,6 +17,7 @@ import {
     isSuspensionPoint,
     isSupportedFunction,
     type SupportedFunction,
+    classBaseExpression,
 } from "./syntax.js";
 import { emitReachableStatements, finalReturn } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
@@ -1893,7 +1894,7 @@ export class NativeFunctionLowerer {
         // A class in a hierarchy resolves `this` calls per run-time class,
         // which one emitted function over field channels cannot.
         if (
-            classDeclaration.heritageClauses?.length ||
+            classBaseExpression(classDeclaration) !== undefined ||
             this.context.dataTypes.classHierarchy.inHierarchy(
                 classDeclaration,
             ) ||

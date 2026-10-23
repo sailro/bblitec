@@ -156,6 +156,7 @@ import {
     declarationNamed,
     objectLiteralMembers,
     variableKind,
+    classBaseExpression,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
@@ -8118,9 +8119,7 @@ export class DataTypeRegistry {
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Abstract) !==
                 0 ||
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
+            classBaseExpression(declaration) !== undefined
         )
             return undefined;
         for (const member of classInstanceProperties(declaration)) {

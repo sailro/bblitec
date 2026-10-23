@@ -3671,7 +3671,12 @@ test("erases type-only class implements clauses", () => {
         counter.bump();
     `);
 
-    assert.match(result.cpp, /\(\*v_bblite_class_field_value_\d+\)\+\+/);
+    // An `implements` clause names no base: the class lowers as a plain one,
+    // its method a native function over the field.
+    assert.match(
+        result.cpp,
+        /ImplementedCounter_bump\(\(\*v_bblite_class_field_value_\d+\)\)/,
+    );
 });
 
 test("runs a discarded local-class constructor for its side effects", () => {

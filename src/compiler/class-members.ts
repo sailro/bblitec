@@ -11,6 +11,7 @@ import {
     wrappedParent,
     expressionHasEffects,
     variableKind,
+    classBaseExpression,
 } from "./syntax.js";
 
 /**
@@ -190,9 +191,7 @@ function resolveHeritage(
     | { unsupported: ts.ExpressionWithTypeArguments }
     | { errorBase: string }
     | undefined {
-    const heritage = declaration.heritageClauses?.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types[0];
+    const heritage = classBaseExpression(declaration);
     if (!heritage) return undefined;
     const symbol = resolvedSymbol(checker, heritage.expression);
     if (
