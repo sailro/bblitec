@@ -530,6 +530,9 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
 export function mutatingCallTarget(
     node: ts.Node,
     mutatesVia: (method: string) => boolean,
+    // Resolves `globalThis.Object` and the like; without it only the bare
+    // name reads as the library's Object.
+    libraryGlobal?: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(node) ||
@@ -539,9 +542,10 @@ export function mutatingCallTarget(
     }
     const callee = node.expression;
     if (
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Object" &&
-        callee.name.text === "assign"
+        callee.name.text === "assign" &&
+        ((ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Object") ||
+            libraryGlobal?.(callee.expression) === "Object")
     ) {
         return node.arguments[0];
     }

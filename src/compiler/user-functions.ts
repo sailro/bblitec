@@ -552,7 +552,11 @@ function writesThroughRoot(
         isReadOnlyRegExpCall(checker, node, sourceFiles)
     )
         return false;
-    const target = mutatingCallTarget(node, mutatesVia);
+    const target = mutatingCallTarget(
+        node,
+        mutatesVia,
+        checker && ((expression) => libraryGlobal(checker, expression)),
+    );
     // Calling a method on a primitive field cannot write through its owner.
     // Argument and callback effects remain the enclosing analysis's concern.
     return (

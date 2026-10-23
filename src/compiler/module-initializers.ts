@@ -17,6 +17,7 @@ import {
     declaredSymbol,
     type CompilerSymbols,
     calledDeclaration,
+    libraryGlobal,
 } from "./symbols.js";
 import {
     ClassHierarchy,
@@ -351,8 +352,10 @@ function collectMutatedContainerSymbols(
         if (writes.length > 0) {
             for (const { target } of writes) recordThrough(target);
         } else {
-            const target = mutatingCallTarget(node, (method) =>
-                receiverWritingMethods.has(method),
+            const target = mutatingCallTarget(
+                node,
+                (method) => receiverWritingMethods.has(method),
+                (expression) => libraryGlobal(checker, expression),
             );
             if (target) record(target);
         }
