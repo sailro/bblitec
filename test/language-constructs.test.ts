@@ -16,6 +16,17 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "outlined-member-body-reads-its-receiver",
+    `
+    class A { v(): number { return 1; } twice(): number { return this.v() * 2; } isB(): boolean { return this instanceof B; } }
+    class B extends A { override v(): number { return 5; } }
+    const xs: A[] = [new A(), new B()];
+    if (xs.map((x) => x.twice()).join() !== "2,10") throw new Error("virtual call on this");
+    if (xs.map((x) => x.isB()).join() !== "false,true") throw new Error("instanceof this");
+`,
+);
+
+check(
     "indexed-boolean-presence-in-optional-sinks",
     `
     const flags: boolean[] = [false, true];

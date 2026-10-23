@@ -2257,6 +2257,8 @@ export class ClassLowerer {
             });
         }
         const hierarchy = this.context.dataTypes.classHierarchy;
+        // The tag test reads the receiver, which a closure then captures.
+        this.context.useNativeValue(instance);
         const tag = `${instance.cpp}->${classTagMember}`;
         const arms = [...groups.values()];
         arms.forEach((group, index) => {
