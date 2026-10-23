@@ -1620,3 +1620,13 @@ test("a projection's path algebra is read through projections.ts", () => {
             name,
         );
 });
+
+test("a stored record keeps its binding's object through one owner", () => {
+    for (const path of sourcePaths.filter((path) =>
+        path.startsWith("src/compiler/data-sinks/"),
+    ))
+        assert.ok(!sourceFacts(path).members.has("recordDeclaration"), path);
+    assert.deepEqual(declarationOwners("requireHeldRecordStorage"), [
+        "src/compiler/dynamic-binding-storage.ts",
+    ]);
+});

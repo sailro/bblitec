@@ -172,6 +172,42 @@ export interface OneObjectContext
     >;
 }
 
+/** What keeping a stored record's object reads of the compiler. */
+export interface HeldRecordContext {
+    readonly bindings: Pick<BindingScopes, "recordDeclaration">;
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+    fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * A compile-time record stored where it stays one object: the binding that
+ * holds it -- found by its members, whatever node the store reads it from
+ * (a spread operand, a member, the name) -- takes native storage, so the
+ * store keeps that binding's object rather than a copy. `expression` is
+ * the expression the stored value was read from, where there is one.
+ */
+export function requireHeldRecordStorage(
+    context: HeldRecordContext,
+    value: Value,
+    node: ts.Node,
+    expression: ts.Expression | undefined,
+): void {
+    if (value.kind !== "record") return;
+    const declaration = context.bindings.recordDeclaration(value, expression);
+    if (!declaration) return;
+    // A binding already given its own storage is still a record only when
+    // lowering its initializer into that storage refused.
+    if (context.dynamicBindings.get(declaration) !== undefined)
+        context.fail(
+            node,
+            `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+        );
+    throw new DynamicBindingStorageRequired(declaration, "source");
+}
+
 /** Replay a mutable compile-time array using its declared or represented source storage. */
 export function requireMutableTupleStorage(
     context: OneObjectContext,

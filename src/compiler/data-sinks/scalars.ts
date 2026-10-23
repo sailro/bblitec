@@ -19,7 +19,10 @@ import {
 } from "../error-values.js";
 import { readsErasedVoid } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    requireHeldRecordStorage,
+} from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
@@ -181,17 +184,7 @@ function valueJson(
                 "Erased object storage requires a mutable plain-data document owner.",
             );
         }
-        if (value.kind === "record" && expression) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                expression,
-            );
-            if (
-                declaration &&
-                !lowerer.context.dynamicBindings.has(declaration)
-            )
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+        requireHeldRecordStorage(lowerer.context, value, node, expression);
     }
     if (
         value.kind === "void" &&

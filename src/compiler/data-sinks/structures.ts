@@ -16,7 +16,7 @@ import {
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
@@ -444,26 +444,14 @@ function valueStruct(
                 accessorGetter(lowerer, dataType, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
-            !lowerer.context.bindings.containsPlatformEvent(value) &&
-            ts.isExpression(node)
-        ) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
+            !lowerer.context.bindings.containsPlatformEvent(value)
+        )
+            requireHeldRecordStorage(
+                lowerer.context,
                 value,
                 node,
+                lowerer.convertedExpression(node),
             );
-            // A binding already given its own storage is still a record
-            // only when lowering its initializer into that storage refused.
-            if (
-                declaration &&
-                lowerer.context.dynamicBindings.get(declaration) !== undefined
-            )
-                lowerer.context.fail(
-                    node,
-                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
-                );
-            if (declaration)
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
         lowerer.context.dataTypes.cppType(dataType);
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(

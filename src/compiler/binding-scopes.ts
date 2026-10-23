@@ -334,7 +334,7 @@ export class BindingScopes {
     /** The earliest live declaration sharing this record, before any lexical aliases. */
     public recordDeclaration(
         value: Value,
-        expression: ts.Expression,
+        expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         return this.aggregateDeclaration(
             value.recordProperties,
@@ -374,7 +374,7 @@ export class BindingScopes {
     private aggregateDeclaration(
         members: object | undefined,
         membersOf: (value: Value) => object | undefined,
-        expression: ts.Expression,
+        expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         if (!members) return undefined;
         let origin: ts.Declaration | undefined;
@@ -392,10 +392,11 @@ export class BindingScopes {
             }
             if (origin) break;
         }
-        const source = unwrapExpression(expression);
-        const symbol = ts.isIdentifier(source)
-            ? this.context.symbols.valueSymbol(source)
-            : undefined;
+        const source = expression && unwrapExpression(expression);
+        const symbol =
+            source && ts.isIdentifier(source)
+                ? this.context.symbols.valueSymbol(source)
+                : undefined;
         // A container's source node can accompany one of its nested values.
         // Only an unbound name may stand in for an aggregate not found above.
         if (

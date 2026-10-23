@@ -15535,3 +15535,26 @@ check(
     if (a !== 2 || b !== 4 || text !== '{"id":1,"meta":{"tag":"m"}}') throw new Error("globalThis " + a + b + text);
     `,
 );
+check(
+    "a spread copy shares the objects its source holds",
+    `
+    function main(): void {
+        const inner = { n: 1 };
+        const o = { inner };
+        const c = { ...o };
+        c.inner.n = 5;
+        const d = { ...c, extra: 1 };
+        d.inner.n += 1;
+        const leaf = { n: 1 };
+        const top = { mid: { leaf } };
+        const copy = { ...top };
+        copy.mid.leaf.n = 6;
+        if (inner.n !== 6 || o.inner.n !== 6 || leaf.n !== 6) throw new Error("spread member " + inner.n + " " + leaf.n);
+        const state = { x: 1 };
+        const own = { ...state };
+        own.x = 9;
+        if (state.x !== 1) throw new Error("spread own slot");
+    }
+    main();
+    `,
+);

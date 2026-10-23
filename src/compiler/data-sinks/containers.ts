@@ -17,6 +17,7 @@ import { writable } from "../emission-transaction.js";
 import {
     DynamicBindingStorageRequired,
     initializedVariableDeclaration,
+    requireHeldRecordStorage,
 } from "../dynamic-binding-storage.js";
 import { unaliasedValue } from "./aliasing.js";
 import {
@@ -606,17 +607,12 @@ function valueMap(
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
         }
-        if (value.kind === "record" && ts.isExpression(node)) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                node,
-            );
-            if (
-                declaration &&
-                !lowerer.context.dynamicBindings.has(declaration)
-            )
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+        requireHeldRecordStorage(
+            lowerer.context,
+            value,
+            node,
+            lowerer.convertedExpression(node),
+        );
     }
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in
