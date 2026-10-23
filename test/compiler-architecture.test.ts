@@ -1251,6 +1251,26 @@ test("an access's accessors are read through memberAccessors", () => {
         assert.ok(sourceFacts(path).calls.has("memberAccessors"), path);
 });
 
+test("undefined as a value is spelled and read by values/model.ts", () => {
+    // undefinedValue makes the json-null `undefined`; absenceOf reads which
+    // absence a json-null value is. Comparing emitted C++ to "std::nullopt"
+    // elsewhere may only shrink.
+    for (const name of ["undefinedValue", "absenceOf"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/values/model.ts"],
+            name,
+        );
+    const checks = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [...readFileSync(path, "utf8").matchAll(/[=!]== "std::nullopt"/g)]
+                .length,
+        0,
+    );
+    assert.ok(checks <= 22, `"std::nullopt" text checks: ${checks}`);
+});
+
 test("a Promise reaction call is recognized by promises.ts", () => {
     // promiseReactionOf reads then / catch / finally only on a receiver the
     // checker types as the library Promise: a class's own then is a method.

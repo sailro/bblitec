@@ -32,6 +32,7 @@ import type { UiProjection } from "./ui-projection.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+import { undefinedValue, absenceOf } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
@@ -685,7 +686,7 @@ export class ExpressionLowerer {
         const window = compileWindowIdentity(this.context, unwrapped);
         if (window) return window;
         if (this.context.browserErasure.isAbsentGlobalMember(unwrapped))
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
 
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -924,7 +925,7 @@ export class ExpressionLowerer {
                 );
             }
             if (this.context.symbols.isGlobalUndefined(unwrapped)) {
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             const numeric = this.context.libraryGlobal(unwrapped);
             if (numeric === "Infinity" || numeric === "NaN") {
@@ -2384,7 +2385,7 @@ export class ExpressionLowerer {
             case "null":
                 return { kind: "json-null", cpp: "" };
             case "undefined":
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             case "dom-rect":
             case "object":
             case "search-params":
@@ -3187,7 +3188,7 @@ export class ExpressionLowerer {
             (value.kind === "void" &&
                 !value.abruptCompletion &&
                 !value.coroutineResult) ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt");
+            absenceOf(value) === "undefined";
         if (
             whenTrue.kind !== whenFalse.kind &&
             undefinedArm(whenTrue) &&
@@ -3584,7 +3585,7 @@ export class ExpressionLowerer {
             )
                 return undefined;
             this.context.emitDiscardedValue(value);
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         });
     }
 
@@ -4183,7 +4184,7 @@ export class ExpressionLowerer {
             (bound.kind === "json-null" || isUndefinedDataType(bound.dataType))
         ) {
             this.context.emitDiscardedValue(bound);
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         if (bound?.kind === "callback") {
             const recursive =
@@ -5004,8 +5005,7 @@ export class ExpressionLowerer {
     private compileAbsentElementAccess(
         unwrapped: ts.ElementAccessExpression,
     ): Value {
-        if (unwrapped.questionDotToken)
-            return { kind: "json-null", cpp: "std::nullopt" };
+        if (unwrapped.questionDotToken) return undefinedValue();
         const type = this.context.dataLowerer.dataTypeAt(unwrapped);
         if (!type)
             return this.context.fail(
@@ -5550,7 +5550,7 @@ export class ExpressionLowerer {
             if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
                 this.context.emitDiscardedValue(owner);
                 this.context.emitDiscardedValue(key);
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
         }
         if (owner.kind !== "tuple") {
@@ -5622,7 +5622,7 @@ export class ExpressionLowerer {
                         ts.SyntaxKind.QuestionQuestionToken)
             ) {
                 // A lane past the tuple's end reads as `undefined`.
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             this.context.fail(
                 unwrapped,
@@ -5646,7 +5646,7 @@ export class ExpressionLowerer {
             !readsErasedVoid(this.context, value, expression)
         ) {
             this.context.emitDiscardedValue(value);
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         return value;
     }
@@ -7522,8 +7522,7 @@ export class ExpressionLowerer {
             // the declared call result only types that throwing branch.
             if (instance?.kind === "json-null") {
                 this.context.emitDiscardedValue(instance);
-                if (callee.questionDotToken)
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                if (callee.questionDotToken) return undefinedValue();
                 const message = this.context.cppString(
                     `Cannot read properties of ${instance.cpp === "std::nullopt" ? "undefined" : "null"} (reading '${memberName}')`,
                 );
@@ -7634,7 +7633,7 @@ export class ExpressionLowerer {
                 // missing one; none of the call's arguments are evaluated.
                 if (recordCallback)
                     this.context.emitDiscardedValue(recordCallback);
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             if (instance && recordMethod) {
                 // A literal written in the record has no identifier
@@ -7844,6 +7843,6 @@ export class ExpressionLowerer {
                   nativeBinding: true,
                   nativeCaptures: [binding],
               }
-            : { kind: "json-null", cpp: "std::nullopt" };
+            : undefinedValue();
     }
 }

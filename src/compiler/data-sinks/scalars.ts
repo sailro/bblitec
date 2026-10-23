@@ -1,5 +1,6 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
+import { absenceOf } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
@@ -593,10 +594,7 @@ export const scalarsSinks: DataSinkOperations<
                     node,
                     "A stored void field requires a proven undefined completion.",
                 );
-            if (
-                value.kind === "void" ||
-                (value.kind === "json-null" && value.cpp === "std::nullopt")
-            ) {
+            if (value.kind === "void" || absenceOf(value) === "undefined") {
                 lowerer.context.emitDiscardedValue(value);
                 return "bbl::js::Undefined{}";
             }

@@ -5,6 +5,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
@@ -1705,7 +1706,7 @@ export class AsyncLowerer {
                     settlement.result.inner.kind === "handle"
                 ) {
                     context.emitDiscardedValue(result.value);
-                    result.value = { kind: "json-null", cpp: "std::nullopt" };
+                    result.value = undefinedValue();
                 }
                 if (!cleanup)
                     result.value = this.ownResult(
@@ -1862,7 +1863,7 @@ export class AsyncLowerer {
         }
         if (value.kind === "void") {
             context.emitDiscardedValue(value);
-            value = { kind: "json-null", cpp: "std::nullopt" };
+            value = undefinedValue();
         }
         return context.dataLowerer.leafValue(
             context.dataLowerer.compileKnownValueForSink(

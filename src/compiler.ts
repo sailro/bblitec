@@ -58,6 +58,7 @@ import {
 import { sourceProfileScope } from "./compiler/source-profile.js";
 import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
+import { undefinedValue, absenceOf } from "./compiler/values/model.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
 import { PageLoader } from "./compiler/page-loader.js";
@@ -5330,7 +5331,7 @@ class Compiler implements LoweringServices {
                 (pair): pair is [unknown, unknown] =>
                     Array.isArray(pair) && pair[0] === key,
             );
-        if (!entry) return { kind: "json-null", cpp: "std::nullopt" };
+        if (!entry) return undefinedValue();
         // A generation copy of an object entry would be a different identity
         // from the native Map's own value; only scalars stand in.
         const value = jsonToValue(
@@ -5677,11 +5678,7 @@ class Compiler implements LoweringServices {
         const carried = this.compileValue(node);
         // A present undefined argument still counts toward the authored arity.
         // Nested undefined values remain excluded by the lossless JSON boundary.
-        if (
-            carried.kind === "json-null" &&
-            carried.cpp === "std::nullopt" &&
-            !carried.parameterBinding
-        )
+        if (absenceOf(carried) === "undefined" && !carried.parameterBinding)
             return { value: undefined };
         const value =
             carried.staticString ??
@@ -6462,7 +6459,7 @@ class Compiler implements LoweringServices {
             .getProperty(expression.name.text);
         return declared !== undefined &&
             (declared.flags & ts.SymbolFlags.Optional) !== 0
-            ? { kind: "json-null", cpp: "std::nullopt" }
+            ? undefinedValue()
             : undefined;
     }
 
@@ -8114,7 +8111,7 @@ class Compiler implements LoweringServices {
             );
         const value = !expression.expression
             ? this.dataLowerer.compileKnownValueForSink(
-                  { kind: "json-null", cpp: "std::nullopt" },
+                  undefinedValue(),
                   element,
                   expression,
               )
@@ -9657,17 +9654,18 @@ class Compiler implements LoweringServices {
                         expression,
                         `Stored Babylon Lite intrinsic '${imported}' is not supported.`,
                     );
-                const undefinedValue = (result: Value | undefined): boolean =>
+                const isUndefinedResult = (
+                    result: Value | undefined,
+                ): boolean =>
                     !!result &&
                     !result.erasedVoidCompletion &&
                     (result.kind === "void" ||
-                        (result.kind === "json-null" &&
-                            result.cpp === "std::nullopt") ||
+                        absenceOf(result) === "undefined" ||
                         result.dataType?.kind === "undefined");
                 const undefinedCompletion =
                     synchronous &&
                     undefinedOnly(sourceReturn) &&
-                    undefinedValue(value);
+                    isUndefinedResult(value);
                 if (type.undefinedCompletion && !undefinedCompletion)
                     this.fail(
                         expression,
@@ -9680,7 +9678,7 @@ class Compiler implements LoweringServices {
                         undefinedOnly(awaitedReturn) &&
                         (undefinedCompletion ||
                             (value.kind === "promise" &&
-                                undefinedValue(value.promiseResult)))
+                                isUndefinedResult(value.promiseResult)))
                     )
                 )
                     this.fail(

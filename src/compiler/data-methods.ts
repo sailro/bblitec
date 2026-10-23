@@ -20,6 +20,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -863,8 +864,7 @@ export function compileDataMethodCall(
                           cpp: "",
                           tupleElements: selected,
                       };
-                  if (method === "find")
-                      return { kind: "json-null", cpp: "std::nullopt" };
+                  if (method === "find") return undefinedValue();
                   if (method === "findIndex")
                       return {
                           kind: "number",

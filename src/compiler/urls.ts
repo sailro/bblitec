@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
 
@@ -75,7 +76,7 @@ export function compileUrlNew(
         };
     const base = context.compileValue(baseNode);
     if (
-        (base.kind === "json-null" && base.cpp === "std::nullopt") ||
+        absenceOf(base) === "undefined" ||
         base.dataType?.kind === "undefined"
     ) {
         context.emitDiscardedValue(base);

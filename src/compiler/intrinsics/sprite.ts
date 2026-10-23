@@ -1,6 +1,7 @@
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
+import { absenceOf } from "../values/model.js";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { renderClosure } from "../closure-captures.js";
@@ -379,10 +380,7 @@ function sprite2DPropsCpp(
                 Object.entries(props.recordProperties).filter(
                     ([, value]) =>
                         !isUndefinedDataType(value.dataType) &&
-                        !(
-                            value.kind === "json-null" &&
-                            value.cpp === "std::nullopt"
-                        ),
+                        !(absenceOf(value) === "undefined"),
                 ),
             ),
         };

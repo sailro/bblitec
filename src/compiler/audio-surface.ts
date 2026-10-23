@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { argumentAt } from "./syntax.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 
@@ -188,7 +189,7 @@ export function audioPrototypeValue(
         recordProperties: Object.fromEntries(
             Object.keys(UNAVAILABLE_CONTEXT_METHODS).map((name) => [
                 name,
-                { kind: "json-null" as const, cpp: "std::nullopt" },
+                undefinedValue(),
             ]),
         ),
     };

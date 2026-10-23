@@ -17,6 +17,7 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { cancelledSchedulerOf, schedulerOf } from "./schedulers.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
@@ -498,8 +499,8 @@ function nativeNavigatorProperties(): Record<string, Value> {
             cpp: "bbl::logical_processor_count()",
         },
         onLine: { kind: "boolean", cpp: "true", staticBoolean: true },
-        userAgentData: { kind: "json-null", cpp: "std::nullopt" },
-        deviceMemory: { kind: "json-null", cpp: "std::nullopt" },
+        userAgentData: undefinedValue(),
+        deviceMemory: undefinedValue(),
         gpu: gpuValue(graphics),
         clipboard: {
             kind: "record",
@@ -529,7 +530,7 @@ export function browserEnvironmentValue(
             truthinessCpp: "true",
             objectIdentityCpp: "bbl::native_performance_identity()",
             recordProperties: {
-                memory: { kind: "json-null", cpp: "std::nullopt" },
+                memory: undefinedValue(),
                 now: {
                     kind: "data",
                     cpp: "bbl::pal::performance_milliseconds",

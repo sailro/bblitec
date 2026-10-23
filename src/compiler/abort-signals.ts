@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     listenerAddition,
@@ -63,7 +64,7 @@ export function compileAbortNew(
                 staticString: fallback,
             };
         const value = context.compileValue(argument);
-        if (value.kind === "json-null" && value.cpp === "std::nullopt") {
+        if (absenceOf(value) === "undefined") {
             context.emitDiscardedValue(value);
             return {
                 kind: "string" as const,
@@ -169,7 +170,7 @@ export function compileAbortMethod(
         if (!reason) return { kind: "void", cpp: `(${receiver.cpp}).abort()` };
         const value = context.compileValue(reason);
         if (
-            (value.kind === "json-null" && value.cpp === "std::nullopt") ||
+            absenceOf(value) === "undefined" ||
             value.dataType?.kind === "undefined"
         ) {
             context.emitDiscardedValue(value);

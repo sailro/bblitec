@@ -34,6 +34,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { undefinedValue, absenceOf } from "./values/model.js";
 import { countedLoopShape } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
@@ -5108,7 +5109,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         if (!path) this.context.emitDiscardedValue(owner);
-        return { kind: "json-null", cpp: "std::nullopt" };
+        return undefinedValue();
     }
 
     /**
@@ -5134,7 +5135,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
         )
             return undefined;
-        return { kind: "json-null", cpp: "std::nullopt" };
+        return undefinedValue();
     }
 
     private propertyRead(
@@ -5918,7 +5919,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     owner,
                     index.staticString,
                     access,
-                ) ?? { kind: "json-null", cpp: "std::nullopt" }
+                ) ?? undefinedValue()
             );
         }
         if (dataType.kind === "union") {
@@ -6024,7 +6025,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         index.staticNumber < 0 ||
                         index.staticNumber >= dataType.elements.length)
                 )
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 return this.fixedTupleElement(
                     { ...owner, cpp: receiver },
                     index.staticNumber,
@@ -6144,7 +6145,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) {
                 const character = owner.staticString[index.staticNumber];
                 return character === undefined
-                    ? { kind: "json-null", cpp: "std::nullopt" }
+                    ? undefinedValue()
                     : {
                           kind: "string",
                           cpp: this.context.cppString(character),
@@ -8085,7 +8086,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 initializer: `bbl::js::array_from_length(${context.compileNumber(length, "double")})`,
             });
             loop = `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`;
-            element = () => ({ kind: "json-null", cpp: "std::nullopt" });
+            element = () => undefinedValue();
         } else {
             const range = context.probeEmission(() =>
                 this.iterationTarget(sourceNode),
@@ -16370,7 +16371,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: "",
                 tupleElements: right.elements.map((element, index) => {
                     if (ts.isOmittedExpression(element))
-                        return { kind: "json-null", cpp: "std::nullopt" };
+                        return undefinedValue();
                     // Each RHS lane is saved independently before assigning any
                     // target. Erased assertions cannot narrow that snapshot:
                     // `T!` can still contain null under the active substitution.
@@ -16401,7 +16402,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 "A void result stored as an element requires a proven undefined completion.",
                             );
                         this.context.emitDiscardedValue(compiled);
-                        return { kind: "json-null", cpp: "std::nullopt" };
+                        return undefinedValue();
                     }
                     elementType ??=
                         compiled?.dataType ??
@@ -16546,7 +16547,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     );
                 return index < length
                     ? this.fixedTupleElement(value, index, name)!
-                    : { kind: "json-null", cpp: "std::nullopt" };
+                    : undefinedValue();
             };
             const readForTarget = (type: DataType): Value =>
                 fallback
@@ -18380,7 +18381,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const a = this.context.compileValue(left);
                 const b = this.context.compileValue(right);
                 const absent = (value: Value): boolean =>
-                    value.kind === "json-null" && value.cpp === "std::nullopt";
+                    absenceOf(value) === "undefined";
                 if (
                     absent(a) === absent(b) ||
                     !excludesUndefined(absent(a) ? right : left)

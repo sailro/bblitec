@@ -2,6 +2,7 @@
 // creates a unique identity, `Symbol.for`/`Symbol.keyFor` use the realm's
 // registry, and a symbol answers `description` and `toString()`.
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { stringConcatPart } from "./expressions.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -40,7 +41,7 @@ function descriptionCpp(
     if (!argument) return "std::nullopt";
     const value = context.compileValue(argument);
     if (
-        (value.kind === "json-null" && value.cpp === "std::nullopt") ||
+        absenceOf(value) === "undefined" ||
         isUndefinedDataType(value.dataType)
     ) {
         if (value.kind !== "json-null") context.emitDiscardedValue(value);

@@ -92,6 +92,20 @@ export function hasScalarFacts(value: Value): boolean {
     );
 }
 
+/**
+ * `undefined` as a value: the json-null kind spelling the empty native
+ * optional. {@link absenceOf} reads which absence a json-null value is.
+ */
+export function undefinedValue(): Value<"json-null"> {
+    return { kind: "json-null", cpp: "std::nullopt" };
+}
+
+/** Which absence a json-null value is; undefined for any other value. */
+export function absenceOf(value: Value): "undefined" | "null" | undefined {
+    if (value.kind !== "json-null") return undefined;
+    return value.cpp === "std::nullopt" ? "undefined" : "null";
+}
+
 /** Whether a record member's generation-known shape survives a copy of the record. */
 export function keepsStaticMember(value: Value): boolean {
     return (

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import {
@@ -50,8 +51,7 @@ function optionalArgument(
     site: ts.Node,
     name: string,
 ): string {
-    if (!value || (value.kind === "json-null" && value.cpp === "std::nullopt"))
-        return "std::nullopt";
+    if (!value || absenceOf(value) === "undefined") return "std::nullopt";
     if (value.dataType?.kind !== "optional")
         return snapshot(lowerer, value, inner, site, name);
     const cpp = snapshot(
@@ -109,11 +109,7 @@ function compileLocalesAndOptions(
         name: locales,
         initializer: `bbl::pal::requested_locales(${locale})`,
     });
-    if (
-        !optionsNode ||
-        !options ||
-        (options.kind === "json-null" && options.cpp === "std::nullopt")
-    )
+    if (!optionsNode || !options || absenceOf(options) === "undefined")
         return { locales, fields: {} };
     const unsupportedOption = (
         key: string,
@@ -481,8 +477,7 @@ export function compileLocaleStringMethod(
             ? context.compileValue(call.arguments[0])
             : undefined;
         const form =
-            !value ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt")
+            !value || absenceOf(value) === "undefined"
                 ? '"NFC"'
                 : snapshot(
                       lowerer,

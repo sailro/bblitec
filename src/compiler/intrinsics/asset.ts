@@ -8,6 +8,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
+import { absenceOf } from "../values/model.js";
 import { argumentAt, propertyKey } from "../syntax.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -149,9 +150,7 @@ function sceneSplatFragment(
     if (!slots)
         context.fail(site, "A GsShaderFragment requires id and fragmentSlots.");
     const helper = fields.helperFunctions;
-    const hasHelper =
-        helper &&
-        !(helper.kind === "json-null" && helper.cpp === "std::nullopt");
+    const hasHelper = helper && !(absenceOf(helper) === "undefined");
     return {
         kind: "scene",
         id: string(fields.id),

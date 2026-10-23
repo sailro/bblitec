@@ -2,6 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
+import { undefinedValue, absenceOf } from "./values/model.js";
 import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
@@ -4836,9 +4837,7 @@ export class DeclarationLowerer {
             // A default applies exactly when the lane is undefined: past
             // the end of the tuple, or present as `undefined`.
             const bound =
-                (!present ||
-                    (present.kind === "json-null" &&
-                        present.cpp === "std::nullopt")) &&
+                (!present || absenceOf(present) === "undefined") &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
                     : present;
@@ -5712,9 +5711,7 @@ export class DeclarationLowerer {
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
             let propertyValue =
-                (!present ||
-                    (present.kind === "json-null" &&
-                        present.cpp === "std::nullopt")) &&
+                (!present || absenceOf(present) === "undefined") &&
                 element.initializer
                     ? this.context.compileValue(element.initializer)
                     : present;
@@ -5724,7 +5721,7 @@ export class DeclarationLowerer {
                 nullability(this.context.checker.getTypeAtLocation(name))
                     .undefined
             )
-                propertyValue = { kind: "json-null", cpp: "std::nullopt" };
+                propertyValue = undefinedValue();
             if (!propertyValue) {
                 this.context.fail(
                     element,

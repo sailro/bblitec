@@ -23,6 +23,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { undefinedValue, absenceOf } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
@@ -3653,9 +3654,7 @@ export class UserFunctionLowerer {
             const argument = rootArguments[index];
             if (
                 parameter.declaration.initializer &&
-                (!argument ||
-                    (argument.kind === "json-null" &&
-                        argument.cpp === "std::nullopt"))
+                (!argument || absenceOf(argument) === "undefined")
             ) {
                 // A default the recursion overrides (`walk(child, world)` under
                 // `walk(root)`) or hands on as itself (`walk(child, into)`)
@@ -7483,7 +7482,7 @@ export class UserFunctionLowerer {
             const parameter = parameters?.[values.length];
             if (!parameter || !this.checker.isOptionalParameter(parameter))
                 break;
-            values.push({ kind: "json-null", cpp: "std::nullopt" });
+            values.push(undefinedValue());
         }
         return values;
     }
@@ -7535,7 +7534,7 @@ export class UserFunctionLowerer {
                     this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
                 (parameter.declaration.questionToken
-                    ? { kind: "json-null", cpp: "std::nullopt" }
+                    ? undefinedValue()
                     : context.fail(
                           parameter.declaration,
                           `Parameter '${parameter.name.getText()}' requires an argument.`,
@@ -7544,7 +7543,7 @@ export class UserFunctionLowerer {
         if (
             !argument ||
             argument.kind === "void" ||
-            (argument.kind === "json-null" && argument.cpp === "std::nullopt")
+            absenceOf(argument) === "undefined"
         ) {
             // A void result takes the default only when it is undefined.
             if (argument && readsErasedVoid(context, argument, source))

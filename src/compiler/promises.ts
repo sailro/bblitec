@@ -1,5 +1,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import { caughtErrorValue } from "./error-values.js";
 import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
 import { libraryName } from "./symbols.js";
@@ -120,10 +121,7 @@ export function compileImmediatePromise(
             context.fail(call, "Immediate Promise.resolve requires one value.");
         }
         const value = context.compileValue(argumentAt(call, 0));
-        if (
-            value.kind === "void" ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt")
-        )
+        if (value.kind === "void" || absenceOf(value) === "undefined")
             throw new ApplicationRealmRequired();
         return value;
     }

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
 import { expressionMayRunCode, propertyKey } from "./syntax.js";
@@ -165,7 +166,7 @@ export function errorValue(
                           staticString: name,
                       },
             // Native exceptions do not carry a JavaScript engine's optional stack string.
-            stack: { kind: "json-null", cpp: "std::nullopt" },
+            stack: undefinedValue(),
         },
     };
 }

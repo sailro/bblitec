@@ -21,6 +21,7 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -2683,8 +2684,7 @@ export class PropertyAccessLowerer {
         );
         if (environment) return environment;
         const deployed = browserDeploymentValue(this.context, expression);
-        if (deployed === null)
-            return { kind: "json-null", cpp: "std::nullopt" };
+        if (deployed === null) return undefinedValue();
         if (typeof deployed === "boolean")
             return {
                 kind: "boolean",
@@ -2744,7 +2744,7 @@ export class PropertyAccessLowerer {
                     // `pickAsync` is only lowered in its pinned BASIC mode.
                     // Upstream sets `info.ray = null` in that mode, so the
                     // optional access is exactly the nullish left operand.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
             }
         }
@@ -2924,7 +2924,7 @@ export class PropertyAccessLowerer {
         );
         if (platformProperty) return platformProperty;
         if (owner.kind === "json-null" && expression.questionDotToken)
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")
@@ -3154,7 +3154,7 @@ export class PropertyAccessLowerer {
             // Basic GPU picks publish a null ray; only the detailed pipeline
             // carries one. Keeping that null in the value model lets the
             // source's optional chain and fallback lower unchanged.
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         if (owner.platformEventBase) {
             const eventInterface = this.declaredEventInterface(ownerExpression);
@@ -3488,7 +3488,7 @@ export class PropertyAccessLowerer {
                     // compile-time record preserves that absence as
                     // JavaScript's `undefined`, which `??`, equality
                     // guards, `typeof` and concatenation read.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
                 this.context.fail(
                     expression,

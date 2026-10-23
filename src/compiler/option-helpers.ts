@@ -12,6 +12,7 @@ import type { DataLowerer } from "./data-lowering.js";
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import {
@@ -235,8 +236,7 @@ export function compileBooleanOptions<N extends string>(
         if (fallback === undefined) return converted;
         if (isJsonValue(value))
             return `(${value.cpp}.is_undefined() ? ${fallback} : ${converted})`;
-        if (value.kind === "json-null" && value.cpp === "std::nullopt")
-            return String(fallback);
+        if (absenceOf(value) === "undefined") return String(fallback);
         if (
             value.dataType?.kind !== "optional" ||
             !value.dataType.undefinedOnly
