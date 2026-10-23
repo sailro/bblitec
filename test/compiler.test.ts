@@ -9703,28 +9703,29 @@ test("a float field's compound store rounds once, at the store", () => {
     assert.doesNotMatch(result.cpp, /\*= 1\.1f|1e\+39f/);
 });
 
-test("shares one cell per for-of iteration between the closures that capture and write it", () => {
-    const result = compileSource(
+test("shares one cell between the closures that capture and write a by-value binding", () => {
+    // A for-of variable gets one cell per iteration; a destructured binding
+    // one cell where the pattern binds it.
+    for (const source of [
         "const incs: Array<() => void> = [], gets: Array<() => number> = []; for (let x of [1, 10]) { incs.push(() => { x++; }); gets.push(() => x); } incs[0]!(); console.log(gets[0]!());",
-    );
-    assert.match(
-        result.cpp,
-        /auto \w*iteration_cell\w* = bbl::js::make_gc_shared<double>\(/,
-    );
+        "function counter(o: { n: number }) { let { n } = o; return { inc: () => { n++; }, get: () => n }; } const c = counter({ n: 0 }); c.inc(); console.log(c.get());",
+    ])
+        assert.match(
+            compileSource(source).cpp,
+            /auto \w*shared_binding\w* = bbl::js::make_gc_shared<double>\(/,
+        );
 });
 
-test("refuses a closure-written binding the lowering would copy per closure", () => {
-    for (const [source, message] of [
-        [
-            "function counter() { let { n } = { n: 0 }; return { inc: () => { n++; }, get: () => n }; } const c = counter(); c.inc();",
-            /A destructured binding that a stored closure captures/,
-        ],
-        [
-            "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
-            /A `var` declared in a loop body and captured by a stored closure/,
-        ],
-    ] as const)
-        assert.throws(() => compileSource(source), message);
+test("refuses a captured var declared in a loop body", () => {
+    // JavaScript has one binding per function; a cell made where the
+    // declaration sits would be one per iteration.
+    assert.throws(
+        () =>
+            compileSource(
+                "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
+            ),
+        /A `var` declared in a loop body and captured by a stored closure/,
+    );
 });
 
 test("folds static string concatenation assigned to retained UI text", () => {

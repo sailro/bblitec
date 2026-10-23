@@ -1000,6 +1000,7 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        value = this.closureSharedCell(identifier, value);
         const storedType =
             value.dataType?.kind === "optional"
                 ? value.dataType.inner
@@ -1102,6 +1103,55 @@ export class BindingScopes {
             name: identifier.text,
             value,
         });
+    }
+
+    /**
+     * A destructured or for-of binding a stored closure captures and another
+     * closure writes lives in one shared cell (one per for-of iteration) that
+     * every closure reads and writes, instead of the copy each would hold.
+     */
+    private closureSharedCell(identifier: ts.MemberName, value: Value): Value {
+        if (
+            !ts.isIdentifier(identifier) ||
+            value.sharedStorageCpp !== undefined
+        )
+            return value;
+        const declaration = copiedBindingDeclaration(identifier);
+        if (
+            !declaration ||
+            !this.context.sharedClosures.needsSharedClosureStorage(
+                declaration,
+                identifier,
+            ) ||
+            !this.context.sharedClosures.identifierIsReboundInClosure(
+                identifier,
+            )
+        )
+            return value;
+        const type =
+            value.dataType ??
+            this.context.dataLowerer.dataTypeAt(identifier) ??
+            this.context.fail(
+                identifier,
+                "A binding closures share and write needs a represented type.",
+            );
+        const cell = emitSharedCell(
+            this.context,
+            this.context.allocateTemporaryCppName("shared_binding"),
+            {
+                type: this.context.dataTypes.cppType(type),
+                initializer: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    identifier,
+                ),
+            },
+        );
+        this.context.dataLowerer.registerLocal(cell.cpp, "owned");
+        return {
+            ...this.context.dataLowerer.leafValue(cell.cpp, type),
+            sharedStorageCpp: cell.sharedStorageCpp,
+        };
     }
 
     /** A picking result's engine, read through the storage now holding it. */
@@ -3291,4 +3341,30 @@ export function sceneNodeVectorProperties(
             } satisfies Value,
         ]),
     );
+}
+
+/**
+ * The declaration of a binding the lowering binds by value: a destructured
+ * name, or a for-of / for-in variable.
+ */
+function copiedBindingDeclaration(
+    identifier: ts.Identifier,
+): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
+    let node: ts.Node = identifier.parent;
+    if (ts.isVariableDeclaration(node))
+        return ts.isVariableDeclarationList(node.parent) &&
+            (ts.isForOfStatement(node.parent.parent) ||
+                ts.isForInStatement(node.parent.parent))
+            ? node
+            : undefined;
+    if (!ts.isBindingElement(node)) return undefined;
+    while (
+        ts.isBindingElement(node) ||
+        ts.isObjectBindingPattern(node) ||
+        ts.isArrayBindingPattern(node)
+    )
+        node = node.parent;
+    return ts.isVariableDeclaration(node) || ts.isParameter(node)
+        ? node
+        : undefined;
 }

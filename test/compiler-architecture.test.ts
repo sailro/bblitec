@@ -1338,3 +1338,19 @@ test("a statement list's reachable prefix is emitted by loop-control.ts", () => 
         [],
     );
 });
+
+test("a by-value binding closures share and write gets its cell where it is bound", () => {
+    // binding-scopes.ts closureSharedCell gives a destructured, for-of or
+    // for-in binding a stored closure captures and another closure writes one
+    // shared cell; no declaration form decides it on its own.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path !== "src/compiler/shared-closure-analysis.ts" &&
+                readFileSync(path, "utf8").includes(
+                    "identifierIsReboundInClosure(",
+                ),
+        ),
+        ["src/compiler/binding-scopes.ts"],
+    );
+});

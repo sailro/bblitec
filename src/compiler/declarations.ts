@@ -637,11 +637,6 @@ export class DeclarationLowerer {
             });
             return;
         }
-        if (
-            ts.isObjectBindingPattern(declaration.name) ||
-            ts.isArrayBindingPattern(declaration.name)
-        )
-            this.refuseSharedPatternBinding(declaration, declaration.name);
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
             return;
@@ -5194,32 +5189,6 @@ export class DeclarationLowerer {
      * and some code writes needs one shared cell per binding, which the
      * pattern lowerings do not make: refused rather than copied per closure.
      */
-    private refuseSharedPatternBinding(
-        declaration: ts.VariableDeclaration,
-        pattern: ts.BindingPattern,
-    ): void {
-        for (const element of pattern.elements) {
-            if (ts.isOmittedExpression(element)) continue;
-            if (!ts.isIdentifier(element.name)) {
-                this.refuseSharedPatternBinding(declaration, element.name);
-                continue;
-            }
-            if (
-                this.context.sharedClosures.needsSharedClosureStorage(
-                    declaration,
-                    element.name,
-                ) &&
-                this.context.sharedClosures.identifierIsReboundInClosure(
-                    element.name,
-                )
-            )
-                this.context.fail(
-                    element.name,
-                    "A destructured binding that a stored closure captures and code writes is not supported; destructure into a `const` and copy it into a `let`.",
-                );
-        }
-    }
-
     private emitObjectBindingDeclaration(
         declaration: ts.VariableDeclaration,
     ): void {
