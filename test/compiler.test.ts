@@ -2489,8 +2489,8 @@ test("materializes mutable intersection-typed object locals", () => {
         const moved = move();
     `);
 
-    assert.match(result.cpp, /\.grounded = true;/);
-    assert.match(result.cpp, /\.wall = 1\.0;/);
+    assert.match(result.cpp, /->grounded = true;/);
+    assert.match(result.cpp, /->wall = 1\.0;/);
     assert.doesNotMatch(result.cpp, /false = true|0\.0 =/);
 });
 
@@ -2506,8 +2506,8 @@ test("writes nested mutable record fields through native lvalues", () => {
         actor.box.y += 2;
     `);
 
-    assert.match(result.cpp, /v_actor\.box->x = 4\.0;/);
-    assert.match(result.cpp, /v_actor\.box->y \+= 2\.0;/);
+    assert.match(result.cpp, /v_actor->box->x = 4\.0;/);
+    assert.match(result.cpp, /v_actor->box->y \+= 2\.0;/);
     assert.doesNotMatch(result.cpp, /0\.0 =|70\.0 \* 2\.8\) \+=/);
 });
 
@@ -2771,7 +2771,7 @@ test("returns the value of chained numeric field assignments", () => {
         box.w = box.h = 42;
     `);
 
-    assert.match(result.cpp, /v_box\.w = \(v_box\.h = 42\.0\);/);
+    assert.match(result.cpp, /->w = \(v_box->h = 42\.0\);/);
 });
 
 test("returns the value of chained scalar-local assignments", () => {
@@ -2803,18 +2803,21 @@ test("spreads a native partial struct into a wider struct", () => {
 
     // Nothing reads a copied key's presence, so an own undefined needs no
     // document: the wider record stays native and copies present fields.
-    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
+    assert.match(
+        result.cpp,
+        /bblscene::Item v_item = bbl::js::make_ref<bblscene::ItemData>\(\);/,
+    );
     for (const key of ["label", "enabled"])
         assert.match(
             result.cpp,
             new RegExp(
-                String.raw`if \(v_options\.${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options\.${key}\);`,
+                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item->${key} = \(\*v_options->${key}\);`,
             ),
         );
     // `label` is never written, so the copy's presence is known statically.
     assert.ok(
         result.cpp.includes(
-            "v_options.enabled = bbl::js::Nullable<bool>{true};",
+            "v_options->enabled = bbl::js::Nullable<bool>{true};",
         ),
     );
 
@@ -4228,7 +4231,7 @@ test("binds object data-path locals with shared identity", () => {
     // field write still reaches the object stored in the holder.
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -4557,7 +4560,7 @@ test("mutable object aliases retain JavaScript identity", () => {
     `);
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -11942,7 +11945,7 @@ test("lowers boolean data-field assignment expression callbacks", () => {
         invoke((value) => (state.left = value));
     `);
 
-    assert.match(result.cpp, /v_state\.left = true/);
+    assert.match(result.cpp, /v_state->left = true/);
 });
 
 test("projects an audited native host-page UI companion without changing scene source", () => {

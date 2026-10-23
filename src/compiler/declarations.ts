@@ -3322,11 +3322,10 @@ export class DeclarationLowerer {
                   this.context.moduleContainerIsMutated(name)
                 : this.context.sharedClosures.identifierIsRebound(name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
-        const explicitlyTypedMutableEntryObject =
-            declaration.type !== undefined &&
-            mutablePlainObject &&
-            (this.context.defaultEngine() !== undefined ||
-                this.context.options.workers !== undefined);
+        // An annotation names the struct; it does not make a mutated object
+        // any less shared, whether or not the program has an engine.
+        const explicitlyTypedMutableObject =
+            declaration.type !== undefined && mutablePlainObject;
         const inferredReboundFunction =
             !declaration.type &&
             annotated?.kind === "function" &&
@@ -3415,7 +3414,7 @@ export class DeclarationLowerer {
         }
         if (
             annotated &&
-            (inferredMutableObject || explicitlyTypedMutableEntryObject)
+            (inferredMutableObject || explicitlyTypedMutableObject)
         ) {
             annotated =
                 this.context.dataTypes.markStoredObjectReferences(annotated);

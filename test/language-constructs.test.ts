@@ -16,6 +16,18 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a store through a call result writes the object the call returns",
+    `
+    const st: { v?: number } = {};
+    const obj = () => st;
+    obj().v = 3;
+    function named() { return st; }
+    named().v ??= 9;
+    if (st.v !== 3) throw new Error("annotated object written through a call " + st.v);
+`,
+);
+
+check(
     "a-binding-pattern-binds-alike-in-every-position",
     `
     function f([a, b = 3]: [number, number?], { p: [x, y] }: { p: [number, number] }): number { return a * 10 + b + x - y; }
