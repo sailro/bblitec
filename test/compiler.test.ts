@@ -9735,6 +9735,14 @@ test("refuses a captured var declared in a loop body", () => {
             ),
         /A `var` declared in a loop body and captured by a stored closure/,
     );
+    // `var x;` re-run each iteration keeps the earlier iteration's value.
+    assert.throws(
+        () =>
+            compileSource(
+                "const seen: string[] = []; for (let i = 0; i < 2; i++) { var x: number | undefined; if (i === 0) x = 5; seen.push(String(x)); } console.log(seen.join());",
+            ),
+        /A `var` declared without an initializer in a loop body keeps its value/,
+    );
 });
 
 test("folds static string concatenation assigned to retained UI text", () => {

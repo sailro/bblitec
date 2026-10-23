@@ -724,10 +724,11 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
-        // A `var` has one binding per function: a cell made where the
-        // declaration sits in a loop body would be one per iteration.
+        // A `var` has one binding per function: storage made where the
+        // declaration sits in a loop body would be one per iteration -- a
+        // cell a stored closure keeps, or a value `var x;` would reset.
         if (
-            sharedClosureStorage &&
+            (sharedClosureStorage || !declaration.initializer) &&
             declaration.parent &&
             ts.isVariableDeclarationList(declaration.parent) &&
             variableKind(declaration.parent) === "var" &&
@@ -741,7 +742,9 @@ export class DeclarationLowerer {
         )
             this.context.fail(
                 declaration,
-                "A `var` declared in a loop body and captured by a stored closure is one binding for the whole function; declare it before the loop.",
+                sharedClosureStorage
+                    ? "A `var` declared in a loop body and captured by a stored closure is one binding for the whole function; declare it before the loop."
+                    : "A `var` declared without an initializer in a loop body keeps its value across iterations as one binding for the whole function; declare it before the loop.",
             );
         if (
             this.emitAbsenceTaggedDeclaration(
