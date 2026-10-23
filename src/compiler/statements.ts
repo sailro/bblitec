@@ -901,6 +901,25 @@ export class StatementLowerer {
         return result;
     }
 
+    /**
+     * Emit statements until one's lowered control flow leaves (true) or, with
+     * `stopAtIteration`, a static unrolled iteration completes (false): what
+     * follows either is unreachable in this emission.
+     */
+    private emitReachable(
+        context: StatementLoweringContext,
+        statements: readonly ts.Statement[],
+        stopAtIteration = true,
+    ): boolean {
+        for (const statement of statements) {
+            this.emit(context, statement);
+            if (this.terminatesAfterLowering(statement)) return true;
+            if (stopAtIteration && this.staticIterationCompleted())
+                return false;
+        }
+        return false;
+    }
+
     public terminatesAfterLowering(statement: ts.Statement): boolean {
         return terminatesFlow(
             statement,
@@ -2273,14 +2292,7 @@ export class StatementLowerer {
             const protectedBody = context.captureEmittedStatements(() => {
                 context.bindings.pushScope(context.allocateBlockPrefix());
                 try {
-                    for (const child of statement.tryBlock.statements) {
-                        this.emit(context, child);
-                        if (
-                            this.terminatesAfterLowering(child) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(context, statement.tryBlock.statements);
                 } finally {
                     context.bindings.popScope();
                 }
@@ -2339,15 +2351,10 @@ export class StatementLowerer {
                     );
                 }
                 const handlerBody = context.captureEmittedStatements(() => {
-                    for (const child of statement.catchClause!.block
-                        .statements) {
-                        this.emit(context, child);
-                        if (
-                            this.terminatesAfterLowering(child) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(
+                        context,
+                        statement.catchClause!.block.statements,
+                    );
                 });
                 context.emitCapturedStatements(handlerBody);
                 // A source handler that ignores its exception says so.
@@ -2372,14 +2379,7 @@ export class StatementLowerer {
         }
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            for (const child of statement.tryBlock.statements) {
-                this.emit(context, child);
-                if (
-                    this.terminatesAfterLowering(child) ||
-                    this.staticIterationCompleted()
-                )
-                    break;
-            }
+            this.emitReachable(context, statement.tryBlock.statements);
         } finally {
             context.bindings.popScope();
         }
@@ -2451,14 +2451,7 @@ export class StatementLowerer {
         try {
             return context.captureHoistedLines(
                 () => {
-                    for (const statement of block.statements) {
-                        this.emit(context, statement);
-                        if (
-                            this.terminatesAfterLowering(statement) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(context, block.statements);
                 },
                 beforeBody,
                 block,
@@ -2926,14 +2919,7 @@ export class StatementLowerer {
         const emitStatements = (): void => {
             bind();
             const statements = ts.isBlock(body) ? body.statements : [body];
-            for (const nested of statements) {
-                this.emit(context, nested);
-                if (
-                    this.terminatesAfterLowering(nested) ||
-                    this.staticIterationCompleted()
-                )
-                    break;
-            }
+            this.emitReachable(context, statements);
         };
         try {
             if (mode === "scoped") {
@@ -3393,10 +3379,11 @@ export class StatementLowerer {
                 context,
                 () =>
                     this.inRuntimeControlFlow(context, () => {
-                        for (const nested of bodyStatements(statement)) {
-                            this.emit(context, nested);
-                            if (this.terminatesAfterLowering(nested)) break;
-                        }
+                        this.emitReachable(
+                            context,
+                            bodyStatements(statement),
+                            false,
+                        );
                     }),
                 statement,
             );
@@ -4629,12 +4616,7 @@ export class StatementLowerer {
             const statements = ts.isBlock(statement)
                 ? statement.statements
                 : [statement];
-            for (const nested of statements) {
-                this.emit(context, nested);
-                if (this.terminatesAfterLowering(nested)) return true;
-                if (this.staticIterationCompleted()) break;
-            }
-            return false;
+            return this.emitReachable(context, statements);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
