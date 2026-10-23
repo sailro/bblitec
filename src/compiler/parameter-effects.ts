@@ -1,4 +1,14 @@
 import ts from "typescript";
+import {
+    boundedKeyPath,
+    derive,
+    nest,
+    pathStartsWith,
+    pathsOverlap,
+    projectMember,
+    slotProjections,
+    type Projection,
+} from "./projections.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
@@ -29,11 +39,9 @@ import {
     ANY_KEY,
     accessKey,
     aliasKey,
-    keysMayMatch,
     keyIndex,
     arrayLiteralSlots,
     patternSlots,
-    type PatternRead,
     equalityOperator,
     parameterForArgument,
     functionKind,
@@ -147,58 +155,7 @@ export function isEffectFunction(
     );
 }
 
-/**
- * What a value holds of the parameter's objects: the object at `from` sits
- * at `at` inside the value (`at` empty: the value is that object). A
- * `derived` value is computed from the object: it may be, or hold, any
- * object at or below `from`.
- */
-interface Projection {
-    readonly at: EffectPath;
-    readonly from: EffectPath;
-    readonly derived: boolean;
-}
-
-const MAXIMUM_PATH = 6;
 const MAXIMUM_PROJECTIONS = 16;
-
-function bounded(path: EffectPath): EffectPath {
-    return path.length > MAXIMUM_PATH ? path.slice(0, MAXIMUM_PATH) : path;
-}
-
-/** The projections of the value read at `key` inside a value holding `values`. */
-function project(
-    values: readonly Projection[],
-    key: string,
-): readonly Projection[] {
-    return values.flatMap((value) =>
-        value.at.length > 0
-            ? keysMayMatch(value.at[0]!, key)
-                ? [{ ...value, at: value.at.slice(1) }]
-                : []
-            : [{ ...value, from: bounded([...value.from, key]) }],
-    );
-}
-
-/** The projections of a container holding a value with `values` at `key`. */
-function nest(
-    values: readonly Projection[],
-    key: string,
-): readonly Projection[] {
-    return values.map((value) => ({
-        ...value,
-        at: bounded([key, ...value.at]),
-    }));
-}
-
-/** A value a call computed from one holding `values`. */
-function derive(values: readonly Projection[]): readonly Projection[] {
-    return values.map((value) => ({
-        at: [],
-        from: value.from,
-        derived: true,
-    }));
-}
 
 /** Whether a value of `type` can be or hold an object: not a primitive, nor an array of them. */
 function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
@@ -206,19 +163,6 @@ function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
     const element = arrayElementType(checker, type);
     return element === undefined || typeCanCarryReference(element);
-}
-
-/**
- * The values one destructuring slot takes: a member's projection, or for a
- * rest a new collection of the members.
- */
-function slotValues(
-    values: readonly Projection[],
-    read: PatternRead,
-): readonly Projection[] {
-    return read.kind === "member"
-        ? project(values, aliasKey(read.key))
-        : nest(project(values, ANY_KEY), ANY_KEY);
 }
 
 /**
@@ -464,7 +408,12 @@ class EffectWalker {
             // An object rest enumerates the remaining keys.
             if (read.kind === "rest")
                 this.emit("enumerated", node, values, scope);
-            this.bindPattern(target, slotValues(values, read), node, scope);
+            this.bindPattern(
+                target,
+                slotProjections(values, read),
+                node,
+                scope,
+            );
         }
     }
 
@@ -589,7 +538,7 @@ class EffectWalker {
                 this.method(access.parent, key, outer, current, scope);
                 return;
             }
-            current = project(current, key);
+            current = projectMember(current, key);
             if (current.length === 0) return;
             node = parent;
         }
@@ -634,7 +583,7 @@ class EffectWalker {
                 this.uses.push({
                     kind: "write",
                     node: slot,
-                    path: bounded([...value.from, key]),
+                    path: boundedKeyPath([...value.from, key]),
                     derived: value.derived,
                     ...scope,
                 });
@@ -675,7 +624,7 @@ class EffectWalker {
                     ...scope,
                 });
         // An iterating method hands its callback the elements and receiver.
-        const elements = project(receiver, ANY_KEY);
+        const elements = projectMember(receiver, ANY_KEY);
         const positions = callbackPositions(method);
         for (const argument of call.arguments) {
             const callback = unwrapExpression(argument);
@@ -725,7 +674,7 @@ class EffectWalker {
             this.emit("enumerated", spread, values, scope);
             this.consume(
                 consumer,
-                nest(project(values, ANY_KEY), ANY_KEY),
+                nest(projectMember(values, ANY_KEY), ANY_KEY),
                 scope,
             );
             return;
@@ -734,7 +683,7 @@ class EffectWalker {
             this.checker,
             this.checker.getTypeAtLocation(top),
         );
-        const elements = project(values, ANY_KEY);
+        const elements = projectMember(values, ANY_KEY);
         if (element && !typeCanCarryReference(element)) return;
         if (
             (ts.isCallExpression(consumer) || ts.isNewExpression(consumer)) &&
@@ -858,11 +807,17 @@ class EffectWalker {
                 for (const declaration of list.declarations)
                     this.bindPattern(
                         declaration.name,
-                        project(values, ANY_KEY),
+                        projectMember(values, ANY_KEY),
                         parent,
                         scope,
                     );
-            else this.assigned(list, project(values, ANY_KEY), parent, scope);
+            else
+                this.assigned(
+                    list,
+                    projectMember(values, ANY_KEY),
+                    parent,
+                    scope,
+                );
             return;
         }
         if (ts.isForInStatement(parent) && parent.expression === top) {
@@ -971,7 +926,12 @@ class EffectWalker {
             for (const { target, read } of patternSlots(unwrapped)) {
                 if (read.kind === "rest")
                     this.emit("enumerated", node, values, scope);
-                this.assigned(target, slotValues(values, read), node, scope);
+                this.assigned(
+                    target,
+                    slotProjections(values, read),
+                    node,
+                    scope,
+                );
             }
             return;
         }
@@ -1632,14 +1592,6 @@ function argumentVisiblyWritten(
     );
 }
 
-/** Whether `path` begins with `prefix`, `*` matching any key. */
-function startsWith(path: EffectPath, prefix: EffectPath): boolean {
-    return (
-        path.length >= prefix.length &&
-        prefix.every((key, index) => keysMayMatch(key, path[index]!))
-    );
-}
-
 /** @unjournaled Pure functions of the checked source, kept across replays. */
 const heldAnswers = new WeakMap<ts.Identifier, Map<string, boolean>>();
 /** @unjournaled The held-object queries in progress, by binding. */
@@ -1682,9 +1634,9 @@ function heldObjectWritten(
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;
             const below = use.derived
-                ? startsWith(at, object) || startsWith(object, at)
-                : startsWith(object, at);
-            const above = !below && startsWith(at, object);
+                ? pathsOverlap(at, object)
+                : pathStartsWith(object, at);
+            const above = !below && pathStartsWith(at, object);
             if (!below && !above) return false;
             switch (use.kind) {
                 case "write":

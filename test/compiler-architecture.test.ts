@@ -1601,3 +1601,22 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
             name,
         );
 });
+
+test("a projection's path algebra is read through projections.ts", () => {
+    // project / nest / derive / slotProjections and the path relations are
+    // the one algebra the parameter effect and projection analyses share.
+    for (const name of [
+        "projectMember",
+        "nest",
+        "derive",
+        "slotProjections",
+        "pathStartsWith",
+        "pathsOverlap",
+        "boundedKeyPath",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/projections.ts"],
+            name,
+        );
+});

@@ -1,4 +1,12 @@
 import ts from "typescript";
+import {
+    derive,
+    nest,
+    pathsOverlap,
+    projectMember,
+    slotProjections,
+    type Projection,
+} from "./projections.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { readOnlyDataMethods } from "./receiver-methods.js";
@@ -41,36 +49,6 @@ import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js
 import { callResultCanHoldReceiver } from "./kept-values.js";
 
 type Path = readonly string[];
-
-/** A reference at `at` in a local value aliases `from` in the parameter. */
-interface Projection {
-    readonly at: Path;
-    readonly from: Path;
-}
-
-function overlaps(left: Path, right: Path): boolean {
-    return left
-        .slice(0, right.length)
-        .every((key, i) => keysMayMatch(key, right[i]!));
-}
-
-function project(values: readonly Projection[], key: string): Projection[] {
-    return values.flatMap((value) =>
-        value.at.length > 0
-            ? keysMayMatch(value.at[0]!, key)
-                ? [{ at: value.at.slice(1), from: value.from }]
-                : []
-            : [{ at: [], from: [...value.from, key] }],
-    );
-}
-
-/** The projections of a container holding a value with `values` at `key`. */
-function nest(values: readonly Projection[], key: string): Projection[] {
-    return values.map((value) => ({
-        at: [key, ...value.at],
-        from: value.from,
-    }));
-}
 
 const results = new EmissionWeakMap<
     ts.TypeChecker,
@@ -424,7 +402,7 @@ function parameterProjection(
     };
 
     const aliases = new Map<ts.Symbol, readonly Projection[]>([
-        [symbol, [{ at: [], from: [] }]],
+        [symbol, [{ at: [], from: [], derived: false }]],
     ]);
     const roots = [
         ...declaration.parameters.flatMap((item) =>
@@ -438,7 +416,7 @@ function parameterProjection(
         from: Path,
         entry: (typeof selected)[number],
     ): boolean => {
-        if (overlaps(from, entry.path)) return true;
+        if (pathsOverlap(from, entry.path)) return true;
         if (independentFields || identityPaths) return false;
         const divergent = from.findIndex(
             (key, i) => !keysMayMatch(key, entry.path[i]!),
@@ -488,7 +466,10 @@ function parameterProjection(
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
         )
-            return project(flow(node.expression), aliasKey(accessKey(node)));
+            return projectMember(
+                flow(node.expression),
+                aliasKey(accessKey(node)),
+            );
         if (isOperandSelection(node)) return valueOperands(node).flatMap(flow);
         if (ts.isObjectLiteralExpression(node))
             return node.properties.flatMap((property): Projection[] => {
@@ -530,10 +511,7 @@ function parameterProjection(
                     )
                         keys.push(ANY_KEY);
                     return keys.flatMap((key) =>
-                        project(source, key).map((entry) => ({
-                            at: [key, ...entry.at],
-                            from: entry.from,
-                        })),
+                        nest(projectMember(source, key), key),
                     );
                 }
                 if (
@@ -544,17 +522,14 @@ function parameterProjection(
                 const value = ts.isPropertyAssignment(property)
                     ? property.initializer
                     : property.name;
-                return flow(value).map((entry) => ({
-                    at: [aliasKey(propertyKey(property.name)), ...entry.at],
-                    from: entry.from,
-                }));
+                return nest(flow(value), aliasKey(propertyKey(property.name)));
             });
         if (ts.isArrayLiteralExpression(node))
             return arrayLiteralSlots(node).flatMap(
                 ({ element, index }): Projection[] => {
                     if (ts.isOmittedExpression(element)) return [];
                     const values = ts.isSpreadElement(element)
-                        ? project(flow(element.expression), ANY_KEY)
+                        ? projectMember(flow(element.expression), ANY_KEY)
                         : flow(element);
                     const elementType = ts.isSpreadElement(element)
                         ? arrayElementType(
@@ -564,15 +539,12 @@ function parameterProjection(
                         : undefined;
                     if (elementType && !typeCanCarryReference(elementType))
                         return [];
-                    return values.map((entry) => ({
-                        at: [
-                            aliasKey(
-                                index === undefined ? undefined : String(index),
-                            ),
-                            ...entry.at,
-                        ],
-                        from: entry.from,
-                    }));
+                    return nest(
+                        values,
+                        aliasKey(
+                            index === undefined ? undefined : String(index),
+                        ),
+                    );
                 },
             );
         if (ts.isCallExpression(node) && arrayMethod(node) === "slice") {
@@ -583,7 +555,7 @@ function parameterProjection(
             );
             return element && !typeCanCarryReference(element)
                 ? []
-                : nest(project(flow(owner), ANY_KEY), ANY_KEY);
+                : nest(projectMember(flow(owner), ANY_KEY), ANY_KEY);
         }
         // Calls with a relevant input must separately prove no escape. Their
         // result cannot alias that input when this proof succeeds.
@@ -592,13 +564,7 @@ function parameterProjection(
         // Keep it opaque rather than dropping an await/comma/assignment alias.
         const opaque: Projection[] = [];
         ts.forEachChild(node, (child) => {
-            if (ts.isExpression(child))
-                opaque.push(
-                    ...flow(child).map((value) => ({
-                        at: [],
-                        from: value.from,
-                    })),
-                );
+            if (ts.isExpression(child)) opaque.push(...derive(flow(child)));
         });
         return opaque;
     };
@@ -626,9 +592,7 @@ function parameterProjection(
         // A rest is a new collection of the remaining members.
         for (const { target, read, fallback } of patternSlots(name))
             bind(target, [
-                ...(read.kind === "member"
-                    ? project(values, aliasKey(read.key))
-                    : nest(project(values, ANY_KEY), ANY_KEY)),
+                ...slotProjections(values, read),
                 ...(fallback ? flow(fallback) : []),
             ]);
     };
@@ -662,7 +626,7 @@ function parameterProjection(
                         for (const item of node.initializer.declarations)
                             bind(
                                 item.name,
-                                project(flow(node.expression), ANY_KEY),
+                                projectMember(flow(node.expression), ANY_KEY),
                             );
                 },
                 {
@@ -682,13 +646,15 @@ function parameterProjection(
             !ts.isElementAccessExpression(node)
         )
             return false;
-        return project(flow(node.expression), aliasKey(accessKey(node))).some(
-            (value) =>
-                selected.some(
-                    (entry) =>
-                        mayAffectSelection(value.from, entry) &&
-                        (value.from.length > entry.path.length || entry.scalar),
-                ),
+        return projectMember(
+            flow(node.expression),
+            aliasKey(accessKey(node)),
+        ).some((value) =>
+            selected.some(
+                (entry) =>
+                    mayAffectSelection(value.from, entry) &&
+                    (value.from.length > entry.path.length || entry.scalar),
+            ),
         );
     };
     const captures = (identifier: ts.Identifier): boolean => {
@@ -708,7 +674,7 @@ function parameterProjection(
                     access.parent.expression === access)
             )
                 return relevant(values).length > 0;
-            values = project(values, aliasKey(accessKey(access)));
+            values = projectMember(values, aliasKey(accessKey(access)));
             expression = access;
         }
         return relevant(values).length > 0;
