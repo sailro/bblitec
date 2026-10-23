@@ -16,6 +16,15 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "an-array-literal-of-runtime-elements-joins-at-run-time",
+    `
+    const s = Math.random() > 2 ? "a" : "b";
+    const n = Math.random() > 2 ? 1 : 2;
+    if ([s, "c"].join("-") !== "b-c" || [n, 3].join() !== "2,3") throw new Error("join");
+`,
+);
+
+check(
     "a-discarded-getter-read-runs-the-getter-once",
     `
     let reads = 0;

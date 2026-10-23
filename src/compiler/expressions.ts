@@ -1299,7 +1299,9 @@ export class ExpressionLowerer {
             const joined = ts.isPropertyAccessExpression(unwrapped.expression)
                 ? this.context.unwrap(unwrapped.expression.expression)
                 : undefined;
-            // A literal with spreads joins the array it builds at run time.
+            // A literal of generation-known elements joins at generation; one
+            // with spreads or run-time elements joins the array it builds at
+            // run time.
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
                 unwrapped.expression.name.text === "join" &&
@@ -1308,14 +1310,24 @@ export class ExpressionLowerer {
                 ts.isArrayLiteralExpression(joined) &&
                 !joined.elements.some(ts.isSpreadElement)
             ) {
-                const value =
-                    this.context.evaluator.compileStringLiteral(unwrapped);
-                return {
-                    kind: "string",
-                    cpp: this.context.cppString(value),
-                    staticString: value,
-                    dataType: { kind: "string" },
-                };
+                let value: string | undefined;
+                try {
+                    value =
+                        this.context.evaluator.compileStringLiteral(unwrapped);
+                } catch (error) {
+                    if (
+                        !(error instanceof CompileError) ||
+                        error.reason !== "static-value-required"
+                    )
+                        throw error;
+                }
+                if (value !== undefined)
+                    return {
+                        kind: "string",
+                        cpp: this.context.cppString(value),
+                        staticString: value,
+                        dataType: { kind: "string" },
+                    };
             }
             // A pure module-URL helper remains a compile-time string even
             // though its implementation uses browser URL objects. Recognize
