@@ -1,5 +1,6 @@
 import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
@@ -58,6 +59,7 @@ interface CallbackContext extends Pick<
     | "probeEmission"
     | "reachJsData"
     | "registerNativeBinding"
+    | "sharedClosures"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "statementTerminatesAfterLowering"
@@ -725,9 +727,17 @@ export class CallbackLowerer {
             );
             const snapshot =
                 this.context.allocateTemporaryCppName("platform_callback");
+            // The registration keeps the function the name holds now; a
+            // name nothing rebinds holds it for the registration already.
+            const named = this.context.unwrap(callback);
             this.context.emit({
                 kind: "declaration",
-                type: "const auto",
+                type:
+                    ts.isIdentifier(named) &&
+                    cppIdentifierPattern.test(stored.cpp) &&
+                    !this.context.sharedClosures.identifierIsRebound(named)
+                        ? "const auto&"
+                        : "const auto",
                 name: snapshot,
                 initializer: stored.cpp,
             });
