@@ -92,6 +92,35 @@ test("emitted declarations retain their lifetime and large initializers return t
     assert.ok(result.segments.every((segment) => segment.source === "test.ts"));
 });
 
+test("a helper's shape is its code with parameters and declared locals renamed", () => {
+    // Two specializations of one function spell their locals differently;
+    // the helpers they outline share a shape, so they share one name.
+    const shapes = (prefix: string): string[] => {
+        const seen: string[] = [];
+        outlineEmittedBody({
+            body: largeBody(
+                [
+                    declaration(`v_${prefix}_scene`, "double", "1.0"),
+                    declaration(`v_${prefix}_count`, "double", "0.0"),
+                ],
+                `use(v_${prefix}_scene, v_${prefix}_count);`,
+            ),
+            parameters: [],
+            source: "test.ts",
+            bindingType: () => undefined,
+            allocateName: (shape) => {
+                seen.push(shape);
+                return `outlined_${seen.length}`;
+            },
+        });
+        return seen;
+    };
+    const first = shapes("fn1");
+    assert.ok(first.length > 0);
+    assert.deepEqual(shapes("fn2"), first);
+    assert.ok(first.every((shape) => !shape.includes("v_fn1")));
+});
+
 test("untyped reads stay in their scope", () => {
     const body = largeBody(
         [declaration("v_opaque", "auto", "make()")],

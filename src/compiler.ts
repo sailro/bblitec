@@ -7,6 +7,7 @@ import {
 } from "./compiler/undefined-values.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
+import { createHash } from "node:crypto";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
@@ -994,7 +995,8 @@ class Compiler implements LoweringServices {
     public readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
     public readonly body: NativeEmission[] = emissionArray([]);
     @journaled private accessor emissionSource: string | undefined;
-    @journaled private accessor nextOutlinedIndex = 0;
+    /** Outlined helpers already defined, by their shape-derived names. */
+    private readonly outlinedHelpers = new EmissionSet<string>();
     public readonly nativeDeclarations = new EmissionMap<
         string,
         NativeDeclaration
@@ -7218,6 +7220,7 @@ class Compiler implements LoweringServices {
                 renderNativeEmission,
             );
         const boundary = this.nativeBindingCheckpoint();
+        const allocations = this.temporaryIndex;
         const captured = this.captureNativeDependencies(() =>
             this.captureEmittedStatements(emitBody),
         );
@@ -7227,9 +7230,10 @@ class Compiler implements LoweringServices {
                 name: binding.name,
                 type: this.nativeBindingCaptureType(binding.name),
             }));
-        return this.outlineNativeBody(captured.value, parameters).map(
-            renderNativeEmission,
-        );
+        return this.outlineNativeBody(captured.value, parameters, {
+            bindings: boundary,
+            allocations,
+        }).map(renderNativeEmission);
     }
 
     public captureEmittedStatements(emitBody: () => void): NativeEmission[] {
@@ -7256,24 +7260,40 @@ class Compiler implements LoweringServices {
         }
     }
 
+    /**
+     * `locals` bounds the names the body declares: a native binding or a
+     * temporary created after it began (the entry body's are all its own).
+     */
     private outlineNativeBody(
         body: readonly NativeEmission[],
         parameters: readonly { name: string; type: string | undefined }[],
+        locals = { bindings: 0, allocations: 0 },
     ): readonly NativeEmission[] {
         if (this.options.workers) return body;
         const outlined = outlineEmittedBody({
             body,
             parameters,
             bindingType: (name) => this.nativeBindingCaptureType(name),
-            allocateName: () => `bbl_outlined_${this.nextOutlinedIndex++}`,
+            // Named by shape, two bodies outlining the same code (two
+            // specializations of one function) call one helper and stay one
+            // body for the shared-function interning.
+            allocateName: (shape) =>
+                `bbl_outlined_${createHash("sha256").update(shape).digest("hex").slice(0, 16)}`,
+            isLocal: (name) =>
+                (this.nativeBindings.get(name)?.sequence ?? 0) >
+                    locals.bindings ||
+                (this.allocatedCppNames.get(name) ?? 0) > locals.allocations,
             source: this.emissionSource ?? this.sourceFile.fileName,
         });
-        for (const segment of outlined.segments)
+        for (const segment of outlined.segments) {
+            if (this.outlinedHelpers.has(segment.name)) continue;
+            this.outlinedHelpers.add(segment.name);
             this.nativeEmission.registerNativeFunction(
                 segment.prototype,
                 [...segment.lines],
                 segment.source,
             );
+        }
         for (const declaration of outlined.rewrittenDeclarations)
             this.nativeDeclarations.set(
                 nativeStatementCode(declaration),
