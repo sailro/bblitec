@@ -160,7 +160,7 @@ test("record union storage refuses a wider record's field stored another way", (
         `),
         // The join is refused where the record is stored, before any
         // layout is computed for both types.
-        /A 'End' record stored as 'Flat \| Mark' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity; no shared layout holds both record types\./,
+        /A 'End' record stored as 'Flat \| Mark' would be a copy of the one object JavaScript keeps, and a union view shares its arm's storage; no shared layout holds both record types\./,
     );
 });
 
