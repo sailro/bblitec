@@ -15340,3 +15340,13 @@ check(
     if (k["my-key"]() !== 4 || k[1]() !== 5 || k[m]() !== 4) throw new Error("keyed method");
     `,
 );
+check(
+    "a language global read through globalThis is the global",
+    `
+    const st = { s: 1 };
+    function next(): number { globalThis.Object.assign(st, { s: st.s * 2 }); return st.s; }
+    const a = next(), b = next();
+    const text = globalThis.JSON.stringify({ id: 1, meta: { tag: "m" } });
+    if (a !== 2 || b !== 4 || text !== '{"id":1,"meta":{"tag":"m"}}') throw new Error("globalThis " + a + b + text);
+    `,
+);

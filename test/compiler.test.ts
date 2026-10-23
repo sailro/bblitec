@@ -19677,7 +19677,9 @@ test("does not erase a bounded wait through a shadowed Promise", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+        // `globalThis.Promise` is the language's Promise, not erasable
+        // browser state: the alias itself refuses as a value.
+        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)|Unknown or unsupported variable 'globalThis'/,
     );
 });
 

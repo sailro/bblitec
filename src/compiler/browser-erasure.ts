@@ -47,6 +47,7 @@ import {
     declaredInDomLibrary,
     ecmascriptGlobalTypeof,
     libraryName,
+    resolvedSymbol,
 } from "./symbols.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -1262,6 +1263,31 @@ export class BrowserErasure {
         );
     }
 
+    /** A member access that names, through the global object, a global only the language library declares. */
+    private languageGlobalRead(node: ts.Expression): boolean {
+        for (
+            let current = node;
+            ts.isPropertyAccessExpression(current) ||
+            ts.isCallExpression(current);
+            current = this.context.unwrap(current.expression)
+        ) {
+            if (!ts.isPropertyAccessExpression(current)) continue;
+            const owner = this.context.unwrap(current.expression);
+            if (
+                ts.isIdentifier(owner) &&
+                GLOBAL_OBJECT_NAMES.has(owner.text) &&
+                this.context.libraryGlobal(current) !== undefined
+            ) {
+                const symbol = resolvedSymbol(this.context.checker, current);
+                return (
+                    declaredIn(symbol, "default-lib") &&
+                    !declaredIn(symbol, "dom")
+                );
+            }
+        }
+        return false;
+    }
+
     private browserValueOf(expression: ts.Expression): Value["browserValue"] {
         return this.evaluateOnce(
             expression,
@@ -1273,6 +1299,9 @@ export class BrowserErasure {
     private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        // `globalThis.Object` is the language's `Object` read through the
+        // global object, which every realm has: not browser state.
+        if (this.languageGlobalRead(unwrapped)) return false;
         if (hasDomLowering(this.context.checker, unwrapped)) return false;
         if (
             this.context.options.deferredCapabilities &&

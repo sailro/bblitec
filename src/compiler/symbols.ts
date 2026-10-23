@@ -493,6 +493,41 @@ export function accessedPropertySymbol(
 }
 
 /**
+ * Whether two expressions read the same reference: the same binding, or the
+ * same keys off the same reference, or both `this`. A call anywhere is a new
+ * value each time it runs, so two spellings of one call are not one value.
+ */
+export function sameReference(
+    checker: ts.TypeChecker,
+    left: ts.Expression,
+    right: ts.Expression,
+): boolean {
+    const a = unwrapExpression(left);
+    const b = unwrapExpression(right);
+    if (
+        a.kind === ts.SyntaxKind.ThisKeyword ||
+        b.kind === ts.SyntaxKind.ThisKeyword
+    )
+        return a.kind === b.kind;
+    if (ts.isIdentifier(a) && ts.isIdentifier(b)) {
+        const symbol = resolvedSymbol(checker, a);
+        return symbol !== undefined && symbol === resolvedSymbol(checker, b);
+    }
+    if (
+        (ts.isPropertyAccessExpression(a) || ts.isElementAccessExpression(a)) &&
+        (ts.isPropertyAccessExpression(b) || ts.isElementAccessExpression(b))
+    ) {
+        const key = staticAccessKey(checker, a);
+        return (
+            key !== undefined &&
+            key === staticAccessKey(checker, b) &&
+            sameReference(checker, a.expression, b.expression)
+        );
+    }
+    return false;
+}
+
+/**
  * The user accessors a member access runs: getters for a read (`"get"`),
  * setters for a write (`"set"`), both for `"either"`. A dotted access reads
  * its symbol, whose declarations a union receiver's members all supply; a
