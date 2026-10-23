@@ -16,14 +16,10 @@ import {
     findAnalysisNodeWithState,
     findAnalysisNode,
 } from "./analysis-walk.js";
-import {
-    EmissionSet,
-    EmissionMap,
-    EmissionWeakMap,
-    writable,
-} from "./emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -151,47 +147,6 @@ export interface CallbackInvocationOptions {
     generator?: DataType<"iterator">;
     /** A concrete collection sink can retain its mapper's declared result model. */
     resultType?: DataType;
-}
-
-const directCallBindingCache = new EmissionWeakMap<
-    ts.TypeChecker,
-    WeakMap<ts.Node, WeakMap<ts.Identifier, boolean>>
->();
-
-export function bindingIsOnlyCalledDirectly(
-    checker: ts.TypeChecker,
-    name: ts.Identifier,
-    scope: ts.Node,
-): boolean {
-    let scopes = directCallBindingCache.get(checker);
-    if (!scopes)
-        directCallBindingCache.set(checker, (scopes = new EmissionWeakMap()));
-    let bindings = scopes.get(scope);
-    if (!bindings) scopes.set(scope, (bindings = new EmissionWeakMap()));
-    const cached = bindings.get(name);
-    if (cached !== undefined) return cached;
-    const symbol = declaredSymbol(checker, name);
-    const onlyCalled =
-        !!symbol &&
-        !someAnalysisNode(
-            scope,
-            (node) => {
-                if (
-                    !ts.isIdentifier(node) ||
-                    node === name ||
-                    declaredSymbol(checker, node) !== symbol
-                )
-                    return false;
-                const parent = node.parent;
-                return (
-                    !ts.isCallExpression(parent) ||
-                    unwrapExpression(parent.expression) !== node
-                );
-            },
-            { types: "skip" },
-        );
-    bindings.set(name, onlyCalled);
-    return onlyCalled;
 }
 
 function generationKnownPrimitive(value: Value): boolean {

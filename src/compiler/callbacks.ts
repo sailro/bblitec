@@ -1,10 +1,8 @@
 import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { emitReachableStatements } from "./loop-control.js";
-import {
-    bindingIsOnlyCalledDirectly,
-    tryResolveFunctionDeclaration,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
     CapturedClosure,
     ClosureCaptures,

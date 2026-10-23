@@ -1531,3 +1531,30 @@ test("a binding pattern binds through declarations.ts bindPattern", () => {
     ])
         assert.ok(sourceFacts(path).members.has("bindPattern"), path);
 });
+
+test("a library call's callback lifetime is read through receiver-methods.ts", () => {
+    // callsArgumentInPlace (a callback a library call runs before it
+    // returns) and isListenerRegistration (a listener it keeps) are the one
+    // table the effect analysis, the native-function eligibility, the
+    // shared-closure analysis and the pinned record lowerer read.
+    for (const name of ["callsArgumentInPlace", "isListenerRegistration"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/receiver-methods.ts"],
+            name,
+        );
+    for (const [path, name] of [
+        ["src/compiler/parameter-effects.ts", "callsArgumentInPlace"],
+        ["src/compiler/native-functions.ts", "callsArgumentInPlace"],
+        ["src/compiler/native-functions.ts", "isListenerRegistration"],
+        ["src/compiler/shared-closure-analysis.ts", "isListenerRegistration"],
+        ["src/lowering/pinned-record-lowerer.ts", "callsArgumentInPlace"],
+        ["src/compiler/parameter-effects.ts", "bindingIsOnlyCalledDirectly"],
+        ["src/compiler/native-functions.ts", "bindingIsOnlyCalledDirectly"],
+    ] as const)
+        assert.ok(sourceFacts(path).calls.has(name), `${path} ${name}`);
+    // A local function only ever called directly is read the same way.
+    assert.deepEqual(declarationOwners("bindingIsOnlyCalledDirectly"), [
+        "src/compiler/binding-rebinds.ts",
+    ]);
+});

@@ -5,6 +5,7 @@ import {
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
 import {
@@ -56,7 +57,6 @@ import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import { programObservations } from "./program-observations.js";
 import {
-    bindingIsOnlyCalledDirectly,
     generationKnownStringArgument,
     borrowsReferenceParameter,
     requiresDefaultParameterBinding,
@@ -69,6 +69,10 @@ import {
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { isVoid } from "./type-facts.js";
+import {
+    callsArgumentInPlace,
+    isListenerRegistration,
+} from "./receiver-methods.js";
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
@@ -2383,18 +2387,6 @@ export class NativeFunctionLowerer {
     private containsRetainedCallbackRegistration(
         declaration: EligibleMember,
     ): boolean {
-        const immediateCallbackMethods = new EmissionSet([
-            "every",
-            "filter",
-            "find",
-            "findIndex",
-            "flatMap",
-            "forEach",
-            "map",
-            "reduce",
-            "some",
-            "sort",
-        ]);
         const onlyCalledDirectly = (
             callback:
                 | ts.ArrowFunction
@@ -2433,9 +2425,7 @@ export class NativeFunctionLowerer {
                 const immediateMethodArgument =
                     functionExpression &&
                     ts.isCallExpression(parent) &&
-                    parent.arguments.includes(node) &&
-                    ts.isPropertyAccessExpression(parent.expression) &&
-                    immediateCallbackMethods.has(parent.expression.name.text);
+                    callsArgumentInPlace(this.context.checker, parent, node);
                 if (
                     !immediatelyInvoked &&
                     !immediateMethodArgument &&
@@ -2444,12 +2434,7 @@ export class NativeFunctionLowerer {
                     return true;
                 }
             }
-            if (
-                ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "addEventListener" &&
-                node.arguments.length >= 2
-            ) {
+            if (ts.isCallExpression(node) && isListenerRegistration(node)) {
                 return true;
             }
             return false;

@@ -26,6 +26,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { promiseReactionOf } from "./promises.js";
 import { keptArguments } from "./kept-values.js";
 import { memberAccessors } from "./symbols.js";
+import { isListenerRegistration } from "./receiver-methods.js";
 
 interface SharedClosureBindings {
     captured: ReadonlySet<ts.Symbol>;
@@ -218,13 +219,7 @@ export class SharedClosureAnalysis {
                     return includeFrameRegistrations && index === 1;
             }
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "addEventListener" &&
-            call.arguments.length >= 2
-        ) {
-            return index === 1;
-        }
+        if (isListenerRegistration(call)) return index === 1;
         const reaction =
             ts.isPropertyAccessExpression(callee) &&
             promiseReactionOf(callee, this.context.checker);

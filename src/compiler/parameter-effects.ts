@@ -1,8 +1,10 @@
 import ts from "typescript";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     callbackTakesReceiver,
+    callsArgumentInPlace,
     isStoringDataCall,
     lengthPreservingArrayMethods,
     readOnlyDataMethods,
@@ -218,26 +220,6 @@ function slotValues(
         ? project(values, aliasKey(read.key))
         : nest(project(values, ANY_KEY), ANY_KEY);
 }
-
-/** Library methods that call the function they are handed before returning. */
-export const SYNCHRONOUS_CALLBACK_METHODS: ReadonlySet<string> = new Set([
-    "every",
-    "filter",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "flatMap",
-    "forEach",
-    "map",
-    "reduce",
-    "reduceRight",
-    "replace",
-    "replaceAll",
-    "some",
-    "sort",
-    "toSorted",
-]);
 
 /**
  * Library methods whose result holds what their callback returns (`map`,
@@ -515,14 +497,7 @@ class EffectWalker {
             call.expression === outermostWrapper(scope)
         )
             return undefined;
-        const callee = unwrapExpression(call.expression);
-        const declaration = calledDeclaration(this.checker, call);
-        return declaration !== undefined &&
-            declarationInDefaultLibrary(declaration) &&
-            ts.isPropertyAccessExpression(callee) &&
-            (SYNCHRONOUS_CALLBACK_METHODS.has(callee.name.text) ||
-                (callee.name.text === "from" &&
-                    libraryGlobal(this.checker, callee.expression) === "Array"))
+        return callsArgumentInPlace(this.checker, call, outermostWrapper(scope))
             ? call
             : undefined;
     }
@@ -543,24 +518,12 @@ class EffectWalker {
                     variableKind(scope.parent) === "const"
                   ? scope.parent.name
                   : undefined;
-        const symbol = name && declaredSymbol(this.checker, name);
         const body = isEffectFunction(enclosing) ? enclosing.body : undefined;
-        if (!symbol || !body) return false;
-        let called = true;
-        forEachAnalysisNode(body, (node) => {
-            if (!called) return "skip";
-            if (
-                ts.isIdentifier(node) &&
-                node !== name &&
-                declaredSymbol(this.checker, node) === symbol
-            )
-                called =
-                    ts.isCallExpression(node.parent) &&
-                    node.parent.expression === node &&
-                    ts.findAncestor(node.parent, ts.isFunctionLike) ===
-                        enclosing;
-        });
-        return called;
+        return (
+            name !== undefined &&
+            body !== undefined &&
+            bindingIsOnlyCalledDirectly(this.checker, name, body, enclosing)
+        );
     }
 
     private emit(

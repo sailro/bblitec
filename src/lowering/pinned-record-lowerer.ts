@@ -36,7 +36,7 @@ import {
     numberPredicateCpp,
 } from "../compiler/number-intrinsics.js";
 import { MATH_CONSTANTS } from "../compiler/math-intrinsics.js";
-import { SYNCHRONOUS_CALLBACK_METHODS } from "../compiler/parameter-effects.js";
+import { callsArgumentInPlace } from "../compiler/receiver-methods.js";
 import { regexpHasLineAnchor } from "../compiler/regexp-grammar.js";
 import {
     regularExpressionParts,
@@ -448,33 +448,11 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
         return false;
     const child = outermostWrapper(node);
     const parent = child.parent;
-    // `Array.from(source, mapper)` calls its mapper before it returns.
-    if (
-        ts.isCallExpression(parent) &&
-        parent.arguments[1] === child &&
-        isArrayFromCall(parent, checker)
-    )
-        return true;
-    // `new Promise(executor)` runs its executor before it returns.
-    if (
-        ts.isNewExpression(parent) &&
-        parent.arguments?.[0] === child &&
-        ts.isIdentifier(parent.expression) &&
-        parent.expression.text === "Promise" &&
-        declaredInDefaultLibrary(resolvedSymbol(checker, parent.expression))
-    )
-        return true;
-    if (
-        !ts.isCallExpression(parent) ||
-        parent.expression === child ||
-        !ts.isPropertyAccessExpression(parent.expression) ||
-        !SYNCHRONOUS_CALLBACK_METHODS.has(parent.expression.name.text)
-    )
-        return false;
-    const receiver = checker.getNonNullableType(
-        checker.getTypeAtLocation(parent.expression.expression),
+    return (
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.expression !== child &&
+        callsArgumentInPlace(checker, parent, child)
     );
-    return checker.isArrayType(receiver) || checker.isTupleType(receiver);
 }
 
 // ── Evaluation order ───────────────────────────────────────────────────
