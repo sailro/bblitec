@@ -77,7 +77,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
-import { knownCondition } from "./values/model.js";
+import { knownCondition, rebaseSpelling } from "./values/model.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -2235,8 +2235,8 @@ export class BindingScopes {
                 "optionalStorageCpp",
             ] as const) {
                 const spelling = pinned[key];
-                if (spelling?.includes(value.cpp))
-                    pinned[key] = spelling.replaceAll(value.cpp, cpp);
+                if (spelling !== undefined)
+                    pinned[key] = rebaseSpelling(spelling, value.cpp, cpp);
             }
             this.context.registerNativeConstBinding(cpp);
             this.context.describeNativeValue(pinned);

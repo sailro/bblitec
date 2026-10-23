@@ -106,6 +106,39 @@ export function staticBooleanOf(value: Value): boolean | undefined {
 }
 
 /**
+ * `spelling` with each whole occurrence of the C++ expression `from` read as
+ * `to`: a fact spelled over a value's C++ (its presence, truthiness or
+ * identity) carried to the binding that now holds the value. An occurrence
+ * inside a longer name, or a member of that name, is not `from`.
+ */
+export function rebaseSpelling(
+    spelling: string,
+    from: string,
+    to: string,
+): string {
+    if (from.length === 0) return spelling;
+    const name = /[\w$]/;
+    const opensName = name.test(from[0]!);
+    const closesName = name.test(from.at(-1)!);
+    let rebased = "";
+    let index = 0;
+    for (
+        let at = spelling.indexOf(from);
+        at >= 0;
+        at = spelling.indexOf(from, index)
+    ) {
+        const before = spelling.slice(Math.max(0, at - 2), at);
+        const after = spelling[at + from.length] ?? "";
+        const whole =
+            !(opensName && /(?:[\w$.]|->|::)$/.test(before)) &&
+            !(closesName && name.test(after));
+        rebased += spelling.slice(index, at) + (whole ? to : from);
+        index = at + from.length;
+    }
+    return rebased + spelling.slice(index);
+}
+
+/**
  * The boolean a compiled condition is known to be: the `true` / `false`
  * spelling a condition, presence or truthiness lowering folds to.
  */

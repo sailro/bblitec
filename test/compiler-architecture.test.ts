@@ -1490,3 +1490,19 @@ test("a folded condition is read through knownCondition", () => {
         [],
     );
 });
+
+test("a fact spelled over a value's C++ is rebased by rebaseSpelling", () => {
+    // Presence, truthiness and identity spellings carried to the binding
+    // that now holds a value replace only whole occurrences of its C++.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /\.replaceAll\(\s*[\w.]*(?:\.cpp|Cpp)\s*,/.test(
+                    readFileSync(path, "utf8"),
+                ),
+        ),
+        [],
+    );
+});

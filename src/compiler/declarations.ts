@@ -2,7 +2,12 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    rebaseSpelling,
+    undefinedValue,
+} from "./values/model.js";
 import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
@@ -1694,9 +1699,11 @@ export class DeclarationLowerer {
                               : {}),
                         ...(statedTruthinessCpp(narrowed)
                             ? {
-                                  truthinessCpp: statedTruthinessCpp(
-                                      narrowed,
-                                  )!.replaceAll(narrowed.cpp, boundCpp),
+                                  truthinessCpp: rebaseSpelling(
+                                      statedTruthinessCpp(narrowed)!,
+                                      narrowed.cpp,
+                                      boundCpp,
+                                  ),
                               }
                             : {}),
                     },
@@ -1782,10 +1789,7 @@ export class DeclarationLowerer {
             // the handle and whether it was present. Derive presence from the
             // bound handle where possible rather than re-reading an owner
             // whose slot may move later.
-            const presence =
-                value.cpp.length > 0
-                    ? valueFound!.replaceAll(value.cpp, boundCpp)
-                    : valueFound!;
+            const presence = rebaseSpelling(valueFound!, value.cpp, boundCpp);
             this.context.emit({
                 kind: "declaration",
                 type: "const bool",
