@@ -306,6 +306,7 @@ import {
     isSupportedFunction,
     variableKind,
     unwrapExpression,
+    keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -5913,7 +5914,10 @@ class Compiler implements LoweringServices {
                     named.parent,
                     binding,
                 );
-                return !written.has("") && !written.has(path[0]!);
+                return (
+                    !written.has("") &&
+                    ![...written].some((key) => keysMayMatch(key, path[0]!))
+                );
             }
             return parameterProjectionIsReadOnly(
                 this.checker,

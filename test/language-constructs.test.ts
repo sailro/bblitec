@@ -15322,3 +15322,12 @@ check(
     if (caught !== "zero" || f(3) !== 6 || g(1) !== "v3" || g(5) !== "v5") throw new Error("fallthrough end " + caught);
     `,
 );
+check(
+    "a callee's write through a run-time key reaches the argument",
+    `
+    function pushAt(p: Record<string, number[]>, k: string): void { p[k]!.push(9); }
+    const obj = { list: [1] };
+    pushAt(obj, Date.now() > 0 ? "list" : "x");
+    if (obj.list.length !== 2) throw new Error("run-time key write " + obj.list.length);
+    `,
+);

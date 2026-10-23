@@ -95,6 +95,7 @@ import {
     isFunctionWithBody,
     variableKind,
     isBlockScopedVariable,
+    keysMayMatch,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -4427,10 +4428,11 @@ export class DeclarationLowerer {
                             holds(operand),
                     );
                 const name = property.name;
+                const named = name && propertyKey(name);
                 return (
                     name === undefined ||
                     ts.isComputedPropertyName(name) ||
-                    propertyKey(name) === key
+                    (named !== undefined && keysMayMatch(named, key))
                 );
             });
         return holds(literal);
