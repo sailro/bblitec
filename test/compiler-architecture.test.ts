@@ -1444,3 +1444,24 @@ test("the compiler never decides by comparing source text", () => {
         [],
     );
 });
+
+test("a compound assignment's old value and store have one owner", () => {
+    // The data lowerer's compoundPlace holds the old value a right side may
+    // write, binding a target that runs code once; its emitCompoundStore
+    // stores the number and binds it for an assignment used as a value.
+    const callers = sourcePaths
+        .filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                sourceFacts(path).calls.has("compoundAssignmentValue"),
+        )
+        .sort();
+    assert.deepEqual(callers, [
+        "src/compiler/data-lowering.ts",
+        "src/compiler/statements.ts",
+    ]);
+    for (const path of callers)
+        for (const name of ["compoundPlace", "emitCompoundStore"])
+            assert.ok(sourceFacts(path).members.has(name), `${path} ${name}`);
+});

@@ -4778,15 +4778,12 @@ export class StatementLowerer {
                     return;
                 }
                 if (target.kind === "number") {
-                    context.emit({
-                        kind: "expression",
-                        code: this.numericAssignmentCpp(
-                            context,
-                            target.cpp,
-                            operator,
-                            unwrapped.right,
-                        ),
-                    });
+                    this.emitNumericAssignment(
+                        context,
+                        unwrapped,
+                        target.cpp,
+                        operator,
+                    );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit({
                         kind: "expression",
@@ -5185,23 +5182,41 @@ export class StatementLowerer {
         });
     }
 
-    private numericAssignmentCpp(
+    /** `local op= right` into the number local `target`. */
+    private emitNumericAssignment(
         context: StatementLoweringContext,
+        expression: ts.BinaryExpression,
         target: string,
         operator: string,
-        right: ts.Expression,
-    ): string {
-        const cpp = context.compileNumber(right, "double");
-        if (operator === "=") return `${target} = ${cpp};`;
+    ): void {
+        if (operator === "=") {
+            context.emit({
+                kind: "expression",
+                code: `${target} = ${context.compileNumber(expression.right, "double")};`,
+            });
+            return;
+        }
+        const { previous } = context.dataLowerer.compoundPlace(
+            expression.left,
+            expression.right,
+            target,
+        );
+        const cpp = context.compileNumber(expression.right, "double");
         const value = compoundAssignmentValue(
             operator,
-            target,
+            previous,
             cpp,
-            staticNumberValue(context, right),
+            staticNumberValue(context, expression.right),
         );
-        if (value.native) return `${target} ${operator} ${cpp};`;
         if (value.jsData) context.reachJsData();
-        return `${target} = ${value.cpp};`;
+        context.dataLowerer.emitCompoundStore(
+            expression.left,
+            value.cpp,
+            (stored) => `${target} = ${stored};`,
+            value.native && previous === target
+                ? `${target} ${operator} ${cpp};`
+                : undefined,
+        );
     }
 
     private emitCameraVectorSet(

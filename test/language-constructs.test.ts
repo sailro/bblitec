@@ -16,6 +16,33 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-compound-assignment-reads-its-old-value-first-and-is-a-value",
+    `
+    let x = 1;
+    const bump = (): number => { x = 10; return 1; };
+    x += bump();
+    if (x !== 2) throw new Error("local order " + x);
+    const st = { v: 1 };
+    const obj = () => st;
+    const write = (): number => { st.v = 10; return 1; };
+    obj().v += write();
+    if (st.v !== 2) throw new Error("receiver order " + st.v);
+    class S { private n = 1; get v(): number { return this.n; } set v(k: number) { this.n = Math.min(k, 2); } }
+    const s = new S();
+    const r = (s.v += 5);
+    if (r !== 6 || s.v !== 2) throw new Error("setter value " + r);
+    const m: Record<string, number> = { a: 1 };
+    let b = 6;
+    const u = new Uint8Array(1);
+    u[0] = 200;
+    let t = 0;
+    while ((t += 3) < 10) b |= 1;
+    if ((m["a"] += 4) !== 5 || (b >>>= 1) !== 3 || (u[0] += 100) !== 300 || u[0] !== 44 || t !== 12)
+        throw new Error("values");
+`,
+);
+
+check(
     "split-evaluates-its-separator-once-and-keeps-a-limit",
     `
     const log: string[] = [];

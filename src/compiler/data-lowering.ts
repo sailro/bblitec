@@ -824,22 +824,21 @@ export class DataLowerer {
             const operator = ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
             );
+            if (!operator) return undefined;
             const left = this.context.unwrap(expression.left);
-            if (
-                !operator ||
-                (!ts.isPropertyAccessExpression(left) &&
-                    !ts.isElementAccessExpression(left))
-            )
-                return undefined;
             return this.withStoreKeysHeld(expression, () => {
-                const target = this.jsonAssignmentTarget(left);
+                const target =
+                    ts.isPropertyAccessExpression(left) ||
+                    ts.isElementAccessExpression(left)
+                        ? this.jsonAssignmentTarget(left)
+                        : undefined;
                 return target
                     ? this.emitJsonCompoundAssignment(
                           expression,
                           target,
                           operator,
                       )
-                    : undefined;
+                    : this.compileCompoundStoreValue(expression, left);
             });
         }
         return this.withStoreKeysHeld(expression, () =>
@@ -986,6 +985,110 @@ export class DataLowerer {
                 "This store evaluates its right side at generation; used as a value, its target, which runs code, would run again.",
             );
         return this.context.compileValue(expression.left);
+    }
+
+    /**
+     * `compileAssignmentValue` for `target op= right` outside a dynamic
+     * object: the store lowers as a statement and binds the number it
+     * stores (`emitCompoundStore`), which is the assignment's value.
+     */
+    private compileCompoundStoreValue(
+        expression: ts.BinaryExpression,
+        left: ts.Expression,
+    ): Value | undefined {
+        if (this.context.browserErasure.isBrowserOnlyExpression(expression))
+            return undefined;
+        this.compoundValues.set(left, "pending");
+        let stored: string | undefined;
+        try {
+            this.context.emitExpressionAsStatement(expression);
+            stored = this.compoundValues.get(left);
+        } finally {
+            this.compoundValues.delete(left);
+        }
+        if (stored === undefined || stored === "pending")
+            this.context.fail(
+                expression,
+                "This compound assignment target has no represented expression value.",
+            );
+        return this.leafValue(stored, { kind: "number" });
+    }
+
+    /**
+     * Each compound assignment used as a value whose store is lowering, by
+     * its unwrapped target: "pending" until its store binds the number it
+     * stores.
+     */
+    private readonly compoundValues = new EmissionMap<ts.Expression, string>();
+
+    /**
+     * Stores the number `compound` computes for the compound assignment to
+     * `left` through `store`, or as `native` (C++'s own `op=`) when given.
+     * An assignment used as a value binds the number first: that binding is
+     * its value (`compileCompoundStoreValue`).
+     */
+    public emitCompoundStore(
+        left: ts.Expression,
+        compound: string,
+        store: (value: string) => string,
+        native?: string,
+    ): void {
+        const target = this.context.unwrap(left);
+        if (this.compoundValues.get(target) !== "pending") {
+            this.context.emit({
+                kind: "expression",
+                code: native ?? store(compound),
+            });
+            return;
+        }
+        const next = this.context.allocateTemporaryCppName("compound_next");
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: next,
+            initializer: compound,
+        });
+        this.context.emit({ kind: "expression", code: store(next) });
+        this.compoundValues.set(target, next);
+    }
+
+    /**
+     * The place `left op= right` stores and the old value it combines, from
+     * the target's C++ `place`: the old value is held in a temporary when
+     * the right side may write the target, since JavaScript reads it first
+     * (`force` holds it regardless), and a target that runs code is then
+     * bound once for both its read and its store.
+     */
+    public compoundPlace(
+        left: ts.Expression,
+        right: ts.Expression,
+        place: string,
+        force = false,
+    ): { place: string; previous: string } {
+        if (
+            !force &&
+            !this.context.evaluationOrder.operandsToPin([left, right])[0]
+        )
+            return { place, previous: place };
+        let held = place;
+        if (this.storeTargetRunsCode(left)) {
+            held = this.context.allocateTemporaryCppName("compound_slot");
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: held,
+                initializer: place,
+            });
+        }
+        const previous =
+            this.context.allocateTemporaryCppName("compound_previous");
+        this.context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: previous,
+            initializer: held,
+        });
+        return { place: held, previous };
     }
 
     /**
@@ -16166,25 +16269,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         initializer: `static_cast<double>(${targetCpp})`,
                     });
                 }
-            } else if (
-                operator !== "=" &&
-                (plainResourceProperty ||
-                    (!this.storeTargetRunsCode(left) &&
-                        this.context.evaluationOrder.operandsToPin([
-                            left,
-                            expression.right,
-                        ])[0]))
-            ) {
-                // `a[i] += f()` reads the old value before the right side,
-                // which may write it.
-                previous =
-                    this.context.allocateTemporaryCppName("compound_previous");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name: previous,
-                    initializer: target.cpp,
-                });
+            } else if (operator !== "=") {
+                ({ place: targetCpp, previous } = this.compoundPlace(
+                    left,
+                    expression.right,
+                    target.cpp,
+                    plainResourceProperty,
+                ));
             }
             const right = this.context.compileNumber(
                 expression.right,
@@ -16200,21 +16291,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                           staticRight(),
                       );
             if (compound?.jsData) this.context.reachJsData();
-            if (target.dataStore) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, compound?.cpp ?? right)};`,
-                });
-                invalidateRootRecordSnapshot();
-                return true;
-            }
-            this.context.emit({
-                kind: "expression",
-                code:
-                    compound && (!compound.native || previous !== target.cpp)
-                        ? `${target.cpp} = ${compound.cpp};`
-                        : `${target.cpp} ${operator} ${right};`,
-            });
+            const dataStore = target.dataStore;
+            const store = (value: string): string =>
+                `${targetCpp} = ${dataStore ? typedArrayStoreExpression(dataStore, value) : value};`;
+            if (!compound)
+                this.context.emit({ kind: "expression", code: store(right) });
+            else
+                this.emitCompoundStore(
+                    left,
+                    compound.cpp,
+                    store,
+                    compound.native && !dataStore && previous === targetCpp
+                        ? `${targetCpp} ${operator} ${right};`
+                        : undefined,
+                );
             invalidateRootRecordSnapshot();
             return true;
         }
@@ -17481,6 +17571,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
         if (storeThroughSetter) storeThroughSetter(stored);
         else this.context.emit({ kind: "expression", code: store(stored) });
+        const target = this.context.unwrap(operand);
+        if (this.compoundValues.get(target) === "pending")
+            this.compoundValues.set(target, stored);
         if (place.kind === "entry")
             this.context.bindings.invalidateRecordProperties(place.owner);
         else this.invalidateRecordFieldSnapshot(this.context.unwrap(operand));
