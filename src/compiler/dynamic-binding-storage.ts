@@ -187,13 +187,16 @@ export interface HeldRecordContext {
  * holds it -- found by its members, whatever node the store reads it from
  * (a spread operand, a member, the name) -- takes native storage, so the
  * store keeps that binding's object rather than a copy. `expression` is
- * the expression the stored value was read from, where there is one.
+ * the store's source expression, where there is one: an unbound container
+ * name there stands in for a nested record it holds.
  */
 export function requireHeldRecordStorage(
     context: HeldRecordContext,
     value: Value,
     node: ts.Node,
-    expression: ts.Expression | undefined,
+    expression: ts.Expression | undefined = ts.isExpression(node)
+        ? node
+        : undefined,
 ): void {
     if (value.kind !== "record") return;
     const declaration = context.bindings.recordDeclaration(value, expression);

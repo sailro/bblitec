@@ -446,12 +446,7 @@ function valueStruct(
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
             !lowerer.context.bindings.containsPlatformEvent(value)
         )
-            requireHeldRecordStorage(
-                lowerer.context,
-                value,
-                node,
-                lowerer.convertedExpression(node),
-            );
+            requireHeldRecordStorage(lowerer.context, value, node);
         lowerer.context.dataTypes.cppType(dataType);
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(

@@ -607,12 +607,7 @@ function valueMap(
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
         }
-        requireHeldRecordStorage(
-            lowerer.context,
-            value,
-            node,
-            lowerer.convertedExpression(node),
-        );
+        requireHeldRecordStorage(lowerer.context, value, node);
     }
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in
