@@ -91,6 +91,7 @@ import {
     callSignatures,
     unionMembers,
 } from "./type-facts.js";
+import { jsToUint32Call } from "../lowering/pinned-operators.js";
 
 /**
  * Array and binary-view predicates share the same finite data discrimination.
@@ -4326,9 +4327,27 @@ function compileStringDataMethod(
         };
     }
     if (method === "split") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(call, "String.split expects one separator.");
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
+            lowerer.context.fail(
+                call,
+                "String.split expects a separator and an optional limit.",
+            );
         }
+        // A limit keeps the first ToUint32(limit) pieces.
+        // The limit is evaluated after the separator, before the split runs.
+        const limited = (pieces: string): string => {
+            if (call.arguments.length !== 2) return pieces;
+            const limit = lowerer.context.compileValue(argumentAt(call, 1));
+            const count =
+                limit.staticNumber !== undefined
+                    ? limit
+                    : lowerer.context.bindings.pinValueToTemporary(
+                          limit,
+                          "split_limit",
+                          argumentAt(call, 1),
+                      );
+            return `bbl::js::array_slice(${pieces}, 0.0, static_cast<double>(${jsToUint32Call(lowerer.context.castNumber(count, "double"))}))`;
+        };
         const separatorValue = regexpCaptureFacts(
             lowerer.context,
             lowerer.context.compileValue(argumentAt(call, 0)),
@@ -4351,16 +4370,38 @@ function compileStringDataMethod(
             );
             return {
                 kind: "data",
-                cpp: `${separatorValue.cpp}.split${groups.template}(${narrowed.cpp})`,
+                cpp: limited(
+                    `${separatorValue.cpp}.split${groups.template}(${narrowed.cpp})`,
+                ),
                 dataType: { kind: "vector", element: groups.element },
             };
         }
-        const separator = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
+        // The separator was compiled once, above; its value sinks here.
+        let separator = lowerer.compileKnownValueForSink(
+            separatorValue,
+            { kind: "string" },
+            argumentAt(call, 0),
+        );
+        // A run-time limit is pinned; the separator before it keeps their order.
+        if (
+            call.arguments.length === 2 &&
+            lowerer.context.evaluator.staticNumberValue(argumentAt(call, 1)) ===
+                undefined
+        )
+            separator = lowerer.context.bindings.pinValueToTemporary(
+                {
+                    kind: "data",
+                    cpp: separator,
+                    dataType: { kind: "string" },
+                },
+                "split_separator",
+                argumentAt(call, 0),
+            ).cpp;
         return {
             kind: "data",
-            cpp: `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
+            cpp: limited(
+                `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
+            ),
             dataType: {
                 kind: "vector",
                 element: { kind: "string" },

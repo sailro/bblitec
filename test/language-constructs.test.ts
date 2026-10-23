@@ -16,6 +16,19 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "split-evaluates-its-separator-once-and-keeps-a-limit",
+    `
+    const log: string[] = [];
+    const sep = () => { log.push("sep"); return ","; };
+    const lim = () => { log.push("lim"); return Math.random() < 2 ? 2 : 1; };
+    const s = Math.random() < 2 ? "a,b,c" : "";
+    const out = s.split(sep(), lim());
+    if (out.join("|") !== "a|b" || log.join() !== "sep,lim") throw new Error("split " + out.join("|") + " " + log.join());
+    if (s.split(",", 0).length !== 0 || s.split(",").length !== 3) throw new Error("split limits");
+`,
+);
+
+check(
     "a-rebound-object-binding-reads-its-current-object",
     `
     let cfg = { n: 1, s: "a" };
