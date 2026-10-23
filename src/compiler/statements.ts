@@ -4440,6 +4440,19 @@ export class StatementLowerer {
         const span =
             container?.kind === "span" &&
             target.container.nativeCollectionCppType === undefined;
+        // The element is bound per iteration by value: a loop variable a
+        // stored closure captures and code writes would need a shared cell.
+        if (
+            ts.isIdentifier(declaration.name) &&
+            context.sharedClosures.needsSharedClosureStorage(declaration) &&
+            context.sharedClosures.identifierIsReboundInClosure(
+                declaration.name,
+            )
+        )
+            context.fail(
+                declaration.name,
+                "A for-of variable that a stored closure captures and code writes is not supported; copy it into a `let` declared in the body.",
+            );
         // An array element is read in place while the body can change no
         // array and never reassigns the loop variable; otherwise the loop
         // yields a snapshot the body's writes cannot change.

@@ -9698,6 +9698,24 @@ test("a float field's compound store rounds once, at the store", () => {
     assert.doesNotMatch(result.cpp, /\*= 1\.1f|1e\+39f/);
 });
 
+test("refuses a closure-written binding the lowering would copy per closure", () => {
+    for (const [source, message] of [
+        [
+            "function counter() { let { n } = { n: 0 }; return { inc: () => { n++; }, get: () => n }; } const c = counter(); c.inc();",
+            /A destructured binding that a stored closure captures/,
+        ],
+        [
+            "const incs: Array<() => void> = []; for (let x of [1]) { incs.push(() => { x++; }); }",
+            /A for-of variable that a stored closure captures/,
+        ],
+        [
+            "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
+            /A `var` declared in a loop body and captured by a stored closure/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
+});
+
 test("folds static string concatenation assigned to retained UI text", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

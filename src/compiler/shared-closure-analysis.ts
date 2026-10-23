@@ -6,7 +6,7 @@ import {
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { schedulerOf } from "./schedulers.js";
-import { isRebound } from "./binding-rebinds.js";
+import { bindingRebinds, isRebound } from "./binding-rebinds.js";
 import {
     choosesOperand,
     outermostWrapper,
@@ -683,6 +683,25 @@ export class SharedClosureAnalysis {
      * they rebind a number (a browser value read once is no longer it), and
      * cannot apply to the objects most callers ask about.
      */
+    /**
+     * Whether a closure (a function nested in the binding's own) rebinds the
+     * binding: a closure lowering copies what it captures unless the binding
+     * has one shared cell, so the copies would diverge.
+     */
+    public identifierIsReboundInClosure(identifier: ts.Identifier): boolean {
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        if (!symbol) return false;
+        const owner = ts.findAncestor(identifier, ts.isFunctionLike);
+        return bindingRebinds(
+            this.context.checker,
+            this.context.program.getSourceFiles(),
+            symbol,
+        ).some(
+            ({ target }) =>
+                ts.findAncestor(target, ts.isFunctionLike) !== owner,
+        );
+    }
+
     public identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.context.symbols.valueSymbol(identifier);
         return (

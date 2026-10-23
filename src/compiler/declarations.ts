@@ -644,6 +644,11 @@ export class DeclarationLowerer {
             });
             return;
         }
+        if (
+            ts.isObjectBindingPattern(declaration.name) ||
+            ts.isArrayBindingPattern(declaration.name)
+        )
+            this.refuseSharedPatternBinding(declaration, declaration.name);
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
             return;
@@ -725,6 +730,25 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
+        // A `var` has one binding per function: a cell made where the
+        // declaration sits in a loop body would be one per iteration.
+        if (
+            sharedClosureStorage &&
+            declaration.parent &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            variableKind(declaration.parent) === "var" &&
+            ts.findAncestor(declaration, (node) =>
+                ts.isFunctionLike(node)
+                    ? "quit"
+                    : ts.isIterationStatement(node, false) &&
+                      declaration.pos >= node.statement.pos &&
+                      declaration.end <= node.statement.end,
+            )
+        )
+            this.context.fail(
+                declaration,
+                "A `var` declared in a loop body and captured by a stored closure is one binding for the whole function; declare it before the loop.",
+            );
         if (
             this.emitAbsenceTaggedDeclaration(
                 declaration,
@@ -5182,6 +5206,37 @@ export class DeclarationLowerer {
         if (ts.isObjectBindingPattern(pattern))
             this.bindObjectPattern(pattern, value, source);
         else this.bindArrayPattern(pattern, value, source);
+    }
+
+    /**
+     * A destructured `let` / `var` whose binding a stored closure captures
+     * and some code writes needs one shared cell per binding, which the
+     * pattern lowerings do not make: refused rather than copied per closure.
+     */
+    private refuseSharedPatternBinding(
+        declaration: ts.VariableDeclaration,
+        pattern: ts.BindingPattern,
+    ): void {
+        for (const element of pattern.elements) {
+            if (ts.isOmittedExpression(element)) continue;
+            if (!ts.isIdentifier(element.name)) {
+                this.refuseSharedPatternBinding(declaration, element.name);
+                continue;
+            }
+            if (
+                this.context.sharedClosures.needsSharedClosureStorage(
+                    declaration,
+                    element.name,
+                ) &&
+                this.context.sharedClosures.identifierIsReboundInClosure(
+                    element.name,
+                )
+            )
+                this.context.fail(
+                    element.name,
+                    "A destructured binding that a stored closure captures and code writes is not supported; destructure into a `const` and copy it into a `let`.",
+                );
+        }
     }
 
     private emitObjectBindingDeclaration(
