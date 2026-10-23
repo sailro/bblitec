@@ -29,6 +29,12 @@ check(
     s = "b";
     n++;
     if (text + amount !== "after5" || s + n !== "b2") throw new Error("rebound " + text + amount + s + n);
+    const m = new Map<string, { n: number; w?: number }>([["a", { n: 1 }], ["b", { n: 2, w: 3 }]]);
+    let out = "";
+    for (const [k, { n: count, w = 10 }] of m) out += k + count * w;
+    for (const [i, [first, second]] of ([[1], [2, 3]] as [number, number?][]).entries()) out += i + String(second) + first;
+    for (let [a, b] of [[1, 2]] as [number, number][]) { a *= 10; out += a + b; }
+    if (out !== "a10b60undefined113212") throw new Error("for-of patterns " + out);
 `,
 );
 

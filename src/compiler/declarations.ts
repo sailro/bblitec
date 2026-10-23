@@ -4784,6 +4784,7 @@ export class DeclarationLowerer {
         value: Value,
         source: ts.Node,
         initializerBoundary = this.context.nativeBindingCheckpoint(),
+        held = false,
     ): void {
         const bindings = pattern.elements;
         const restIndex = bindings.findIndex(
@@ -4894,14 +4895,12 @@ export class DeclarationLowerer {
             return;
         }
         if (value.dataType?.kind === "product") {
-            const temporary =
-                this.context.allocateTemporaryCppName("destructure_tuple");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: temporary,
-                initializer: value.cpp,
-            });
+            const temporary = this.patternSource(
+                pattern,
+                value,
+                held,
+                "destructure_tuple",
+            );
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
                     this.context.bindings.bindLocalValue(
@@ -4941,12 +4940,14 @@ export class DeclarationLowerer {
                     `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`,
                 );
             }
-            const temporary = this.context.bindings.bindDataTuple(
-                value,
-                tupleArity,
-                "tuple",
-                initializerBoundary,
-            );
+            const temporary = this.readsSourceInPlace(pattern, held)
+                ? value.cpp
+                : this.context.bindings.bindDataTuple(
+                      value,
+                      tupleArity,
+                      "tuple",
+                      initializerBoundary,
+                  );
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
                     this.context.bindings.bindLocalValue(
@@ -4972,14 +4973,12 @@ export class DeclarationLowerer {
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "vector") {
-            const temporary =
-                this.context.allocateTemporaryCppName("destructure_vector");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: temporary,
-                initializer: value.cpp,
-            });
+            const temporary = this.patternSource(
+                pattern,
+                value,
+                held,
+                "destructure_vector",
+            );
             const storedVector: Value = {
                 ...value,
                 cpp: temporary,
@@ -5058,6 +5057,7 @@ export class DeclarationLowerer {
                         storedVector,
                         index,
                         source,
+                        element,
                     ),
                 );
             });
@@ -5193,17 +5193,71 @@ export class DeclarationLowerer {
 
     /**
      * Binds a binding pattern from a value: a destructuring declaration, a
-     * nested pattern and a destructured parameter are the same binding over
-     * different sources.
+     * nested pattern, a destructured parameter and a for-of pattern are the
+     * same binding over different sources. `held`: the caller holds the
+     * source for the binding's duration (a for-of item), so it is read in
+     * place.
      */
     public bindPattern(
         pattern: ts.BindingPattern,
         value: Value,
         source: ts.Node = pattern,
+        held = false,
     ): void {
         if (ts.isObjectBindingPattern(pattern))
-            this.bindObjectPattern(pattern, value, source);
-        else this.bindArrayPattern(pattern, value, source);
+            this.bindObjectPattern(pattern, value, source, held);
+        else
+            this.bindArrayPattern(
+                pattern,
+                value,
+                source,
+                this.context.nativeBindingCheckpoint(),
+                held,
+            );
+    }
+
+    /**
+     * Whether a pattern reads a source the caller holds in place: no
+     * default may write the storage it reads.
+     */
+    private readsSourceInPlace(
+        pattern: ts.BindingPattern,
+        held: boolean,
+    ): boolean {
+        const defaultWrites = (node: ts.BindingPattern): boolean =>
+            node.elements.some(
+                (element) =>
+                    !ts.isOmittedExpression(element) &&
+                    ((element.initializer !== undefined &&
+                        this.context.evaluationOrder.writesStorage(
+                            element.initializer,
+                        )) ||
+                        (!ts.isIdentifier(element.name) &&
+                            defaultWrites(element.name))),
+            );
+        return held && !defaultWrites(pattern);
+    }
+
+    /**
+     * The C++ an array pattern reads its lanes from: the source itself when
+     * the caller holds it and no default may write the storage it reads,
+     * else a copy taken once.
+     */
+    private patternSource(
+        pattern: ts.BindingPattern,
+        value: Value,
+        held: boolean,
+        label: string,
+    ): string {
+        if (this.readsSourceInPlace(pattern, held)) return value.cpp;
+        const temporary = this.context.allocateTemporaryCppName(label);
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: temporary,
+            initializer: value.cpp,
+        });
+        return temporary;
     }
 
     /**
@@ -5247,6 +5301,7 @@ export class DeclarationLowerer {
         pattern: ts.ObjectBindingPattern,
         value: Value,
         source: ts.Node = pattern,
+        held = false,
     ): void {
         if (value.dataType?.kind === "module-namespace") {
             value = this.context.bindings.pinValueToTemporary(
@@ -5267,14 +5322,14 @@ export class DeclarationLowerer {
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             // Retain the selected object before a binding's default can replace
             // its source slot. Value-layout records still read their live fields.
-            const owner = this.context.dataTypes.isReferenceStruct(
-                value.dataType.name,
-            )
-                ? this.context.bindings.pinValueToTemporary(
-                      value,
-                      "destructure_owner",
-                  )
-                : value;
+            const owner =
+                this.context.dataTypes.isReferenceStruct(value.dataType.name) &&
+                !this.readsSourceInPlace(pattern, held)
+                    ? this.context.bindings.pinValueToTemporary(
+                          value,
+                          "destructure_owner",
+                      )
+                    : value;
             const temporary =
                 this.context.allocateTemporaryCppName("destructure");
             this.context.emit({

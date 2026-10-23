@@ -2693,9 +2693,14 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
         `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];`,
     ).exec(result.cpp);
     assert.ok(iteration);
+    // The pattern binds its lanes from the item in place, as a declaration does.
+    const lane = new RegExp(`double (\\w+_vx) = ${iteration[2]}\\[0\\];`).exec(
+        result.cpp,
+    );
+    assert.ok(lane);
     assert.match(
         result.cpp,
-        new RegExp(`if \\(${iteration[2]}\\[0\\] > 0\\.0\\) \\{\\s+break;`),
+        new RegExp(`if \\(${lane[1]} > 0\\.0\\) \\{\\s+break;`),
     );
 });
 
@@ -2987,7 +2992,7 @@ test("retains tuple array storage through fixed and runtime indices", () => {
     );
     assert.match(
         result.cpp,
-        /v_total \+= \(v_bblite_item_\d+\[0\] \+ v_bblite_item_\d+\[1\]\);/,
+        /double (v_block\d+_left) = (v_bblite_item_\d+)\[0\];\s+\[\[maybe_unused\]\] double (v_block\d+_right) = \2\[1\];\s+v_total \+= \(\1 \+ \3\);/,
     );
 });
 
@@ -4510,8 +4515,11 @@ test("copies spread objects and destructures reference-backed array entries", ()
     );
     // `original.row` is never written, so the moved row folds.
     assert.match(result.cpp, /v_moved->row = \(1\.0 \+ 1\.0\);/);
-    assert.match(result.cpp, /v_bblite_item_\d+->row/);
-    assert.match(result.cpp, /v_bblite_item_\d+->colors/);
+    // The pattern reads the item in place.
+    assert.match(
+        result.cpp,
+        /auto&& (v_bblite_destructure_\d+) = v_bblite_item_\d+;\s+double v_fn\d+_block\d+_row = \1->row;\s+bbl::js::Array<double> v_fn\d+_block\d+_colors = \1->colors;/,
+    );
 });
 
 test("keeps an object element alive after its container is resized", () => {

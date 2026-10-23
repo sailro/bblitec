@@ -1506,3 +1506,28 @@ test("a fact spelled over a value's C++ is rebased by rebaseSpelling", () => {
         [],
     );
 });
+
+test("a binding pattern binds through declarations.ts bindPattern", () => {
+    // Destructuring declarations, parameters, callbacks and for-of (runtime
+    // and unrolled) bind a pattern's names in the declaration owner; no
+    // other module binds a binding element's name. home-object-methods'
+    // `binding` is the declaration an object literal initializes.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /(?:bindLocalValue|bindParameterValue|bindCompileTimeValue|defineVariable|defineItem|define)\(\s*(?:binding|element|element_)\.name/.test(
+                    readFileSync(path, "utf8"),
+                ),
+        ),
+        ["src/compiler/declarations.ts", "src/compiler/home-object-methods.ts"],
+    );
+    for (const path of [
+        "src/compiler/data-lowering.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).members.has("bindPattern"), path);
+});

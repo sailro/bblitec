@@ -250,7 +250,6 @@ import {
     writeSiteOf,
     accessKey,
     patternSlots,
-    bindingElementKey,
     isProtoSetter,
     equalityOperator,
     containsSuspension,
@@ -550,6 +549,7 @@ export function isNeverResized(
 
 interface DataLoweringContext extends Pick<
     LoweringServices,
+    | "declarations"
     | "objectProperty"
     | "symbols"
     | "optionalChainStop"
@@ -7324,13 +7324,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * Reads one binding from a native vector for an array destructuring
-     * declaration. A concrete reached binding cannot represent JavaScript's
-     * out-of-range `undefined`, so use the ordinary checked index path.
+     * declaration. A lane past the end is JavaScript's `undefined`: a binding
+     * whose type admits it reads an optional lane; one whose type does not
+     * cannot represent it, so it uses the ordinary checked index path.
      */
     public readVectorBindingElement(
         vector: Value,
         index: number,
         node: ts.Node,
+        binding?: ts.BindingElement,
     ): Value {
         this.invalidateRecordArrayFacts(vector);
         if (vector.kind !== "data" || vector.dataType?.kind !== "vector") {
@@ -7351,12 +7353,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ),
                 preserveUncheckedLookup: true,
                 ...(slotHoldsOnlyNull(
-                    this.context.checker.getTypeAtLocation(node),
+                    this.context.checker.getTypeAtLocation(binding ?? node),
                 )
                     ? {
                           slotFoundCpp: `bbl::js::array_has_index(${vector.cpp}, ${index}.0)`,
                       }
                     : {}),
+            };
+        }
+        if (
+            binding &&
+            nullability(this.context.checker.getTypeAtLocation(binding.name))
+                .undefined
+        ) {
+            const lane: DataType = {
+                kind: "optional",
+                inner: vector.dataType.element,
+            };
+            return {
+                ...this.leafValue(
+                    `bbl::js::array_relative_at<${this.context.dataTypes.cppType(lane)}>(${vector.cpp}, ${index}.0)`,
+                    lane,
+                ),
+                preserveUncheckedLookup: true,
             };
         }
         return this.leafValue(
@@ -19869,195 +19888,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             defineIndex(name, element.indexCpp);
             return;
         }
-        if (element.kind === "array-entry") {
-            if (!ts.isArrayBindingPattern(name)) {
+        if (ts.isIdentifier(name)) {
+            if (element.kind === "array-entry")
                 this.context.fail(
                     name,
                     "Array entries iteration requires an [index, value] binding.",
                 );
-            }
-            if (
-                !name.elements.some(
-                    (binding) =>
-                        !ts.isOmittedExpression(binding) &&
-                        binding.dotDotDotToken,
-                ) &&
-                name.elements.length > 2
-            ) {
-                this.context.fail(
-                    name,
-                    "Array entry destructuring accepts at most two bindings.",
-                );
-            }
-            name.elements.forEach((binding, position) => {
-                if (ts.isOmittedExpression(binding)) return;
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer ||
-                    (binding.dotDotDotToken &&
-                        position !== name.elements.length - 1)
-                ) {
-                    this.context.fail(
-                        binding,
-                        "Array entry destructuring supports plain identifiers.",
-                    );
-                }
-                if (binding.dotDotDotToken) {
-                    define(
-                        binding.name,
-                        this.arrayRestValue(
-                            this.iterationElementValue(itemCpp, element),
-                            position,
-                            binding.name,
-                        ),
-                    );
-                    return;
-                }
-                if (position >= 2)
-                    this.context.fail(
-                        binding,
-                        "Array entry binding is out of range.",
-                    );
-                if (position === 0) {
-                    defineIndex(binding.name, element.indexCpp);
-                    return;
-                }
-                const value: Value = {
-                    ...withNativeMetadata(
-                        this.leafValue(itemCpp, element.element),
-                        template,
-                    ),
-                    runtimeIteration: true,
-                };
-                defineItem(binding.name, runtimeMeshValue(value));
-            });
-            return;
-        }
-        if (element.kind === "map-entry" || element.kind === "set-entry") {
-            if (ts.isIdentifier(name)) {
+            if (element.kind === "map-entry" || element.kind === "set-entry") {
                 define(
                     name,
                     this.materializeIterationPair(itemCpp, element, name),
                 );
                 return;
             }
-            if (!ts.isArrayBindingPattern(name)) {
-                this.context.fail(
-                    name,
-                    "Entry iteration requires a pair or destructured pair binding.",
-                );
-            }
-            if (
-                !name.elements.some(
-                    (binding) =>
-                        !ts.isOmittedExpression(binding) &&
-                        binding.dotDotDotToken,
-                ) &&
-                name.elements.length > 2
-            ) {
-                this.context.fail(
-                    name,
-                    "Entry destructuring accepts at most two bindings.",
-                );
-            }
-            const pair = this.iterationElementValue(
-                itemCpp,
-                element,
-            ).tupleElements!;
-            name.elements.forEach((binding, index) => {
-                if (ts.isOmittedExpression(binding)) return;
-                // A struct value destructures by its fields, as a for...of
-                // over struct elements does.
-                const structValue = pair[index]?.dataType;
-                if (
-                    ts.isObjectBindingPattern(binding.name) &&
-                    !binding.initializer &&
-                    !binding.dotDotDotToken &&
-                    structValue?.kind === "struct"
-                ) {
-                    const owner =
-                        this.context.allocateTemporaryCppName("entry_binding");
-                    this.context.emit({
-                        kind: "declaration",
-                        type: "const auto&",
-                        name: owner,
-                        initializer: pair[index]!.cpp,
-                    });
-                    this.bindIterationVariable(
-                        binding.name,
-                        owner,
-                        structValue,
-                        template,
-                        define,
-                    );
-                    return;
-                }
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer ||
-                    (binding.dotDotDotToken &&
-                        index !== name.elements.length - 1)
-                ) {
-                    this.context.fail(
-                        binding,
-                        "Entry destructuring supports plain identifiers and struct patterns.",
-                    );
-                }
-                if (binding.dotDotDotToken) {
-                    define(
-                        binding.name,
-                        this.arrayRestValue(
-                            { kind: "tuple", cpp: "", tupleElements: pair },
-                            index,
-                            binding.name,
-                        ),
-                    );
-                    return;
-                }
-                const source = pair[index];
-                if (!source)
-                    this.context.fail(
-                        binding,
-                        "Entry binding is out of range.",
-                    );
-                const cpp =
-                    this.context.allocateTemporaryCppName("entry_binding");
-                const storage =
-                    source.absenceTagType ??
-                    (source.dataType?.kind === "handle" &&
-                    source.dataType.ownedEngine
-                        ? source.dataType
-                        : undefined);
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cpp,
-                    initializer: storage
-                        ? this.compileKnownValueForSink(
-                              source,
-                              storage,
-                              binding,
-                          )
-                        : source.cpp,
-                    attributes: "[[maybe_unused]] ",
-                });
-                const value = {
-                    ...withNativeMetadata(
-                        storage
-                            ? this.leafValue(cpp, storage)
-                            : { ...source, cpp },
-                        source,
-                    ),
-                    nativeCaptures: [this.context.registerNativeBinding(cpp)],
-                };
-                define(binding.name, value);
-                if (value.kind === "data") {
-                    this.registerLocal(cppRootName(value.cpp), "copy");
-                }
-            });
-            return;
-        }
-        if (ts.isIdentifier(name)) {
             const value: Value = {
                 ...withNativeMetadata(
                     this.leafValue(itemCpp, element),
@@ -20068,126 +19911,40 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             defineItem(name, runtimeMeshValue(value));
             return;
         }
-        if (ts.isArrayBindingPattern(name)) {
-            const arity =
-                element.kind === "tuple"
-                    ? element.arity
-                    : element.kind === "product"
-                      ? element.elements.length
-                      : undefined;
-            if (arity === undefined && element.kind !== "vector") {
-                this.context.fail(
-                    name,
-                    "Array destructuring in for...of requires tuple elements.",
-                );
-            }
-            name.elements.forEach((element_, index) => {
-                if (ts.isOmittedExpression(element_)) {
-                    return;
-                }
-                if (
-                    !ts.isIdentifier(element_.name) ||
-                    element_.initializer ||
-                    (element_.dotDotDotToken &&
-                        index !== name.elements.length - 1)
-                ) {
-                    this.context.fail(
-                        element_,
-                        "Tuple destructuring supports plain identifiers.",
-                    );
-                }
-                if (element_.dotDotDotToken) {
-                    define(
-                        element_.name,
-                        this.arrayRestValue(
-                            this.leafValue(itemCpp, element),
-                            index,
-                            element_.name,
-                        ),
-                    );
-                    return;
-                }
-                if (arity !== undefined && index >= arity) {
-                    this.context.fail(
-                        element_,
-                        `Tuple index ${index} is out of range.`,
-                    );
-                }
-                const source = this.leafValue(itemCpp, element);
-                defineItem(
-                    element_.name,
-                    element.kind === "vector"
-                        ? this.narrowBindingLane(
-                              this.readVectorBindingElement(
-                                  source,
-                                  index,
-                                  element_,
-                              ),
-                              element_.name,
-                          )
-                        : this.fixedTupleElement(source, index, element_)!,
-                );
-            });
-            return;
-        }
-        if (ts.isObjectBindingPattern(name)) {
-            if (element.kind !== "struct") {
-                this.context.fail(
-                    name,
-                    "Object destructuring in for...of requires struct elements.",
-                );
-            }
-            for (const binding of name.elements) {
-                const property = bindingElementKey(binding, (key) =>
-                    this.context.propertyName(key),
-                );
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer ||
-                    binding.dotDotDotToken ||
-                    property === undefined
-                ) {
-                    this.context.fail(
-                        binding,
-                        "Struct destructuring supports plain and renamed identifiers.",
-                    );
-                }
-                const absent = this.absentBindingValue(
-                    binding,
-                    element.name,
-                    property,
-                );
-                if (absent) {
-                    define(binding.name, absent);
-                    continue;
-                }
-                const field = this.context.dataTypes.structField(
-                    element.name,
-                    property,
-                    binding,
-                );
-                const value = this.context.bindings.pinValueToTemporary(
-                    this.leafValue(
-                        `${itemCpp}${
-                            this.context.dataTypes.isReferenceStruct(
-                                element.name,
-                            )
-                                ? "->"
-                                : "."
-                        }${field.name}`,
-                        field.type,
-                    ),
-                    "iteration_field",
-                    binding.name,
-                );
-                define(binding.name, value);
-                if (value.kind === "data") {
-                    this.registerLocal(cppRootName(value.cpp), "copy");
-                }
-            }
-            return;
-        }
-        this.context.fail(name, "Unsupported for...of binding.");
+        // A pattern destructures the item as a destructuring declaration
+        // destructures its initializer.
+        this.context.declarations.bindPattern(
+            name,
+            this.iterationPatternValue(itemCpp, element, template),
+            name,
+            true,
+        );
+    }
+
+    /**
+     * The item a for-of pattern destructures: the iterable's element, an
+     * entry's pair, or an array entry's index and element (which keeps the
+     * iteration's handle metadata).
+     */
+    private iterationPatternValue(
+        itemCpp: string,
+        element: DataIterationElement,
+        template: Value | undefined,
+    ): Value {
+        const value = this.iterationElementValue(itemCpp, element);
+        if (element.kind !== "array-entry" || !value.tupleElements)
+            return value;
+        const [index, item] = value.tupleElements;
+        return {
+            ...value,
+            tupleElements: [
+                index!,
+                runtimeMeshValue({
+                    ...withNativeMetadata(item!, template),
+                    runtimeIteration: true,
+                }),
+            ],
+        };
     }
 
     public compileStringSink(
