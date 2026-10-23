@@ -41,7 +41,7 @@ import {
     hasOnlyReportingEffects,
     writesUnobservedCanvasMetadata,
 } from "./canvas-instrumentation.js";
-import { staticClassMember } from "./class-members.js";
+import { isStaticMember, staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
 import {
     declaredIn,
@@ -888,9 +888,6 @@ export class BrowserErasure {
             (ts.getCombinedModifierFlags(member) &
                 (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) !==
             0;
-        const isStatic = (member: ts.ClassElement): boolean =>
-            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !==
-            0;
         const domOwned = declaration.members.some(
             (member) =>
                 ts.isPropertyDeclaration(member) &&
@@ -925,7 +922,7 @@ export class BrowserErasure {
 
         const publicSurfaceIsWriteOnly = declaration.members.every((member) => {
             if (
-                isStatic(member) ||
+                isStaticMember(member) ||
                 isPrivateOrProtected(member) ||
                 ts.isConstructorDeclaration(member)
             ) {

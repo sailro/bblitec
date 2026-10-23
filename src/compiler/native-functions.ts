@@ -49,6 +49,7 @@ import {
     classMemberTable,
     classMethod,
     localClassOfSymbol,
+    isStaticMember,
 } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
@@ -2057,9 +2058,10 @@ export class NativeFunctionLowerer {
             return false;
         }
         if (
+            isStaticMember(member) ||
             (ts.getCombinedModifierFlags(member) &
-                (ts.ModifierFlags.Static | ts.ModifierFlags.Abstract)) !==
-            0
+                ts.ModifierFlags.Abstract) !==
+                0
         ) {
             return false;
         }

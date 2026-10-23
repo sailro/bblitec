@@ -142,6 +142,7 @@ import {
 } from "./function-specializations.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
+import { isStaticMember } from "./class-members.js";
 
 export interface CallbackInvocationOptions {
     coroutine?: true;
@@ -6881,9 +6882,7 @@ export class UserFunctionLowerer {
         | undefined {
         if (
             !ts.isMethodDeclaration(declaration) ||
-            (ts.getCombinedModifierFlags(declaration) &
-                ts.ModifierFlags.Static) ===
-                0 ||
+            !isStaticMember(declaration) ||
             !ts.isClassLike(declaration.parent) ||
             !declaration.body ||
             declaration.body.statements.length !== 1

@@ -1402,3 +1402,15 @@ test("a class's construction order and parameter field writes have one owner", (
     );
     assert.equal([...classes.matchAll(/this\.initializeFields\(/g)].length, 1);
 });
+
+test("a class member's static modifier is read by isStaticMember", () => {
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                readFileSync(path, "utf8").includes("ModifierFlags.Static"),
+        ),
+        ["src/compiler/class-members.ts"],
+    );
+});
