@@ -1193,6 +1193,17 @@ export function accessKey(
         : literalKey(access.argumentExpression);
 }
 
+/** A member access a call can name: `o.m`, or `o["m"]` with a literal key. */
+export type MemberAccess =
+    ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+/** The node that spells a member access's key, for diagnostics. */
+export function memberKeyNode(access: MemberAccess): ts.Expression {
+    return ts.isPropertyAccessExpression(access)
+        ? access.name
+        : access.argumentExpression;
+}
+
 /**
  * One member of an object literal, as the literal evaluates it: `key` is
  * the key it writes, undefined for a run-time key. A `proto` member is a

@@ -15331,3 +15331,12 @@ check(
     if (obj.list.length !== 2) throw new Error("run-time key write " + obj.list.length);
     `,
 );
+check(
+    "a class method is called by a quoted, numeric or const key",
+    `
+    class K { private n = 2; "my-key"(): number { return 4; } 1(): number { return 5; } twice(): number { return this.n * 2; } }
+    const k = new K();
+    const m = "twice";
+    if (k["my-key"]() !== 4 || k[1]() !== 5 || k[m]() !== 4) throw new Error("keyed method");
+    `,
+);
