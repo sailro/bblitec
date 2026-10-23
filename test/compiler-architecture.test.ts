@@ -1354,3 +1354,24 @@ test("a by-value binding closures share and write gets its cell where it is boun
         ["src/compiler/binding-scopes.ts"],
     );
 });
+
+test("a body running off its end completes through emitFallOffEnd", () => {
+    // Undefined for a void or optional result, the generator end, or the
+    // guard of a path TypeScript proves impossible: spelled in one place.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            readFileSync(path, "utf8").includes(
+                "fell through without returning",
+            ),
+        ),
+        ["src/compiler.ts"],
+    );
+    for (const path of [
+        "src/compiler/native-functions.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(
+            readFileSync(path, "utf8").includes(".emitFallOffEnd()"),
+            path,
+        );
+});

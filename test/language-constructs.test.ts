@@ -16,6 +16,22 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-body-running-off-its-end-returns-undefined",
+    `
+    function f(x: number): number | undefined { if (x > 0) return x; }
+    function g(n: number): number | undefined { if (n === 0) return 0; if (n > 0) return g(n - 1); }
+    function s(x: number): string | undefined { if (x > 0) return "p"; }
+    function find(xs: number[], t: number): number | undefined { for (const x of xs) { if (x === t) return x; } }
+    class A { m(x: number): number | undefined { if (x > 0) return x; } }
+    if (f(-1) !== undefined || f(2) !== 2) throw new Error("function");
+    if (g(-1) !== undefined || g(3) !== 0) throw new Error("recursive function");
+    if (s(-1) !== undefined || s(1) !== "p") throw new Error("string result");
+    if (find([1, 2], 3) !== undefined || find([1, 2], 2) !== 2) throw new Error("loop");
+    if (new A().m(-1) !== undefined) throw new Error("method");
+`,
+);
+
+check(
     "outlined-member-body-reads-its-receiver",
     `
     class A { v(): number { return 1; } twice(): number { return this.v() * 2; } isB(): boolean { return this instanceof B; } }

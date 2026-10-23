@@ -1221,6 +1221,7 @@ export interface UserFunctionContext
             | "dataValue"
             | "emitStatement"
             | "statementTerminatesAfterLowering"
+            | "emitFallOffEnd"
             | "bindings"
             | "platformDocumentHidden"
             | "declarations"
@@ -4505,36 +4506,36 @@ export class UserFunctionLowerer {
                                     );
                                 }
                                 if (ts.isBlock(body)) {
-                                    let terminated = false;
-                                    for (const statement of body.statements) {
-                                        if (
-                                            ts.isReturnStatement(statement) &&
-                                            statement.expression &&
-                                            ts.isIdentifier(
-                                                statement.expression,
-                                            )
-                                        ) {
-                                            returnMetadata =
-                                                context.bindings.lookupOptional(
-                                                    statement.expression,
+                                    const terminated = emitReachableStatements(
+                                        {
+                                            emitStatement: (statement) => {
+                                                if (
+                                                    ts.isReturnStatement(
+                                                        statement,
+                                                    ) &&
+                                                    statement.expression &&
+                                                    ts.isIdentifier(
+                                                        statement.expression,
+                                                    )
+                                                )
+                                                    returnMetadata =
+                                                        context.bindings.lookupOptional(
+                                                            statement.expression,
+                                                        );
+                                                context.emitStatement(
+                                                    statement,
                                                 );
-                                        }
-                                        context.emitStatement(statement);
-                                        terminated =
-                                            context.statementTerminatesAfterLowering(
+                                            },
+                                            statementTerminatesAfterLowering: (
                                                 statement,
-                                            );
-                                        if (terminated) break;
-                                    }
-                                    // An exhaustive source switch may lower to a
-                                    // native if/else chain; keep its impossible
-                                    // fallthrough defined.
-                                    if (!terminated && entry.returnType)
-                                        context.emit({
-                                            kind: "control",
-                                            code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                                            transfer: "throw",
-                                        });
+                                            ) =>
+                                                context.statementTerminatesAfterLowering(
+                                                    statement,
+                                                ),
+                                        },
+                                        body.statements,
+                                    );
+                                    if (!terminated) context.emitFallOffEnd();
                                 } else {
                                     if (!entry.returnType) {
                                         context.asyncActivations.emitDiscardedReturn(
@@ -5475,59 +5476,30 @@ export class UserFunctionLowerer {
                             ? declaration.body.statements
                             : ir.statements,
                     );
-                    if (generator) {
-                        if (!terminated)
-                            context.emit({
-                                kind: "control",
-                                code: "co_return;",
-                                transfer: "suspend",
-                            });
+                    if (terminated) return;
+                    if (generator || !ir.returnExpression) {
+                        context.emitFallOffEnd();
                         return;
                     }
-                    if (!terminated && ir.returnExpression) {
-                        if (asynchronous) {
-                            context.emit({
-                                kind: "control",
-                                code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
-                                transfer: "suspend",
-                            });
-                        } else if (!bodyResult) {
-                            context.asyncActivations.emitDiscardedReturn(
-                                ir.returnExpression,
-                            );
-                        } else {
-                            context.asyncActivations.refuseThenableReturn(
-                                ir.returnExpression,
-                            );
-                            context.emit({
-                                kind: "control",
-                                code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
-                                transfer: "return",
-                            });
-                        }
-                    }
-                    if (
-                        asynchronous &&
-                        !terminated &&
-                        !ir.returnExpression &&
-                        !bodyResult
-                    )
+                    if (asynchronous) {
                         context.emit({
                             kind: "control",
-                            code: "co_return bbl::js::PromiseVoid{};",
+                            code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
                             transfer: "suspend",
                         });
-                    if (!terminated && !ir.returnExpression && bodyResult) {
-                        if (bodyResult.kind === "optional")
-                            context.emit(
-                                `${asynchronous ? "co_return" : "return"} std::nullopt;`,
-                            );
-                        else
-                            context.emit({
-                                kind: "control",
-                                code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                                transfer: "throw",
-                            });
+                    } else if (!bodyResult) {
+                        context.asyncActivations.emitDiscardedReturn(
+                            ir.returnExpression,
+                        );
+                    } else {
+                        context.asyncActivations.refuseThenableReturn(
+                            ir.returnExpression,
+                        );
+                        context.emit({
+                            kind: "control",
+                            code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
+                            transfer: "return",
+                        });
                     }
                 });
             closure =
@@ -6144,16 +6116,8 @@ export class UserFunctionLowerer {
                             ir.declaration,
                             "A generator requires a statement body.",
                         );
-                    const terminated = emitReachableStatements(
-                        context,
-                        block.statements,
-                    );
-                    if (!terminated)
-                        context.emit({
-                            kind: "control",
-                            code: "co_return;",
-                            transfer: "suspend",
-                        });
+                    if (!emitReachableStatements(context, block.statements))
+                        context.emitFallOffEnd();
                     return { kind: "void", cpp: "" };
                 } finally {
                     context.endNativeFunctionBody();
@@ -6358,13 +6322,7 @@ export class UserFunctionLowerer {
         let terminated: boolean;
         try {
             terminated = emitReachableStatements(context, statements);
-            if (!terminated && returnType) {
-                context.emit({
-                    kind: "control",
-                    code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                    transfer: "throw",
-                });
-            }
+            if (!terminated) context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();
             context.decreaseIndent();
@@ -6446,26 +6404,8 @@ export class UserFunctionLowerer {
                 : {}),
         });
         try {
-            const terminated = emitReachableStatements(context, ir.statements);
-            if (!terminated) {
-                if (!type.result)
-                    context.emit({
-                        kind: "control",
-                        code: "co_return bbl::js::PromiseVoid{};",
-                        transfer: "suspend",
-                    });
-                else if (type.result.kind === "optional")
-                    context.emit({
-                        kind: "control",
-                        code: "co_return std::nullopt;",
-                        transfer: "suspend",
-                    });
-                else
-                    context.fail(
-                        callNode,
-                        "Async value function can fall through without returning.",
-                    );
-            }
+            if (!emitReachableStatements(context, ir.statements))
+                context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();
         }

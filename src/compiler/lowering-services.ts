@@ -491,6 +491,7 @@ export interface LoweringServices {
     activeNativeReturnType(): DataType | "void" | undefined;
     activeNativeCoroutine(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
+    emitFallOffEnd(): void;
     emitNativeYield(expression: ts.YieldExpression): void;
     activeGeneratorType(): DataType<"iterator"> | undefined;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;

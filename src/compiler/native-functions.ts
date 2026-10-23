@@ -89,6 +89,7 @@ export interface NativeFunctionContext extends Pick<
     | "conditions"
     | "emitStatement"
     | "statementTerminatesAfterLowering"
+    | "emitFallOffEnd"
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
@@ -2284,8 +2285,7 @@ export class NativeFunctionLowerer {
                 this.context,
                 signature.parameters,
                 signature.returnType,
-                () =>
-                    this.emitValueBody(body.statements, !!signature.returnType),
+                () => this.emitValueBody(body.statements),
                 {
                     namespaceScope: signature.method,
                     bindLeading: () =>
@@ -2705,7 +2705,7 @@ export class NativeFunctionLowerer {
             this.context,
             signature.parameters,
             signature.returnType,
-            () => this.emitValueBody(body.statements, !!signature.returnType),
+            () => this.emitValueBody(body.statements),
             { namespaceScope: signature.declaration },
         );
         this.registerDataFunction(
@@ -2716,20 +2716,9 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private emitValueBody(
-        statements: readonly ts.Statement[],
-        returnsValue: boolean,
-    ): void {
-        const terminated = emitReachableStatements(this.context, statements);
-        if (returnsValue && !terminated) {
-            // An exhaustive source switch may lower to a native if/else chain.
-            // Keep the impossible fallthrough defined on all native compilers.
-            this.context.emit({
-                kind: "control",
-                code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                transfer: "throw",
-            });
-        }
+    private emitValueBody(statements: readonly ts.Statement[]): void {
+        if (!emitReachableStatements(this.context, statements))
+            this.context.emitFallOffEnd();
     }
 
     /**

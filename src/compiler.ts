@@ -1735,12 +1735,7 @@ class Compiler implements LoweringServices {
                         coroutine: true,
                     });
                     try {
-                        if (!emitBody())
-                            this.emit({
-                                kind: "control",
-                                code: "co_return bbl::js::PromiseVoid{};",
-                                transfer: "suspend",
-                            });
+                        if (!emitBody()) this.emitFallOffEnd();
                     } finally {
                         this.endNativeFunctionBody();
                     }
@@ -7898,6 +7893,43 @@ class Compiler implements LoweringServices {
         return (
             members.length > 0 &&
             members.every((member) => libraryName(member) === "Promise")
+        );
+    }
+
+    /**
+     * A native body that runs off its end completes as `return;` does:
+     * undefined for a void or optional result, the end of a generator. A
+     * result without undefined cannot get there (TypeScript proves it; an
+     * exhaustive switch lowered to an if/else chain keeps a defined guard).
+     */
+    public emitFallOffEnd(): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame?.kind !== "native")
+            throw new Error("A body end outside a native function body.");
+        const returnType = frame.type;
+        if (frame.generator || (frame.coroutine && returnType === "void")) {
+            this.emit({
+                kind: "control",
+                code: frame.generator
+                    ? "co_return;"
+                    : "co_return bbl::js::PromiseVoid{};",
+                transfer: "suspend",
+            });
+            return;
+        }
+        if (returnType === "void") return;
+        this.emit(
+            returnType.kind === "optional"
+                ? {
+                      kind: "control",
+                      code: `${frame.coroutine ? "co_return" : "return"} std::nullopt;`,
+                      transfer: frame.coroutine ? "suspend" : "return",
+                  }
+                : {
+                      kind: "control",
+                      code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                      transfer: "throw",
+                  },
         );
     }
 
