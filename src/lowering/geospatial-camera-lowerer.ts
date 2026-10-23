@@ -31,6 +31,7 @@ import {
 
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const CAMERA = "src/camera/geospatial-camera.ts";
 const LIMITS = "src/camera/geospatial-limits.ts";
@@ -453,7 +454,7 @@ export class GeospatialCameraLowerer {
             declaration.parameters.length !== 1 ||
             !ts.isIdentifier(declaration.parameters[0]!.name) ||
             declaration.parameters[0]!.name.text !== "planetRadius" ||
-            declaration.parameters[0]!.type?.getText(file) !== "number"
+            !sameSource(declaration.parameters[0]!.type, "number")
         ) {
             this.context.contractError(
                 declaration,

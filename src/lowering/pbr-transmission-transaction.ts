@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Native shaders precompose the linear-capable variants; no runtime feature cache exists. */
 export function lowerPbrTransmissionTransaction(
@@ -156,7 +157,7 @@ export function lowerRebuildTransaction(
     if (
         !ts.isArrowFunction(receiver) ||
         receiver.parameters.length !== 1 ||
-        receiver.parameters[0]!.name.getText(file) !== "value" ||
+        !sameSource(receiver.parameters[0]!.name, "value") ||
         !ts.isBlock(receiver.body)
     )
         context.contractError(

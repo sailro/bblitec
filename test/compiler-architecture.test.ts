@@ -1558,3 +1558,25 @@ test("a library call's callback lifetime is read through receiver-methods.ts", (
         "src/compiler/binding-rebinds.ts",
     ]);
 });
+
+test("the pinned lowering recognizes source by its syntax, not its text", () => {
+    // sameSource (a node against a source shape) and sameSyntax (two nodes)
+    // compare syntax trees through wrappers, layout and comments; a text
+    // comparison breaks on a stray `!`, parentheses or a reformatted pin.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/lowering/") &&
+                /getText\([^)]*\)\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()|(?:[=!]==)\s*[\w.!?[\]]*\.getText\(/.test(
+                    readFileSync(path, "utf8"),
+                ),
+        ),
+        [],
+    );
+    for (const name of ["sameSource", "sameSyntax"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+});

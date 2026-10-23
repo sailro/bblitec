@@ -2,7 +2,11 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
-import { specifierSourceName } from "../compiler/syntax.js";
+import {
+    specifierSourceName,
+    sameSyntax,
+    sameSource,
+} from "../compiler/syntax.js";
 
 /** The pinned module that declares the error helper. */
 const liteErrorModule = "src/lite-error.ts";
@@ -71,7 +75,7 @@ export function encodePinnedErrorContracts(
     source: string,
     owner: ts.Node,
 ): string {
-    const { file, table } = pinnedErrorTable(context);
+    const { table } = pinnedErrorTable(context);
     const codes = new Map<string, number>();
     const templates = new Map<string, number>();
     const reachedCodes = new Set(
@@ -97,8 +101,10 @@ export function encodePinnedErrorContracts(
             decoder.body.templateSpans.every(
                 (span, index) =>
                     ts.isIdentifier(span.expression) &&
-                    span.expression.text ===
-                        decoder.parameters[index]!.name.getText(file),
+                    sameSource(
+                        decoder.parameters[index]!.name,
+                        span.expression.text,
+                    ),
             )
         )
             templates.set(templateKey(decoder.body), code);
@@ -209,7 +215,7 @@ export function pinnedErrorMessageCpp(
     code: number,
     args: readonly (string | number | { readonly cpp: string })[],
 ): string {
-    const { file, table } = pinnedErrorTable(context);
+    const { table } = pinnedErrorTable(context);
     const decoder = table.elements[code];
     const template =
         decoder && ts.isArrowFunction(decoder) && !ts.isBlock(decoder.body)
@@ -224,10 +230,8 @@ export function pinnedErrorMessageCpp(
         !template.templateSpans.every(
             (span) =>
                 ts.isIdentifier(span.expression) &&
-                decoder.parameters.some(
-                    (parameter) =>
-                        parameter.name.getText(file) ===
-                        span.expression.getText(file),
+                decoder.parameters.some((parameter) =>
+                    sameSyntax(parameter.name, span.expression),
                 ),
         )
     ) {
@@ -239,9 +243,8 @@ export function pinnedErrorMessageCpp(
     const pieces: string[] = [];
     let literal = template.head.text;
     for (const span of template.templateSpans) {
-        const index = decoder.parameters.findIndex(
-            (parameter) =>
-                parameter.name.getText(file) === span.expression.getText(file),
+        const index = decoder.parameters.findIndex((parameter) =>
+            sameSyntax(parameter.name, span.expression),
         );
         const value = args[index]!;
         if (typeof value === "object") {

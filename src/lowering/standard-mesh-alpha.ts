@@ -7,6 +7,7 @@ import {
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
 import { refuseGeneration } from "../generation-refusal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const MODULE = "src/material/standard/standard-renderable.ts";
 const FLAG_MODULE = "src/material/standard/standard-flags.ts";
@@ -46,7 +47,7 @@ function alphaExpressions(context: LoweringContext): {
         !ts.isBinaryExpression(featureStore.expression) ||
         featureStore.expression.operatorToken.kind !==
             ts.SyntaxKind.BarEqualsToken ||
-        featureStore.expression.left.getText(file) !== "features"
+        !sameSource(featureStore.expression.left, "features")
     ) {
         refuseGeneration(
             MODULE,

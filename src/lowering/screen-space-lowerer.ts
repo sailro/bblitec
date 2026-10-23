@@ -28,6 +28,7 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource, sameSyntax } from "../compiler/syntax.js";
 
 const CONTACT = screenSpaceFactsOfKind("scalar");
 const GI = screenSpaceFactsOfKind("color");
@@ -294,7 +295,7 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
      * and not translated.
      */
     private packMat4(): string {
-        const { file, declaration } = this.context.functionDeclaration(
+        const { declaration } = this.context.functionDeclaration(
             PACK_MODULE,
             "packMat4IntoF32",
         );
@@ -302,8 +303,10 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
             declaration,
             (node): node is ts.IfStatement =>
                 ts.isIfStatement(node) &&
-                node.expression.getText(file) ===
+                sameSource(
+                    node.expression,
                     "srcOffsetFloats === 0 && src.length === 16",
+                ),
         );
         if (
             guard.length !== 1 ||
@@ -392,8 +395,7 @@ void pack_mat4_into_f32(
             !ts.isArrowFunction(initializer) ||
             initializer.parameters.length !== 3 ||
             ts.isBlock(initializer.body) ||
-            initializer.getText(contact) !==
-                twin.getText(this.context.sourceFile(GI.module))
+            !sameSyntax(initializer, twin)
         ) {
             this.context.contractError(
                 initializer,
@@ -875,16 +877,13 @@ ${arms}
         for (const kind of ["scalar", "color"] as const) {
             if (!this.tasks.some((task) => task.composed.kind === kind))
                 continue;
-            const { file, declaration: record } = this.taskMethod(
-                kind,
-                "record",
-            );
+            const { declaration: record } = this.taskMethod(kind, "record");
             const flagged = this.context.countNodes(
                 record,
                 (node) =>
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    node.left.getText(file) === "pendingReallocation" &&
+                    sameSource(node.left, "pendingReallocation") &&
                     node.right.kind === ts.SyntaxKind.TrueKeyword,
             );
             if (flagged !== 2 || !this.context.hasCall(record, "record")) {
@@ -971,7 +970,7 @@ ${
         for (const kind of ["scalar", "color"] as const) {
             if (!this.tasks.some((task) => task.composed.kind === kind))
                 continue;
-            const { file, declaration } = this.factoryOf(kind);
+            const { declaration } = this.factoryOf(kind);
             for (const shape of [
                 "(source._descriptor.samples ?? 1) !== 1",
                 "(depthSource._descriptor.samples ?? 1) !== 1",
@@ -982,7 +981,7 @@ ${
                         declaration,
                         (node) =>
                             ts.isIfStatement(node) &&
-                            node.expression.getText(file) === shape,
+                            sameSource(node.expression, shape),
                     )
                 ) {
                     this.context.contractError(
@@ -1114,11 +1113,10 @@ TaskHandle create_screen_space_task(
             ...(kind === "scalar" ? ["lightDirection"] : []),
             ...Object.keys(manifest.options),
         ]);
-        const name =
-            manifest.name ?? this.pinnedDefault(declaration, file, "name");
+        const name = manifest.name ?? this.pinnedDefault(declaration, "name");
         const composition =
             manifest.options.composition ??
-            this.pinnedDefault(declaration, file, "composition");
+            this.pinnedDefault(declaration, "composition");
         if (typeof composition !== "string") {
             this.context.contractError(
                 declaration,
@@ -1269,7 +1267,6 @@ ${
     /** The pin's `config.<option> ?? <literal>` default, read off the AST. */
     private pinnedDefault(
         declaration: ts.FunctionDeclaration,
-        file: ts.SourceFile,
         option: string,
     ): string {
         const fallbacks = this.context
@@ -1278,7 +1275,7 @@ ${
             .filter(
                 (split) =>
                     split !== undefined &&
-                    split.left.getText(file) === `config.${option}`,
+                    sameSource(split.left, `config.${option}`),
             );
         const literal = fallbacks[0]
             ? this.context.unwrapExpression(fallbacks[0].right)
@@ -1522,7 +1519,6 @@ class FrameWalker {
         statement: ts.Statement,
         indent: string,
     ): string[] | undefined {
-        const file = this.file;
         if (ts.isVariableStatement(statement)) {
             const declaration = statement.declarationList.declarations[0];
             if (
@@ -1626,7 +1622,7 @@ class FrameWalker {
             if (
                 ts.isBinaryExpression(expression) &&
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                expression.left.getText(file) === "lastCameraKey"
+                sameSource(expression.left, "lastCameraKey")
             ) {
                 return [];
             }
@@ -1659,8 +1655,7 @@ class FrameWalker {
     ): string[] {
         if (
             !ts.isCallExpression(initializer) ||
-            initializer.expression.getText(this.file) !==
-                "decideScreenSpaceReset" ||
+            !sameSource(initializer.expression, "decideScreenSpaceReset") ||
             initializer.arguments.length !== 1
         ) {
             this.context.contractError(
@@ -1743,8 +1738,10 @@ class FrameWalker {
     private assertProducerPass(initializer: ts.Expression): void {
         if (
             !ts.isCallExpression(initializer) ||
-            initializer.expression.getText(this.file) !==
-                "engine._currentEncoder.beginRenderPass" ||
+            !sameSource(
+                initializer.expression,
+                "engine._currentEncoder.beginRenderPass",
+            ) ||
             initializer.arguments.length !== 1
         ) {
             this.context.contractError(
@@ -1852,7 +1849,7 @@ class FrameWalker {
         if (
             !ts.isBinaryExpression(initializer) ||
             initializer.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-            initializer.left.getText(this.file) !== "1"
+            !sameSource(initializer.left, "1")
         ) {
             this.context.contractError(
                 initializer,
@@ -1862,7 +1859,7 @@ class FrameWalker {
         const call = this.context.unwrapExpression(initializer.right);
         if (
             !ts.isCallExpression(call) ||
-            call.expression.getText(this.file) !== "owner.resolve" ||
+            !sameSource(call.expression, "owner.resolve") ||
             call.arguments.length !== 1
         ) {
             this.context.contractError(call, "Expected owner.resolve(inputs).");
@@ -1961,7 +1958,7 @@ class FrameWalker {
                 this.context.contractError(method, "resolve returns"),
         });
         for (const statement of method.body.statements) {
-            const recognised = this.recogniseResolve(statement, file);
+            const recognised = this.recogniseResolve(statement);
             if (recognised) continue;
             lines.push(...resolver.statement(statement, indent));
         }
@@ -1969,10 +1966,7 @@ class FrameWalker {
     }
 
     /** The resolve statements the backend owns, asserted and skipped. */
-    private recogniseResolve(
-        statement: ts.Statement,
-        file: ts.SourceFile,
-    ): boolean {
+    private recogniseResolve(statement: ts.Statement): boolean {
         if (ts.isVariableStatement(statement)) {
             const declaration = statement.declarationList.declarations[0];
             if (
@@ -2029,8 +2023,10 @@ class FrameWalker {
             if (
                 ts.isBinaryExpression(expression) &&
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                expression.left.getText(file) ===
-                    "renderPassDescriptor.colorAttachments"
+                sameSource(
+                    expression.left,
+                    "renderPassDescriptor.colorAttachments",
+                )
             ) {
                 const assigned = (name: string, value: string): boolean =>
                     this.context.hasNode(
@@ -2074,7 +2070,7 @@ class FrameWalker {
             return false;
         }
         if (ts.isReturnStatement(statement)) {
-            if (statement.expression?.getText(file) !== "draws") {
+            if (!sameSource(statement.expression, "draws")) {
                 this.context.contractError(
                     statement,
                     "Expected resolve to return draws.",

@@ -46,6 +46,7 @@ import {
     declarationNamed,
     isSuspensionPoint,
     variableKind,
+    sameSource,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -1521,9 +1522,7 @@ export class PinnedNumericLowerer {
         const text = source.getText();
         return (
             findAnalysisNode(enclosingFunction(declaration), (node) =>
-                writeSites(node).some(
-                    ({ target }) => target.getText() === text,
-                ),
+                writeSites(node).some(({ target }) => sameSource(target, text)),
             ) !== undefined
         );
     }

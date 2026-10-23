@@ -10,6 +10,7 @@ import {
     pinnedRecordLiteral,
     pinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/engine/frame-post-submit.ts";
 const stateSchema = pinnedRecordSchema("FramePostSubmitState", {
@@ -122,12 +123,12 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
                     return "{}";
                 if (
                     ts.isNewExpression(node) &&
-                    node.expression.getText(file) === "Set"
+                    sameSource(node.expression, "Set")
                 )
                     return "js::Set<std::shared_ptr<FramePostSubmitHook>>{}";
                 if (ts.isObjectLiteralExpression(node)) {
-                    const schema = node.properties.some(
-                        (property) => property.name?.getText(file) === "hooks",
+                    const schema = node.properties.some((property) =>
+                        sameSource(property.name, "hooks"),
                     )
                         ? stateSchema
                         : hookSchema;

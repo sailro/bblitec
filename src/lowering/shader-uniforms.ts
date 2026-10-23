@@ -6,6 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/material/shader/shader-material.ts";
 
@@ -445,8 +446,7 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
         (statement) =>
             ts.isExpressionStatement(statement) &&
             ts.isBinaryExpression(statement.expression) &&
-            statement.expression.left.getText(cachedFile) ===
-                "plan.versions[i]",
+            sameSource(statement.expression.left, "plan.versions[i]"),
     )!;
     const slotGate = lowerPinnedBody(
         cachedFile,

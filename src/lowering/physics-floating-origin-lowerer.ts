@@ -40,7 +40,7 @@ import {
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { variableKind } from "../compiler/syntax.js";
+import { variableKind, sameSource } from "../compiler/syntax.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -427,7 +427,7 @@ function floatingOriginScope(
         // `used.has(region)`: set membership by identity.
         if (
             ts.isCallExpression(node) &&
-            node.expression.getText(file) === "used.has" &&
+            sameSource(node.expression, "used.has") &&
             node.arguments.length === 1
         ) {
             return `used.contains(${lowerer.expression(node.arguments[0]!)}.get())`;
@@ -514,7 +514,7 @@ function declaration(
     }
     // A region the module creates: `{ _world, origin, gravity }`.
     if (ts.isObjectLiteralExpression(initializer)) {
-        if (entry.type?.getText(file) !== "WorldRegion") return undefined;
+        if (!sameSource(entry.type, "WorldRegion")) return undefined;
         const value = regionLiteral(context, initializer, lowerer);
         bind(regionMembers(name, name));
         return [`${indent}const auto ${name} = ${value};`];
@@ -596,8 +596,8 @@ function declaration(
     // `new Set<WorldRegion>()`: membership by identity.
     if (
         ts.isNewExpression(initializer) &&
-        initializer.expression.getText(file) === "Set" &&
-        initializer.typeArguments?.[0]?.getText(file) === "WorldRegion" &&
+        sameSource(initializer.expression, "Set") &&
+        sameSource(initializer.typeArguments?.[0], "WorldRegion") &&
         !initializer.arguments?.length
     ) {
         bind([[name, { cpp: name, type: "opaque" }]]);
@@ -685,7 +685,7 @@ function expressionStatement(
         return undefined;
     }
     // `used.add(region)`.
-    if (callee.getText(file) === "used.add" && call.arguments.length === 1) {
+    if (sameSource(callee, "used.add") && call.arguments.length === 1) {
         return [
             `${indent}used.insert(${lowerer.expression(call.arguments[0]!)}.get());`,
         ];
@@ -698,7 +698,7 @@ function expressionStatement(
             !start ||
             !count ||
             call.arguments.length !== 2 ||
-            count.getText(file) !== "1" ||
+            !sameSource(count, "1") ||
             RECORD_LISTS.get(list) !== "region"
         ) {
             return context.contractError(
@@ -921,7 +921,7 @@ function contextFactoryCpp(
     motionTypes: ReadonlyMap<string, number>,
 ): string {
     const pinned = "createHavokFloatingOriginContext";
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         havokFloatingOriginModule,
         pinned,
     );
@@ -971,7 +971,7 @@ function contextFactoryCpp(
                         if (hook) {
                             if (
                                 !ts.isPropertyAssignment(property) ||
-                                property.initializer.getText(file) !== hook
+                                !sameSource(property.initializer, hook)
                             ) {
                                 context.contractError(
                                     property,
@@ -1039,7 +1039,7 @@ export function enableFloatingOriginCpp(
     motionTypes: ReadonlyMap<string, number>,
 ): string {
     const pinned = "enableHavokFloatingOrigin";
-    const { file } = context.functionDeclaration(havokModule, pinned);
+    context.functionDeclaration(havokModule, pinned);
     const scope = floatingOriginScope(context, "*world.engine", motionTypes);
     const parts = lowerPinnedFunctionParts(
         context,
@@ -1100,7 +1100,7 @@ export function enableFloatingOriginCpp(
                     ts.isBinaryExpression(assignment) &&
                     assignment.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    assignment.left.getText(file) === "world._fo"
+                    sameSource(assignment.left, "world._fo")
                 ) {
                     const call = context.unwrapExpression(assignment.right);
                     if (

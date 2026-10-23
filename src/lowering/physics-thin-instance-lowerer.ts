@@ -8,6 +8,7 @@ import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/physics/havok-thin-instances.ts";
 
@@ -235,9 +236,7 @@ export function lowerPhysicsThinInstances(
     );
     const result = context.returnObject(declaration);
     const method = (name: string): ts.MethodDeclaration => {
-        const member = result.properties.find(
-            (p) => p.name?.getText(file) === name,
-        );
+        const member = result.properties.find((p) => sameSource(p.name, name));
         if (!member || !ts.isMethodDeclaration(member) || !member.body)
             return context.contractError(
                 result,
@@ -596,7 +595,7 @@ export function lowerPhysicsThinInstances(
             if (
                 ts.isExpressionStatement(statement) &&
                 ts.isCallExpression(statement.expression) &&
-                statement.expression.expression.getText(file) === "states.set"
+                sameSource(statement.expression.expression, "states.set")
             ) {
                 context.assertExpressionShape(
                     statement.expression,
@@ -612,7 +611,7 @@ export function lowerPhysicsThinInstances(
                 ts.isExpressionStatement(statement) &&
                 ts.isBinaryExpression(statement.expression) &&
                 ts.isElementAccessExpression(statement.expression.left) &&
-                statement.expression.left.expression.getText(file) === "handles"
+                sameSource(statement.expression.left.expression, "handles")
             ) {
                 const assignment = statement.expression;
                 if (
@@ -631,7 +630,7 @@ export function lowerPhysicsThinInstances(
             if (
                 !expression ||
                 (expression.kind === ts.SyntaxKind.Identifier &&
-                    expression.getText(file) === "undefined")
+                    sameSource(expression, "undefined"))
             )
                 return "std::nullopt";
             context.assertExpressionShape(
@@ -679,7 +678,10 @@ export function lowerPhysicsThinInstances(
             statement(statement, _lowerer, indent) {
                 if (ts.isVariableStatement(statement)) {
                     const local = statement.declarationList.declarations[0];
-                    if (local?.name.getText(file) === "state") {
+                    if (
+                        local !== undefined &&
+                        sameSource(local.name, "state")
+                    ) {
                         context.assertExpressionShape(
                             local.initializer!,
                             "states.get(handle)",
@@ -757,7 +759,7 @@ export function lowerPhysicsThinInstances(
         statement(statement, lowerer, indent) {
             if (ts.isVariableStatement(statement)) {
                 const local = statement.declarationList.declarations[0]!;
-                if (local.name.getText(file) === "handle") {
+                if (sameSource(local.name, "handle")) {
                     context.assertExpressionShape(
                         local.initializer!,
                         "state[1][i]!",
@@ -811,7 +813,7 @@ export function lowerPhysicsThinInstances(
             statement(statement, _lowerer, indent) {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
-                if (local.name.getText(file) !== "transform") return undefined;
+                if (!sameSource(local.name, "transform")) return undefined;
                 context.assertExpressionShape(
                     local.initializer!,
                     "raw.HP_Body_GetQTransform(nativeBody)[1]",
@@ -1100,12 +1102,11 @@ export function lowerPhysicsThinInstances(
                 )
                     return undefined;
                 const assignment = statement.expression;
-                const field =
-                    assignment.left.getText() === "state[8]"
-                        ? "carrier_version"
-                        : assignment.left.getText() === "state[9]"
-                          ? "carrier_identity"
-                          : undefined;
+                const field = sameSource(assignment.left, "state[8]")
+                    ? "carrier_version"
+                    : sameSource(assignment.left, "state[9]")
+                      ? "carrier_identity"
+                      : undefined;
                 return field &&
                     assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
                     ? [

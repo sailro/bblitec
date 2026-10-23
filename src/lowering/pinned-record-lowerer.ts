@@ -58,6 +58,7 @@ import {
     isGeneratorFunction,
     variableKind,
     isBlockScopedVariable,
+    sameSource,
 } from "../compiler/syntax.js";
 import {
     declarationInDefaultLibrary,
@@ -1555,7 +1556,7 @@ export class PinnedRecordModel {
                 ?.members.find(
                     (candidate): candidate is ts.PropertySignature =>
                         ts.isPropertySignature(candidate) &&
-                        candidate.name.getText() === member,
+                        sameSource(candidate.name, member),
                 );
             if (!declaration?.type)
                 throw new Error(
@@ -2611,7 +2612,7 @@ export class PinnedRecordModel {
             return owner.members.find(ts.isConstructorDeclaration) ?? owner;
         const found = owner.members.find(
             (candidate) =>
-                candidate.name?.getText() === member &&
+                sameSource(candidate.name, member) &&
                 (kind === "get"
                     ? ts.isGetAccessorDeclaration(candidate)
                     : kind === "set"
@@ -7780,7 +7781,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 unwrapped.properties.length !== 1 ||
                 !length ||
                 !ts.isPropertyAssignment(length) ||
-                length.name.getText() !== "length" ||
+                !sameSource(length.name, "length") ||
                 !mapper
             )
                 return this.refuse(
@@ -9347,7 +9348,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             ts.isPropertyAssignment(property) ||
                             ts.isShorthandPropertyAssignment(property)
                         ) ||
-                        property.name.getText() !== "cause"
+                        !sameSource(property.name, "cause")
                     )
                         return this.refuse(
                             options,

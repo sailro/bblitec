@@ -7,6 +7,7 @@ import {
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { computeTextureSamplingCpp } from "./compute-texture-descriptor.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Source validation, level iteration and task closures over PAL-owned mip bindings. */
 export function lowerComputeTextureMipmaps(
@@ -362,7 +363,7 @@ export function lowerComputeTextureMipmaps(
             continue;
         else if (
             ts.isPropertyAssignment(member) &&
-            member.name.getText(factory.file) === "_passes"
+            sameSource(member.name, "_passes")
         )
             context.assertExpressionShape(
                 member.initializer,

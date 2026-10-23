@@ -8,6 +8,8 @@ import {
     type WriteSite,
     lastWriter,
     objectLiteralMembers,
+    sameSource,
+    sameSyntax,
     variableKind,
 } from "../compiler/syntax.js";
 import {
@@ -1041,19 +1043,7 @@ export class LoweringContext {
         actual: ts.Expression,
         expectedSource: string,
     ): boolean {
-        const expected = this.expectedFingerprint(expectedSource);
-        // A fingerprint walks the whole subtree, and most candidates a
-        // counting walk offers are not even the expected node kind; the
-        // head is free where the walk is not.
-        const head = this.fingerprintHead(actual);
-        if (
-            head !== undefined &&
-            expected !== head &&
-            !expected.startsWith(`${head}(`)
-        ) {
-            return false;
-        }
-        return this.nodeFingerprint(actual) === expected;
+        return sameSource(actual, expectedSource, "expression");
     }
 
     /** Select a canonical expression case by AST, retaining its native projection key. */
@@ -1137,10 +1127,7 @@ export class LoweringContext {
             expected.map(statementKind),
         );
         for (const [index, statement] of statements.entries()) {
-            if (
-                this.nodeFingerprint(statement) !==
-                this.nodeFingerprint(expected[index]!)
-            ) {
+            if (!sameSyntax(statement, expected[index]!)) {
                 this.contractError(
                     statement,
                     `${label} statement ${index + 1} changed; the native seam must be re-read.`,
@@ -1176,36 +1163,6 @@ export class LoweringContext {
             );
         }
     }
-
-    /**
-     * The fingerprint of an expected shape, parsed once per process: it is
-     * a pure function of the string, and the shape helpers ask for the
-     * same handful of strings across every scene compiled in one run.
-     */
-    private expectedFingerprint(expectedSource: string): string {
-        const cached = LoweringContext.expectedFingerprints.get(expectedSource);
-        if (cached !== undefined) return cached;
-        const expectedFile = ts.createSourceFile(
-            "expected-expression.ts",
-            `const expected = ${expectedSource};`,
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.TS,
-        );
-        const statement = expectedFile.statements[0];
-        const declaration =
-            statement && ts.isVariableStatement(statement)
-                ? statement.declarationList.declarations[0]
-                : undefined;
-        if (!declaration?.initializer) {
-            throw new Error(`Invalid expected expression '${expectedSource}'.`);
-        }
-        const fingerprint = this.nodeFingerprint(declaration.initializer);
-        LoweringContext.expectedFingerprints.set(expectedSource, fingerprint);
-        return fingerprint;
-    }
-
-    private static readonly expectedFingerprints = new Map<string, string>();
 
     public assertExpressionShape(
         actual: ts.Expression,
@@ -1250,10 +1207,7 @@ export class LoweringContext {
             !declaration.body
         )
             throw new Error(`Invalid function body contract: ${label}.`);
-        if (
-            this.nodeFingerprint(declaration.body) !==
-            this.nodeFingerprint(expected.body)
-        )
+        if (!sameSyntax(declaration.body, expected.body))
             this.contractError(
                 declaration,
                 `${label} changed; re-establish its complete structural specialization.`,
@@ -1691,52 +1645,6 @@ export class LoweringContext {
 
     public unwrapExpression(expression: ts.Expression): ts.Expression {
         return unwrapExpression(expression);
-    }
-
-    /**
-     * The leading segment of `nodeFingerprint(node)` without the walk, or
-     * undefined for the wrappers the fingerprint sees through.
-     */
-    private fingerprintHead(node: ts.Node): string | undefined {
-        if (isExpressionWrapper(node)) return undefined;
-        if (ts.isIdentifier(node)) {
-            return `identifier:${node.text}`;
-        }
-        if (ts.isNumericLiteral(node)) {
-            return `number:${Number(node.text)}`;
-        }
-        if (ts.isStringLiteralLike(node)) {
-            return `string:${node.text}`;
-        }
-        return ts.SyntaxKind[node.kind];
-    }
-
-    private nodeFingerprint(node: ts.Node): string {
-        if (isExpressionWrapper(node))
-            return this.nodeFingerprint(node.expression);
-        if (ts.isIdentifier(node)) {
-            return `identifier:${node.text}`;
-        }
-        if (ts.isNumericLiteral(node)) {
-            return `number:${Number(node.text)}`;
-        }
-        if (ts.isStringLiteralLike(node)) {
-            return `string:${node.text}`;
-        }
-        const children = node
-            .getChildren(node.getSourceFile())
-            .filter(
-                (child) =>
-                    !ts.isJSDoc(child) &&
-                    child.kind !== ts.SyntaxKind.CommaToken &&
-                    child.kind !== ts.SyntaxKind.SemicolonToken,
-            );
-        if (children.length === 0) {
-            return ts.SyntaxKind[node.kind];
-        }
-        return `${ts.SyntaxKind[node.kind]}(${children
-            .map((child) => this.nodeFingerprint(child))
-            .join(",")})`;
     }
 }
 

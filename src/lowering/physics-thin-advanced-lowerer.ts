@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Native shape handles and keyed ownership adapt the pin's optional advanced seam. */
 export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
@@ -12,7 +13,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
     );
     const assignment = context
         .findNodes(declaration, ts.isBinaryExpression)
-        .find((node) => node.left.getText(file) === "world._thinAdvanced");
+        .find((node) => sameSource(node.left, "world._thinAdvanced"));
     if (!assignment || !ts.isObjectLiteralExpression(assignment.right))
         return context.contractError(
             declaration,
@@ -20,8 +21,8 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
         );
     const contextRecord = assignment.right;
     const method = (name: string) => {
-        const member = contextRecord.properties.find(
-            (property) => property.name?.getText(file) === name,
+        const member = contextRecord.properties.find((property) =>
+            sameSource(property.name, name),
         );
         if (!member || !ts.isMethodDeclaration(member) || !member.body)
             return context.contractError(
@@ -78,7 +79,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
                 const assignment = statement.expression;
                 if (
                     !ts.isElementAccessExpression(assignment.left) ||
-                    assignment.left.expression.getText() !== "result"
+                    !sameSource(assignment.left.expression, "result")
                 )
                     return undefined;
                 const index = assignment.left.argumentExpression.getText();
@@ -189,7 +190,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
         expression(expression, numeric) {
             if (
                 ts.isElementAccessExpression(expression) &&
-                expression.expression.getText(file) === "handles"
+                sameSource(expression.expression, "handles")
             )
                 return `state.handles.at(static_cast<std::size_t>(${numeric.expression(expression.argumentExpression)}))`;
             if (
@@ -201,7 +202,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
                 return "pal::physics_shape_create_container()";
             if (
                 ts.isCallExpression(expression) &&
-                expression.expression.getText(file) === "raw.HP_Shape_AddChild"
+                sameSource(expression.expression, "raw.HP_Shape_AddChild")
             ) {
                 const transform = expression.arguments[2];
                 if (
@@ -226,12 +227,12 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
             // These calls adapt ownership maps; arguments identifying the already-selected state carry no values.
             if (
                 ts.isCallExpression(expression) &&
-                expression.expression.getText(file) === "releaseShapes"
+                sameSource(expression.expression, "releaseShapes")
             )
                 return "state.scaled_shapes.clear()";
             if (
                 ts.isCallExpression(expression) &&
-                expression.expression.getText(file) === "shapesByHandles.set"
+                sameSource(expression.expression, "shapesByHandles.set")
             )
                 return "state.scaled_shapes = std::move(scaled_shapes)";
             return undefined;
@@ -260,7 +261,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
         statement(statement, numeric, indent) {
             if (!ts.isVariableStatement(statement)) return undefined;
             const local = statement.declarationList.declarations[0]!;
-            if (local.name.getText(file) !== "massProperties") return undefined;
+            if (!sameSource(local.name, "massProperties")) return undefined;
             context.assertExpressionShape(
                 local.initializer!,
                 "buildNativeMassProperties(raw, handles[index], properties, fallbackInertia)",
@@ -276,7 +277,7 @@ export function lowerPhysicsThinAdvanced(context: LoweringContext): string {
         expression(expression, numeric) {
             if (
                 ts.isElementAccessExpression(expression) &&
-                expression.expression.getText(file) === "handles"
+                sameSource(expression.expression, "handles")
             )
                 return `state.handles.at(static_cast<std::size_t>(${numeric.expression(expression.argumentExpression)}))`;
             return undefined;

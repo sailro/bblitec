@@ -518,8 +518,10 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
         if (context.expressionMatchesShape(expression, "oldTexture.destroy()"))
             return "destroy";
         if (
-            ts.isCallExpression(expression) &&
-            expression.getText(file).startsWith("(enabling ??=")
+            context.expressionMatchesShape(
+                expression,
+                "(enabling ??= new WeakMap()).set(sg, promise)",
+            )
         )
             return "enabling";
         return undefined;

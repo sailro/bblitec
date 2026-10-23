@@ -15,6 +15,7 @@ import {
     absentDrawRangeBinding,
     assertDrawRangesUnreached,
 } from "./mesh-draw-range.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/mesh/mesh-factories.ts";
 const optionalStreams = new Set(["uvs", "uvs2", "tangents", "colors"]);
@@ -398,7 +399,7 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                     }
                     if (
                         ts.isCallExpression(node) &&
-                        node.expression.getText(file) === "engine._dlr?.m"
+                        sameSource(node.expression, "engine._dlr?.m")
                     )
                         context.assertExpressionShape(
                             node,
@@ -408,7 +409,7 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                     if (
                         ts.isBinaryExpression(node) &&
                         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                        node.left.getText(file) === "mesh._cpuIndexFormat"
+                        sameSource(node.left, "mesh._cpuIndexFormat")
                     )
                         context.assertExpressionShape(
                             node.right,

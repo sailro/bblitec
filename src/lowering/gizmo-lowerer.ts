@@ -75,6 +75,7 @@ import {
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -2089,9 +2090,8 @@ EditGizmoHandle push_edit_gizmo(
                     const widget =
                         ts.isCallExpression(call) &&
                         ts.isIdentifier(call.expression)
-                            ? EDIT_MODULES.find(
-                                  ({ factory }) =>
-                                      factory === call.expression.getText(file),
+                            ? EDIT_MODULES.find(({ factory }) =>
+                                  sameSource(call.expression, factory),
                               )
                             : undefined;
                     if (!widget || !ts.isCallExpression(call)) {
@@ -2303,7 +2303,7 @@ ${body}
         this.context.hasNode(factory, (node) => {
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === "buildArrow" &&
+                sameSource(node.expression, "buildArrow") &&
                 node.arguments[5]?.kind === ts.SyntaxKind.TrueKeyword
             )
                 colliderThickness = node.arguments[4];
@@ -2948,7 +2948,6 @@ ${
         local: string,
         member: string,
     ): string {
-        const file = scope.getSourceFile();
         let found: ts.Expression | undefined;
         const visit = (node: ts.Node): void => {
             if (found) return;
@@ -2957,7 +2956,7 @@ ${
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === member &&
-                node.left.expression.getText(file) === local
+                sameSource(node.left.expression, local)
             ) {
                 found = this.context.unwrapExpression(node.right);
             }
@@ -3117,7 +3116,6 @@ ${
      * read from that template rather than restated.
      */
     private loopMeshName(scope: ts.Node, local: string): string {
-        const file = scope.getSourceFile();
         let found: ts.Expression | undefined;
         const visit = (node: ts.Node): void => {
             if (found) return;
@@ -3126,7 +3124,7 @@ ${
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === "name" &&
-                node.left.expression.getText(file) === local
+                sameSource(node.left.expression, local)
             ) {
                 found = this.context.unwrapExpression(node.right);
             }
@@ -3850,9 +3848,11 @@ std::array<float, 16> bbox_mat4_from_quat(
             !ts.isIdentifier(toWorld.body.expression) ||
             toWorld.body.expression.text !== "rotatePoint" ||
             toWorld.body.arguments.length !== 2 ||
-            toWorld.body.arguments[0]!.getText(file) !== "q" ||
-            toWorld.body.arguments[1]!.getText(file) !==
-                (toWorld.parameters[0]!.name as ts.Identifier).text
+            !sameSource(toWorld.body.arguments[0], "q") ||
+            !sameSource(
+                toWorld.body.arguments[1],
+                (toWorld.parameters[0]!.name as ts.Identifier).text,
+            )
         ) {
             this.context.contractError(
                 layout,

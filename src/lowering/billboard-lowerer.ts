@@ -23,6 +23,7 @@ import {
 import { recordAt } from "../compiler/record-access.js";
 import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
 import { lowerBillboardInstances } from "./pinned-billboard-instances.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -446,8 +447,10 @@ inline double billboard_sort_compare(
                         node.thenStatement,
                         (call): call is ts.CallExpression =>
                             ts.isCallExpression(call) &&
-                            call.expression.getText(file) ===
+                            sameSource(
+                                call.expression,
                                 "uploadSortedBillboardInstances",
+                            ),
                     )
                     .some(() => true),
         );

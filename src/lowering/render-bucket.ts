@@ -6,6 +6,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedOptionNumber } from "./pinned-option-defaults.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const STANDARD_RENDERABLE = "src/material/standard/standard-renderable.ts";
 const STANDARD_FLAGS = "src/material/standard/standard-flags.ts";
@@ -70,8 +71,7 @@ function pbrAlphaBlendFeatures(context: LoweringContext): string {
         if (
             term === undefined &&
             ts.isConditionalExpression(node) &&
-            context.unwrapExpression(node.whenTrue).getText(file) ===
-                "PBR_HAS_ALPHA_BLEND"
+            sameSource(node.whenTrue, "PBR_HAS_ALPHA_BLEND")
         ) {
             term = node;
             return;

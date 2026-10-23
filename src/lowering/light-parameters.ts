@@ -6,6 +6,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export function lightVersionBumpBody(
     context: LoweringContext,
@@ -37,7 +38,7 @@ export function lightVersionBumpBody(
     );
     const bump = state.properties.find(
         (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node) && node.name.getText(file) === "b",
+            ts.isMethodDeclaration(node) && sameSource(node.name, "b"),
     );
     if (!bump?.body)
         context.contractError(state, "Expected light version callback.");
@@ -75,7 +76,7 @@ export function lightParameterHeader(context: LoweringContext): string {
                     const setter = observable.members.find(
                         (node): node is ts.SetAccessorDeclaration =>
                             ts.isSetAccessorDeclaration(node) &&
-                            node.name.getText(observableFile) === lane,
+                            sameSource(node.name, lane),
                     );
                     if (!setter?.body)
                         context.contractError(

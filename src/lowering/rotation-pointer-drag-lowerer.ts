@@ -15,6 +15,7 @@ import { PINNED_DECOMPOSE_ROTATION } from "./pinned-mat4-decompose.js";
 import { assertRotationPointerContract } from "./rotation-pointer-contract.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const MATH = "src/gizmo/gizmo-math.ts";
 const ROTATION = "src/gizmo/plane-rotation-gizmo.ts";
@@ -84,9 +85,7 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     const parentQuaternion = localStatements.findIndex(
         (statement) =>
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(
-                worldLocal.file,
-            ) === "pq",
+            sameSource(statement.declarationList.declarations[0]?.name, "pq"),
     );
     if (parentQuaternion < 0)
         context.contractError(
@@ -147,15 +146,13 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     const begin = body.findIndex(
         (statement) =>
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(
-                factory.file,
-            ) === "nx",
+            sameSource(statement.declarationList.declarations[0]?.name, "nx"),
     );
     const end = body.findIndex(
         (statement) =>
             ts.isExpressionStatement(statement) &&
             ts.isCallExpression(statement.expression) &&
-            statement.expression.expression.getText(factory.file) === "rq.set",
+            sameSource(statement.expression.expression, "rq.set"),
     );
     if (begin < 0 || end <= begin)
         context.contractError(
@@ -180,9 +177,10 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
                 (statement) =>
                     !(
                         ts.isVariableStatement(statement) &&
-                        statement.declarationList.declarations[0]?.name.getText(
-                            factory.file,
-                        ) === "rq"
+                        sameSource(
+                            statement.declarationList.declarations[0]?.name,
+                            "rq",
+                        )
                     ),
             ),
         {
@@ -220,12 +218,13 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
         .flatMap((statement) => {
             if (
                 ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations[0]?.name.getText(
-                    worldLocal.file,
-                ) === "invPq"
+                sameSource(
+                    statement.declarationList.declarations[0]?.name,
+                    "invPq",
+                )
             ) {
                 const expression =
-                    statement.declarationList.declarations[0].initializer!;
+                    statement.declarationList.declarations[0]!.initializer!;
                 if (
                     !ts.isArrayLiteralExpression(expression) ||
                     expression.elements.length !== 4

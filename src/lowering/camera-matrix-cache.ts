@@ -8,6 +8,7 @@ import {
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { CameraLowerer } from "./camera-lowerer.js";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Camera-owned F32 caches; GPU consumers copy only at their upload boundary. */
 export function lowerCameraMatrixCaches(
@@ -48,8 +49,8 @@ export function lowerCameraMatrixCaches(
             "_vpAspect",
         ])
             if (
-                camera.properties.some(
-                    (property) => property.name?.getText() === stamp,
+                camera.properties.some((property) =>
+                    sameSource(property.name, stamp),
                 )
             )
                 context.contractError(
@@ -240,8 +241,8 @@ export function lowerCameraMatrixCaches(
                         !declaration.initializer
                     )
                         return undefined;
-                    const alias = caches.find(
-                        (entry) => entry[2] === declaration.name.getText(),
+                    const alias = caches.find((entry) =>
+                        sameSource(declaration.name, entry[2]),
                     );
                     if (alias) {
                         context.assertExpressionShape(

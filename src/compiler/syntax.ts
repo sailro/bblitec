@@ -1937,3 +1937,126 @@ export function containsSuspension(
         ) === true
     );
 }
+
+/**
+ * A node's syntax as text: its kind with its children's, names and literals
+ * by value, seen through expression wrappers. Layout, comments, commas and
+ * semicolons do not count.
+ */
+export function sourceFingerprint(node: ts.Node): string {
+    if (isExpressionWrapper(node)) return sourceFingerprint(node.expression);
+    const leaf = fingerprintLeaf(node);
+    if (leaf !== undefined) return leaf;
+    const children = node
+        .getChildren(node.getSourceFile())
+        .filter(
+            (child) =>
+                !ts.isJSDoc(child) &&
+                child.kind !== ts.SyntaxKind.CommaToken &&
+                child.kind !== ts.SyntaxKind.SemicolonToken,
+        );
+    if (children.length === 0) return ts.SyntaxKind[node.kind];
+    return `${ts.SyntaxKind[node.kind]}(${children
+        .map(sourceFingerprint)
+        .join(",")})`;
+}
+
+/** A name's or literal's fingerprint. */
+function fingerprintLeaf(node: ts.Node): string | undefined {
+    if (ts.isIdentifier(node)) return `identifier:${node.text}`;
+    if (ts.isPrivateIdentifier(node)) return `private:${node.text}`;
+    if (ts.isNumericLiteral(node)) return `number:${Number(node.text)}`;
+    if (ts.isStringLiteralLike(node)) return `string:${node.text}`;
+    return undefined;
+}
+
+/**
+ * The leading segment of `sourceFingerprint(node)` without the walk, or
+ * undefined for the wrappers the fingerprint sees through.
+ */
+function fingerprintHead(node: ts.Node): string | undefined {
+    if (isExpressionWrapper(node)) return undefined;
+    return fingerprintLeaf(node) ?? ts.SyntaxKind[node.kind];
+}
+
+/** Each source shape's fingerprint by parse context, parsed once per process. */
+const shapeFingerprints = new Map<string, string>();
+
+/** What a source shape is parsed as. */
+export type ShapeKind = "expression" | "type" | "binding";
+
+/** The kind of syntax `node` is, for the shape it is compared with. */
+function shapeKindOf(node: ts.Node): ShapeKind {
+    return ts.isTypeNode(node)
+        ? "type"
+        : ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)
+          ? "binding"
+          : "expression";
+}
+
+/** The fingerprint of `shape` parsed as `context`. */
+function shapeFingerprint(shape: string, context: ShapeKind): string {
+    const key = `${context}\u0000${shape}`;
+    const cached = shapeFingerprints.get(key);
+    if (cached !== undefined) return cached;
+    const statement = ts.createSourceFile(
+        "expected-shape.ts",
+        context === "type"
+            ? `let expected: ${shape};`
+            : context === "binding"
+              ? `const ${shape} = expected;`
+              : `const expected = ${shape};`,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+    ).statements[0];
+    const declaration =
+        statement && ts.isVariableStatement(statement)
+            ? statement.declarationList.declarations[0]
+            : undefined;
+    const parsed =
+        context === "type"
+            ? declaration?.type
+            : context === "binding"
+              ? declaration?.name
+              : declaration?.initializer;
+    // A shape that is no type or binding pattern matches no node there; an
+    // expression shape that does not parse is a lowering's own mistake.
+    if (!parsed && context === "expression")
+        throw new Error(`Invalid expected expression '${shape}'.`);
+    const fingerprint = parsed ? sourceFingerprint(parsed) : "";
+    shapeFingerprints.set(key, fingerprint);
+    return fingerprint;
+}
+
+/**
+ * Whether `node` is the source `shape`: the same syntax, read through
+ * parentheses and other expression wrappers and ignoring layout and
+ * comments. How a lowering recognizes a fixed piece of source (a pinned
+ * call, a member name, a declared type) without comparing its text. The
+ * shape is parsed as the kind of syntax `node` is unless `kind` says (a
+ * walk comparing every node with an expression shape).
+ */
+export function sameSource(
+    node: ts.Node | undefined,
+    shape: string | undefined,
+    kind?: ShapeKind,
+): boolean {
+    if (node === undefined || shape === undefined) return false;
+    const expected = shapeFingerprint(shape, kind ?? shapeKindOf(node));
+    // Most candidates a counting walk offers are not even the expected
+    // node kind; the head is free where the walk is not.
+    const head = fingerprintHead(node);
+    if (
+        head !== undefined &&
+        expected !== head &&
+        !expected.startsWith(`${head}(`)
+    )
+        return false;
+    return sourceFingerprint(node) === expected;
+}
+
+/** Whether two nodes, perhaps of different files, are the same syntax. */
+export function sameSyntax(left: ts.Node, right: ts.Node): boolean {
+    return sourceFingerprint(left) === sourceFingerprint(right);
+}

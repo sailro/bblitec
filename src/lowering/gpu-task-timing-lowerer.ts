@@ -11,6 +11,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/engine/gpu-task-timing.ts";
 const timerPath = "src/engine/gpu-task-timer.ts";
@@ -144,16 +145,18 @@ export function lowerGpuTaskTiming(context: LoweringContext): LoweredSource {
                     if (node.expression.text === "installGpuTaskTimer") {
                         if (
                             node.arguments.length !== 3 ||
-                            node.arguments[0]?.getText(file) !== "timer" ||
-                            node.arguments[1]?.getText(file) !== "engine"
+                            !sameSource(node.arguments[0], "timer") ||
+                            !sameSource(node.arguments[1], "engine")
                         )
                             return fail(node);
                         const callback = node.arguments[2]!;
                         if (
                             !ts.isArrowFunction(callback) ||
                             callback.parameters.length !== 1 ||
-                            callback.parameters[0]?.name.getText(file) !==
-                                "snapshot" ||
+                            !sameSource(
+                                callback.parameters[0]?.name,
+                                "snapshot",
+                            ) ||
                             !ts.isBlock(callback.body)
                         )
                             return fail(callback);

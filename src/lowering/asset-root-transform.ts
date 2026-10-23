@@ -10,6 +10,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { SCENE_NODE_TRANSFORMS } from "../scene-node-transform-descriptor.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /**
  * Public synthetic-root TRS: the outer transform of the loader's flattened,
@@ -54,8 +55,7 @@ export function assetRootTransformSource(
         };
         const set = owner.members.find(
             (node): node is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(node) &&
-                node.name.getText(file) === "set",
+                ts.isMethodDeclaration(node) && sameSource(node.name, "set"),
         );
         if (!set?.body)
             context.contractError(owner, "Expected observable bulk setter.");
@@ -72,7 +72,7 @@ ${descriptor.components
         const setter = owner.members.find(
             (node): node is ts.SetAccessorDeclaration =>
                 ts.isSetAccessorDeclaration(node) &&
-                node.name.getText(file) === lane,
+                sameSource(node.name, lane),
         );
         if (!setter?.body)
             context.contractError(

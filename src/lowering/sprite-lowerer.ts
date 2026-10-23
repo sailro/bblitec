@@ -39,6 +39,7 @@ import {
     ySortHandleModule,
     ySortModule,
 } from "./sprite-y-sort-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -717,13 +718,12 @@ ${body}
                         node.thenStatement,
                         (call): call is ts.CallExpression =>
                             ts.isCallExpression(call) &&
-                            call.expression.getText(file) === "rr._layers.sort",
+                            sameSource(call.expression, "rr._layers.sort"),
                     )
                     .some(
                         (call) =>
                             call.arguments.length === 1 &&
-                            call.arguments[0]!.getText(file) ===
-                                "compareLayers",
+                            sameSource(call.arguments[0], "compareLayers"),
                     ),
         );
         const guard = guards[0];
@@ -874,7 +874,7 @@ inline void sort_sprite_renderer_layers(
                     );
                     if (
                         !ts.isElementAccessExpression(read) ||
-                        read.expression.getText(file) !== "layers"
+                        !sameSource(read.expression, "layers")
                     ) {
                         return this.context.contractError(
                             local,

@@ -83,7 +83,7 @@ import {
     lowerNodeParticleProviderShared,
     lowerNodeParticleProviderState,
 } from "./node-particle-provider-lowerer.js";
-import { variableKind } from "../compiler/syntax.js";
+import { variableKind, sameSource } from "../compiler/syntax.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
 const systemModule = "src/particle/particle-system.ts";
@@ -2632,10 +2632,9 @@ export class NodeParticleLiveLowerer {
             cpp,
             lowerPinnedFunction(this.context, fn.module, name, parameters, {
                 cppName: cpp,
-                returns:
-                    fn.declaration.type?.getText(fn.file) === "void"
-                        ? "void"
-                        : "double",
+                returns: sameSource(fn.declaration.type, "void")
+                    ? "void"
+                    : "double",
                 calls: pinnedCalls(),
             }),
         );
@@ -2666,7 +2665,7 @@ export class NodeParticleLiveLowerer {
                     !ts.isNewExpression(initializer) ||
                     !ts.isIdentifier(initializer.expression) ||
                     initializer.arguments?.length !== 1 ||
-                    initializer.arguments[0]!.getText(file) !== "capacity"
+                    !sameSource(initializer.arguments[0], "capacity")
                 ) {
                     this.context.contractError(
                         column,

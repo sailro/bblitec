@@ -33,6 +33,7 @@ import {
 } from "../pinned-numeric-lowerer.js";
 
 import { pinnedOptionNumber } from "../pinned-option-defaults.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** A pinned `Vec3` parameter, landing on the runtime's double record. */
 function vec3Parameter(pinned: string): PinnedFunctionParameter {
@@ -462,7 +463,7 @@ ${body}
                 ts.isBinaryExpression(statement.expression) &&
                 statement.expression.operatorToken.kind ===
                     ts.SyntaxKind.EqualsToken &&
-                statement.expression.left.getText(file) === "cap",
+                sameSource(statement.expression.left, "cap"),
         );
         if (capClamp.length !== 1) {
             this.context.contractError(
@@ -506,7 +507,7 @@ ${body}
                     const ribbon =
                         call &&
                         ts.isCallExpression(call) &&
-                        call.expression.getText(file) === "createRibbonData" &&
+                        sameSource(call.expression, "createRibbonData") &&
                         call.arguments.length === 1
                             ? this.context.unwrapExpression(call.arguments[0]!)
                             : undefined;
@@ -534,7 +535,7 @@ ${body}
                         if (
                             ts.isArrayLiteralExpression(initializer) &&
                             initializer.elements.length === 0 &&
-                            local.type?.getText(file) === "Vec3[][]"
+                            sameSource(local.type, "Vec3[][]")
                         ) {
                             const name = local.name.getText(file);
                             lowerer.bindPorts(
@@ -557,8 +558,7 @@ ${body}
                         // as the native record the lowered chain returns.
                         if (
                             ts.isCallExpression(initializer) &&
-                            initializer.expression.getText(file) ===
-                                "computePath3D"
+                            sameSource(initializer.expression, "computePath3D")
                         ) {
                             const name = local.name.getText(file);
                             if (initializer.arguments.length !== 1) {

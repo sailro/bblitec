@@ -9,6 +9,7 @@ import {
     bufferAlignmentCpp,
     assertMappedBufferAdapter,
 } from "./gpu-buffer-adapters.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-uniform-buffer.ts";
 
@@ -141,7 +142,7 @@ function factory(context: LoweringContext): string {
                 return [
                     `${indent}std::copy(source.bytes.begin(), source.bytes.end(), bytes.begin());`,
                 ];
-            if (call.expression.getText(file) !== "Object.defineProperties")
+            if (!sameSource(call.expression, "Object.defineProperties"))
                 return undefined;
             context.assertExpressionShape(
                 call.arguments[0]!,

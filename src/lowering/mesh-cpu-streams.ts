@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export const meshCpuStreamFields: ReadonlyMap<string, string> = new Map([
     ["_cpuPositions", "positions"],
@@ -33,7 +34,7 @@ function lowerFactoryRecoveryCapture(context: LoweringContext): string {
     const method = context.findNodes(
         declaration,
         (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node) && node.name.getText(file) === "m",
+            ts.isMethodDeclaration(node) && sameSource(node.name, "m"),
     )[0];
     if (!method?.body)
         return context.contractError(
@@ -79,7 +80,7 @@ function lowerFactoryRecoveryCapture(context: LoweringContext): string {
         factory.declaration,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
-            node.expression.getText(factory.file) === "engine._dlr?.m",
+            sameSource(node.expression, "engine._dlr?.m"),
     )[0];
     if (!call)
         return context.contractError(

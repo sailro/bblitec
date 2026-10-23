@@ -18,6 +18,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerPinnedStatements } from "./pinned-body-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const morphModule = "src/morph/create-morph-targets.ts";
 
@@ -101,7 +102,7 @@ export function morphTargetsHeader(context: LoweringContext): string {
                 !ts.isIdentifier(entry.name) ||
                 !initializer ||
                 !ts.isElementAccessExpression(initializer) ||
-                initializer.expression.getText(file) !== "targets"
+                !sameSource(initializer.expression, "targets")
             ) {
                 return undefined;
             }

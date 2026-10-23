@@ -10,6 +10,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const module = "src/particle/node/npe-emitter-provider.ts";
 
@@ -119,7 +120,7 @@ export function lowerNodeParticleProviderState(
     );
     const property = context
         .findNodes(declaration, ts.isPropertyAssignment)
-        .find((node) => node.name.getText(file) === "_setupEmitter");
+        .find((node) => sameSource(node.name, "_setupEmitter"));
     if (
         !property ||
         !ts.isArrowFunction(property.initializer) ||

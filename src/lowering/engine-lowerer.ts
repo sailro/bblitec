@@ -8,7 +8,7 @@ import {
     meshCompositionRowsCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
-import { isAsyncFunction } from "../compiler/syntax.js";
+import { isAsyncFunction, sameSource } from "../compiler/syntax.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -148,8 +148,10 @@ ${canvasDatasetSource}
             (statement) =>
                 ts.isExpressionStatement(statement) &&
                 ts.isCallExpression(statement.expression) &&
-                statement.expression.expression.getText(file) ===
+                sameSource(
+                    statement.expression.expression,
                     "engine._device.queue.submit",
+                ),
         );
         const flush = statements[submit + 1];
         if (submit < 0 || !flush)
@@ -192,8 +194,10 @@ ${body}
             !first ||
             !ts.isVariableStatement(first) ||
             first.declarationList.declarations.length !== 1 ||
-            first.declarationList.declarations[0]!.name.getText(file) !==
-                "canvas" ||
+            !sameSource(
+                first.declarationList.declarations[0]!.name,
+                "canvas",
+            ) ||
             !first.declarationList.declarations[0]!.initializer ||
             !this.context.expressionMatchesShape(
                 first.declarationList.declarations[0]!.initializer,
@@ -244,7 +248,7 @@ ${body}
             !ts.isForOfStatement(notify) ||
             !ts.isVariableDeclarationList(notify.initializer) ||
             notify.initializer.declarations.length !== 1 ||
-            notify.initializer.declarations[0]!.name.getText(file) !== "c" ||
+            !sameSource(notify.initializer.declarations[0]!.name, "c") ||
             !this.context.expressionMatchesShape(
                 notify.expression,
                 "surface._renderingContexts",

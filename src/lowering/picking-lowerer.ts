@@ -18,6 +18,7 @@ import {
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -285,8 +286,7 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
         const declares = (statement: ts.Statement, name: string): boolean =>
             ts.isVariableStatement(statement) &&
             statement.declarationList.declarations.length === 1 &&
-            statement.declarationList.declarations[0]!.name.getText(file) ===
-                name;
+            sameSource(statement.declarationList.declarations[0]!.name, name);
         const first = statements.findIndex((statement) =>
             declares(statement, "backingWidth"),
         );
@@ -1365,7 +1365,7 @@ void populate_pick_ray(
             ts.isExpressionStatement(store) &&
             ts.isBinaryExpression(store.expression) &&
             store.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            store.expression.left.getText(file) === "info.distance"
+            sameSource(store.expression.left, "info.distance")
                 ? store.expression
                 : undefined;
         if (statements.length !== 5 || !distanceStore) {

@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** Source scene setup over prepared row buffers and the synchronous native upload. */
 export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
@@ -91,7 +92,7 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
             if (
                 !ts.isArrowFunction(callback) ||
                 callback.parameters.length !== 1 ||
-                callback.parameters[0]!.name.getText(file) !== "mesh" ||
+                !sameSource(callback.parameters[0]!.name, "mesh") ||
                 !ts.isBlock(callback.body)
             )
                 context.contractError(

@@ -11,7 +11,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { isAssignmentOperator } from "../compiler/syntax.js";
+import { isAssignmentOperator, sameSource } from "../compiler/syntax.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -317,8 +317,7 @@ export class CameraMutationLowerer {
                     ts.isCallExpression(node) &&
                     this.context.propertyPath(node.expression)?.join(".") ===
                         "Object.defineProperty" &&
-                    node.arguments[1]?.getText(freeFile) ===
-                        stringLiteral(field),
+                    sameSource(node.arguments[1], stringLiteral(field)),
             )[0];
             const descriptor = define?.arguments[2];
             if (!descriptor || !ts.isObjectLiteralExpression(descriptor))

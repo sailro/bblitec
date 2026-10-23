@@ -6,6 +6,7 @@ import {
     variableInitializer,
     contractError,
 } from "./context.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
 export const WRAPPER_GENERATORS =
@@ -75,7 +76,7 @@ export function blockArrow(
         arrow.parameters.length !== parameters.length ||
         arrow.parameters.some(
             (parameter, index) =>
-                parameter.name.getText() !== parameters[index],
+                !sameSource(parameter.name, parameters[index]),
         )
     ) {
         return contractError(
@@ -178,7 +179,7 @@ export function methodAccess(
                 ts.isPrefixUnaryExpression(test) &&
                 test.operator === ts.SyntaxKind.ExclamationToken &&
                 ts.isCallExpression(test.operand) &&
-                test.operand.expression.getText() === "Raw.isNull" &&
+                sameSource(test.operand.expression, "Raw.isNull") &&
                 test.operand.arguments.length === 1
                     ? rawSource(test.operand.arguments[0]!, parameters)
                     : undefined;
@@ -187,7 +188,7 @@ export function methodAccess(
                 ts.isNewExpression(made) &&
                 ts.isIdentifier(made.expression) &&
                 made.arguments?.length === 1 &&
-                made.arguments[0]!.getText() === `this.raw.${tested.field}`
+                sameSource(made.arguments[0], `this.raw.${tested.field}`)
             ) {
                 return {
                     kind: "nullableView",
@@ -222,7 +223,7 @@ export function methodAccess(
         ts.isBinaryExpression(statement) &&
         statement.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         parameters.length === 1 &&
-        statement.right.getText() === parameters[0]
+        sameSource(statement.right, parameters[0])
     ) {
         const path = propertyPath(statement.left);
         return path?.length === 3 && path[0] === "this" && path[1] === "raw"

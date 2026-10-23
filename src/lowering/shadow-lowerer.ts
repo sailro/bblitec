@@ -48,6 +48,7 @@ import {
     pinnedOptionNumber,
 } from "./pinned-option-defaults.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -581,7 +582,7 @@ function csmDefaults(context: LoweringContext) {
     );
     if (
         !ts.isCallExpression(cascades) ||
-        cascades.expression.getText(file) !== "Math.min" ||
+        !sameSource(cascades.expression, "Math.min") ||
         cascades.arguments.length !== 2
     ) {
         context.contractError(
@@ -2372,13 +2373,14 @@ export function shadowFactorySource(
         "registerSceneWithShadowSupport",
     );
     context.callExpression(registerDeclaration, "ensureShadowTask");
-    const { file: coreFile, declaration: ensureDeclaration } =
-        context.functionDeclaration(sceneModule, "ensureShadowTask");
+    const { declaration: ensureDeclaration } = context.functionDeclaration(
+        sceneModule,
+        "ensureShadowTask",
+    );
     const unshift = context.callExpression(ensureDeclaration, "unshift");
     if (
         !ts.isPropertyAccessExpression(unshift.expression) ||
-        unshift.expression.expression.getText(coreFile) !==
-            "scene._frameGraph._tasks"
+        !sameSource(unshift.expression.expression, "scene._frameGraph._tasks")
     ) {
         context.contractError(
             unshift,

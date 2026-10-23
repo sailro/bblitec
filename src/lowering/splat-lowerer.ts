@@ -42,6 +42,7 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -1820,7 +1821,7 @@ ${multiply}`;
             const owner = target.expression;
             if (
                 !ts.isPropertyAccessExpression(owner) ||
-                owner.expression.getText(file) !== "mesh"
+                !sameSource(owner.expression, "mesh")
             ) {
                 continue;
             }

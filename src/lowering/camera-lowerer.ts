@@ -22,7 +22,7 @@ import {
     cameraControlPublication,
     lowerCameraControlLifecycle,
 } from "./camera-control-attachment.js";
-import { isValueReference } from "../compiler/syntax.js";
+import { isValueReference, sameSource } from "../compiler/syntax.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -435,7 +435,7 @@ CameraHandle create_arc_rotate_camera(
                         node.operatorToken.kind !==
                             ts.SyntaxKind.QuestionQuestionToken ||
                         !ts.isPropertyAccessExpression(node.left) ||
-                        node.left.expression.getText(file) !== "b"
+                        !sameSource(node.left.expression, "b")
                     )
                         return undefined;
                     const plane = node.left.name.text;
@@ -794,7 +794,7 @@ CameraHandle create_banked_free_camera(
                 if (
                     !call ||
                     !ts.isCallExpression(call) ||
-                    call.expression.getText(file) !== "createArcRotateCamera"
+                    !sameSource(call.expression, "createArcRotateCamera")
                 )
                     return this.context.contractError(
                         camera,

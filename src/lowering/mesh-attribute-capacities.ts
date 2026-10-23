@@ -8,6 +8,7 @@ import {
 import { bufferAlignmentCpp } from "./gpu-buffer-adapters.js";
 import { meshCpuStreamFields } from "./mesh-cpu-streams.js";
 import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The source's separate GPU allocations, retained beside native interleaved lanes. */
 export function lowerMeshAttributeCapacities(
@@ -23,8 +24,7 @@ export function lowerMeshAttributeCapacities(
     const size = context.findNodes(
         mapped.declaration,
         (node): node is ts.PropertyAssignment =>
-            ts.isPropertyAssignment(node) &&
-            node.name.getText(mapped.file) === "size",
+            ts.isPropertyAssignment(node) && sameSource(node.name, "size"),
     )[0];
     if (!size)
         return context.contractError(

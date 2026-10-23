@@ -24,6 +24,7 @@ import {
     lowerTaskExecutionCheck,
 } from "./frame-graph-task-build.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -492,7 +493,7 @@ export class SceneLowerer {
             registerScene,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                node.expression.getText() === "buildScene",
+                sameSource(node.expression, "buildScene"),
         )[0];
         if (!buildCall || registrationGuard.end >= buildCall.pos) {
             this.context.contractError(
@@ -2756,7 +2757,7 @@ ${options.thinBindings ? "            entry.thin_binding = create_thin_material_
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                node.left.getText(file) === "ctx._built",
+                sameSource(node.left, "ctx._built"),
         );
         if (built.length !== 1)
             this.context.contractError(
@@ -2784,7 +2785,7 @@ ${options.thinBindings ? "            entry.thin_binding = create_thin_material_
                 (node): node is ts.PostfixUnaryExpression =>
                     ts.isPostfixUnaryExpression(node) &&
                     node.operator === ts.SyntaxKind.PlusPlusToken &&
-                    node.operand.getText(file) === "ctx._renderableVersion",
+                    sameSource(node.operand, "ctx._renderableVersion"),
             ).length !== 1
         )
             this.context.contractError(

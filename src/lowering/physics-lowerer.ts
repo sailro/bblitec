@@ -74,7 +74,7 @@ import {
     floatingOriginStructs,
     havokFloatingOriginModule,
 } from "./physics-floating-origin-lowerer.js";
-import { bindingElementKey } from "../compiler/syntax.js";
+import { bindingElementKey, sameSource } from "../compiler/syntax.js";
 
 /**
  * The five geometry lanes both pinned bags declare, as a struct body.
@@ -331,8 +331,8 @@ export class PhysicsLowerer {
         const firstBound = declaration.body.statements.findIndex(
             (statement) =>
                 ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations.some(
-                    (local) => local.name.getText(file) === "min",
+                statement.declarationList.declarations.some((local) =>
+                    sameSource(local.name, "min"),
                 ),
         );
         const prelude = lowerPinnedBody(
@@ -364,8 +364,8 @@ export class PhysicsLowerer {
                         );
                         return local.name.elements.map((element) => {
                             const axis = bindingElementKey(element);
-                            const field = PRELUDE_SCALARS.find(
-                                ([name]) => name === element.name.getText(file),
+                            const field = PRELUDE_SCALARS.find(([name]) =>
+                                sameSource(element.name, name),
                             )?.[1];
                             if (!field || axis === undefined)
                                 return this.context.contractError(
@@ -375,7 +375,7 @@ export class PhysicsLowerer {
                             return `${indent}shape.${field} = static_cast<double>(scaling.${axis});`;
                         });
                     }
-                    if (local.name.getText(file) === "scaleYMagnitude")
+                    if (sameSource(local.name, "scaleYMagnitude"))
                         return [
                             `${indent}shape.scale_y_magnitude = ${numeric.expression(local.initializer!)};`,
                         ];

@@ -7,6 +7,7 @@ import {
     type PinnedCallSpelling,
 } from "./pinned-numeric-lowerer.js";
 import { isShaderSystemMatrix, shaderSystemMatrixTable } from "../shader-ir.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const rendererModule = "src/material/shader/shader-renderable.ts";
 const dependencyModule = "src/material/shader/shader-system-dependencies.ts";
@@ -184,9 +185,9 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
             ? publication.thenStatement.statements.find(
                   (statement): statement is ts.IfStatement =>
                       ts.isIfStatement(statement) &&
-                      statement.expression
-                          .getText(file)
-                          .includes("packet._lastCamera"),
+                      context.hasNode(statement.expression, (node) =>
+                          sameSource(node, "packet._lastCamera"),
+                      ),
               )
             : undefined;
     if (
@@ -230,8 +231,8 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
     const packet = context.objectInitializer(factory, "packet");
     for (const [name] of fields)
         if (
-            packet.properties.some(
-                (property) => property.name?.getText(file) === name,
+            packet.properties.some((property) =>
+                sameSource(property.name, name),
             )
         )
             context.contractError(
@@ -438,7 +439,7 @@ export function lowerShaderSystemWriter(context: LoweringContext): string {
     const entry = ts.isVariableDeclarationList(loop.initializer)
         ? loop.initializer.declarations[0]?.name
         : undefined;
-    if (!entry || entry.getText(file) !== "[name, offset]")
+    if (!entry || !sameSource(entry, "[name, offset]"))
         return context.contractError(
             loop,
             "Expected the declared layout's name and offset.",

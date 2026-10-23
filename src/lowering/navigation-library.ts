@@ -50,6 +50,7 @@ import {
 
 import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -109,13 +110,13 @@ function wrapperClass(className: string): ReadonlyMap<string, RawAccess> {
         const set = declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                member.name.getText() === "set",
+                sameSource(member.name, "set"),
         );
         const [only] = set?.body?.statements ?? [];
         if (
             !only ||
             !ts.isExpressionStatement(only) ||
-            only.expression.getText() !== "this.raw.set(i, value)"
+            !sameSource(only.expression, "this.raw.set(i, value)")
         ) {
             throw new Error(
                 `${WRAPPER_CORE}'s ${GLUE_ARRAY_BASE}.set no longer stores ` +
@@ -404,11 +405,11 @@ function soloPolyFlagsTemplate(): LibraryTemplate {
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            node.left.getText() === "Recast.RC_WALKABLE_AREA",
+            sameSource(node.left, "Recast.RC_WALKABLE_AREA"),
     );
     if (
         constants.length !== 1 ||
-        constants[0]!.right.getText() !== "Raw.Recast.WALKABLE_AREA"
+        !sameSource(constants[0]!.right, "Raw.Recast.WALKABLE_AREA")
     ) {
         return context.contractError(
             core,
@@ -536,7 +537,7 @@ function tileCacheMeshProcessTemplate(): LibraryTemplate {
     const callback =
         made &&
         ts.isNewExpression(made) &&
-        made.expression.getText() === "TileCacheMeshProcess" &&
+        sameSource(made.expression, "TileCacheMeshProcess") &&
         made.arguments?.length === 1
             ? unwrapExpression(made.arguments[0]!)
             : undefined;

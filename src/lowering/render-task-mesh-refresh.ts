@@ -8,6 +8,7 @@ import type {
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /**
  * The refreshed execute's rebind guard as `static bool <name>(task)`: a
@@ -366,7 +367,7 @@ export function renderTaskMeshRefreshCpp(
         const expression = unwrapExpression(statement.expression);
         if (
             ts.isBinaryExpression(expression) &&
-            expression.left.getText(file) === "task._addMesh"
+            sameSource(expression.left, "task._addMesh")
         ) {
             const value = unwrapExpression(expression.right);
             if (ts.isArrowFunction(value)) add = value;

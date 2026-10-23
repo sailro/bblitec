@@ -6,6 +6,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The native shadow hook is fixed; retain the pin's wrapper state beside it. */
 export function lowerShadowEnabled(context: LoweringContext): string {
@@ -46,8 +47,7 @@ export function lowerShadowEnabled(context: LoweringContext): string {
     const property = (name: string) => {
         const field = state.properties.find(
             (entry): entry is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(entry) &&
-                entry.name.getText(file) === name,
+                ts.isPropertyAssignment(entry) && sameSource(entry.name, name),
         );
         if (!field)
             return context.contractError(

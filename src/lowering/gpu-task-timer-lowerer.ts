@@ -11,6 +11,7 @@ import {
     pinnedRecordSchema,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/engine/gpu-task-timer.ts";
 const recordSchema = pinnedRecordSchema("GpuTaskTimingRecord", {
@@ -138,10 +139,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             )
                 return "has_timestamp_writes";
             if (ts.isPropertyAccessExpression(node)) {
-                if (
-                    phase === "finish" &&
-                    node.getText(file) === "records.length"
-                )
+                if (phase === "finish" && sameSource(node, "records.length"))
                     return "static_cast<double>(frame_records.size())";
                 if (
                     ts.isIdentifier(node.expression) &&
@@ -211,7 +209,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                     const [timer, publisher, snapshot] = node.arguments;
                     if (
                         node.arguments.length !== 3 ||
-                        timer?.getText(file) !== "timer" ||
+                        !sameSource(timer, "timer") ||
                         !publisher ||
                         !["publish", "pending.publish"].includes(
                             publisher.getText(file),
@@ -365,10 +363,8 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                 }
                 if (ts.isForOfStatement(node) && phase === "dispose") {
                     if (
-                        node.expression.getText(file) !==
-                            "timer.readbackPool" &&
-                        node.expression.getText(file) !==
-                            "timer.pendingReadbacks"
+                        !sameSource(node.expression, "timer.readbackPool") &&
+                        !sameSource(node.expression, "timer.pendingReadbacks")
                     )
                         return fail(node);
                     const block = ts.isBlock(node.statement)
@@ -642,8 +638,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             return false;
         if (
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(file) ===
-                "raw"
+            sameSource(statement.declarationList.declarations[0]?.name, "raw")
         )
             return false;
         return true;

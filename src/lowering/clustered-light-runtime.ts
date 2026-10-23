@@ -62,6 +62,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import { recordAt, recordFind } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
 const cameraModule = "src/camera/camera.ts";
@@ -1079,7 +1080,7 @@ function coneChangedWriter(context: LoweringContext): string {
         calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
-            node.text === snapshot.name.getText(file) &&
+            sameSource(snapshot.name, node.text) &&
             pinnedDeclaration(file, node) !== snapshot
                 ? context.contractError(
                       node,
@@ -2151,7 +2152,7 @@ function forwardsTo(
         call.arguments.every(
             (argument, index) =>
                 ts.isIdentifier(argument) &&
-                argument.text === arrow.parameters[index]!.name.getText(file),
+                sameSource(arrow.parameters[index]!.name, argument.text),
         )
     );
 }

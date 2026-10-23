@@ -17,6 +17,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-shader.ts";
 export function computeShaderDefaultEntryPoint(): string {
@@ -365,8 +366,8 @@ function scope(
                     const compare = initializer.arguments[0];
                     if (
                         compare.parameters.length !== 2 ||
-                        compare.parameters[0]!.name.getText(file) !== "a" ||
-                        compare.parameters[1]!.name.getText(file) !== "b" ||
+                        !sameSource(compare.parameters[0]!.name, "a") ||
+                        !sameSource(compare.parameters[1]!.name, "b") ||
                         ts.isBlock(compare.body)
                     )
                         return context.contractError(

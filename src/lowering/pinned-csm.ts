@@ -11,7 +11,11 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
-import { isSuspensionPoint, variableKind } from "../compiler/syntax.js";
+import {
+    isSuspensionPoint,
+    variableKind,
+    sameSource,
+} from "../compiler/syntax.js";
 
 const modulePath = "src/shadow/csm-shadow-task-hooks.ts";
 
@@ -459,7 +463,7 @@ function bindParameters(
         if (
             !ts.isIdentifier(parameter.name) ||
             parameter.name.text !== expected.name ||
-            parameter.type?.getText() !== expected.annotation
+            !sameSource(parameter.type, expected.annotation)
         ) {
             context.contractError(
                 parameter,
@@ -700,7 +704,8 @@ function assertStorageContracts(context: LoweringContext): void {
                 !ts.isPropertySignature(member) ||
                 !ts.isIdentifier(member.name) ||
                 member.questionToken ||
-                member.type?.getText() !== expected.get(member.name.text)
+                !expected.has(member.name.text) ||
+                !sameSource(member.type, expected.get(member.name.text))
             ) {
                 context.contractError(
                     member,

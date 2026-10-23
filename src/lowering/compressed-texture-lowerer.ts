@@ -7,7 +7,7 @@ import { compressedTextureFormat as layout } from "../compressed-texture-format.
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { variableKind } from "../compiler/syntax.js";
+import { variableKind, sameSource } from "../compiler/syntax.js";
 
 const KTX_MODULE = "src/texture/ktx-loader.ts";
 const FORMATS_MODULE = "src/texture/compressed-formats.ts";
@@ -219,7 +219,7 @@ export class CompressedTextureLowerer {
         )[0];
         if (
             !dimensions?.initializer ||
-            dimensions.name.getText(file) !== "[w, h]"
+            !sameSource(dimensions.name, "[w, h]")
         ) {
             this.context.contractError(
                 loop,
@@ -268,15 +268,16 @@ export class CompressedTextureLowerer {
                 if (
                     !ts.isBinaryExpression(gl!) ||
                     gl.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-                    gl.right.getText(file) !== "i" ||
+                    !sameSource(gl.right, "i") ||
                     !ts.isTemplateExpression(formatExpression) ||
                     formatExpression.templateSpans.length !== 1 ||
-                    formatExpression.templateSpans[0]!.expression.getText(
-                        file,
-                    ) !== "tag" ||
-                    featureArgument!.getText(file) !== "ASTC" ||
-                    blockW!.getText(file) !== "w" ||
-                    blockH!.getText(file) !== "h"
+                    !sameSource(
+                        formatExpression.templateSpans[0]!.expression,
+                        "tag",
+                    ) ||
+                    !sameSource(featureArgument, "ASTC") ||
+                    !sameSource(blockW, "w") ||
+                    !sameSource(blockH, "h")
                 ) {
                     this.context.contractError(
                         call,
@@ -609,9 +610,9 @@ export class CompressedTextureLowerer {
             );
             if (
                 !ts.isCallExpression(initializer) ||
-                initializer.expression.getText(file) !== "Math.max" ||
+                !sameSource(initializer.expression, "Math.max") ||
                 initializer.arguments.length !== 2 ||
-                initializer.arguments[1]!.getText(file) !== "1"
+                !sameSource(initializer.arguments[1], "1")
             ) {
                 this.context.contractError(
                     initializer,

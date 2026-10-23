@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Preserve source teardown order and finally completion around native device ownership. */
 export function lowerEngineDisposal(context: LoweringContext): LoweredSource {
@@ -51,7 +52,7 @@ export function lowerEngineDisposal(context: LoweringContext): LoweredSource {
             if (
                 ts.isExpressionStatement(node) &&
                 ts.isBinaryExpression(node.expression) &&
-                node.expression.left.getText(file) === "surfaces.length"
+                sameSource(node.expression.left, "surfaces.length")
             ) {
                 context.assertExpressionShape(
                     node.expression,

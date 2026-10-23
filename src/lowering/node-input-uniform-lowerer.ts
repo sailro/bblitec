@@ -2,6 +2,7 @@ import ts from "typescript";
 import { type LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Scalar writes use the numeric arm of the pin's actual input accessor. */
 export function lowerNodeInputScalarSetter(context: LoweringContext): string {
@@ -13,8 +14,7 @@ export function lowerNodeInputScalarSetter(context: LoweringContext): string {
     const setters = context.findNodes(
         declaration,
         (node): node is ts.SetAccessorDeclaration =>
-            ts.isSetAccessorDeclaration(node) &&
-            node.name.getText(file) === "value",
+            ts.isSetAccessorDeclaration(node) && sameSource(node.name, "value"),
     );
     const setter = setters[0];
     if (setters.length !== 1 || !setter?.body)

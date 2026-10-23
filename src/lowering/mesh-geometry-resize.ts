@@ -4,6 +4,7 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { retainedMeshResizeWrappers } from "./mesh-cpu-streams.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const module = "src/mesh/mesh-factories.ts";
 
@@ -80,7 +81,7 @@ export function lowerMeshGeometryResize(
                 if (
                     ts.isExpressionStatement(node) &&
                     ts.isBinaryExpression(node.expression) &&
-                    node.expression.left.getText(file) === "resource._refCount"
+                    sameSource(node.expression.left, "resource._refCount")
                 )
                     return [
                         `${indent}geometry.owners=static_cast<std::uint32_t>(${lowerer.expression(node.expression.right)});`,
@@ -271,7 +272,7 @@ function lowerMeshFactoryFunction(
         expression(node, lowerer) {
             if (
                 ts.isElementAccessExpression(node) &&
-                node.expression.getText(file) === "meshes"
+                sameSource(node.expression, "meshes")
             )
                 return `(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)}) < meshes.size() ? meshes[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})] : MeshHandle{})`;
             return undefined;
@@ -320,7 +321,7 @@ function lowerMeshFactoryFunction(
             if (
                 ts.isExpressionStatement(node) &&
                 ts.isBinaryExpression(node.expression) &&
-                node.expression.left.getText(file) === "mesh._gpu"
+                sameSource(node.expression.left, "mesh._gpu")
             )
                 return [
                     `${indent}${recordAt("engine.meshes", "mesh")}.geometry=${lowerer.expression(node.expression.right)};`,

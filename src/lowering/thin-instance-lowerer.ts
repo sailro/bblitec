@@ -13,6 +13,7 @@ import {
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 import { absentDrawRangeBinding } from "./mesh-draw-range.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
 const gpuModule = "src/mesh/thin-instance-gpu.ts";
@@ -207,8 +208,8 @@ function thinScope(
         bind(`BU.${flag}`, `${value}.0`, "scalar");
     const optionalTarget = (node: ts.Expression): string | undefined => {
         if (!ts.isPropertyAccessExpression(node)) return undefined;
-        const root = roots.find(
-            ([source]) => node.expression.getText(file) === source,
+        const root = roots.find(([source]) =>
+            sameSource(node.expression, source),
         );
         const field = fields[node.name.text as keyof typeof fields];
         return root &&
@@ -318,7 +319,7 @@ function thinScope(
                 const buffer = node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        property.name.getText(file) === "usage",
+                        sameSource(property.name, "usage"),
                 );
                 const literal = pinnedRecordLiteral(
                     context,
@@ -418,7 +419,7 @@ function thinScope(
                 }
                 if (
                     ts.isCallExpression(expression) &&
-                    expression.expression.getText(file) === "retireGpuResources"
+                    sameSource(expression.expression, "retireGpuResources")
                 ) {
                     const callback = expression.arguments[1];
                     if (

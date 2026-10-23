@@ -6,6 +6,7 @@ import type {
     PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 const featureModule = "src/loader-gltf/gltf-feature-interactivity.ts";
 const sceneModule = "src/flow-graph/scene-flow-graph.ts";
@@ -329,7 +330,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
             !callback ||
             !ts.isArrowFunction(callback) ||
             callback.parameters.length !== 1 ||
-            callback.parameters[0]!.name.getText(feature.file) !== "runtime"
+            !sameSource(callback.parameters[0]!.name, "runtime")
         )
             context.contractError(
                 call,
@@ -480,8 +481,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                         !fulfilled ||
                         !ts.isArrowFunction(fulfilled) ||
                         fulfilled.parameters.length !== 1 ||
-                        fulfilled.parameters[0]!.name.getText(feature.file) !==
-                            "loaded" ||
+                        !sameSource(fulfilled.parameters[0]!.name, "loaded") ||
                         !ts.isBlock(fulfilled.body) ||
                         !rejected
                     )
@@ -597,7 +597,7 @@ export function lowerFlowGraphMembership(context: LoweringContext): string {
             expression(node) {
                 if (
                     node.kind === ts.SyntaxKind.Identifier &&
-                    node.getText(file) === "undefined"
+                    sameSource(node, "undefined")
                 )
                     return "{}";
                 return undefined;
