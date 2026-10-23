@@ -614,13 +614,28 @@ export class SharedClosureAnalysis {
         );
         for (const symbol of storedLocalFunctions)
             localFunctions.get(symbol)?.forEach(addRoot);
-        // A local function a root calls runs from that stored callback.
+        // A local function a root calls runs from that stored callback, as
+        // does any body declared in the owner that a root's call reaches (a
+        // method of a local class, each override included).
         const visitedRoots = new EmissionSet<ts.Node>();
         for (let index = 0; index < roots.length; ++index) {
             const root = roots[index]!;
             if (visitedRoots.has(root)) continue;
             visitedRoots.add(root);
             forEachAnalysisNode(root, (node) => {
+                if (ts.isCallExpression(node)) {
+                    const bodies =
+                        this.context.evaluationOrder.callBodies(node);
+                    if (bodies !== "library")
+                        for (const body of bodies ?? [])
+                            if (
+                                !rootSet.has(body) &&
+                                body.pos >= owner.pos &&
+                                body.end <= owner.end &&
+                                body.getSourceFile() === owner.getSourceFile()
+                            )
+                                addRoot(body);
+                }
                 if (
                     ts.isIdentifier(node) &&
                     localFunctionNames.has(node.text)

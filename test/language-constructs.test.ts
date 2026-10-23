@@ -16,6 +16,19 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-stored-closure-calling-a-method-shares-the-bindings-it-writes",
+    `
+    let n = 0;
+    class C { m(): void { n++; } }
+    const c = new C();
+    const fs: Array<() => void> = [];
+    fs.push(() => c.m());
+    fs[0]!(); fs[0]!();
+    if (n !== 2) throw new Error("method write through a stored closure");
+`,
+);
+
+check(
     "a-static-initializer-reads-this-as-its-class",
     `
     class R { static readonly F = 10; static readonly H = this.F / 2; value(): number { return R.H; } }
