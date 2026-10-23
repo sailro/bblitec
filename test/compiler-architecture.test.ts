@@ -1269,6 +1269,19 @@ test("undefined as a value is spelled and read by values/model.ts", () => {
         0,
     );
     assert.ok(checks <= 22, `"std::nullopt" text checks: ${checks}`);
+    // staticBooleanOf is the one reader of a value's known boolean.
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/values/model.ts" &&
+                    /\.cpp [=!]== "(?:true|false)"/.test(
+                        readFileSync(path, "utf8"),
+                    ),
+            )
+            .sort(),
+        [],
+    );
 });
 
 test("a Promise reaction call is recognized by promises.ts", () => {

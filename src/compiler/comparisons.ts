@@ -9,6 +9,7 @@
  * and pinned bodies compare with one meaning.
  */
 import ts from "typescript";
+import { staticBooleanOf } from "./values/model.js";
 import {
     PINNED_COMPARISON_OPERATORS,
     foldNumericComparison,
@@ -198,11 +199,8 @@ export function foldBooleanComparison(
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
         if (value?.kind !== "boolean") return undefined;
-        if (value.cpp === "true" || value.cpp === "false") return value.cpp;
-        // A binding whose generation-known value outlives its storage name.
-        return value.staticBoolean === undefined
-            ? undefined
-            : String(value.staticBoolean);
+        const known = staticBooleanOf(value);
+        return known === undefined ? undefined : String(known);
     };
     return context.probeEmission(() => {
         const left = settled(expression.left);

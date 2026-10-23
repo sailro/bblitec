@@ -2469,7 +2469,11 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
-import { optionalPresentCpp, optionalValueCpp } from "./values/model.js";
+import {
+    optionalPresentCpp,
+    optionalValueCpp,
+    staticBooleanOf,
+} from "./values/model.js";
 import { recordAt } from "./record-access.js";
 import { isPinnedType } from "./data-types.js";
 import { creationInSegment } from "./creation-segments.js";
@@ -3452,13 +3456,7 @@ function emitReceiveShadowsAssignment(
         requireSimpleAssignment(context, expression, "mesh receiveShadows");
         const enabled = context.compileValue(expression.right);
         context.expectKind(enabled, "boolean", expression.right);
-        const staticEnabled =
-            enabled.staticBoolean ??
-            (enabled.cpp === "true"
-                ? true
-                : enabled.cpp === "false"
-                  ? false
-                  : undefined);
+        const staticEnabled = staticBooleanOf(enabled);
         if (staticEnabled === false) {
             if (target.sceneMeshIndex === undefined) {
                 context.emit({

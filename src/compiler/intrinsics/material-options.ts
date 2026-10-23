@@ -18,6 +18,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // derivation reads exactly these values back. The intrinsic lowerer
 // in material.ts calls these through its context.
 import ts from "typescript";
+import { staticBooleanOf } from "../values/model.js";
 import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
@@ -923,8 +924,7 @@ export function compileMetallicReflectanceOptions(
     );
     if (
         useOnly &&
-        (useOnly.kind !== "boolean" ||
-            (useOnly.cpp !== "true" && useOnly.cpp !== "false"))
+        (useOnly.kind !== "boolean" || staticBooleanOf(useOnly) === undefined)
     ) {
         context.fail(
             expression,
@@ -947,7 +947,10 @@ export function compileMetallicReflectanceOptions(
             hasMetallicTexture: texture !== undefined,
             hasReflectanceTexture: reflectanceTexture !== undefined,
             ...(useOnly
-                ? { useOnlyMetallicFromTexture: useOnly.cpp === "true" }
+                ? {
+                      useOnlyMetallicFromTexture:
+                          staticBooleanOf(useOnly) === true,
+                  }
                 : {}),
         },
     };

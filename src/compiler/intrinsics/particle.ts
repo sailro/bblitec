@@ -16,6 +16,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // unsupported combinations refuse where their source operation is reached.
 import { createHash } from "node:crypto";
 import ts from "typescript";
+import { staticBooleanOf } from "../values/model.js";
 import { argumentAt } from "../syntax.js";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
 import {
@@ -226,12 +227,8 @@ function staticArgumentJson(
         }
         if (value.browserValue.kind === "null") return null;
     }
-    if (
-        value.kind === "boolean" &&
-        (value.cpp === "true" || value.cpp === "false")
-    ) {
-        return value.cpp === "true";
-    }
+    const known = value.kind === "boolean" ? staticBooleanOf(value) : undefined;
+    if (known !== undefined) return known;
     context.fail(node, "A node-particle graph factory takes static arguments.");
 }
 
@@ -331,13 +328,13 @@ function sprite2dOptions(
     let visible: boolean | undefined;
     if (visibleNamed) {
         const value = context.compileValue(visibleNamed);
-        if (value.cpp !== "true" && value.cpp !== "false") {
+        if (staticBooleanOf(value) === undefined) {
             context.fail(
                 visibleNamed,
                 "A bridge-owned layer's visible must be a static boolean.",
             );
         }
-        visible = value.cpp === "true";
+        visible = staticBooleanOf(value) === true;
     }
     const opacity = numeric("opacity");
     const order = numeric("order");

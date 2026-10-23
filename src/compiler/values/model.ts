@@ -100,6 +100,16 @@ export function undefinedValue(): Value<"json-null"> {
     return { kind: "json-null", cpp: "std::nullopt" };
 }
 
+/** The boolean a value is known to be: its static fact, or a literal spelling. */
+export function staticBooleanOf(value: Value): boolean | undefined {
+    if (value.staticBoolean !== undefined) return value.staticBoolean;
+    return value.cpp === "true"
+        ? true
+        : value.cpp === "false"
+          ? false
+          : undefined;
+}
+
 /** Which absence a json-null value is; undefined for any other value. */
 export function absenceOf(value: Value): "undefined" | "null" | undefined {
     if (value.kind !== "json-null") return undefined;

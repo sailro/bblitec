@@ -58,7 +58,11 @@ import {
 import { sourceProfileScope } from "./compiler/source-profile.js";
 import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./compiler/values/model.js";
+import {
+    undefinedValue,
+    absenceOf,
+    staticBooleanOf,
+} from "./compiler/values/model.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
 import { PageLoader } from "./compiler/page-loader.js";
@@ -2835,12 +2839,9 @@ class Compiler implements LoweringServices {
                 "Conditional text transform objects require a runtime vector identity carrier; select the renderable before reading its transform.",
             );
         }
-        if (
-            value.kind === "boolean" &&
-            (value.cpp === "true" || value.cpp === "false")
-        ) {
-            value = { ...value, staticBoolean: value.cpp === "true" };
-        }
+        const known =
+            value.kind === "boolean" ? staticBooleanOf(value) : undefined;
+        if (known !== undefined) value = { ...value, staticBoolean: known };
         // CSG values retain materialized geometry plans, not the native mesh
         // handles read while producing them. A later consumer can therefore
         // use the plan from a hoisted cleanup without capturing those locals.

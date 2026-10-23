@@ -1,5 +1,6 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
+import { staticBooleanOf } from "../values/model.js";
 import { argumentAt, outermostWrapper } from "../syntax.js";
 import { rejectedWhenRefused } from "../promises.js";
 import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
@@ -344,13 +345,7 @@ function compileShadowGeneratorFactory(
             if (name === "forceRefreshEveryFrame") {
                 const value = context.compileValue(expression);
                 context.expectKind(value, "boolean", expression);
-                const fixed =
-                    value.staticBoolean ??
-                    (value.cpp === "true"
-                        ? true
-                        : value.cpp === "false"
-                          ? false
-                          : undefined);
+                const fixed = staticBooleanOf(value);
                 if (fixed === undefined) {
                     context.fail(
                         expression,

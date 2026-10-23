@@ -1,7 +1,7 @@
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { absenceOf } from "../values/model.js";
+import { absenceOf, staticBooleanOf } from "../values/model.js";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { renderClosure } from "../closure-captures.js";
@@ -999,7 +999,7 @@ function compileCreateSpriteAtlasFromFrames(
         );
     }
     const srgb = property(options, "srgb");
-    if (srgb && srgb.cpp !== "false") {
+    if (srgb && staticBooleanOf(srgb) !== false) {
         context.fail(
             argumentAt(call, 2),
             "sRGB in-memory sprite atlases are not lowered yet.",
