@@ -28,6 +28,7 @@ import {
     compileEntryCollection,
 } from "./collection-methods.js";
 import { callSignatures } from "./type-facts.js";
+import { absenceOfNull, jsonAbsenceCpp } from "./values/model.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -455,9 +456,7 @@ function compileObjectIs(
     const erased = (value: Value, node: ts.Expression): string | undefined => {
         if (isJsonValue(value)) return value.cpp;
         if (value.kind === "json-null")
-            return value.cpp === "std::nullopt"
-                ? "bbl::js::JsonValue{}"
-                : "bbl::js::JsonValue::null_value()";
+            return jsonAbsenceCpp(absenceOfNull(value));
         if (numeric(value))
             return `bbl::js::JsonValue::from_number(${value.cpp})`;
         if (textual(value))

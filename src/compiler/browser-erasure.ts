@@ -17,7 +17,7 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
-import { undefinedValue } from "./values/model.js";
+import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { cancelledSchedulerOf, schedulerOf } from "./schedulers.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
@@ -1882,8 +1882,7 @@ export class BrowserErasure {
                 if (bound.browserValue !== undefined) return bound.browserValue;
                 if (bound.kind === "json-null")
                     return {
-                        kind:
-                            bound.cpp === "std::nullopt" ? "undefined" : "null",
+                        kind: absenceOfNull(bound),
                     };
                 // Inlining can bind a module constant before a browser
                 // helper evaluates it. Its native binding still carries

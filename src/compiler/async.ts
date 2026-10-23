@@ -5,7 +5,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { undefinedValue } from "./values/model.js";
+import { undefinedValue, absenceOf } from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
@@ -2055,11 +2055,11 @@ export class AsyncLowerer {
         if (value.kind === "browser" && isVoid(result))
             return { kind: "void", cpp: "" };
         return value.kind === "json-null" &&
-            (value.cpp === "std::nullopt" ||
+            (absenceOf(value) === "undefined" ||
                 (result.flags & ts.TypeFlags.Undefined) !== 0)
             ? {
                   kind: "void",
-                  cpp: value.cpp === "std::nullopt" ? "" : value.cpp,
+                  cpp: absenceOf(value) === "undefined" ? "" : value.cpp,
                   ...(value.erasedVoidCompletion
                       ? { erasedVoidCompletion: true as const }
                       : {}),

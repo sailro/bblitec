@@ -42,6 +42,7 @@ import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
 import { readsErasedVoid } from "../undefined-values.js";
+import { absenceOf } from "../values/model.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -124,7 +125,7 @@ function valueTagged(
     const cppType = context.dataTypes.cppType(dataType);
     const inner = dataType.inner;
     if (value.kind === "json-null")
-        return value.cpp === "std::nullopt"
+        return absenceOf(value) === "undefined"
             ? `${cppType}{}`
             : `${cppType}{${context.dataTypes.absentValue(inner)}, true}`;
     if (isUndefinedDataType(value.dataType)) {

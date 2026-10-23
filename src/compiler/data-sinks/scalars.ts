@@ -1,6 +1,6 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
-import { absenceOf } from "../values/model.js";
+import { absenceOf, absenceOfNull, jsonAbsenceCpp } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
@@ -198,7 +198,7 @@ function valueJson(
         !readsErasedVoid(lowerer.context, value, node)
     ) {
         lowerer.context.emitDiscardedValue(value);
-        return "bbl::js::JsonValue{}";
+        return jsonAbsenceCpp("undefined");
     }
     // An optional's one absent state is the absence its read admits:
     // `undefined` or `null`, or the run-time answer of a read that records
@@ -231,10 +231,7 @@ function valueJson(
                 value,
             );
     }
-    if (value.kind === "json-null")
-        return value.cpp === "std::nullopt"
-            ? "bbl::js::JsonValue{}"
-            : "bbl::js::JsonValue::null_value()";
+    if (value.kind === "json-null") return jsonAbsenceCpp(absenceOfNull(value));
     if (value.kind === "record" && !value.cpp) {
         const owned = ownedDocument(lowerer, value, node);
         if (owned !== undefined) return owned;
@@ -573,7 +570,7 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, lowerer, value) => {
             if (value.dataType?.kind === "null")
                 return `(static_cast<void>(${value.cpp}), bbl::js::Null{})`;
-            if (value.kind !== "json-null" || value.cpp === "std::nullopt")
+            if (value.kind !== "json-null" || absenceOf(value) === "undefined")
                 return undefined;
             lowerer.context.emitDiscardedValue(value);
             return "bbl::js::Null{}";

@@ -172,6 +172,7 @@ import {
     finiteArraySources,
     type FiniteArraySources,
 } from "./finite-array-sources.js";
+import { jsonAbsenceCpp } from "./values/model.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -9235,9 +9236,9 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): string | undefined {
         if (isUndefinedDataType(type))
-            return `(static_cast<void>(${cpp}), bbl::js::JsonValue{})`;
+            return `(static_cast<void>(${cpp}), ${jsonAbsenceCpp("undefined")})`;
         if (type.kind === "null")
-            return `(static_cast<void>(${cpp}), bbl::js::JsonValue::null_value())`;
+            return `(static_cast<void>(${cpp}), ${jsonAbsenceCpp("null")})`;
         if (type.kind === "tagged") {
             const present = this.jsonPresentValueCpp(
                 type.inner,

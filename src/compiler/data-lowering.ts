@@ -34,7 +34,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./values/model.js";
+import { undefinedValue, absenceOf, absenceOfNull } from "./values/model.js";
 import { countedLoopShape } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
@@ -17021,7 +17021,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         } else {
             item = read();
             if (item.kind === "json-null")
-                return item.cpp === "std::nullopt"
+                return absenceOf(item) === "undefined"
                     ? this.context.compileValue(fallback)
                     : item;
             absent = "false";
@@ -17777,8 +17777,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (literal) return literal;
         if (ts.isIdentifier(node)) {
             const bound = this.context.bindings.lookupOptional(node);
-            if (bound?.kind === "json-null")
-                return bound.cpp === "std::nullopt" ? "undefined" : "null";
+            if (bound?.kind === "json-null") return absenceOfNull(bound);
         }
         return undefined;
     }
@@ -17963,8 +17962,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const equal =
                 loose ||
                 literal === undefined ||
-                (value.cpp === "std::nullopt" ? "undefined" : "null") ===
-                    literal;
+                absenceOfNull(value) === literal;
             return equal !== negated ? "true" : "false";
         }
         if (isUndefinedDataType(value.dataType)) {

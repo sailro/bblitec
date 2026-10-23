@@ -1255,7 +1255,12 @@ test("undefined as a value is spelled and read by values/model.ts", () => {
     // undefinedValue makes the json-null `undefined`; absenceOf reads which
     // absence a json-null value is. Comparing emitted C++ to "std::nullopt"
     // elsewhere may only shrink.
-    for (const name of ["undefinedValue", "absenceOf"])
+    for (const name of [
+        "undefinedValue",
+        "absenceOf",
+        "absenceOfNull",
+        "jsonAbsenceCpp",
+    ])
         assert.deepEqual(
             declarationOwners(name),
             ["src/compiler/values/model.ts"],
@@ -1268,7 +1273,14 @@ test("undefined as a value is spelled and read by values/model.ts", () => {
                 .length,
         0,
     );
-    assert.ok(checks <= 22, `"std::nullopt" text checks: ${checks}`);
+    assert.ok(checks <= 5, `"std::nullopt" text checks: ${checks}`);
+    // A JsonValue absence is spelled by jsonAbsenceCpp.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            readFileSync(path, "utf8").includes("JsonValue::null_value()"),
+        ),
+        ["src/compiler/values/model.ts"],
+    );
     // staticBooleanOf is the one reader of a value's known boolean.
     assert.deepEqual(
         sourcePaths

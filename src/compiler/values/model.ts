@@ -116,6 +116,21 @@ export function absenceOf(value: Value): "undefined" | "null" | undefined {
     return value.cpp === "std::nullopt" ? "undefined" : "null";
 }
 
+/** A JsonValue holding an absence: `undefined` is the empty value, `null` JSON null. */
+export function jsonAbsenceCpp(absence: "undefined" | "null"): string {
+    return absence === "undefined"
+        ? "bbl::js::JsonValue{}"
+        : "bbl::js::JsonValue::null_value()";
+}
+
+/** Which absence a value the caller knows is json-null is. */
+export function absenceOfNull(value: Value): "undefined" | "null" {
+    const absence = absenceOf(value);
+    if (absence === undefined)
+        throw new Error(`A ${value.kind} value is no absence.`);
+    return absence;
+}
+
 /** Whether a record member's generation-known shape survives a copy of the record. */
 export function keepsStaticMember(value: Value): boolean {
     return (

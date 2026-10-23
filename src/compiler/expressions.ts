@@ -32,7 +32,7 @@ import type { UiProjection } from "./ui-projection.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./values/model.js";
+import { undefinedValue, absenceOf, absenceOfNull } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
@@ -398,8 +398,7 @@ function staticStringCoercion(value: Value): string | undefined {
     if (value.staticString !== undefined) return value.staticString;
     if (value.staticNumber !== undefined) return String(value.staticNumber);
     if (value.staticBoolean !== undefined) return String(value.staticBoolean);
-    if (value.kind === "json-null")
-        return value.cpp === "std::nullopt" ? "undefined" : "null";
+    if (value.kind === "json-null") return absenceOfNull(value);
     return undefined;
 }
 
@@ -1722,7 +1721,9 @@ export class ExpressionLowerer {
             }
             if (operand.kind === "json-null") {
                 return staticStringValue(
-                    operand.cpp === "std::nullopt" ? "undefined" : "object",
+                    absenceOfNull(operand) === "undefined"
+                        ? "undefined"
+                        : "object",
                     (text) => this.context.cppString(text),
                 );
             }
@@ -4082,9 +4083,8 @@ export class ExpressionLowerer {
             const coerced = staticStringCoercion(value);
             this.context.reachJsData();
             if (value.kind === "json-null") {
-                return staticStringValue(
-                    value.cpp === "std::nullopt" ? "undefined" : "null",
-                    (text) => this.context.cppString(text),
+                return staticStringValue(absenceOfNull(value), (text) =>
+                    this.context.cppString(text),
                 );
             }
             // `String(symbol)` is its description text, as `toString()`.
@@ -7524,7 +7524,7 @@ export class ExpressionLowerer {
                 this.context.emitDiscardedValue(instance);
                 if (callee.questionDotToken) return undefinedValue();
                 const message = this.context.cppString(
-                    `Cannot read properties of ${instance.cpp === "std::nullopt" ? "undefined" : "null"} (reading '${memberName}')`,
+                    `Cannot read properties of ${absenceOfNull(instance)} (reading '${memberName}')`,
                 );
                 const type = this.context.dataLowerer.dataTypeAt(call);
                 this.context.reachJsData();

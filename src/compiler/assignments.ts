@@ -1202,7 +1202,7 @@ export function emitPropertyAssignment(
             context.emit({
                 kind: "expression",
                 code: `bbl::js::throw_nullish_access(${context.cppString(
-                    `Cannot ${simple ? "set" : "read"} properties of ${absent.cpp === "std::nullopt" ? "undefined" : "null"}`,
+                    `Cannot ${simple ? "set" : "read"} properties of ${absenceOfNull(absent)}`,
                 )});`,
             });
             return;
@@ -2473,6 +2473,7 @@ import {
     optionalPresentCpp,
     optionalValueCpp,
     staticBooleanOf,
+    absenceOfNull,
 } from "./values/model.js";
 import { recordAt } from "./record-access.js";
 import { isPinnedType } from "./data-types.js";
