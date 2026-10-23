@@ -52,6 +52,7 @@ import {
     uiQuerySelectorCpp,
 } from "./ui-query-selectors.js";
 import { valueKindOf } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -1045,13 +1046,13 @@ export class PlatformCalls {
             if (onceExpression) {
                 const compiled =
                     this.context.conditions.compileCondition(onceExpression);
-                if (compiled !== "true" && compiled !== "false") {
+                if (knownCondition(compiled) === undefined) {
                     this.context.fail(
                         onceExpression,
                         "The event listener 'once' option must be static.",
                     );
                 }
-                once = compiled === "true";
+                once = knownCondition(compiled) === true;
             }
         }
         if (

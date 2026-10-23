@@ -1,4 +1,5 @@
 import {
+    booleanValue,
     commonResourceValue,
     isStringValue,
     optionalPresentCpp,
@@ -23,7 +24,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./values/model.js";
+import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
@@ -4174,7 +4175,7 @@ export class UserFunctionLowerer {
                 true,
             );
         const projected = { ...result };
-        if (statedTruthinessCpp(metadata) === "true")
+        if (knownCondition(statedTruthinessCpp(metadata)) === true)
             Object.assign(projected, {
                 truthinessCpp: "true",
                 optionalFoundCpp: "true",
@@ -4627,7 +4628,7 @@ export class UserFunctionLowerer {
                     returnedValues.every(
                         (value) =>
                             value.kind === "record" ||
-                            statedTruthinessCpp(value) === "true",
+                            knownCondition(statedTruthinessCpp(value)) === true,
                     )
                 ) {
                     const properties = returnedValues[0]!.recordProperties;
@@ -4828,14 +4829,7 @@ export class UserFunctionLowerer {
                 callNode,
                 "Boolean as a callback requires an argument with native truthiness.",
             );
-        return {
-            kind: "boolean",
-            cpp: condition,
-            dataType: { kind: "boolean" },
-            ...(condition === "true" || condition === "false"
-                ? { staticBoolean: condition === "true" }
-                : {}),
-        };
+        return booleanValue(condition);
     }
 
     /**
@@ -5650,14 +5644,7 @@ export class UserFunctionLowerer {
                     declaration,
                     "Array predicate return has no native truthiness.",
                 );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                dataType: { kind: "boolean" },
-                ...(condition === "true" || condition === "false"
-                    ? { staticBoolean: condition === "true" }
-                    : {}),
-            };
+            return booleanValue(condition);
         }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>
@@ -5674,14 +5661,7 @@ export class UserFunctionLowerer {
                     declaration,
                     "Array predicate return has no native truthiness.",
                 );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                dataType: { kind: "boolean" },
-                ...(condition === "true" || condition === "false"
-                    ? { staticBoolean: condition === "true" }
-                    : {}),
-            };
+            return booleanValue(condition);
         }
         if (!ir?.returnExpression) {
             context.fail(
@@ -5723,16 +5703,7 @@ export class UserFunctionLowerer {
             const condition = context.conditions.compileCondition(
                 ir.returnExpression,
             );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                ...(condition === "true"
-                    ? { staticBoolean: true }
-                    : condition === "false"
-                      ? { staticBoolean: false }
-                      : {}),
-                dataType: { kind: "boolean" },
-            };
+            return booleanValue(condition);
         } finally {
             context.bindings.popScope();
             this.active.delete(ir.declaration);
@@ -6472,10 +6443,10 @@ export class UserFunctionLowerer {
                     const condition = context.conditions.compileCondition(
                         statement.expression,
                     );
-                    if (condition !== "true" && condition !== "false")
+                    if (knownCondition(condition) === undefined)
                         return { kind: "dynamic" };
                     const branch =
-                        condition === "true"
+                        knownCondition(condition) === true
                             ? statement.thenStatement
                             : statement.elseStatement;
                     const outcome = branch

@@ -187,10 +187,12 @@ export function foldBooleanComparison(
     };
     if (!booleanLike(expression.left) || !booleanLike(expression.right))
         return undefined;
-    const settled = (side: ts.Expression): string | undefined => {
+    const settled = (
+        side: ts.Expression,
+    ): boolean | "nullish" | "object" | undefined => {
         const resolved = context.evaluator.resolveStaticExpression(side);
-        if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
-        if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
+        if (resolved.kind === ts.SyntaxKind.TrueKeyword) return true;
+        if (resolved.kind === ts.SyntaxKind.FalseKeyword) return false;
         const value = ts.isIdentifier(resolved)
             ? context.bindings.lookupOptional(resolved)
             : ts.isPropertyAccessExpression(resolved)
@@ -199,8 +201,7 @@ export function foldBooleanComparison(
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
         if (value?.kind !== "boolean") return undefined;
-        const known = staticBooleanOf(value);
-        return known === undefined ? undefined : String(known);
+        return staticBooleanOf(value);
     };
     return context.probeEmission(() => {
         const left = settled(expression.left);
@@ -208,9 +209,8 @@ export function foldBooleanComparison(
         if (left === undefined || right === undefined) return undefined;
         // Object identity and null versus undefined remain undecided;
         // only their inequality with a concrete boolean is established.
-        const boolean = (value: string): boolean =>
-            value === "true" || value === "false";
-        if (!boolean(left) && !boolean(right)) return undefined;
+        if (typeof left !== "boolean" && typeof right !== "boolean")
+            return undefined;
         return String((left === right) === equals);
     });
 }

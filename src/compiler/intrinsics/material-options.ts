@@ -18,7 +18,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // derivation reads exactly these values back. The intrinsic lowerer
 // in material.ts calls these through its context.
 import ts from "typescript";
-import { staticBooleanOf } from "../values/model.js";
+import { knownCondition, staticBooleanOf } from "../values/model.js";
 import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
@@ -707,7 +707,7 @@ export function compilePbrMaterialOptions(
                 ? {}
                 : { metallicF0Factor: staticMetallicF0Factor }),
             ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
-            doubleSided: doubleSidedCpp === "true",
+            doubleSided: knownCondition(doubleSidedCpp) === true,
             ...(staticPhysicalLightFalloff
                 ? {}
                 : { usePhysicalLightFalloff: false }),
@@ -1013,7 +1013,7 @@ export function compileClearCoatOptions(
             ? context.compileNumber(bumpTextureScale, "float")
             : pinnedDefaultFloatCpp("clearcoatBumpTextureScale"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticIntensity !== undefined
                 ? { intensity: staticIntensity }
                 : {}),
@@ -1090,7 +1090,7 @@ export function compileIridescenceOptions(
             ? context.compileNumber(maximumThickness, "float")
             : pinnedDefaultFloatCpp("iridescenceMaximumThickness"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticIntensity !== undefined
                 ? { intensity: staticIntensity }
                 : {}),
@@ -1151,7 +1151,7 @@ export function compileAnisotropyOptions(
             ? context.evaluator.compileVec2(direction)
             : pinnedDefaultVec2Cpp("anisotropyDirection"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             // Omitted where the scene computes the value: the composition
             // then replays the pin's own `?? 1.0` default, which is what the
             // variant reads. Nothing in the pinned `detect` selects on it.
@@ -1197,7 +1197,7 @@ export function compileSheenOptions(
     const albedoScalingValue = albedoScaling
         ? context.compileBoolean(albedoScaling)
         : "false";
-    if (albedoScalingValue !== "true" && albedoScalingValue !== "false") {
+    if (knownCondition(albedoScalingValue) === undefined) {
         context.fail(
             albedoScaling ?? object,
             "Sheen albedoScaling must be a static boolean; it selects the composed fragment.",
@@ -1214,7 +1214,7 @@ export function compileSheenOptions(
         ? staticNumberValue(context, intensity)
         : pinnedDefaultNumber("sheenIntensity");
     const texture = context.objectProperty(object, "texture");
-    const albedoScalingEnabled = albedoScalingValue === "true";
+    const albedoScalingEnabled = knownCondition(albedoScalingValue) === true;
     return {
         enabled,
         color: color
@@ -1229,7 +1229,7 @@ export function compileSheenOptions(
         texture,
         albedoScaling: albedoScalingEnabled,
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticColor !== undefined ? { color: staticColor } : {}),
             ...(staticRoughness !== undefined
                 ? { roughness: staticRoughness }

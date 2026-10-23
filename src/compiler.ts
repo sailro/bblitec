@@ -60,9 +60,10 @@ import { sourceProfileScope } from "./compiler/source-profile.js";
 import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
 import {
-    undefinedValue,
     absenceOf,
+    knownCondition,
     staticBooleanOf,
+    undefinedValue,
 } from "./compiler/values/model.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
@@ -6114,7 +6115,7 @@ class Compiler implements LoweringServices {
                     compileCondition: (node) =>
                         this.probeEmission(
                             () => this.conditions.compileCondition(node),
-                            (folded) => folded === "true" || folded === "false",
+                            (folded) => knownCondition(folded) !== undefined,
                         ),
                 },
                 resolveStaticExpression: (node) =>
@@ -8440,7 +8441,7 @@ class Compiler implements LoweringServices {
     public optionalResourceCpp(value: Value): string {
         const cpp = value.storedEngineCpp ?? value.ownedEngineCpp ?? value.cpp;
         const found = presenceFlagCpp(value);
-        return found !== undefined && found !== "true"
+        return found !== undefined && knownCondition(found) !== true
             ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
             : cpp;
     }

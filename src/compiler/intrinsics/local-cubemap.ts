@@ -16,6 +16,7 @@ import {
     knownDescriptorProperties,
     requireStableRetainedDescriptor,
 } from "../retained-descriptor.js";
+import { knownCondition } from "../values/model.js";
 
 export interface LocalCubemapIntrinsicContext
     extends
@@ -183,14 +184,18 @@ export function compileLocalCubemapIntrinsic(
         const enabled = context.conditions.compileCondition(
             argumentAt(call, 1),
         );
-        if ((enabled !== "true" && enabled !== "false") || !first.localCubemap)
+        if (knownCondition(enabled) === undefined || !first.localCubemap)
             context.fail(
                 call,
                 "Local probe debug must be a static boolean on a retained probe set.",
             );
-        if ((first.localCubemap.plan.debug ?? false) === (enabled === "true"))
+        if (
+            (first.localCubemap.plan.debug ?? false) ===
+            (knownCondition(enabled) === true)
+        )
             return { kind: "void", cpp: "" };
-        writable(first.localCubemap.plan).debug = enabled === "true";
+        writable(first.localCubemap.plan).debug =
+            knownCondition(enabled) === true;
         return {
             kind: "void",
             cpp: `*${first.cpp} = *${packetExpression(context, first.localCubemap, call)}`,

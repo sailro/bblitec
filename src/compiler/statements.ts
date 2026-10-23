@@ -117,6 +117,7 @@ import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
 
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
+import { knownCondition } from "./values/model.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -1798,12 +1799,12 @@ export class StatementLowerer {
         // a particle system the bake resolved — and emitting
         // `if ((!(true) || !(true)))` would compile a body generation has
         // proved unreachable, dragging its own machinery in with it.
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             const selected =
-                condition === "true"
+                knownCondition(condition) === true
                     ? statement.thenStatement
                     : statement.elseStatement;
-            if (condition === "true") {
+            if (knownCondition(condition) === true) {
                 this.emitScopedBody(context, statement.thenStatement, true);
             } else if (statement.elseStatement) {
                 this.emitScopedBody(context, statement.elseStatement, true);
@@ -4618,9 +4619,9 @@ export class StatementLowerer {
                     "A conditional expression statement cannot suspend in one arm.",
                 );
         };
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             emitArm(
-                condition === "true"
+                knownCondition(condition) === true
                     ? expression.whenTrue
                     : expression.whenFalse,
             );

@@ -56,6 +56,7 @@ import type {
 import { recordAt } from "../record-access.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
+import { knownCondition } from "../values/model.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -1092,9 +1093,11 @@ function compileCreateShaderMaterial(
         const condition = context.conditions.compileCondition(
             selection.condition,
         );
-        if (condition === "true" || condition === "false")
+        if (knownCondition(condition) !== undefined)
             return compile(
-                condition === "true" ? selection.whenTrue : selection.whenFalse,
+                knownCondition(condition) === true
+                    ? selection.whenTrue
+                    : selection.whenFalse,
             );
         const arm = (options: ts.ObjectLiteralExpression): Value => {
             let value!: Value;
@@ -2294,7 +2297,7 @@ function compileRebuildMaterial(
             const property = context.objectProperty(options, name);
             if (!property) continue;
             const value = context.compileBoolean(property);
-            if (value !== "true" && value !== "false") {
+            if (knownCondition(value) === undefined) {
                 context.fail(property, `${name} must be a static boolean.`);
             }
         }

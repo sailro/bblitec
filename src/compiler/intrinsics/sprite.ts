@@ -1,7 +1,7 @@
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { absenceOf, staticBooleanOf } from "../values/model.js";
+import { absenceOf, knownCondition, staticBooleanOf } from "../values/model.js";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { renderClosure } from "../closure-captures.js";
@@ -1592,7 +1592,7 @@ function compilePlaySprite2DAnimation(
     const removeWhenFinished = removeWhenFinishedValue
         ? removeWhenFinishedValue.cpp
         : "false";
-    if (removeWhenFinished !== "true" && removeWhenFinished !== "false") {
+    if (knownCondition(removeWhenFinished) === undefined) {
         context.fail(
             argumentAt(call, 6),
             importedName +

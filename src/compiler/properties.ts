@@ -21,7 +21,7 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
-import { undefinedValue } from "./values/model.js";
+import { knownCondition, undefinedValue } from "./values/model.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -3741,7 +3741,7 @@ export class PropertyAccessLowerer {
         // present one, already tested, and carries none.
         if (
             ownerFlag === undefined ||
-            ownerFlag === "true" ||
+            knownCondition(ownerFlag) === true ||
             !ts.isOptionalChain(expression) ||
             !isStoredPrimitiveRead(value)
         )

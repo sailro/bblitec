@@ -73,6 +73,7 @@ import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
 import { arrayElementType, unionMembers } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * One engine handle collection an expression names.
@@ -1988,7 +1989,11 @@ export class HandleCollections {
                 predicate.parameters[0]!.name,
                 root,
             );
-            if (context.conditions.compileCondition(predicate.body) !== "true")
+            if (
+                knownCondition(
+                    context.conditions.compileCondition(predicate.body),
+                ) !== true
+            )
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",

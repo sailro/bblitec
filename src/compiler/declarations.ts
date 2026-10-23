@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./values/model.js";
+import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
@@ -1421,7 +1421,7 @@ export class DeclarationLowerer {
                 !narrowed.nativeVectorData;
             const narrowedFound = presenceFlagCpp(narrowed);
             const settledFound =
-                (narrowedFound === "true" || narrowedFound === "false") &&
+                knownCondition(narrowedFound) !== undefined &&
                 initializerFactsStable()
                     ? narrowedFound
                     : undefined;
@@ -1759,9 +1759,7 @@ export class DeclarationLowerer {
         const boundCpp = sharedBinding ? sharedCellCpp(cppName) : cppName;
         const valueFound = presenceFlagCpp(value);
         const optionalFoundCpp =
-            valueFound === undefined ||
-            valueFound === "true" ||
-            valueFound === "false"
+            valueFound === undefined || knownCondition(valueFound) !== undefined
                 ? undefined
                 : this.context.allocateTemporaryCppName("element_found");
         // Source bindings can be consumed entirely through generation metadata.
@@ -2022,15 +2020,16 @@ export class DeclarationLowerer {
                         );
                         return effects.length === 0 &&
                             this.context.impureReadCount === reads &&
-                            (compiled === "true" || compiled === "false")
+                            knownCondition(compiled) !== undefined
                             ? compiled
                             : undefined;
                     });
                 } catch (error) {
                     if (!(error instanceof CompileError)) throw error;
                 }
-                if (condition === "true") return visit(node.thenStatement);
-                if (condition === "false")
+                if (knownCondition(condition) === true)
+                    return visit(node.thenStatement);
+                if (knownCondition(condition) === false)
                     return node.elseStatement
                         ? visit(node.elseStatement)
                         : false;
@@ -3958,7 +3957,7 @@ export class DeclarationLowerer {
               ? "false"
               : initializerSnapshot?.kind === "record"
                 ? "true"
-                : snapshotFound === "true" || snapshotFound === "false"
+                : knownCondition(snapshotFound) !== undefined
                   ? snapshotFound
                   : undefined;
         const boundValue: Value = {

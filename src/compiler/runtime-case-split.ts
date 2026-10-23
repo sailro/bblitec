@@ -7,6 +7,7 @@ import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import { writeSites, isValueReference, isSuspensionPoint } from "./syntax.js";
+import { knownCondition } from "./values/model.js";
 
 type CaseSplitContext = Pick<
     LoweringServices,
@@ -237,7 +238,7 @@ function runtimeSelectors(
             () => context.conditions.compileCondition(test),
             () => false,
         );
-        return folded !== "true" && folded !== "false";
+        return knownCondition(folded) === undefined;
     });
     return runtime.length > 0 && runtime.length <= MAX_CANDIDATE_SELECTORS
         ? runtime

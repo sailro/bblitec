@@ -34,7 +34,12 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { undefinedValue, absenceOf, absenceOfNull } from "./values/model.js";
+import {
+    absenceOf,
+    absenceOfNull,
+    knownCondition,
+    undefinedValue,
+} from "./values/model.js";
 import { countedLoopShape } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
@@ -4464,8 +4469,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const { value, lines } = this.compileArm(() => spell(branch));
             return this.armExpression(branch, lines, value);
         };
-        if (condition === "true") return arm(conditional.whenTrue);
-        if (condition === "false") return arm(conditional.whenFalse);
+        if (knownCondition(condition) === true)
+            return arm(conditional.whenTrue);
+        if (knownCondition(condition) === false)
+            return arm(conditional.whenFalse);
         return `(${condition} ? ${arm(conditional.whenTrue)} : ${arm(conditional.whenFalse)})`;
     }
 
@@ -4622,9 +4629,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "A never-completing fallback requires a left operand whose absence the native storage represents.",
             );
         this.emitGuardedStore(
-            present === "true"
+            knownCondition(present) === true
                 ? "false"
-                : present === "false"
+                : knownCondition(present) === false
                   ? "true"
                   : `!(${present})`,
             () =>
@@ -4763,7 +4770,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // search selects on its found flag. The fallback must be
             // the same handle kind; a fallback that can itself miss
             // composes its flag into the result's.
-            if (leftFound === "true") {
+            if (knownCondition(leftFound) === true) {
                 return left.kind === "data" &&
                     left.dataType?.kind === "optional"
                     ? {
@@ -4775,7 +4782,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       }
                     : left;
             }
-            if (leftFound === "false") {
+            if (knownCondition(leftFound) === false) {
                 this.context.emitDiscardedValue(left);
                 return this.context.compileValue(expression.right);
             }
@@ -5484,7 +5491,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 writable(value).optionalFoundCpp = "false";
             }
             if (
-                sourceField?.optionalFoundCpp === "true" &&
+                knownCondition(sourceField?.optionalFoundCpp) === true &&
                 field.type.kind === "optional" &&
                 provenWith(true)
             ) {
@@ -7815,9 +7822,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return {
                 cpp:
-                    condition === "true"
+                    knownCondition(condition) === true
                         ? trueCpp
-                        : condition === "false"
+                        : knownCondition(condition) === false
                           ? falseCpp
                           : `(${condition} ? ${trueCpp} : ${falseCpp})`,
             };
@@ -11004,10 +11011,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 lines: [...(preparation?.lines ?? []), ...lines],
             };
         };
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             const selected = compileBranch(
-                condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
-                condition === "true" ? prepared?.whenTrue : prepared?.whenFalse,
+                knownCondition(condition) === true
+                    ? unwrapped.whenTrue
+                    : unwrapped.whenFalse,
+                knownCondition(condition) === true
+                    ? prepared?.whenTrue
+                    : prepared?.whenFalse,
             );
             for (const line of selected.lines) {
                 this.context.emit(line);
@@ -11250,8 +11261,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     left.left,
                 );
                 const empty = this.context.dataTypes.absentValue(dataType);
-                if (condition === "false") return empty;
-                if (condition === "true")
+                if (knownCondition(condition) === false) return empty;
+                if (knownCondition(condition) === true)
                     return this.compileForSink(left.right, dataType);
                 const selected = this.compileArm(() =>
                     this.compileForSink(left.right, dataType),
@@ -13366,7 +13377,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         : source;
                 if (
                     spread.kind === "json-null" ||
-                    spread.optionalFoundCpp === "false"
+                    knownCondition(spread.optionalFoundCpp) === false
                 ) {
                     declareDefault();
                     continue;
@@ -14889,9 +14900,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
             return truthy;
         }
-        return truthy === "true"
+        return knownCondition(truthy) === true
             ? "false"
-            : truthy === "false"
+            : knownCondition(truthy) === false
               ? "true"
               : `!(${truthy})`;
     }
@@ -14903,7 +14914,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * so a store that never happens compiles no right side either.
      */
     private emitGuardedStore(guard: string, store: () => void): void {
-        if (guard === "false") {
+        if (knownCondition(guard) === false) {
             return;
         }
         this.context.enterRuntimeControlFlow();
@@ -14913,7 +14924,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         } finally {
             this.context.leaveRuntimeControlFlow();
         }
-        if (guard === "true") {
+        if (knownCondition(guard) === true) {
             for (const line of lines) this.context.emit(line);
             return;
         }
@@ -17152,7 +17163,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             vector && vector.element.kind !== "optional"
                 ? this.leafValue(`${saved}.value()`, vector.element)
                 : item;
-        if (absent === "false") return present;
+        if (knownCondition(absent) === false) return present;
         const cpp = this.context.allocateTemporaryCppName(
             "destructure_default",
         );
@@ -17769,11 +17780,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `static_cast<bool>(${value.cpp})`;
         }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            if (value.optionalFoundCpp === "false") {
+            if (knownCondition(value.optionalFoundCpp) === false) {
                 return "false";
             }
             if (
-                value.optionalFoundCpp === "true" &&
+                knownCondition(value.optionalFoundCpp) === true &&
                 (value.dataType.inner.kind === "struct" ||
                     value.dataType.inner.kind === "vector" ||
                     value.dataType.inner.kind === "handle")
@@ -18070,11 +18081,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return equal !== negated ? "true" : "false";
         }
         if (value?.kind === "data" && value.dataType?.kind === "optional") {
-            if (value.optionalFoundCpp === "false") {
+            if (knownCondition(value.optionalFoundCpp) === false) {
                 return absentTest("false", "true");
             }
             if (
-                value.optionalFoundCpp === "true" ||
+                knownCondition(value.optionalFoundCpp) === true ||
                 value.staticString !== undefined ||
                 value.staticNumber !== undefined ||
                 value.staticBoolean !== undefined ||
@@ -20368,9 +20379,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         ? compiled
                         : undefined;
                 });
-                if (condition === "true" || condition === "false") {
+                if (knownCondition(condition) !== undefined) {
                     const selected = this.context.unwrap(
-                        condition === "true"
+                        knownCondition(condition) === true
                             ? expression.whenTrue
                             : expression.whenFalse,
                     );

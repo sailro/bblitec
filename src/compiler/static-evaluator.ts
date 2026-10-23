@@ -113,6 +113,7 @@ import {
     mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * The function a module-scope declaration names: a `function` or a `const`
@@ -609,9 +610,9 @@ export class StaticEvaluator {
         }
         if (ts.isConditionalExpression(unwrapped)) {
             const condition = this.compileCondition(unwrapped.condition);
-            if (condition === "true" || condition === "false")
+            if (knownCondition(condition) !== undefined)
                 return this.compileBoolean(
-                    condition === "true"
+                    knownCondition(condition) === true
                         ? unwrapped.whenTrue
                         : unwrapped.whenFalse,
                 );
@@ -656,12 +657,12 @@ export class StaticEvaluator {
         // expression the same way.
         //
         // Only a SETTLED answer is taken. Callers here read the returned
-        // text as a decision -- the line family selects a variant on
-        // `=== "true"` -- so handing one an unsettled comparison would read
-        // as a silent `false` where the refusal below names the expression.
+        // text as a decision -- the line family selects a variant on its
+        // knownCondition -- so handing one an unsettled comparison would
+        // read as a silent `false` where the refusal below names it.
         if (ts.isBinaryExpression(unwrapped)) {
             const condition = this.compileCondition(unwrapped);
-            if (condition === "true" || condition === "false") {
+            if (knownCondition(condition) !== undefined) {
                 return condition;
             }
         }
@@ -1511,7 +1512,7 @@ export class StaticEvaluator {
                     return undefined;
                 }
                 const resolvedField = this.resolveProperty(left);
-                if (resolvedField?.optionalFoundCpp === "false") {
+                if (knownCondition(resolvedField?.optionalFoundCpp) === false) {
                     return expression.right;
                 }
                 if (

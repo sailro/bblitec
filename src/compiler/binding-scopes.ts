@@ -77,6 +77,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
+import { knownCondition } from "./values/model.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -1709,9 +1710,10 @@ export class BindingScopes {
                 ? !reboundParameter
                 : ts.isIdentifier(identifier) &&
                   !this.context.sharedClosures.identifierIsRebound(identifier);
+            const known = knownCondition(found);
             reference.optionalFoundCpp =
-                stable && (found === "true" || found === "false")
-                    ? found
+                stable && known !== undefined
+                    ? String(known)
                     : `static_cast<bool>(${storedCpp})`;
             reference.truthinessCpp = reference.optionalFoundCpp;
         }

@@ -27,6 +27,7 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
+import { knownCondition } from "../values/model.js";
 
 export interface LineIntrinsicContext
     extends
@@ -337,7 +338,7 @@ function lineMaterialFlags(
         if (!expression) {
             return fallback;
         }
-        return context.compileBoolean(expression) === "true";
+        return knownCondition(context.compileBoolean(expression)) === true;
     };
     const useThinInstances = flag("useThinInstances", false);
     const useThinInstanceColors = flag("useThinInstanceColors", false);
@@ -364,7 +365,9 @@ function lineMaterialFlags(
         ...(depthWriteExpression
             ? {
                   depthWrite:
-                      context.compileBoolean(depthWriteExpression) === "true",
+                      knownCondition(
+                          context.compileBoolean(depthWriteExpression),
+                      ) === true,
               }
             : {}),
     };

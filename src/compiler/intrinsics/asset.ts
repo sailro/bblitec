@@ -8,7 +8,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
-import { absenceOf } from "../values/model.js";
+import { absenceOf, knownCondition } from "../values/model.js";
 import { argumentAt, propertyKey } from "../syntax.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -640,9 +640,9 @@ function compileLoadBabylon(
     }
     const asset = context.assetRegistry.registerAsset(source, "babylon");
     const textureModes =
-        loadTextures === "true"
+        knownCondition(loadTextures) === true
             ? [true]
-            : loadTextures === "false"
+            : knownCondition(loadTextures) === false
               ? [false]
               : [false, true];
     writable(asset).babylonTextureModes = [
@@ -650,7 +650,8 @@ function compileLoadBabylon(
     ];
     // The pin imports its camera parser only when `loadCamera !== false`
     // (load-babylon.ts), so a literal `false` reaches no camera factory.
-    if (loadCamera !== "false") context.reachFeature("camera:free", call);
+    if (knownCondition(loadCamera) !== false)
+        context.reachFeature("camera:free", call);
     context.reachFeature("loader:babylon", call);
     context.reachFeature("material:standard", call);
     context.reachFeature("renderer:scene", call);
@@ -764,15 +765,19 @@ function compileLoadTexture2D(
         }
         const mipExpression = context.objectProperty(options, "mipMaps");
         if (mipExpression) {
-            mipMaps = context.compileBoolean(mipExpression) === "true";
+            mipMaps =
+                knownCondition(context.compileBoolean(mipExpression)) === true;
         }
         const invertExpression = context.objectProperty(options, "invertY");
         if (invertExpression) {
-            invertY = context.compileBoolean(invertExpression) === "true";
+            invertY =
+                knownCondition(context.compileBoolean(invertExpression)) ===
+                true;
         }
         const srgbExpression = context.objectProperty(options, "srgb");
         if (srgbExpression) {
-            srgb = context.compileBoolean(srgbExpression) === "true";
+            srgb =
+                knownCondition(context.compileBoolean(srgbExpression)) === true;
         }
         const premultiplyExpression = context.objectProperty(
             options,
@@ -780,7 +785,9 @@ function compileLoadTexture2D(
         );
         if (premultiplyExpression) {
             premultiplyAlpha =
-                context.compileBoolean(premultiplyExpression) === "true";
+                knownCondition(
+                    context.compileBoolean(premultiplyExpression),
+                ) === true;
         }
     }
     // `maxAnisotropy: allLinear ? 4 : 1` — the rule, and the mip

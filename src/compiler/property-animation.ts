@@ -19,6 +19,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
 import { renderClosure } from "./closure-captures.js";
+import { knownCondition } from "./values/model.js";
 
 export interface PropertyAnimationContext extends Pick<
     LoweringServices,
@@ -549,7 +550,8 @@ export function compilePropertyAnimationClip(
             // honour, a value it cannot settle included: both must refuse,
             // because silently dropping the option is what leaves the two
             // sides interpolating differently.
-            context.compileBoolean(quaternionExpression) !== "false"
+            knownCondition(context.compileBoolean(quaternionExpression)) !==
+                false
         ) {
             context.fail(
                 quaternionExpression,

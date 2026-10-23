@@ -49,6 +49,7 @@ import {
     type Value,
 } from "./types.js";
 import { readsErasedVoid } from "./undefined-values.js";
+import { knownCondition } from "./values/model.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -449,8 +450,8 @@ export class ConditionLowerer {
             unwrapped.operator === ts.SyntaxKind.ExclamationToken
         ) {
             const operand = this.compileCondition(unwrapped.operand);
-            if (operand === "true") return "false";
-            if (operand === "false") return "true";
+            if (knownCondition(operand) === true) return "false";
+            if (knownCondition(operand) === false) return "true";
             return `!(${operand})`;
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
@@ -645,9 +646,10 @@ export class ConditionLowerer {
                                   : brand
                                     ? brand(`(${value.cpp})`)
                                     : "true";
-                        return present === undefined || test === "false"
+                        return present === undefined ||
+                            knownCondition(test) === false
                             ? test
-                            : test === "true"
+                            : knownCondition(test) === true
                               ? present
                               : `(${present} && ${test})`;
                     }

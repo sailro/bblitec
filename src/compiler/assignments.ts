@@ -2470,10 +2470,11 @@ import {
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
 import {
+    absenceOfNull,
+    knownCondition,
     optionalPresentCpp,
     optionalValueCpp,
     staticBooleanOf,
-    absenceOfNull,
 } from "./values/model.js";
 import { recordAt } from "./record-access.js";
 import { isPinnedType } from "./data-types.js";
@@ -2797,7 +2798,7 @@ function emitTargetPropertyAssignment(
         if (property === "invertY") {
             // The one boolean in `TEXTURE_UV_PROPERTIES`, which is why the
             // refusal below can name it.
-            if (rendered !== "true" && rendered !== "false") {
+            if (knownCondition(rendered) === undefined) {
                 context.fail(
                     expression.right,
                     "A texture's `invertY` is composition input — the lightmap " +
@@ -2805,7 +2806,8 @@ function emitTargetPropertyAssignment(
                         "generation.",
                 );
             }
-            writable(target).textureObjectInvertY = rendered === "true";
+            writable(target).textureObjectInvertY =
+                knownCondition(rendered) === true;
         } else if (property === "uAng") {
             // The value reaches composition as well as the record: the pinned
             // lightmap `detect` compares it against `Math.PI`. A write that
@@ -3071,10 +3073,10 @@ function emitTargetPropertyAssignment(
                 recordField.property === "backFaceCulling" ||
                 recordField.property === "disableLighting"
             ) {
-                if (value === "true" || value === "false") {
+                if (knownCondition(value) !== undefined) {
                     writable(target.standardMaterialInput)[
                         recordField.property
-                    ] = value === "true";
+                    ] = knownCondition(value) === true;
                 } else {
                     delete writable(target.standardMaterialInput)[
                         recordField.property

@@ -20,7 +20,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import { undefinedValue } from "./values/model.js";
+import { knownCondition, undefinedValue } from "./values/model.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -168,8 +168,11 @@ export function compileArrayPredicateOverData(
               : matchesType(dataType)
                 ? "true"
                 : "false";
-    if (predicate === "false" || (predicate === "true" && !optional))
-        return decided(predicate === "true");
+    if (
+        knownCondition(predicate) === false ||
+        (knownCondition(predicate) === true && !optional)
+    )
+        return decided(knownCondition(predicate) === true);
     return {
         kind: "boolean",
         cpp: `([](const auto& candidate) { return ${optional ? "candidate.has_value() && " : ""}${predicate}; }(${value.cpp}))`,
@@ -946,9 +949,9 @@ export function compileDataMethodCall(
                         ),
                     () => false,
                 );
-                return condition === "true" || condition === "false"
+                return knownCondition(condition) !== undefined
                     ? arrayLiteral(
-                          condition === "true"
+                          knownCondition(condition) === true
                               ? resolved.whenTrue
                               : resolved.whenFalse,
                           depth + 1,

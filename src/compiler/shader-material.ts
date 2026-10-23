@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { isTypedArrayType, tupleComponents } from "./data-types.js";
 import { presenceCpp } from "./types.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -98,7 +99,10 @@ function absentShaderOption(
             )
                 return false;
             const value = context.compileValue(resolved);
-            if (value.kind !== "json-null" && presenceCpp(value) !== "false")
+            if (
+                value.kind !== "json-null" &&
+                knownCondition(presenceCpp(value)) !== false
+            )
                 return false;
             context.emitDiscardedValue(value);
             return true;

@@ -15,6 +15,7 @@ import {
     type Absence,
 } from "./type-facts.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * One operand of a strict equality between two values that may be absent:
@@ -97,13 +98,15 @@ export function sameAbsenceCpp(
     const leftNull = absentIsNull(lowerer, left, leftState);
     const rightNull = absentIsNull(lowerer, right, rightState);
     const constant = (test: string): boolean =>
-        test === "true" || test === "false";
+        knownCondition(test) !== undefined;
     if (leftNull === rightNull) return "true";
     if (constant(leftNull) && constant(rightNull)) return "false";
     if (constant(leftNull))
-        return leftNull === "true" ? rightNull : `!(${rightNull})`;
+        return knownCondition(leftNull) === true
+            ? rightNull
+            : `!(${rightNull})`;
     if (constant(rightNull))
-        return rightNull === "true" ? leftNull : `!(${leftNull})`;
+        return knownCondition(rightNull) === true ? leftNull : `!(${leftNull})`;
     return `(${leftNull} == ${rightNull})`;
 }
 
@@ -119,9 +122,9 @@ export function absentAwareEquality(
     rightPresent: string,
     presentEqual: string,
 ): string {
-    if (same === "true")
+    if (knownCondition(same) === true)
         return `(${leftPresent} == ${rightPresent} && (!${leftPresent} || ${presentEqual}))`;
-    if (same === "false")
+    if (knownCondition(same) === false)
         return `(${leftPresent} && ${rightPresent} && ${presentEqual})`;
     return `(${leftPresent} == ${rightPresent} && (${leftPresent} ? ${presentEqual} : ${same}))`;
 }
@@ -138,9 +141,9 @@ export function absentAwareIdentity(
     identical: (operator: "==" | "!=") => string,
     negated: boolean,
 ): string {
-    if (same === "true") return identical(negated ? "!=" : "==");
+    if (knownCondition(same) === true) return identical(negated ? "!=" : "==");
     const equal =
-        same === "false"
+        knownCondition(same) === false
             ? `(${leftPresent} && ${identical("==")})`
             : `(${identical("==")} && (${leftPresent} || ${same}))`;
     return negated ? `!${equal}` : equal;
@@ -247,7 +250,7 @@ export function strictEqualsCpp(
         { node: expression.left, value: left },
         { node: expression.right, value: right },
     );
-    if (same === "true") return undefined;
+    if (knownCondition(same) === true) return undefined;
     const stable = cppIdentifierPattern.test(left.cpp)
         ? left
         : context.bindings.pinValueToTemporary(

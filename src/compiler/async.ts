@@ -5,7 +5,7 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { undefinedValue, absenceOf } from "./values/model.js";
+import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
@@ -2403,7 +2403,7 @@ export class AsyncLowerer {
                 : undefined;
             if (
                 presenceFlagCpp(value) !== undefined &&
-                presenceFlagCpp(value) !== "true" &&
+                knownCondition(presenceFlagCpp(value)) !== true &&
                 !(result?.kind === "handle" && result.handle === value.kind) &&
                 !(
                     result?.kind === "struct" &&

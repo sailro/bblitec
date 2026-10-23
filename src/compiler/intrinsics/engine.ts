@@ -106,6 +106,7 @@ import {
     compileGpuTaskTimingIntrinsic,
     type GpuTaskTimingIntrinsicContext,
 } from "./gpu-task-timing.js";
+import { knownCondition } from "../values/model.js";
 
 export interface EngineIntrinsicContext
     extends
@@ -146,10 +147,12 @@ function compileDepthSampler(
     const node = context.unwrap(expression);
     if (ts.isConditionalExpression(node)) {
         const condition = context.conditions.compileCondition(node.condition);
-        if (condition === "true" || condition === "false")
+        if (knownCondition(condition) !== undefined)
             return compileDepthSampler(
                 context,
-                condition === "true" ? node.whenTrue : node.whenFalse,
+                knownCondition(condition) === true
+                    ? node.whenTrue
+                    : node.whenFalse,
             );
         const arm = (branch: ts.Expression): string => {
             let result = "";
@@ -541,7 +544,7 @@ export function compileEngineIntrinsic(
                 optionsCpp = descriptor;
             }
             if (
-                sampleDepth === "true" &&
+                knownCondition(sampleDepth) === true &&
                 (!options.signature.depthFormat ||
                     options.signature.samples !== 1)
             ) {
@@ -550,7 +553,7 @@ export function compileEngineIntrinsic(
                     "withSampledDepthTexture requires a single-sample depth attachment.",
                 );
             }
-            if (!options.hasColor && sampleDepth !== "true") {
+            if (!options.hasColor && knownCondition(sampleDepth) !== true) {
                 context.fail(
                     call,
                     "A colorless render-target texture requires withSampledDepthTexture.",

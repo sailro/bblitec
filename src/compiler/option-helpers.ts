@@ -12,7 +12,7 @@ import type { DataLowerer } from "./data-lowering.js";
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
 import ts from "typescript";
-import { absenceOf } from "./values/model.js";
+import { absenceOf, knownCondition } from "./values/model.js";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import {
@@ -552,11 +552,13 @@ export function selectedStaticExpression(
         const condition = context.conditions.compileCondition(
             selected.condition,
         );
-        if (condition !== "true" && condition !== "false") {
+        if (knownCondition(condition) === undefined) {
             return undefined;
         }
         selected = context.resolveStaticExpression(
-            condition === "true" ? selected.whenTrue : selected.whenFalse,
+            knownCondition(condition) === true
+                ? selected.whenTrue
+                : selected.whenFalse,
         );
     }
     return selected;
@@ -581,13 +583,13 @@ export function compileOptionalStaticBoolean(
     const compiled = context.compileBoolean(
         context.resolveStaticExpression(expression),
     );
-    if (compiled !== "true" && compiled !== "false") {
+    if (knownCondition(compiled) === undefined) {
         context.fail(
             expression,
             `${what} must be a static boolean: generation decides on it.`,
         );
     }
-    return compiled === "true";
+    return knownCondition(compiled) === true;
 }
 
 /**

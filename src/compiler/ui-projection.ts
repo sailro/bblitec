@@ -152,6 +152,7 @@ import {
     callSignatures,
     unionMembers,
 } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -1651,12 +1652,12 @@ export class UiProjection {
             };
             if (
                 method === "add" ||
-                (method === "toggle" && enabled === "true")
+                (method === "toggle" && knownCondition(enabled) === true)
             ) {
                 mutate(true);
             } else if (
                 method === "remove" ||
-                (method === "toggle" && enabled === "false")
+                (method === "toggle" && knownCondition(enabled) === false)
             ) {
                 mutate(false);
             } else {
@@ -5137,10 +5138,12 @@ export class UiProjection {
                     const condition = this.context.conditions.compileCondition(
                         part.condition,
                     );
-                    if (condition === "true" || condition === "false")
+                    if (knownCondition(condition) !== undefined)
                         return emit(
                             [
-                                ...(condition === "true" ? part.yes : part.no),
+                                ...(knownCondition(condition) === true
+                                    ? part.yes
+                                    : part.no),
                                 ...pending.slice(index + 1),
                             ],
                             source,

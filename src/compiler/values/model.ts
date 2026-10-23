@@ -102,12 +102,15 @@ export function undefinedValue(): Value<"json-null"> {
 
 /** The boolean a value is known to be: its static fact, or a literal spelling. */
 export function staticBooleanOf(value: Value): boolean | undefined {
-    if (value.staticBoolean !== undefined) return value.staticBoolean;
-    return value.cpp === "true"
-        ? true
-        : value.cpp === "false"
-          ? false
-          : undefined;
+    return value.staticBoolean ?? knownCondition(value.cpp);
+}
+
+/**
+ * The boolean a compiled condition is known to be: the `true` / `false`
+ * spelling a condition, presence or truthiness lowering folds to.
+ */
+export function knownCondition(cpp: string | undefined): boolean | undefined {
+    return cpp === "true" ? true : cpp === "false" ? false : undefined;
 }
 
 /** Which absence a json-null value is; undefined for any other value. */

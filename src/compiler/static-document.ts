@@ -7,6 +7,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { notJson, staticJsonValue } from "./option-helpers.js";
 import { resolvedSymbol } from "./symbols.js";
 import { valueKindOf } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 interface StaticDocumentContext extends Pick<
     LoweringServices,
@@ -100,10 +101,10 @@ export function staticDocumentText(
                                     ),
                                 () => false,
                             );
-                            if (condition !== "true" && condition !== "false")
+                            if (knownCondition(condition) === undefined)
                                 return false;
                             const branch =
-                                condition === "true"
+                                knownCondition(condition) === true
                                     ? statement.thenStatement
                                     : statement.elseStatement;
                             return !branch || statements(branch);

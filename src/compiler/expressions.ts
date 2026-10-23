@@ -32,7 +32,12 @@ import type { UiProjection } from "./ui-projection.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
-import { undefinedValue, absenceOf, absenceOfNull } from "./values/model.js";
+import {
+    absenceOf,
+    absenceOfNull,
+    knownCondition,
+    undefinedValue,
+} from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
@@ -1608,15 +1613,15 @@ export class ExpressionLowerer {
                         leftValue,
                     );
                 },
-                (condition) => condition === "true" || condition === "false",
+                (condition) => knownCondition(condition) !== undefined,
             );
-            if (truthiness === "true" || truthiness === "false") {
+            if (knownCondition(truthiness) !== undefined) {
                 const isAnd =
                     unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken;
                 const selectsRight = isAnd
-                    ? truthiness === "true"
-                    : truthiness === "false";
+                    ? knownCondition(truthiness) === true
+                    : knownCondition(truthiness) === false;
                 return selectsRight
                     ? this.compileValue(unwrapped.right)
                     : leftValue!;
@@ -5107,9 +5112,9 @@ export class ExpressionLowerer {
             );
             const condition = selection.cpp;
             const selectedOwner =
-                condition === "true"
+                knownCondition(condition) === true
                     ? ownerExpression.whenTrue
-                    : condition === "false"
+                    : knownCondition(condition) === false
                       ? ownerExpression.whenFalse
                       : undefined;
             const indexed = (owner: ts.Expression): Value =>
@@ -5692,17 +5697,16 @@ export class ExpressionLowerer {
                             this.context.conditions.compileCondition(
                                 unwrapped.condition,
                             ),
-                        (condition) =>
-                            condition === "true" || condition === "false",
+                        (condition) => knownCondition(condition) !== undefined,
                     )
                   : undefined;
-        if (foldedCondition === "true" || foldedCondition === "false") {
+        if (knownCondition(foldedCondition) !== undefined) {
             const taken =
-                foldedCondition === "true"
+                knownCondition(foldedCondition) === true
                     ? unwrapped.whenTrue
                     : unwrapped.whenFalse;
             const dropped =
-                foldedCondition === "true"
+                knownCondition(foldedCondition) === true
                     ? unwrapped.whenFalse
                     : unwrapped.whenTrue;
             const selected = this.compileSelectedOperand(taken);
@@ -5905,12 +5909,12 @@ export class ExpressionLowerer {
             const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
-            if (condition === "true" || condition === "false") {
+            if (knownCondition(condition) !== undefined) {
                 // Keep the selected Value's generation-known metadata.
                 // A string-only sink would discard staticNumber, for
                 // example when the chosen number configures engine MSAA.
                 return this.compileSelectedOperand(
-                    condition === "true"
+                    knownCondition(condition) === true
                         ? unwrapped.whenTrue
                         : unwrapped.whenFalse,
                 );
@@ -5966,9 +5970,11 @@ export class ExpressionLowerer {
             this.context.conditions.compileCondition(unwrapped.condition),
         );
         const condition = selection.cpp;
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             return this.compileSelectedOperand(
-                condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
+                knownCondition(condition) === true
+                    ? unwrapped.whenTrue
+                    : unwrapped.whenFalse,
             );
         }
         const jsonConditional = this.tryCompileJsonConditional(

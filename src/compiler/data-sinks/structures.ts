@@ -32,6 +32,7 @@ import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
 import { unionMembers } from "../type-facts.js";
+import { knownCondition } from "../values/model.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -336,7 +337,7 @@ function valueStruct(
         sourceType?.kind === "struct" &&
         sourceType.name !== dataType.name &&
         lowerer.context.dataTypes.isReferenceStruct(sourceType.name) &&
-        presenceCpp(value) !== "true";
+        knownCondition(presenceCpp(value)) !== true;
     if (
         sourceType &&
         (wrapped || flattened) &&

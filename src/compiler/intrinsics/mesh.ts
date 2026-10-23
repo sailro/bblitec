@@ -55,6 +55,7 @@ import { writeVec3Lanes } from "./vec3-write.js";
 import { emitPresentOption, retainedOptions } from "./retained-options.js";
 import { constructedFieldPresent } from "../constructed-fields.js";
 import { creationInSegment } from "../creation-segments.js";
+import { knownCondition } from "../values/model.js";
 
 /** Attribute uploads change existing buffers without recording composition facts. */
 export const runtimeOnlyMeshIntrinsics: ReadonlySet<string> = new EmissionSet([
@@ -1294,11 +1295,11 @@ function compileMeshOptionalStreams(
         if (!argument || context.symbols.isGlobalUndefined(argument))
             return { cpp: "std::nullopt", present: false };
         const value = context.compileValue(argument);
-        if (value.optionalFoundCpp === "false")
+        if (knownCondition(value.optionalFoundCpp) === false)
             return { cpp: "std::nullopt", present: false };
         const optional =
             value.dataType?.kind === "optional" &&
-            value.optionalFoundCpp !== "true" &&
+            knownCondition(value.optionalFoundCpp) !== true &&
             !constructedFieldPresent(context, argument);
         const type: DataType = {
             kind: "optional",
@@ -2304,7 +2305,7 @@ function compileEnableThinInstanceGpuCulling(
         );
     }
     if (
-        enabled === "false" &&
+        knownCondition(enabled) === false &&
         !context.sceneManifest.meshMayHaveThinInstanceGpuCulling(mesh)
     ) {
         // `_gpuCullingEnabled` starts false and nothing reached so

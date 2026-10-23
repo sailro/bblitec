@@ -1465,3 +1465,21 @@ test("a compound assignment's old value and store have one owner", () => {
         for (const name of ["compoundPlace", "emitCompoundStore"])
             assert.ok(sourceFacts(path).members.has(name), `${path} ${name}`);
 });
+
+test("a folded condition is read through knownCondition", () => {
+    // Condition, presence and truthiness lowerings fold to the `true` /
+    // `false` spelling; values/model.ts knownCondition is its one reader. A
+    // UI attribute's own authored text is no compiled condition.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                path !== "src/compiler/values/model.ts" &&
+                /(?<!toLowerCase\(\) )[=!]== "(?:true|false)"/.test(
+                    readFileSync(path, "utf8"),
+                ),
+        ),
+        [],
+    );
+});
