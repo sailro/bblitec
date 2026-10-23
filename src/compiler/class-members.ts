@@ -453,6 +453,51 @@ export function classChainInstanceProperties(
     return properties;
 }
 
+/** A constructor's direct write of one of its parameters to a field. */
+export interface ConstructorFieldParameter {
+    readonly field: string;
+    readonly parameter: number;
+    readonly assignment: ts.BinaryExpression;
+    readonly statement: ts.ExpressionStatement;
+}
+
+/**
+ * The constructor's top-level `this.field = parameter` statements, in
+ * source order, each with its parameter's index.
+ */
+export function constructorFieldParameters(
+    constructorDeclaration: ts.ConstructorDeclaration,
+): readonly ConstructorFieldParameter[] {
+    const parameters = new Map<string, number>();
+    constructorDeclaration.parameters.forEach((parameter, index) => {
+        if (ts.isIdentifier(parameter.name))
+            parameters.set(parameter.name.text, index);
+    });
+    const writes: ConstructorFieldParameter[] = [];
+    for (const statement of constructorDeclaration.body?.statements ?? []) {
+        if (!ts.isExpressionStatement(statement)) continue;
+        const assignment = unwrapExpression(statement.expression);
+        if (
+            !ts.isBinaryExpression(assignment) ||
+            assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(assignment.left) ||
+            assignment.left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+            !ts.isIdentifier(assignment.left.name) ||
+            !ts.isIdentifier(assignment.right)
+        )
+            continue;
+        const parameter = parameters.get(assignment.right.text);
+        if (parameter !== undefined)
+            writes.push({
+                field: assignment.left.name.text,
+                parameter,
+                assignment,
+                statement,
+            });
+    }
+    return writes;
+}
+
 /** The class whose constructor runs for `new` of `table`'s class, following implicit constructors. */
 export function effectiveConstructor(
     table: ClassMemberTable,

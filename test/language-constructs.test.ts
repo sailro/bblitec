@@ -16,6 +16,22 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "construction-evaluates-arguments-before-own-members",
+    `
+    let c = 0;
+    class A { f = c++; constructor(public a: number) {} }
+    const x = new A(c++);
+    if (x.a !== 0 || x.f !== 1) throw new Error("base order");
+    const log: string[] = [];
+    const t = (s: string) => { log.push(s); return s.length; };
+    class B { b = t("bfield"); constructor(_x: number) { t("bbody"); } }
+    class D extends B { d = t("dfield"); constructor(public p: number) { super(t("superarg")); t("dbody"); } }
+    const v = new D(t("arg"));
+    if (log.join() !== "arg,superarg,bfield,bbody,dfield,dbody" || v.p !== 3) throw new Error("derived order");
+`,
+);
+
+check(
     "a-body-running-off-its-end-returns-undefined",
     `
     function f(x: number): number | undefined { if (x > 0) return x; }

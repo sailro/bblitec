@@ -8348,16 +8348,14 @@ test("snapshots scalar members of records retained by classes", () => {
             result.cpp,
         );
     assert.ok(stored);
-    const initialized = new RegExp(
-        String.raw`auto& (\w+) = v_vehicle;\s*${stored[1]} = \1;`,
-    ).exec(result.cpp);
-    assert.ok(initialized);
-    assert.ok(
-        result.cpp.indexOf(initialized[0]) > result.cpp.indexOf(stored[0]),
-    );
+    // The argument binds first; the field is assigned from it once stored.
+    const argument = /auto& (\w+) = v_vehicle;/.exec(result.cpp);
+    assert.ok(argument);
+    const initialized = `${stored[1]} = ${argument[1]};`;
+    assert.ok(result.cpp.indexOf(initialized) > result.cpp.indexOf(stored[0]));
     assert.ok(result.cpp.includes(`return ${stored[1]}->bodyRestY;`));
     const mutation = result.cpp.indexOf(".position.y = 10.0;");
-    assert.ok(mutation > result.cpp.indexOf(initialized[0]));
+    assert.ok(mutation > result.cpp.indexOf(initialized));
     assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 

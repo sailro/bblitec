@@ -1375,3 +1375,18 @@ test("a body running off its end completes through emitFallOffEnd", () => {
             path,
         );
 });
+
+test("a class's construction order and parameter field writes have one owner", () => {
+    // initializeOwnMembers runs field initializers then parameter
+    // properties for a base and a derived class alike;
+    // constructorFieldParameters reads a constructor's `this.field = param`.
+    assert.deepEqual(declarationOwners("constructorFieldParameters"), [
+        "src/compiler/class-members.ts",
+    ]);
+    const classes = readFileSync("src/compiler/classes.ts", "utf8");
+    assert.equal(
+        [...classes.matchAll(/isParameterPropertyDeclaration\(/g)].length,
+        1,
+    );
+    assert.equal([...classes.matchAll(/this\.initializeFields\(/g)].length, 1);
+});

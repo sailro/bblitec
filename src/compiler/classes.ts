@@ -69,6 +69,7 @@ import {
     classAccessors,
     classChain,
     classChainInstanceProperties,
+    constructorFieldParameters,
     classExtends,
     classErrorBase,
     classHasStaticState,
@@ -828,30 +829,22 @@ export class ClassLowerer {
         ) {
             return undefined;
         }
-        const fieldByParameter = new EmissionMap<string, string>();
         const parameterNames = constructorDeclaration.parameters.map(
             (parameter) => parameter.name,
         );
         if (!parameterNames.every(ts.isIdentifier)) return undefined;
-        const constructorFieldWrites = new EmissionSet<ts.Statement>();
-        for (const statement of constructorDeclaration.body?.statements ?? []) {
-            if (!ts.isExpressionStatement(statement)) continue;
-            const expression = this.context.unwrap(statement.expression);
-            if (
-                !ts.isBinaryExpression(expression) ||
-                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-                !ts.isPropertyAccessExpression(expression.left) ||
-                expression.left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-                !ts.isIdentifier(expression.right)
-            ) {
-                continue;
-            }
-            fieldByParameter.set(
-                expression.right.text,
-                expression.left.name.text,
-            );
-            constructorFieldWrites.add(statement);
-        }
+        // Only a parameter's own field write is the wiring done below; any
+        // other constructor write reruns against the live fields.
+        const writes = constructorFieldParameters(constructorDeclaration);
+        const fieldByParameter = new EmissionMap(
+            writes.map((write) => [
+                parameterNames[write.parameter]!.text,
+                write.field,
+            ]),
+        );
+        const constructorFieldWrites = new EmissionSet<ts.Statement>(
+            writes.map((write) => write.statement),
+        );
         if (parameterNames.some((name) => !fieldByParameter.has(name.text))) {
             return undefined;
         }
@@ -860,7 +853,7 @@ export class ClassLowerer {
             this.context.allocateUserFunctionPrefix(),
         );
         try {
-            this.bindParameters(method, call.arguments, undefined, true);
+            this.bindParameters(method, call.arguments, true);
             const instance = this.construct(fallback!, owner);
             const fields = instance.recordProperties!;
             const targets = parameterNames.map((parameter) => {
@@ -1119,8 +1112,9 @@ export class ClassLowerer {
     /**
      * Runs one class's part of a construction with `this` already bound:
      * its field initializers, its parameter properties and its constructor
-     * body, in JavaScript's order. A base class initializes first, then its
-     * fields, then the body. A subclass binds its parameters, runs its body
+     * body, in JavaScript's order. A base class binds its parameters (the
+     * arguments are evaluated first), initializes its own members, then runs
+     * the body. A subclass binds its parameters, runs its body
      * up to `super(...)`, constructs the base with the arguments that call
      * evaluated, initializes its own fields and parameter properties, and
      * finishes the body. A subclass without a constructor passes its
@@ -1134,7 +1128,6 @@ export class ClassLowerer {
         instanceType: ts.Type,
         construction: ts.NewExpression | ts.CallExpression,
     ): void {
-        const fields = writable(instance.recordProperties!);
         const constructorDeclaration = table.constructorDeclaration;
         if (table.base && !constructorDeclaration) {
             this.initialize(
@@ -1157,28 +1150,29 @@ export class ClassLowerer {
                         construction,
                         instance,
                     );
-                // Field declarations with initializers bind first, so the
-                // constructor body can already read them.
-                this.initializeFields(table, instance, instanceType);
-                if (constructorDeclaration) {
+                // The arguments are evaluated before the instance's own
+                // members initialize, which the body can then read.
+                if (constructorDeclaration)
                     this.bindParameters(
                         constructorDeclaration,
                         argumentList,
-                        fields,
                         false,
                         evaluatedArguments,
                     );
-                    for (const statement of constructorDeclaration.body
-                        ?.statements ?? []) {
-                        this.context.emitStatement(statement);
-                    }
-                }
+                this.initializeOwnMembers(
+                    table,
+                    instance,
+                    instanceType,
+                    constructorDeclaration,
+                );
+                for (const statement of constructorDeclaration?.body
+                    ?.statements ?? [])
+                    this.context.emitStatement(statement);
                 return;
             }
             this.bindParameters(
                 constructorDeclaration,
                 argumentList,
-                undefined,
                 false,
                 evaluatedArguments,
             );
@@ -1227,21 +1221,12 @@ export class ClassLowerer {
                         superCall,
                     );
                 }
-                this.initializeFields(table, instance, instanceType);
-                for (const parameter of constructorDeclaration.parameters) {
-                    if (
-                        ts.isParameterPropertyDeclaration(
-                            parameter,
-                            constructorDeclaration,
-                        ) &&
-                        ts.isIdentifier(parameter.name)
-                    ) {
-                        this.initializeParameterProperty(
-                            parameter.name,
-                            fields,
-                        );
-                    }
-                }
+                this.initializeOwnMembers(
+                    table,
+                    instance,
+                    instanceType,
+                    constructorDeclaration,
+                );
             }
             if (!constructed) {
                 this.context.fail(
@@ -1462,42 +1447,19 @@ export class ClassLowerer {
             string,
             { index: number; assignment: ts.BinaryExpression }
         >();
-        const parameterIndex = new EmissionMap<string, number>();
-        constructorDeclaration.parameters.forEach((parameter, index) => {
-            if (ts.isIdentifier(parameter.name)) {
-                parameterIndex.set(parameter.name.text, index);
-            }
-        });
         const stored = new EmissionSet(layout.map((field) => field.source));
         const declared = new EmissionSet(
             classChainInstanceProperties(this.table(declaration)).map(
                 (member) => member.name.text,
             ),
         );
-        for (const statement of constructorDeclaration.body?.statements ?? []) {
-            if (
-                !ts.isExpressionStatement(statement) ||
-                !ts.isBinaryExpression(statement.expression) ||
-                statement.expression.operatorToken.kind !==
-                    ts.SyntaxKind.EqualsToken
-            ) {
-                continue;
-            }
-            const { left, right } = statement.expression;
-            if (
-                !ts.isPropertyAccessExpression(left) ||
-                left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-                !ts.isIdentifier(right) ||
-                stored.has(left.name.text) ||
-                !declared.has(left.name.text)
-            ) {
-                continue;
-            }
-            const index = parameterIndex.get(right.text);
-            if (index !== undefined) {
-                hoisted.set(left.name.text, {
-                    index,
-                    assignment: statement.expression,
+        for (const write of constructorFieldParameters(
+            constructorDeclaration,
+        )) {
+            if (!stored.has(write.field) && declared.has(write.field)) {
+                hoisted.set(write.field, {
+                    index: write.parameter,
+                    assignment: write.assignment,
                 });
             }
         }
@@ -2515,7 +2477,6 @@ export class ClassLowerer {
                 this.bindParameters(
                     method,
                     argumentValues.expressions,
-                    undefined,
                     false,
                     argumentValues.values,
                     argumentValues.missing,
@@ -2601,7 +2562,6 @@ export class ClassLowerer {
             this.bindParameters(
                 method,
                 argumentValues.expressions,
-                undefined,
                 false,
                 argumentValues.values,
                 argumentValues.missing,
@@ -2687,9 +2647,7 @@ export class ClassLowerer {
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            this.bindParameters(setter, [value], undefined, false, [
-                argumentValue,
-            ]);
+            this.bindParameters(setter, [value], false, [argumentValue]);
             const needsFunctionScope =
                 firstReturn(setter.body.statements) !== undefined;
             this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
@@ -3217,13 +3175,7 @@ export class ClassLowerer {
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            this.bindParameters(
-                method,
-                call.arguments,
-                undefined,
-                false,
-                argumentValues,
-            );
+            this.bindParameters(method, call.arguments, false, argumentValues);
             const properties: Record<string, Value> = {};
             for (const descriptor of descriptors) {
                 const output = this.context.bindOptionalResourceValue(
@@ -3341,7 +3293,6 @@ export class ClassLowerer {
             | ts.MethodDeclaration
             | ts.SetAccessorDeclaration,
         argumentList: readonly ts.Expression[],
-        parameterProperties?: Record<string, Value>,
         preserveStaticRecords = false,
         evaluatedArguments?: readonly Value[],
         missingLanes: ReadonlySet<number> = new Set(),
@@ -3393,18 +3344,6 @@ export class ClassLowerer {
                                 kind: "json-null",
                                 cpp: "",
                             },
-                        );
-                    }
-                    if (
-                        parameterProperties &&
-                        ts.isParameterPropertyDeclaration(
-                            parameter,
-                            declaration,
-                        )
-                    ) {
-                        this.initializeParameterProperty(
-                            parameter.name,
-                            parameterProperties,
                         );
                     }
                     return;
@@ -3464,16 +3403,32 @@ export class ClassLowerer {
             } else {
                 this.context.bindClassParameterValue(parameter.name, argument);
             }
+        });
+    }
+
+    /**
+     * A class's own part once its base part exists: field initializers, then
+     * parameter properties, in ES2022 class-field order.
+     */
+    private initializeOwnMembers(
+        table: ClassMemberTable,
+        instance: Value,
+        instanceType: ts.Type,
+        constructorDeclaration: ts.ConstructorDeclaration | undefined,
+    ): void {
+        this.initializeFields(table, instance, instanceType);
+        for (const parameter of constructorDeclaration?.parameters ?? [])
             if (
-                parameterProperties &&
-                ts.isParameterPropertyDeclaration(parameter, declaration)
-            ) {
+                ts.isParameterPropertyDeclaration(
+                    parameter,
+                    parameter.parent,
+                ) &&
+                ts.isIdentifier(parameter.name)
+            )
                 this.initializeParameterProperty(
                     parameter.name,
-                    parameterProperties,
+                    writable(instance.recordProperties!),
                 );
-            }
-        });
     }
 
     private initializeParameterProperty(
