@@ -348,6 +348,7 @@ interface ClassLoweringContext
             | "assignOptionalResourceValue"
             | "defineThis"
             | "activeThis"
+            | "withThis"
             | "registerClassInstance"
             | "classOf"
             | "compileRecordGetter"
@@ -517,13 +518,20 @@ export class ClassLowerer {
             owner.kind === ts.SyntaxKind.ThisKeyword
                 ? this.context.activeThis()
                 : this.staticRecord(owner);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(receiver);
-        try {
-            return work();
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        return this.context.withThis(receiver, work);
+    }
+
+    /**
+     * Runs a static member's initializer lowering with `this` bound to the
+     * class that declares it, as a static initializer's `this` is.
+     */
+    public withDeclaringClass<T>(member: ts.ClassElement, work: () => T): T {
+        const owner = member.parent;
+        const receiver =
+            ts.isClassLike(owner) && owner.name
+                ? this.staticRecord(owner.name)
+                : undefined;
+        return this.context.withThis(receiver, work);
     }
 
     /**
@@ -619,9 +627,7 @@ export class ClassLowerer {
         };
         for (const bound of names)
             this.context.bindings.bindCompileTimeValue(bound, record);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(record);
-        try {
+        this.context.withThis(record, () => {
             for (const element of table.staticElements) {
                 if (ts.isClassStaticBlockDeclaration(element)) {
                     this.context.bindings.pushScope(
@@ -642,9 +648,7 @@ export class ClassLowerer {
                 }
                 statics[element.name.text] = this.bindStaticField(element);
             }
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        });
     }
 
     /**
@@ -909,34 +913,35 @@ export class ClassLowerer {
                 this.context.bindings.pushScope(
                     this.context.allocateUserFunctionPrefix(),
                 );
-                const previousThis = this.context.activeThis();
-                this.context.defineThis(instance);
                 try {
-                    parameterNames.forEach((parameter, index) => {
-                        const value = values[index]!;
-                        const target = targets[index]!;
-                        const resourceValue =
-                            successfulConstructorResourceKinds.has(value.kind);
-                        this.context.bindings.bindParameterValue(
-                            parameter,
-                            resourceValue
-                                ? {
-                                      ...value,
-                                      truthinessCpp: optionalPresentCpp(
-                                          target.optionalStorageCpp!,
-                                      ),
-                                  }
-                                : value,
-                        );
-                    });
-                    for (const statement of constructorDeclaration.body
-                        ?.statements ?? []) {
-                        if (!constructorFieldWrites.has(statement)) {
-                            this.context.emitStatement(statement);
+                    this.context.withThis(instance, () => {
+                        parameterNames.forEach((parameter, index) => {
+                            const value = values[index]!;
+                            const target = targets[index]!;
+                            const resourceValue =
+                                successfulConstructorResourceKinds.has(
+                                    value.kind,
+                                );
+                            this.context.bindings.bindParameterValue(
+                                parameter,
+                                resourceValue
+                                    ? {
+                                          ...value,
+                                          truthinessCpp: optionalPresentCpp(
+                                              target.optionalStorageCpp!,
+                                          ),
+                                      }
+                                    : value,
+                            );
+                        });
+                        for (const statement of constructorDeclaration.body
+                            ?.statements ?? []) {
+                            if (!constructorFieldWrites.has(statement)) {
+                                this.context.emitStatement(statement);
+                            }
                         }
-                    }
+                    });
                 } finally {
-                    this.context.defineThis(previousThis);
                     this.context.bindings.popScope();
                 }
             } finally {
@@ -1084,9 +1089,7 @@ export class ClassLowerer {
         // rather than only after construction has already returned.
         this.context.registerClassInstance(instance, declaration);
 
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
-        try {
+        this.context.withThis(instance, () => {
             this.initialize(
                 members,
                 expression.arguments ?? [],
@@ -1103,9 +1106,7 @@ export class ClassLowerer {
                     expression,
                 );
             }
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        });
         return instance;
     }
 
@@ -2014,19 +2015,18 @@ export class ClassLowerer {
                 node,
                 `Recursive generator method '${methodLabel(method)}' is not supported.`,
             );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         this.activeGeneratorMethods.add(method);
         try {
-            return this.context.userFunctions.compileCallbackWithValues(
-                this.context,
-                method,
-                arguments_,
-                node,
+            return this.context.withThis(instance, () =>
+                this.context.userFunctions.compileCallbackWithValues(
+                    this.context,
+                    method,
+                    arguments_,
+                    node,
+                ),
             );
         } finally {
             this.activeGeneratorMethods.delete(method);
-            this.context.defineThis(previousThis);
         }
     }
 
@@ -2332,17 +2332,13 @@ export class ClassLowerer {
                 call.arguments,
                 "method",
             );
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
-            try {
+            return this.context.withThis(instance, () => {
                 return this.context.asyncActivations.compileAsyncCall(
                     method,
                     arguments_,
                     call,
                 )!;
-            } finally {
-                this.context.defineThis(previousThis);
-            }
+            });
         }
         const activeRecursive = this.activeRecursiveMethods.get(method);
         if (activeRecursive) {
@@ -2471,35 +2467,34 @@ export class ClassLowerer {
             this.context.bindings.pushScope(
                 this.context.allocateUserFunctionPrefix(),
             );
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
             try {
-                this.bindParameters(
-                    method,
-                    argumentValues.expressions,
-                    false,
-                    argumentValues.values,
-                    argumentValues.missing,
-                );
-                const result = this.inlineOnReceiver(
-                    method,
-                    instance,
-                    call,
-                    () => {
-                        for (const statement of leading) {
-                            this.context.emitStatement(statement);
-                        }
-                        return this.context.compileValue(
-                            finalStatement.expression!,
-                        );
-                    },
-                );
-                return {
-                    ...result,
-                    requiresExplicitDiscard: true,
-                };
+                return this.context.withThis(instance, () => {
+                    this.bindParameters(
+                        method,
+                        argumentValues.expressions,
+                        false,
+                        argumentValues.values,
+                        argumentValues.missing,
+                    );
+                    const result = this.inlineOnReceiver(
+                        method,
+                        instance,
+                        call,
+                        () => {
+                            for (const statement of leading) {
+                                this.context.emitStatement(statement);
+                            }
+                            return this.context.compileValue(
+                                finalStatement.expression!,
+                            );
+                        },
+                    );
+                    return {
+                        ...result,
+                        requiresExplicitDiscard: true,
+                    };
+                });
             } finally {
-                this.context.defineThis(previousThis);
                 this.context.bindings.popScope();
             }
         }
@@ -2534,74 +2529,65 @@ export class ClassLowerer {
             (!returnType ||
                 !this.context.dataTypes.carriesFunction(returnType));
         if (shared) {
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
-            try {
-                const result = this.inlineOnReceiver(
-                    method,
-                    instance,
-                    call,
-                    () =>
-                        this.context.compileSharedMethod(
-                            method,
-                            call,
-                            argumentValues.values,
-                        ),
-                );
-                if (result) return result;
-            } finally {
-                this.context.defineThis(previousThis);
-            }
+            const result = this.context.withThis(instance, () =>
+                this.inlineOnReceiver(method, instance, call, () =>
+                    this.context.compileSharedMethod(
+                        method,
+                        call,
+                        argumentValues.values,
+                    ),
+                ),
+            );
+            if (result) return result;
         }
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(
-                method,
-                argumentValues.expressions,
-                false,
-                argumentValues.values,
-                argumentValues.missing,
-            );
-            const result = returnsVoid
-                ? undefined
-                : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
-            const needsFunctionScope =
-                !returnsVoid ||
-                firstReturn(method.body.statements) !== undefined;
-            this.context.emit(
-                returnsVoid
-                    ? needsFunctionScope
-                        ? "[&]() -> void {"
-                        : "{"
-                    : `[[maybe_unused]] auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
-            );
-            this.context.increaseIndent();
-            this.context.beginNativeFunctionBody(returnType);
-            try {
-                this.inlineOnReceiver(method, instance, call, () => {
-                    for (const statement of method.body!.statements) {
-                        this.context.emitStatement(statement);
-                    }
-                });
-            } finally {
-                this.context.endNativeFunctionBody();
-                this.context.decreaseIndent();
-            }
-            this.context.emit(needsFunctionScope ? "}();" : "}");
-            if (result)
-                this.context.registerNativeTemporary(result, returnType);
-            return result
-                ? {
-                      ...this.context.dataValue(result, returnType!),
-                      requiresExplicitDiscard: true,
-                  }
-                : { kind: "void", cpp: "" };
+            return this.context.withThis(instance, () => {
+                this.bindParameters(
+                    method,
+                    argumentValues.expressions,
+                    false,
+                    argumentValues.values,
+                    argumentValues.missing,
+                );
+                const result = returnsVoid
+                    ? undefined
+                    : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
+                const needsFunctionScope =
+                    !returnsVoid ||
+                    firstReturn(method.body!.statements) !== undefined;
+                this.context.emit(
+                    returnsVoid
+                        ? needsFunctionScope
+                            ? "[&]() -> void {"
+                            : "{"
+                        : `[[maybe_unused]] auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
+                );
+                this.context.increaseIndent();
+                this.context.beginNativeFunctionBody(returnType);
+                try {
+                    this.inlineOnReceiver(method, instance, call, () => {
+                        for (const statement of method.body!.statements) {
+                            this.context.emitStatement(statement);
+                        }
+                    });
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.context.decreaseIndent();
+                }
+                this.context.emit(needsFunctionScope ? "}();" : "}");
+                if (result)
+                    this.context.registerNativeTemporary(result, returnType);
+                return result
+                    ? {
+                          ...this.context.dataValue(result, returnType!),
+                          requiresExplicitDiscard: true,
+                      }
+                    : { kind: "void", cpp: "" };
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }
@@ -2619,6 +2605,7 @@ export class ClassLowerer {
                 "A reached class setter requires one parameter and a body.",
             );
         }
+        const body = setter.body;
         const argumentValue =
             evaluatedArgument ??
             this.compileClassArguments(setter, [value], "setter")[0]!;
@@ -2644,26 +2631,25 @@ export class ClassLowerer {
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(setter, [value], false, [argumentValue]);
-            const needsFunctionScope =
-                firstReturn(setter.body.statements) !== undefined;
-            this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
-            this.context.increaseIndent();
-            this.context.beginNativeFunctionBody(undefined);
-            try {
-                for (const statement of setter.body.statements) {
-                    this.context.emitStatement(statement);
+            this.context.withThis(instance, () => {
+                this.bindParameters(setter, [value], false, [argumentValue]);
+                const needsFunctionScope =
+                    firstReturn(body.statements) !== undefined;
+                this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
+                this.context.increaseIndent();
+                this.context.beginNativeFunctionBody(undefined);
+                try {
+                    for (const statement of body.statements) {
+                        this.context.emitStatement(statement);
+                    }
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.context.decreaseIndent();
                 }
-            } finally {
-                this.context.endNativeFunctionBody();
-                this.context.decreaseIndent();
-            }
-            this.context.emit(needsFunctionScope ? "}();" : "}");
+                this.context.emit(needsFunctionScope ? "}();" : "}");
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }
@@ -2822,36 +2808,50 @@ export class ClassLowerer {
         );
         this.context.increaseIndent();
         this.context.bindings.pushScope(prefix);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(body);
-        this.activeRecursiveMethods.set(method, {
-            instance: body,
-            cppName: `${self}.template call<0>`,
-            parameters,
-            returnType,
-            overReceiver,
-            binding: this.context.registerNativeBinding(self, true, true),
-        });
-        this.context.beginNativeFunctionBody(returnType);
         try {
-            for (const parameter of cppParameters) {
-                if (parameter.borrowedWrapper)
-                    this.context.registerNativeConstBinding(
-                        parameter.name,
+            this.context.withThis(body, () => {
+                this.activeRecursiveMethods.set(method, {
+                    instance: body,
+                    cppName: `${self}.template call<0>`,
+                    parameters,
+                    returnType,
+                    overReceiver,
+                    binding: this.context.registerNativeBinding(
+                        self,
                         true,
-                    );
-                this.context.bindings.bindParameterValue(parameter.identifier, {
-                    ...this.context.dataValue(parameter.name, parameter.type),
-                    ...(parameter.readOnly ? { readOnly: true as const } : {}),
+                        true,
+                    ),
                 });
-            }
-            for (const statement of method.body!.statements) {
-                this.context.emitStatement(statement);
-            }
+                this.context.beginNativeFunctionBody(returnType);
+                try {
+                    for (const parameter of cppParameters) {
+                        if (parameter.borrowedWrapper)
+                            this.context.registerNativeConstBinding(
+                                parameter.name,
+                                true,
+                            );
+                        this.context.bindings.bindParameterValue(
+                            parameter.identifier,
+                            {
+                                ...this.context.dataValue(
+                                    parameter.name,
+                                    parameter.type,
+                                ),
+                                ...(parameter.readOnly
+                                    ? { readOnly: true as const }
+                                    : {}),
+                            },
+                        );
+                    }
+                    for (const statement of method.body!.statements) {
+                        this.context.emitStatement(statement);
+                    }
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.activeRecursiveMethods.delete(method);
+                }
+            });
         } finally {
-            this.context.endNativeFunctionBody();
-            this.activeRecursiveMethods.delete(method);
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
@@ -3172,80 +3172,85 @@ export class ClassLowerer {
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(method, call.arguments, false, argumentValues);
-            const properties: Record<string, Value> = {};
-            for (const descriptor of descriptors) {
-                const output = this.context.bindOptionalResourceValue(
-                    descriptor.identifier,
+            return this.context.withThis(instance, () => {
+                this.bindParameters(
+                    method,
+                    call.arguments,
+                    false,
+                    argumentValues,
                 );
-                if (!output) {
-                    this.context.fail(
-                        descriptor.identifier,
-                        "A guarded record return currently requires nullable resource properties.",
-                    );
-                }
-                properties[descriptor.name] = output;
-            }
-            const condition = this.context.compileValue(guard.expression);
-            if (condition.kind !== "boolean") {
-                this.context.fail(
-                    guard.expression,
-                    "A guarded record return requires a boolean null guard.",
-                );
-            }
-            this.context.emit({
-                kind: "open",
-                code: `if (!(${condition.cpp})) {`,
-            });
-            this.context.increaseIndent();
-            this.context.bindings.pushScope(
-                this.context.allocateUserFunctionPrefix(),
-            );
-            try {
-                for (const statement of leading.slice(1)) {
-                    this.context.emitStatement(statement);
-                }
-                const success = this.context.compileValue(returned);
-                if (success.kind !== "record") {
-                    this.context.fail(
-                        returned,
-                        "A guarded record success must remain a compile-time record.",
-                    );
-                }
+                const properties: Record<string, Value> = {};
                 for (const descriptor of descriptors) {
-                    const value = success.recordProperties?.[descriptor.name];
-                    const output = properties[descriptor.name]!;
-                    if (!value || value.kind !== output.kind) {
+                    const output = this.context.bindOptionalResourceValue(
+                        descriptor.identifier,
+                    );
+                    if (!output) {
                         this.context.fail(
                             descriptor.identifier,
-                            `Guarded record property '${descriptor.name}' has an incompatible resource kind.`,
+                            "A guarded record return currently requires nullable resource properties.",
                         );
                     }
-                    this.context.assignOptionalResourceValue(
-                        output,
-                        value,
-                        descriptor.identifier,
-                    );
-                    if (value.engineCpp !== undefined) {
-                        writable(output).engineCpp = value.engineCpp;
-                    }
+                    properties[descriptor.name] = output;
                 }
-            } finally {
-                this.context.bindings.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit({ kind: "close", code: "}" });
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                requiresExplicitDiscard: true,
-            };
+                const condition = this.context.compileValue(guard.expression);
+                if (condition.kind !== "boolean") {
+                    this.context.fail(
+                        guard.expression,
+                        "A guarded record return requires a boolean null guard.",
+                    );
+                }
+                this.context.emit({
+                    kind: "open",
+                    code: `if (!(${condition.cpp})) {`,
+                });
+                this.context.increaseIndent();
+                this.context.bindings.pushScope(
+                    this.context.allocateUserFunctionPrefix(),
+                );
+                try {
+                    for (const statement of leading.slice(1)) {
+                        this.context.emitStatement(statement);
+                    }
+                    const success = this.context.compileValue(returned);
+                    if (success.kind !== "record") {
+                        this.context.fail(
+                            returned,
+                            "A guarded record success must remain a compile-time record.",
+                        );
+                    }
+                    for (const descriptor of descriptors) {
+                        const value =
+                            success.recordProperties?.[descriptor.name];
+                        const output = properties[descriptor.name]!;
+                        if (!value || value.kind !== output.kind) {
+                            this.context.fail(
+                                descriptor.identifier,
+                                `Guarded record property '${descriptor.name}' has an incompatible resource kind.`,
+                            );
+                        }
+                        this.context.assignOptionalResourceValue(
+                            output,
+                            value,
+                            descriptor.identifier,
+                        );
+                        if (value.engineCpp !== undefined) {
+                            writable(output).engineCpp = value.engineCpp;
+                        }
+                    }
+                } finally {
+                    this.context.bindings.popScope();
+                    this.context.decreaseIndent();
+                }
+                this.context.emit({ kind: "close", code: "}" });
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: properties,
+                    requiresExplicitDiscard: true,
+                };
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }

@@ -289,6 +289,7 @@ export interface ExpressionContext
             | "expectKind"
             | "expectSameEngine"
             | "activeThis"
+            | "withThis"
             | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
@@ -6784,18 +6785,14 @@ export class ExpressionLowerer {
                 ? pinOperand(this.context, value, argument, "call_argument")
                 : value;
         });
-        const previous = this.context.activeThis();
-        this.context.defineThis(values[0]);
-        try {
+        return this.context.withThis(values[0], () => {
             return this.context.userFunctions.compileCallbackWithValues(
                 this.context,
                 target,
                 values.slice(1),
                 call,
             );
-        } finally {
-            this.context.defineThis(previous);
-        }
+        });
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */

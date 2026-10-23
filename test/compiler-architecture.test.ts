@@ -1414,3 +1414,16 @@ test("a class member's static modifier is read by isStaticMember", () => {
         ["src/compiler/class-members.ts"],
     );
 });
+
+test("a lowering binds `this` for a scope through withThis", () => {
+    // withThis saves, binds and restores the enclosing `this`. The one other
+    // writer binds a synthetic receiver for the rest of a captured
+    // data-function body from that body's own hook.
+    const writers = sourcePaths.filter(
+        (path) =>
+            path !== "src/compiler.ts" &&
+            path !== "src/compiler/lowering-services.ts" &&
+            readFileSync(path, "utf8").includes(".defineThis("),
+    );
+    assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
+});

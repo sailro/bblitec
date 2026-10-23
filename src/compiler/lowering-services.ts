@@ -422,6 +422,7 @@ export interface LoweringServices {
     ): Value | undefined;
     resolveThisField(name: string): Value | undefined;
     activeThis(): Value | undefined;
+    withThis<T>(receiver: Value | undefined, work: () => T): T;
     registerClassInstance(
         instance: Value,
         declaration: ts.ClassLikeDeclaration,

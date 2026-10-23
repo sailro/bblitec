@@ -40,6 +40,7 @@ type ObjectStaticContext = Pick<
     | "captureManagedClosureLines"
     | "registerNativeBinding"
     | "activeThis"
+    | "withThis"
     | "defineThis"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -1328,23 +1329,23 @@ function definitionAccessor(
         const receiver = argument(receiverName, receiverType);
         const values =
             member.name === "get" ? [] : [argument(valueName, field.type)];
-        const previousThis = context.activeThis();
-        if (!ts.isArrowFunction(callback)) context.defineThis(receiver);
-        try {
-            const value = context.compileCallbackWithValues(
-                callback,
-                values,
-                callback,
-                member.name === "set",
-            );
-            context.emit(
-                member.name === "get"
-                    ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
-                    : "return true;",
-            );
-        } finally {
-            context.defineThis(previousThis);
-        }
+        // An arrow callback keeps the enclosing `this`.
+        context.withThis(
+            ts.isArrowFunction(callback) ? context.activeThis() : receiver,
+            () => {
+                const value = context.compileCallbackWithValues(
+                    callback,
+                    values,
+                    callback,
+                    member.name === "set",
+                );
+                context.emit(
+                    member.name === "get"
+                        ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
+                        : "return true;",
+                );
+            },
+        );
     });
     return member.name === "get"
         ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`

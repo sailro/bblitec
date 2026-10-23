@@ -2770,7 +2770,11 @@ export class PropertyAccessLowerer {
         const staticField =
             this.context.classLowerer.resolveStaticField(expression);
         if (staticField?.initializer) {
-            return this.context.compileValue(staticField.initializer);
+            const initializer = staticField.initializer;
+            return this.context.classLowerer.withDeclaringClass(
+                staticField,
+                () => this.context.compileValue(initializer),
+            );
         }
         const staticStorage =
             this.context.classLowerer.readStaticField(expression);

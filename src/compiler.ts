@@ -6530,21 +6530,18 @@ class Compiler implements LoweringServices {
             return work();
         }
         const saved = [...this.bindings.variableScopes];
-        const previousThis = this.activeThis();
         if (owner.recordScopes) {
             this.bindings.variableScopes.length = 0;
             this.bindings.variableScopes.push(...owner.recordScopes);
         }
-        if (bindThis) {
-            this.defineThis(owner);
-        }
         try {
-            return this.dataTypes.withTypeArguments(
-                owner.recordTypeArguments,
-                work,
+            return this.withThis(bindThis ? owner : this.activeThis(), () =>
+                this.dataTypes.withTypeArguments(
+                    owner.recordTypeArguments,
+                    work,
+                ),
             );
         } finally {
-            this.defineThis(previousThis);
             if (owner.recordScopes) {
                 this.bindings.variableScopes.length = 0;
                 this.bindings.variableScopes.push(...saved);
@@ -6602,30 +6599,30 @@ class Compiler implements LoweringServices {
         return this.withRecordScopes(owner, () => {
             if (leading.length)
                 this.bindings.pushScope(this.allocateUserFunctionPrefix());
-            const previousThis = this.activeThis();
             // A getter's `this` is its receiver for both class instances and
             // object-literal accessors. The record may have crossed a return
             // boundary that copied its compile-time Value wrapper, so its
             // identity in classInstances is not a reliable dispatch guard.
-            this.defineThis(receiver ?? owner);
             try {
-                // A getter is an evaluation, even when its return happens
-                // to lower to a field read. Optional chains must consume it
-                // once and keep any nested method calls behind their guard.
-                if (resultType)
-                    return {
-                        ...this.userFunctions.emitValueLambda(
-                            this,
-                            statements,
-                            this.dataTypes.ownReturnedArray(resultType),
-                            false,
-                        ),
-                        impure: true,
-                    };
-                emitReachableStatements(this, leading);
-                return { ...this.compileValue(expression), impure: true };
+                return this.withThis(receiver ?? owner, () => {
+                    // A getter is an evaluation, even when its return happens
+                    // to lower to a field read. Optional chains must consume
+                    // it once and keep any nested method calls behind their
+                    // guard.
+                    if (resultType)
+                        return {
+                            ...this.userFunctions.emitValueLambda(
+                                this,
+                                statements,
+                                this.dataTypes.ownReturnedArray(resultType),
+                                false,
+                            ),
+                            impure: true,
+                        };
+                    emitReachableStatements(this, leading);
+                    return { ...this.compileValue(expression), impure: true };
+                });
             } finally {
-                this.defineThis(previousThis);
                 if (leading.length) this.bindings.popScope();
             }
         });
@@ -6848,6 +6845,17 @@ class Compiler implements LoweringServices {
 
     public activeThis(): Value | undefined {
         return this.thisInstance;
+    }
+
+    /** Runs `work` with `this` bound to `receiver`, restoring the enclosing `this` after. */
+    public withThis<T>(receiver: Value | undefined, work: () => T): T {
+        const previous = this.thisInstance;
+        this.defineThis(receiver);
+        try {
+            return work();
+        } finally {
+            this.defineThis(previous);
+        }
     }
 
     public registerClassInstance(
@@ -9512,13 +9520,7 @@ class Compiler implements LoweringServices {
             // restore the same `this` its declaration ran under, or the
             // body would resolve its fields against whichever receiver the
             // enclosing inlined method happened to leave bound.
-            const previousThis = this.thisInstance;
-            this.defineThis(receiver ?? effectiveOwner);
-            try {
-                return compile();
-            } finally {
-                this.defineThis(previousThis);
-            }
+            return this.withThis(receiver ?? effectiveOwner, compile);
         });
     }
 

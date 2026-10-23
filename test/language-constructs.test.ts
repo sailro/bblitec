@@ -16,6 +16,14 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a-static-initializer-reads-this-as-its-class",
+    `
+    class R { static readonly F = 10; static readonly H = this.F / 2; value(): number { return R.H; } }
+    if (new R().value() !== 5 || R.H !== 5) throw new Error("static this");
+`,
+);
+
+check(
     "construction-evaluates-arguments-before-own-members",
     `
     let c = 0;
