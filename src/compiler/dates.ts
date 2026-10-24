@@ -61,12 +61,30 @@ export function compileDateNew(
     if (context.libraryGlobal(expression.expression) !== "Date")
         return undefined;
     const args = expression.arguments ?? [];
-    if (args.length > 1)
+    if (args.some(ts.isSpreadElement) || args.length > 7)
         context.fail(
             expression,
-            "Date construction supports the current time or one numeric timestamp, standardized date-time string or Date value.",
+            "Date construction takes a year and up to six numeric fields as separate arguments.",
         );
     context.reachJsData();
+    // `new Date(year, month, ...)`: the fields as local time, defaults as
+    // `Date.UTC` takes them.
+    if (args.length > 1) {
+        context.reachFeature("data:locale", expression);
+        const defaults = ["0.0", "0.0", "1.0"];
+        const fields = Array.from({ length: 7 }, (_, index) => {
+            const argument = args[index];
+            return argument
+                ? lowerer.compileNumberArgument(argument, "")
+                : (defaults[index] ?? "0.0");
+        });
+        return {
+            kind: "data",
+            cpp: `bbl::js::make_date(bbl::pal::date_from_local_fields(${fields.join(", ")}))`,
+            dataType: { kind: "date" },
+            impure: true,
+        };
+    }
     const value = args[0] ? context.compileValue(args[0]) : undefined;
     const timestamp = !value
         ? "bbl::js::epoch_milliseconds()"
@@ -152,6 +170,57 @@ function compileDateFieldGetter(
     };
 }
 
+/** How many fields each `set<Field>`/`setUTC<Field>` setter takes, from its own on. */
+const DATE_SETTER_ARITY: ReadonlyMap<string, number> = new EmissionMap([
+    ["FullYear", 3],
+    ["Month", 2],
+    ["Date", 1],
+    ["Hours", 4],
+    ["Minutes", 3],
+    ["Seconds", 2],
+    ["Milliseconds", 1],
+]);
+
+/**
+ * A Date field setter: the fields from its own on, as many as it is
+ * given, replace those of the time value read as UTC (`setUTC<Field>`) or
+ * as local time (`set<Field>`); it stores and returns the new time value.
+ */
+function compileDateFieldSetter(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    owner: Value,
+    method: string,
+): Value | undefined {
+    const utc = method.startsWith("setUTC");
+    const name = method.slice(utc ? 6 : 3);
+    const field = DATE_FIELDS.get(name);
+    const arity = DATE_SETTER_ARITY.get(name);
+    if (!method.startsWith("set") || field === undefined || arity === undefined)
+        return undefined;
+    const context = lowerer.context;
+    if (call.arguments.some(ts.isSpreadElement))
+        context.fail(
+            call,
+            `Date.${method} takes its fields as separate arguments.`,
+        );
+    context.expectArgumentCount(call, 1, arity);
+    if (!utc) context.reachFeature("data:locale", call);
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "date_receiver",
+    );
+    const fields = call.arguments.map((argument) =>
+        lowerer.compileNumberArgument(argument, ""),
+    );
+    return {
+        kind: "number",
+        cpp: `bbl::${utc ? "js::date_set_utc" : "pal::date_set_local"}(${receiver.cpp}, bbl::js::DateField::${field}, ${fields.length}, ${fields.join(", ")})`,
+        dataType: { kind: "number" },
+        impure: true,
+    };
+}
+
 /**
  * `Date.UTC(year, month?, ...)`: each argument converts to a number in
  * order; an omitted month is 0, an omitted day 1 and an omitted time field 0.
@@ -189,8 +258,10 @@ export function compileDateMethod(
 ): Value {
     const context = lowerer.context;
     context.reachJsData();
-    const getter = compileDateFieldGetter(lowerer, call, owner, method);
-    if (getter) return getter;
+    const field =
+        compileDateFieldGetter(lowerer, call, owner, method) ??
+        compileDateFieldSetter(lowerer, call, owner, method);
+    if (field) return field;
     switch (method) {
         case "getTimezoneOffset":
             context.expectArgumentCount(call, 0, 0);

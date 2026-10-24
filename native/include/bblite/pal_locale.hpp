@@ -40,6 +40,36 @@ struct CollationOptions {
                             : js::date_time_field(time + local_time_zone_offset(time), field);
 }
 
+/**
+ * UTC(t): the instant a local time value names, clipped. A local time the
+ * zone repeats or skips at a transition takes the offset before it.
+ */
+[[nodiscard]] inline double utc_from_local(double local) {
+    if (std::isnan(local))
+        return local;
+    const double early = local - local_time_zone_offset(local - 86400000.0);
+    const double late = local - local_time_zone_offset(local + 86400000.0);
+    const bool late_names_it = late + local_time_zone_offset(late) == local;
+    const bool early_names_it = early + local_time_zone_offset(early) == local;
+    return js::date_time_clip(early_names_it || !late_names_it ? early : late);
+}
+
+/** `Date.prototype.set<Field>`: the fields of LocalTime(t) replaced, back through UTC(t). */
+inline double date_set_local(const js::Date& date, js::DateField first, int count, double a,
+                             double b = 0.0, double c = 0.0, double d = 0.0) {
+    const double time = *date;
+    const double local = std::isnan(time) ? time : time + local_time_zone_offset(time);
+    *date = utc_from_local(js::date_with_fields(local, first, count, a, b, c, d));
+    return *date;
+}
+
+/** `new Date(year, month, ...)`: the fields as local time, a year 0..99 meaning 1900..1999. */
+[[nodiscard]] inline double date_from_local_fields(double year, double month, double date,
+                                                   double hours, double minutes, double seconds,
+                                                   double milliseconds) {
+    return utc_from_local(js::date_utc(year, month, date, hours, minutes, seconds, milliseconds));
+}
+
 /** `Date.prototype.getTimezoneOffset`: (t - LocalTime(t)) in minutes. */
 [[nodiscard]] inline double date_time_zone_offset(const js::Date& date) {
     const double time = *date;

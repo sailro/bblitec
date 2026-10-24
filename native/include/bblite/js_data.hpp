@@ -2928,18 +2928,13 @@ struct ParsedDateTime {
 }
 
 /**
- * `Date.UTC`: MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped,
- * a year 0..99 meaning 1900..1999. Years and months beyond V8's ranges are NaN.
+ * MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped. Years and
+ * months beyond V8's ranges are NaN.
  */
-[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
-                                     double minutes, double seconds, double milliseconds) {
+[[nodiscard]] inline double date_make(double year, double month, double date, double hours,
+                                      double minutes, double seconds, double milliseconds) {
     using namespace date_detail;
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    if (!std::isnan(year)) {
-        const double truncated = integer(year);
-        if (truncated >= 0.0 && truncated <= 99.0)
-            year = 1900.0 + truncated;
-    }
     if (!std::isfinite(hours) || !std::isfinite(minutes) || !std::isfinite(seconds) ||
         !std::isfinite(milliseconds))
         return nan;
@@ -2956,6 +2951,73 @@ struct ParsedDateTime {
     const double day = first + integer(date) - 1.0;
     const double value = day * milliseconds_per_day + time;
     return std::isfinite(value) ? date_time_clip(value) : nan;
+}
+
+/** `Date.UTC`: {@link date_make}, a year 0..99 meaning 1900..1999. */
+[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
+                                     double minutes, double seconds, double milliseconds) {
+    if (!std::isnan(year)) {
+        const double truncated = date_detail::integer(year);
+        if (truncated >= 0.0 && truncated <= 99.0)
+            year = 1900.0 + truncated;
+    }
+    return date_make(year, month, date, hours, minutes, seconds, milliseconds);
+}
+
+/**
+ * A time value with `count` fields from `first` on replaced by `given`, the
+ * others kept, all read in one zone: the `set<Field>` arithmetic. An invalid
+ * time stays invalid, except that a year setter starts from +0.
+ */
+[[nodiscard]] inline double date_with_fields(double time, DateField first, int count, double a,
+                                             double b, double c, double d) {
+    if (std::isnan(time)) {
+        if (first != DateField::year)
+            return time;
+        time = 0.0;
+    }
+    double fields[] = {
+        date_time_field(time, DateField::year),        date_time_field(time, DateField::month),
+        date_time_field(time, DateField::date),        date_time_field(time, DateField::hours),
+        date_time_field(time, DateField::minutes),     date_time_field(time, DateField::seconds),
+        date_time_field(time, DateField::milliseconds)};
+    int start = 0;
+    switch (first) {
+    case DateField::year:
+        start = 0;
+        break;
+    case DateField::month:
+        start = 1;
+        break;
+    case DateField::date:
+        start = 2;
+        break;
+    case DateField::hours:
+        start = 3;
+        break;
+    case DateField::minutes:
+        start = 4;
+        break;
+    case DateField::seconds:
+        start = 5;
+        break;
+    case DateField::milliseconds:
+        start = 6;
+        break;
+    case DateField::weekday:
+        throw std::logic_error("A Date has no weekday setter.");
+    }
+    const double given[] = {a, b, c, d};
+    for (int index = 0; index < count; ++index)
+        fields[start + index] = given[index];
+    return date_make(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
+}
+
+/** `Date.prototype.setUTC<Field>`: stores and returns the new time value. */
+inline double date_set_utc(const Date& date, DateField first, int count, double a, double b = 0.0,
+                           double c = 0.0, double d = 0.0) {
+    *date = date_with_fields(*date, first, count, a, b, c, d);
+    return *date;
 }
 
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
@@ -5204,7 +5266,7 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
 
 [[nodiscard]] inline std::size_t array_length_value(double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
-        throw std::runtime_error("Invalid array length.");
+        throw NamedError("RangeError", "Invalid array length");
     return array_index(count);
 }
 
@@ -5793,8 +5855,16 @@ double atomics_compare_exchange(Values values, double index, double expected, do
     return integer == 1.0 || integer == 2.0 || integer == 4.0 || integer == 8.0;
 }
 
+/** ToIndex of a typed array's length: NaN reads 0, a negative or unsafe length throws a RangeError. */
+[[nodiscard]] inline std::size_t typed_array_length(double count) {
+    const double integer = to_integer_or_infinity(count);
+    if (integer < 0.0 || integer > 9007199254740991.0)
+        throw NamedError("RangeError", "Invalid typed array length: " + number_to_string(count));
+    return static_cast<std::size_t>(integer);
+}
+
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
-    return U8Array(static_cast<std::size_t>(count));
+    return U8Array(typed_array_length(count));
 }
 
 template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
@@ -5806,35 +5876,35 @@ template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Valu
 }
 
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
-    return F32Array(static_cast<std::size_t>(count), 0.0f);
+    return F32Array(typed_array_length(count), 0.0f);
 }
 
 [[nodiscard]] inline F64Array f64_array_sized(double count) {
-    return F64Array(static_cast<std::size_t>(count), 0.0);
+    return F64Array(typed_array_length(count), 0.0);
 }
 
 [[nodiscard]] inline U16Array u16_array_sized(double count) {
-    return U16Array(static_cast<std::size_t>(count), 0u);
+    return U16Array(typed_array_length(count), 0u);
 }
 
 [[nodiscard]] inline I16Array i16_array_sized(double count) {
-    return I16Array(static_cast<std::size_t>(count), 0);
+    return I16Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline I8Array i8_array_sized(double count) {
-    return I8Array(static_cast<std::size_t>(count), 0);
+    return I8Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline U32Array u32_array_sized(double count) {
-    return U32Array(static_cast<std::size_t>(count), 0u);
+    return U32Array(typed_array_length(count), 0u);
 }
 
 [[nodiscard]] inline I32Array i32_array_sized(double count) {
-    return I32Array(static_cast<std::size_t>(count), 0);
+    return I32Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline U8CArray u8c_array_sized(double count) {
-    return U8CArray(static_cast<std::size_t>(count), ClampedByte{});
+    return U8CArray(typed_array_length(count), ClampedByte{});
 }
 
 template <typename Output, typename Values, typename Convert>
