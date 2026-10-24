@@ -5,15 +5,28 @@ import {
 } from "./analysis-walk.js";
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
-import { collectReboundSymbols } from "./module-initializers.js";
+import { schedulerOf } from "./schedulers.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
+    choosesOperand,
+    outermostWrapper,
+    rootIdentifier,
+    writeSites,
+    parameterForArgument,
+    containsSuspension,
+    isAsyncFunction,
+    isGeneratorFunction,
     isSupportedFunction,
     type SupportedFunction,
-} from "./user-functions.js";
-import { rootIdentifier } from "./syntax.js";
-import { presentMembers } from "./type-facts.js";
+    variableKind,
+} from "./syntax.js";
+import { presentMembers, callSignatures } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { promiseReactionOf } from "./promises.js";
+import { keptArguments } from "./kept-values.js";
+import { memberAccessors } from "./symbols.js";
+import { isListenerRegistration } from "./receiver-methods.js";
 
 interface SharedClosureBindings {
     captured: ReadonlySet<ts.Symbol>;
@@ -21,69 +34,35 @@ interface SharedClosureBindings {
 }
 
 /**
- * Where a value written at `node` lands. Wrappers that hand the same value
- * on -- parentheses, `as`/`satisfies`/`!`, a conditional's arm, a `??`, `||`
- * or `&&` operand -- are climbed to the site that consumes it
- * (`register(ready ? f : () => n)` consumes either closure as an argument).
- * `selected` says the value went through a run-time choice.
+ * Where a value written at `node` lands: past the wrappers and operators
+ * that yield it, at the site that consumes it (`register(ready ? f : () =>
+ * n)` consumes either closure as an argument). `selected` says the value
+ * went through a run-time choice.
  */
 function valueSite(node: ts.Expression): {
     value: ts.Expression;
     consumer: ts.Node;
     selected: boolean;
 } {
-    let value = node;
+    const value = outermostWrapper(node, { branches: "objects" });
     let selected = false;
-    for (;;) {
-        const parent = value.parent;
-        if (
-            ts.isParenthesizedExpression(parent) ||
-            ts.isAsExpression(parent) ||
-            ts.isSatisfiesExpression(parent) ||
-            ts.isNonNullExpression(parent) ||
-            ts.isTypeAssertionExpression(parent)
-        ) {
-            value = parent;
-            continue;
-        }
-        if (
-            (ts.isConditionalExpression(parent) &&
-                parent.condition !== value) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken))
-        ) {
-            value = parent;
-            selected = true;
-            continue;
-        }
-        return { value, consumer: parent, selected };
-    }
+    for (
+        let current: ts.Node = node;
+        current !== value;
+        current = current.parent
+    )
+        selected ||= choosesOperand(current.parent);
+    return { value, consumer: value.parent, selected };
 }
 
 /** Whether an async function awaits in its own body: a callback it calls can run after its caller resumed. */
 function suspendsBeforeReturn(owner: ts.Node): boolean {
-    if (
-        !isSupportedFunction(owner) ||
-        !owner.body ||
-        !ts
-            .getModifiers(owner)
-            ?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-    )
-        return false;
-    let found = false;
-    forEachAnalysisNode(owner.body, (node) => {
-        if (found || ts.isFunctionLike(node)) return "skip";
-        if (
-            ts.isAwaitExpression(node) ||
-            (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
-        )
-            found = true;
-    });
-    return found;
+    return (
+        isSupportedFunction(owner) &&
+        owner.body !== undefined &&
+        isAsyncFunction(owner) &&
+        containsSuspension(owner.body)
+    );
 }
 
 /**
@@ -124,14 +103,6 @@ interface SharedClosureContext extends Pick<
 export class SharedClosureAnalysis {
     constructor(private readonly context: SharedClosureContext) {}
 
-    /**
-     * One rebound-name walk per file, shared by every `identifierIsRebound`.
-     * @unjournaled The answer depends on the file's syntax alone.
-     */
-    private readonly reboundSymbolsByFile = new WeakMap<
-        ts.SourceFile,
-        ReadonlySet<ts.Symbol>
-    >();
     /** @unjournaled The answers depend on the program's syntax and types alone. */
     private readonly sharedClosureSymbols = new WeakMap<
         ts.Node,
@@ -155,7 +126,7 @@ export class SharedClosureAnalysis {
             !declaration.parent ||
             (ts.isVariableDeclaration(declaration) &&
                 (!ts.isVariableDeclarationList(declaration.parent) ||
-                    (declaration.parent.flags & ts.NodeFlags.Const) !== 0))
+                    variableKind(declaration.parent) === "const"))
         ) {
             return false;
         }
@@ -248,28 +219,16 @@ export class SharedClosureAnalysis {
                     return includeFrameRegistrations && index === 1;
             }
         }
-        if (
+        if (isListenerRegistration(call)) return index === 1;
+        const reaction =
             ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "addEventListener" &&
-            call.arguments.length >= 2
-        ) {
-            return index === 1;
-        }
-        const global = this.context.libraryGlobal(call.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            ["then", "catch", "finally"].includes(callee.name.text) &&
-            this.context.checker.getTypeAtLocation(callee.expression).symbol
-                ?.name === "Promise"
-        )
-            return index === 0 || (callee.name.text === "then" && index === 1);
+            promiseReactionOf(callee, this.context.checker);
+        if (reaction)
+            return index === 0 || (reaction === "then" && index === 1);
+        const scheduler = schedulerOf(this.context.checker, call.expression);
         return (
-            (global === "setTimeout" ||
-                global === "setInterval" ||
-                global === "queueMicrotask" ||
-                global === "requestIdleCallback" ||
-                (includeFrameRegistrations &&
-                    global === "requestAnimationFrame")) &&
+            scheduler !== undefined &&
+            (scheduler !== "frame" || includeFrameRegistrations) &&
             index === 0 &&
             call.arguments.length >= 1
         );
@@ -300,11 +259,10 @@ export class SharedClosureAnalysis {
         if (targets === "library") return false;
         if (targets === "unnamed") return true;
         return targets.some((target) => {
-            const last = target.parameters[target.parameters.length - 1];
-            const parameter =
-                last?.dotDotDotToken && index >= target.parameters.length - 1
-                    ? last
-                    : target.parameters[index];
+            // A spread before it may hand the callback to any parameter.
+            const bound = parameterForArgument(call, target, index);
+            if (bound === "unknown") return true;
+            const parameter = bound?.parameter;
             if (!parameter || !ts.isIdentifier(parameter.name)) return false;
             const symbol = this.context.symbols.valueSymbol(parameter.name);
             const info = this.sharedClosureSymbolsFor(
@@ -431,7 +389,7 @@ export class SharedClosureAnalysis {
                 }
             }
         }
-        const roots: ts.FunctionLikeDeclaration[] = [];
+        const roots: ts.Node[] = [];
         const rootSet = new EmissionSet<ts.Node>();
         const isClosure = (
             node: ts.Node,
@@ -461,10 +419,6 @@ export class SharedClosureAnalysis {
                 ts.isIdentifier(consumer.name)
                 ? consumer.name
                 : undefined;
-        };
-        const storeNamed = (identifier: ts.Identifier): void => {
-            const symbol = this.context.symbols.valueSymbol(identifier);
-            if (symbol) storedLocalFunctions.add(symbol);
         };
         const isStoredLocal = (identifier: ts.Identifier): boolean => {
             const symbol = this.context.symbols.valueSymbol(identifier);
@@ -504,42 +458,33 @@ export class SharedClosureAnalysis {
             if (
                 ts.isVariableDeclaration(parent) &&
                 parent.type &&
-                this.context.checker
-                    .getTypeFromTypeNode(parent.type)
-                    .getCallSignatures().length > 0
+                callSignatures(
+                    this.context.checker,
+                    this.context.checker.getTypeFromTypeNode(parent.type),
+                    "exact",
+                ).length > 0
             )
                 return true;
-            // Constructors and instance fields can retain the function for
-            // the object's lifetime, including a callback supplied as a
-            // parameter property. Mutable outer bindings remain shared.
+            // A construction (a parameter property, a field), a storing call
+            // (a container) and an instance field keep the function past the
+            // call. Mutable outer bindings remain shared.
             if (
-                (ts.isNewExpression(parent) &&
-                    parent.arguments?.includes(value) &&
-                    this.context.libraryGlobal(parent.expression) ===
-                        undefined) ||
+                keptArguments(this.context.checker, parent).includes(value) ||
                 (ts.isPropertyDeclaration(parent) &&
                     parent.initializer === value)
             )
                 return true;
-            if (
-                ts.isCallExpression(parent) &&
-                parent.arguments.includes(value)
-            ) {
-                const callee = this.context.unwrap(parent.expression);
-                return (
-                    ts.isPropertyAccessExpression(callee) &&
-                    ["push", "unshift", "add", "set"].includes(callee.name.text)
-                );
-            }
-            if (
-                ts.isBinaryExpression(parent) &&
-                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                parent.right === value
-            ) {
+            if (ts.isCallExpression(parent) && parent.arguments.includes(value))
+                return false;
+            // `o.cb = fn` and `o.cb ??= fn` store the function whole.
+            const store = writeSites(parent).find(
+                ({ stored }) => stored === value,
+            );
+            if (store) {
                 // A property of the program's own data keeps the function;
                 // a library global's (`Math.random = () => ...`, which a
                 // bake moves to generation) does not.
-                const target = this.context.unwrap(parent.left);
+                const target = this.context.unwrap(store.target);
                 const root = rootIdentifier(target, (chain) =>
                     this.context.unwrap(chain),
                 );
@@ -550,13 +495,16 @@ export class SharedClosureAnalysis {
                     (!(
                         root && this.context.libraryGlobal(root) !== undefined
                     ) ||
-                        (isDeterministicRandomRead(this.context, parent.left) &&
+                        (isDeterministicRandomRead(
+                            this.context,
+                            store.target,
+                        ) &&
                             this.sourceUsesNativeParticleProvider()))
                 );
             }
             return ts.isArrayLiteralExpression(parent);
         };
-        const addRoot = (node: ts.FunctionLikeDeclaration): void => {
+        const addRoot = (node: ts.Node): void => {
             roots.push(node);
             rootSet.add(node);
         };
@@ -572,16 +520,8 @@ export class SharedClosureAnalysis {
                 // outer bindings must therefore use the same cells as callbacks.
                 if (
                     isSupportedFunction(node) &&
-                    (("asteriskToken" in node &&
-                        node.asteriskToken !== undefined) ||
-                        (this.context.options.workers &&
-                            ts
-                                .getModifiers(node)
-                                ?.some(
-                                    (modifier) =>
-                                        modifier.kind ===
-                                        ts.SyntaxKind.AsyncKeyword,
-                                )))
+                    (isGeneratorFunction(node) ||
+                        (this.context.options.workers && isAsyncFunction(node)))
                 ) {
                     addRoot(node);
                 }
@@ -646,50 +586,58 @@ export class SharedClosureAnalysis {
         // environment. Direct calls alone do not require that ownership,
         // except in an async body that awaits: its caller resumes first.
         const suspends = suspendsBeforeReturn(owner);
-        forEachAnalysisNode(owner, (node) => {
-            if (ts.isShorthandPropertyAssignment(node)) {
-                if (localFunctionNames.has(node.name.text)) {
-                    storeNamed(node.name);
-                    const symbol = this.context.symbols.valueSymbol(node.name);
-                    if (symbol && forwardedParameters.has(symbol))
-                        forwarded.add(symbol);
-                }
-            } else if (
-                ts.isIdentifier(node) &&
-                localFunctionNames.has(node.text)
-            ) {
-                const parent = node.parent;
-                const declared =
-                    (ts.isFunctionDeclaration(parent) ||
-                        ts.isVariableDeclaration(parent)) &&
-                    parent.name === node;
+        forEachAnalysisNode(
+            owner,
+            (node) => {
+                if (
+                    !ts.isIdentifier(node) ||
+                    !localFunctionNames.has(node.text)
+                )
+                    return;
                 const callee =
-                    ts.isCallExpression(parent) && parent.expression === node;
-                const member =
-                    ts.isPropertyAccessExpression(parent) &&
-                    parent.name === node;
-                if (!declared && !member && (!callee || suspends)) {
-                    const symbol = this.context.symbols.valueSymbol(node);
-                    if (symbol && !callee && localFunctions.has(symbol))
-                        storeNamed(node);
-                    if (
-                        symbol &&
-                        forwardedParameters.has(symbol) &&
-                        !(ts.isParameter(parent) && parent.name === node)
-                    )
-                        forwarded.add(symbol);
-                }
-            }
-        });
+                    ts.isCallExpression(node.parent) &&
+                    node.parent.expression === node;
+                if (callee && !suspends) return;
+                const symbol = this.context.symbols.valueSymbol(node);
+                if (!symbol) return;
+                if (!callee && localFunctions.has(symbol))
+                    storedLocalFunctions.add(symbol);
+                if (forwardedParameters.has(symbol)) forwarded.add(symbol);
+            },
+            { names: "references" },
+        );
         for (const symbol of storedLocalFunctions)
             localFunctions.get(symbol)?.forEach(addRoot);
-        // A local function a root calls runs from that stored callback.
+        // A local function a root calls runs from that stored callback, as
+        // does any code declared in the owner that a root reaches: a call's
+        // bodies (each override included), a construction's constructors and
+        // field initializers, an accessed property's getter and setter.
         const visitedRoots = new EmissionSet<ts.Node>();
         for (let index = 0; index < roots.length; ++index) {
             const root = roots[index]!;
             if (visitedRoots.has(root)) continue;
             visitedRoots.add(root);
             forEachAnalysisNode(root, (node) => {
+                const reached =
+                    ts.isCallExpression(node) || ts.isNewExpression(node)
+                        ? this.context.evaluationOrder.callUnits(node)
+                        : ts.isPropertyAccessExpression(node) ||
+                            ts.isElementAccessExpression(node)
+                          ? memberAccessors(
+                                this.context.checker,
+                                node,
+                                "either",
+                            )
+                          : undefined;
+                if (reached !== undefined && reached !== "library")
+                    for (const unit of reached)
+                        if (
+                            !rootSet.has(unit) &&
+                            unit.pos >= owner.pos &&
+                            unit.end <= owner.end &&
+                            unit.getSourceFile() === owner.getSourceFile()
+                        )
+                            addRoot(unit);
                 if (
                     ts.isIdentifier(node) &&
                     localFunctionNames.has(node.text)
@@ -748,25 +696,19 @@ export class SharedClosureAnalysis {
     }
 
     /**
-     * A non-literal inferred struct needs storage only when its binding
-     * changes.
-     *
-     * The answer is a property of the file, not of the identifier, so the
-     * file's assigned names are resolved once and every later question is a
-     * set membership -- a scene asks this for most of its declarations, and
-     * a walk each turned that into a scan of the whole file per name.
-     * `false` keeps `++`/`--` out of the set, which is the answer every
-     * caller here has always had.
+     * Whether anything gives the binding a new value, `++` and `--` included:
+     * they rebind a number (a browser value read once is no longer it), and
+     * cannot apply to the objects most callers ask about.
      */
     public identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.context.symbols.valueSymbol(identifier);
-        if (!symbol) return false;
-        const file = identifier.getSourceFile();
-        let rebound = this.reboundSymbolsByFile.get(file);
-        if (!rebound) {
-            rebound = collectReboundSymbols(file, this.context.symbols, false);
-            this.reboundSymbolsByFile.set(file, rebound);
-        }
-        return rebound.has(symbol);
+        return (
+            symbol !== undefined &&
+            isRebound(
+                this.context.checker,
+                this.context.program.getSourceFiles(),
+                symbol,
+            )
+        );
     }
 }

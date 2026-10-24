@@ -2,12 +2,12 @@ import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 import { lowerThinInstanceUploadBody } from "./compiler/thin-instance-upload.js";
 import {
-    provenUndefinedValue,
     isNonThenableDataType,
+    readsErasedVoid,
 } from "./compiler/undefined-values.js";
-import { hasNoValueCompletion } from "./compiler/native-return-type.js";
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { isNativeOwnerRecord } from "./compiler/native-owner-carrier.js";
+import { createHash } from "node:crypto";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
@@ -59,6 +59,13 @@ import {
 import { sourceProfileScope } from "./compiler/source-profile.js";
 import { coverSourceRealm } from "./compiler/source-coverage.js";
 import ts from "typescript";
+import {
+    absenceOf,
+    knownCondition,
+    staticBooleanOf,
+    staticKeyOf,
+    undefinedValue,
+} from "./compiler/values/model.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
 import { PageLoader } from "./compiler/page-loader.js";
@@ -199,10 +206,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
-import {
-    ExpressionLowerer,
-    PURE_NUMBER_FORMATTERS,
-} from "./compiler/expressions.js";
+import { ExpressionLowerer } from "./compiler/expressions.js";
 import { NativeFunctionLowerer } from "./compiler/native-functions.js";
 import {
     emitReachableStatements,
@@ -230,17 +234,29 @@ import { RecordProxies } from "./compiler/proxies.js";
 import { PropertyAccessLowerer, propertyRules } from "./compiler/properties.js";
 import {
     CompilerSymbols,
-    accessedPropertySymbol,
+    memberAccessors,
+    staticAccessKey,
     declaredIn,
     declaredInDomLibrary,
     enumMemberConstant,
-    symbolPropertyKey,
+    staticPropertyKey,
     type DeclarationOrigin,
+    typeMayHoldKey,
+    parameterInput,
+    libraryName,
+    computedEnumMember,
+    isLibraryNumberFormatter,
+    calledDeclaration,
+    calledFunction,
 } from "./compiler/symbols.js";
 import {
     isNullable,
     presentMembers,
     typeCanCarryReference,
+    undefinedOnly,
+    callSignatures,
+    inheritsFrom,
+    unionMembers,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -252,7 +268,6 @@ import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
-    isSupportedFunction,
     resolveFunctionDeclaration,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
@@ -266,6 +281,7 @@ import {
     parameterIsReadOnly,
     parameterWrittenSlots,
 } from "./compiler/parameter-effects.js";
+import { promiseReactionOf } from "./compiler/promises.js";
 import { recordComponents } from "./compiler/record-components.js";
 import { recordFieldIsWritten } from "./compiler/record-observations.js";
 import {
@@ -282,12 +298,24 @@ import {
     isDeclaredInside,
     literalMember,
     isUpdateExpression,
-    objectProperty,
-    propertyNameText,
+    propertyKey,
     sourceFunctionName,
     stringLiteralText,
     unwrappedIdentifier,
     wrappedParent,
+    writeSites,
+    isValueReference,
+    expressionHasEffects,
+    lastWriter,
+    objectLiteralMembers,
+    plainDataMembers,
+    containsSuspension,
+    functionKind,
+    isSupportedFunction,
+    variableKind,
+    rootExpression,
+    unwrapExpression,
+    keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
@@ -349,8 +377,13 @@ import {
     initializerNamesBinding,
 } from "./compiler/declarations.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
+import { emitSharedCell } from "./compiler/shared-cells.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
+import {
+    callResultCanHoldReceiver,
+    keptArguments,
+} from "./compiler/kept-values.js";
 
 export type {
     CompileAsset,
@@ -966,7 +999,8 @@ class Compiler implements LoweringServices {
     public readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
     public readonly body: NativeEmission[] = emissionArray([]);
     @journaled private accessor emissionSource: string | undefined;
-    @journaled private accessor nextOutlinedIndex = 0;
+    /** Outlined helpers already defined, by their shape-derived names. */
+    private readonly outlinedHelpers = new EmissionSet<string>();
     public readonly nativeDeclarations = new EmissionMap<
         string,
         NativeDeclaration
@@ -1129,6 +1163,7 @@ class Compiler implements LoweringServices {
             (expression) => this.generationText(expression),
             (object) => this.objectProperties(object),
             (identifier) => this.inlinedArgumentText(identifier),
+            (access) => this.dataLowerer.compileGuardableElementAccess(access),
         );
     }
 
@@ -1479,9 +1514,7 @@ class Compiler implements LoweringServices {
                 if (
                     !ts.isVariableStatement(statement) ||
                     (file !== this.sourceFile &&
-                        (statement.declarationList.flags &
-                            ts.NodeFlags.Const) ===
-                            0)
+                        variableKind(statement.declarationList) !== "const")
                 ) {
                     continue;
                 }
@@ -1565,9 +1598,7 @@ class Compiler implements LoweringServices {
                     .declarations) {
                     if (!ts.isIdentifier(declaration.name)) continue;
                     if (
-                        (statement.declarationList.flags &
-                            ts.NodeFlags.Const) !==
-                            0 &&
+                        variableKind(statement.declarationList) === "const" &&
                         declaration.initializer &&
                         !this.dynamicBindings.has(declaration) &&
                         this.evaluationOrder.isPureExpression(
@@ -1690,11 +1721,7 @@ class Compiler implements LoweringServices {
         };
         const suspends =
             this.options.workers &&
-            entry.some((statement) =>
-                someAnalysisNode(statement, ts.isAwaitExpression, {
-                    functions: "skip",
-                }),
-            );
+            entry.some((statement) => containsSuspension(statement));
         if (!suspends) {
             emitBody();
             return;
@@ -1711,12 +1738,7 @@ class Compiler implements LoweringServices {
                         coroutine: true,
                     });
                     try {
-                        if (!emitBody())
-                            this.emit({
-                                kind: "control",
-                                code: "co_return bbl::js::PromiseVoid{};",
-                                transfer: "suspend",
-                            });
+                        if (!emitBody()) this.emitFallOffEnd();
                     } finally {
                         this.endNativeFunctionBody();
                     }
@@ -1738,14 +1760,13 @@ class Compiler implements LoweringServices {
                     // Constant members already lower at their use sites. A
                     // runtime initializer must not disappear with its declaration.
                     if (
+                        computedEnumMember(this.checker, statement) ||
                         !statement.members.every(
                             (member) =>
-                                this.checker.getConstantValue(member) !==
-                                    undefined &&
-                                (!member.initializer ||
-                                    this.evaluationOrder.isPureExpression(
-                                        member.initializer,
-                                    )),
+                                !member.initializer ||
+                                this.evaluationOrder.isPureExpression(
+                                    member.initializer,
+                                ),
                         )
                     )
                         this.fail(
@@ -1836,7 +1857,7 @@ class Compiler implements LoweringServices {
         if (
             ts.isCallExpression(expression) &&
             ts.isPropertyAccessExpression(expression.expression) &&
-            expression.expression.name.text === "catch"
+            promiseReactionOf(expression.expression, this.checker) === "catch"
         ) {
             const promise = this.entryReporterPromise(expression, true);
             if (!promise) return false;
@@ -1855,10 +1876,9 @@ class Compiler implements LoweringServices {
             ts.isIdentifier(expression.expression) &&
             this.symbols.valueSymbol(expression.expression)
                 ?.valueDeclaration === main &&
-            signature?.declaration === main &&
+            calledDeclaration(this.checker, expression) === main &&
             returned !== undefined &&
-            (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0
+            undefinedOnly(returned)
         );
     }
 
@@ -1869,7 +1889,7 @@ class Compiler implements LoweringServices {
         const isEntryReference = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
             this.symbols.valueSymbol(node)?.valueDeclaration === entry;
-        const policy = { types: "skip", memberNames: "skip" } as const;
+        const policy = { types: "skip", names: "references" } as const;
         if (
             statements.some((statement) =>
                 someAnalysisNode(statement, isEntryReference, policy),
@@ -1883,15 +1903,9 @@ class Compiler implements LoweringServices {
                 (node) => {
                     if (isEntryReference(node)) return true;
                     if (!ts.isCallExpression(node)) return false;
-                    const callee =
-                        this.checker.getResolvedSignature(node)?.declaration;
+                    const callee = calledFunction(this.checker, node);
                     if (callee === entry) return true;
-                    if (
-                        !isSupportedFunction(callee) ||
-                        !callee.body ||
-                        visited.has(callee)
-                    )
-                        return false;
+                    if (!callee || visited.has(callee)) return false;
                     visited.add(callee);
                     return referencesEntry(callee.body);
                 },
@@ -1930,7 +1944,7 @@ class Compiler implements LoweringServices {
         if (
             !ts.isCallExpression(call) ||
             !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "catch" ||
+            promiseReactionOf(call.expression, this.checker) !== "catch" ||
             call.arguments.length !== 1
         ) {
             return undefined;
@@ -1956,10 +1970,7 @@ class Compiler implements LoweringServices {
         if (
             (!ts.isArrowFunction(handler) &&
                 !ts.isFunctionExpression(handler)) ||
-            (ts.isFunctionExpression(handler) && handler.asteriskToken) ||
-            handler.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            functionKind(handler) !== "plain" ||
             handler.parameters.length !== 1 ||
             !ts.isBlock(handler.body) ||
             handler.body.statements.length !== 1
@@ -2215,27 +2226,11 @@ class Compiler implements LoweringServices {
         type: ts.Type,
         name: string,
         declaredBy: (symbol: ts.Symbol) => boolean,
-        visited = new EmissionSet<ts.Type>(),
     ): boolean {
-        if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
-        if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
-            return false;
-        }
-        visited.add(type);
-        const objectType = type as ts.ObjectType;
-        if (
-            (objectType.objectFlags &
-                (ts.ObjectFlags.Class | ts.ObjectFlags.Interface)) ===
-            0
-        ) {
-            return false;
-        }
-        return (
-            this.checker
-                .getBaseTypes(type as ts.InterfaceType)
-                ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, declaredBy, visited),
-                ) ?? false
+        return inheritsFrom(
+            type,
+            (candidate) =>
+                candidate.symbol?.name === name && declaredBy(candidate.symbol),
         );
     }
 
@@ -2251,13 +2246,10 @@ class Compiler implements LoweringServices {
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (candidate) => {
                 if (found) return "skip";
-                if (
-                    ts.isBinaryExpression(candidate) &&
-                    candidate.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    this.unwrappedValueSymbol(candidate.left) === symbol
-                ) {
-                    const right = this.unwrap(candidate.right);
+                for (const { target, stored } of writeSites(candidate)) {
+                    if (!stored || this.unwrappedValueSymbol(target) !== symbol)
+                        continue;
+                    const right = this.unwrap(stored);
                     const callee = ts.isCallExpression(right)
                         ? unwrappedIdentifier(right.expression, (wrapped) =>
                               this.unwrap(wrapped),
@@ -2430,15 +2422,36 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(left) &&
             this.probeEmission(
                 // The selected property writer evaluates this receiver.
-                () =>
-                    this.resolveRecordValue(left.expression)?.recordSetters?.[
-                        left.name.text
-                    ],
+                () => {
+                    const owner = this.resolveRecordValue(left.expression);
+                    return (
+                        owner?.recordSetters?.[left.name.text] ??
+                        owner?.recordGetters?.[left.name.text]
+                    );
+                },
                 () => false,
             )
         ) {
             emitPropertyAssignment(this, expression);
             return;
+        }
+        // `record["x"] = v` with a static key runs the setter `record.x = v`
+        // would; storing the key as data would drop the call.
+        if (
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isElementAccessExpression(left)
+        ) {
+            const key = staticAccessKey(this.checker, left);
+            const owner =
+                key === undefined
+                    ? undefined
+                    : this.resolveRecordValue(left.expression);
+            const setter =
+                key === undefined ? undefined : owner?.recordSetters?.[key];
+            if (owner && setter) {
+                this.compileRecordSetter(owner, setter, expression.right);
+                return;
+            }
         }
         // An effect task's `record` / `dispose` replaces the method its
         // frame graph calls; the read of either is a copy, not a slot.
@@ -2827,12 +2840,9 @@ class Compiler implements LoweringServices {
                 "Conditional text transform objects require a runtime vector identity carrier; select the renderable before reading its transform.",
             );
         }
-        if (
-            value.kind === "boolean" &&
-            (value.cpp === "true" || value.cpp === "false")
-        ) {
-            value = { ...value, staticBoolean: value.cpp === "true" };
-        }
+        const known =
+            value.kind === "boolean" ? staticBooleanOf(value) : undefined;
+        if (known !== undefined) value = { ...value, staticBoolean: known };
         // CSG values retain materialized geometry plans, not the native mesh
         // handles read while producing them. A later consumer can therefore
         // use the plan from a hoisted cleanup without capturing those locals.
@@ -2969,7 +2979,7 @@ class Compiler implements LoweringServices {
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+            variableKind(declaration.parent) !== "const" ||
             !declaration.initializer
         ) {
             return undefined;
@@ -3089,7 +3099,7 @@ class Compiler implements LoweringServices {
                     const key = this.checker.getTypeAtLocation(
                         parent.argumentExpression,
                     );
-                    const keys = key.isUnion() ? key.types : [key];
+                    const keys = unionMembers(key);
                     if (
                         keys.every(
                             (member) =>
@@ -3129,21 +3139,13 @@ class Compiler implements LoweringServices {
         const scalarRecord =
             initializer &&
             ts.isObjectLiteralExpression(initializer) &&
-            initializer.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) &&
-                        propertyNameText(property.name) !== undefined &&
-                        propertyNameText(property.name) !== "__proto__" &&
-                        !typeCanCarryReference(
-                            this.checker.getTypeAtLocation(
-                                property.initializer,
-                            ),
-                        )) ||
-                    (ts.isShorthandPropertyAssignment(property) &&
-                        !typeCanCarryReference(
-                            this.checker.getTypeAtLocation(property.name),
-                        )),
-            );
+            (plainDataMembers(initializer)?.every(
+                (member) =>
+                    !typeCanCarryReference(
+                        this.checker.getTypeAtLocation(member.value),
+                    ),
+            ) ??
+                false);
         const selectedRecordKeys =
             scalarRecord &&
             initializer &&
@@ -3155,18 +3157,32 @@ class Compiler implements LoweringServices {
                               !ts.isShorthandPropertyAssignment(property)
                           )
                               return [];
-                          const key = propertyNameText(property.name);
+                          const key = propertyKey(property.name);
                           return key === undefined ? [] : [key];
                       }),
                   )
                 : undefined;
         const files = new Set(initialFiles);
         const aliases = new Set([symbol]);
+        // Named helpers that return the constant: a call of one is the
+        // constant.
+        const returners = new Set<ts.Symbol>();
+        const returnsConstant = (call: ts.CallExpression): boolean => {
+            const callee = unwrapExpression(call.expression);
+            const called = ts.isIdentifier(callee)
+                ? this.symbols.valueSymbol(callee)
+                : undefined;
+            return called !== undefined && returners.has(called);
+        };
         const names = (node: ts.Node): boolean => {
+            // A member chain rooted at a call reads that call's result.
+            const root = ts.isExpression(node) ? rootExpression(node) : node;
+            if (ts.isCallExpression(root) && returnsConstant(root)) return true;
             const named =
                 ts.isIdentifier(node) ||
                 ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
+                ts.isElementAccessExpression(node) ||
+                ts.isCallExpression(node)
                     ? moduleContainerSymbol(node, this.checker, this.symbols)
                     : undefined;
             return named !== undefined && aliases.has(named);
@@ -3185,11 +3201,16 @@ class Compiler implements LoweringServices {
                     )
                         return "skip";
                     if (ts.isCallExpression(node)) {
-                        let retained = someAnalysisNode(
-                            node.expression,
-                            names,
-                            { functions: "skip" },
-                        );
+                        // A function's result is not the function; a
+                        // method's can be its receiver or a member of it.
+                        let retained = ts.isIdentifier(
+                            unwrapExpression(node.expression),
+                        )
+                            ? returnsConstant(node)
+                            : callResultCanHoldReceiver(this.checker, node) &&
+                              someAnalysisNode(node.expression, names, {
+                                  functions: "skip",
+                              });
                         node.arguments.forEach((_, index) => {
                             visitMutableArgumentReferences(
                                 this.checker,
@@ -3249,26 +3270,31 @@ class Compiler implements LoweringServices {
             for (const file of files) {
                 const written = someAnalysisNode(file, (node) => {
                     if (
-                        scalarRecord &&
                         ts.isReturnStatement(node) &&
                         node.expression &&
                         mentions(node.expression)
                     ) {
                         // A named helper can return a container holding the
-                        // identity. Follow its callers, including importing files.
+                        // identity. Follow its callers, including importing
+                        // files; a scalar record's certificate cannot follow
+                        // any other function's result.
                         const owner = ts.findAncestor(
                             node.parent,
                             ts.isFunctionLike,
                         );
-                        if (
-                            !owner ||
-                            !ts.isFunctionDeclaration(owner) ||
-                            !owner.name
-                        )
-                            return true;
-                        const returnedBy = this.symbols.valueSymbol(owner.name);
-                        if (!returnedBy) return true;
-                        addAlias(returnedBy);
+                        const returnedBy =
+                            owner &&
+                            ts.isFunctionDeclaration(owner) &&
+                            owner.name
+                                ? this.symbols.valueSymbol(owner.name)
+                                : undefined;
+                        if (returnedBy) {
+                            if (!returners.has(returnedBy)) {
+                                returners.add(returnedBy);
+                                changed = true;
+                            }
+                            addAlias(returnedBy);
+                        } else if (scalarRecord) return true;
                     }
                     // Stored or returned references can acquire aliases outside
                     // this binding walk. A closed scalar-record certificate must
@@ -3307,22 +3333,38 @@ class Compiler implements LoweringServices {
                     )
                         for (const iterated of node.initializer.declarations)
                             alias(iterated.name);
+                    // `view = M`, `view ??= M`, a pattern leaf or a loop target:
+                    // the name holds what it receives.
+                    for (const { target, stored, from } of writeSites(node)) {
+                        const source = stored ?? from;
+                        if (
+                            ts.isIdentifier(target) &&
+                            source &&
+                            mentions(source)
+                        )
+                            alias(target);
+                    }
                     return (
                         // The alias walk can stop at a getter's scalar result,
                         // but evaluating that getter may still mutate its owner.
                         ((ts.isPropertyAccessExpression(node) ||
                             ts.isElementAccessExpression(node)) &&
                             mentions(node.expression) &&
-                            accessedPropertySymbol(
-                                this.checker,
-                                node,
-                            )?.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ) &&
+                            memberAccessors(this.checker, node, "get").length >
+                                0 &&
                             this.evaluationOrder.writesStorage(node)) ||
                         writesThroughTrackedRoot(
                             node,
-                            (target) => names(this.unwrap(target)),
+                            // Assigning an alias name rebinds the name; the
+                            // object it held is unchanged.
+                            (target, via) => {
+                                const written = this.unwrap(target);
+                                return via === "assignment" &&
+                                    ts.isIdentifier(written)
+                                    ? this.symbols.valueSymbol(written) ===
+                                          symbol
+                                    : names(written);
+                            },
                             undefined,
                             this.checker,
                             this.program.getSourceFiles(),
@@ -3337,7 +3379,11 @@ class Compiler implements LoweringServices {
                                         index,
                                     ) &&
                                     writesArgument(node, index),
-                            ))
+                            )) ||
+                        // The constant, or a member of it, kept past the call
+                        // (a construction, a storing call) is written through
+                        // its new owner.
+                        keptArguments(this.checker, node).some(mentions)
                     );
                 });
                 if (written) return true;
@@ -3708,13 +3754,9 @@ class Compiler implements LoweringServices {
                 "GPUQueue.writeTexture destination must name a pixels texture.",
             );
         }
-        const textureProperty = destination.properties.find(
-            (property): property is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === "texture",
-        );
-        const textureMember = textureProperty
-            ? this.unwrap(textureProperty.initializer)
+        const textureValue = this.objectProperty(destination, "texture");
+        const textureMember = textureValue
+            ? this.unwrap(textureValue)
             : undefined;
         if (
             !textureMember ||
@@ -3967,7 +4009,7 @@ class Compiler implements LoweringServices {
 
     public compileVec3(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const unwrapped = this.unwrap(expression);
         if (
@@ -4001,7 +4043,7 @@ class Compiler implements LoweringServices {
     public vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
@@ -4077,7 +4119,7 @@ class Compiler implements LoweringServices {
 
     public compileNumber(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         return (
             this.dataLowerer.assignedNumber(expression, precision) ??
@@ -4172,13 +4214,31 @@ class Compiler implements LoweringServices {
         return this.fail(resolved, "Expected an object literal.");
     }
 
+    /**
+     * The value a literal (static spreads expanded) gives `name`, from its
+     * last writer ({@link lastWriter}); undefined when no member writes it.
+     * A later spread whose type may hold `name`, or a key generation cannot
+     * read, leaves it to the run time: refused here rather than read as
+     * absent.
+     */
     public objectProperty(
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        return objectProperty(this.objectProperties(object), name, (key) =>
-            this.propertyName(key),
+        const writer = lastWriter(
+            objectLiteralMembers(this.objectProperties(object), (key) =>
+                this.propertyName(key),
+            ),
+            name,
+            (spread, key) =>
+                typeMayHoldKey(this.checker, spread.expression, key),
         );
+        if (writer === "unknown")
+            return this.fail(
+                object,
+                `'${name}' may come from a spread or key only the run time knows.`,
+            );
+        return writer?.value;
     }
 
     public objectProperties(
@@ -4211,24 +4271,44 @@ class Compiler implements LoweringServices {
         });
     }
 
+    /**
+     * The key a property name declares, when knowing it runs no code: the
+     * checker's ({@link staticPropertyKey}), else a computed key generation
+     * folds (`[prefix + "x"]`). Reading it emits nothing. A computed key that
+     * calls, constructs, awaits or writes has none here: only the literal
+     * that runs it knows it ({@link compilePropertyKey}).
+     */
     public propertyName(name: ts.PropertyName): string | undefined {
         if (
-            ts.isIdentifier(name) ||
-            ts.isStringLiteral(name) ||
-            ts.isNumericLiteral(name)
-        ) {
-            return name.text;
-        }
-        if (ts.isComputedPropertyName(name)) {
-            const symbolKey = symbolPropertyKey(this.checker, name.expression);
-            if (symbolKey !== undefined) return symbolKey;
-            const value = this.compileValue(name.expression);
-            if (value.staticString !== undefined) return value.staticString;
-            if (value.staticNumber !== undefined) {
-                return String(value.staticNumber);
-            }
-        }
-        return undefined;
+            ts.isComputedPropertyName(name) &&
+            expressionHasEffects(name.expression)
+        )
+            return undefined;
+        const key = staticPropertyKey(this.checker, name);
+        if (key !== undefined || !ts.isComputedPropertyName(name)) return key;
+        const value = this.probeEmission(
+            () => this.compileValue(name.expression),
+            () => false,
+        );
+        return staticKeyOf(value);
+    }
+
+    /**
+     * Evaluates a literal member's key where the literal runs it, its
+     * effects in source order (`{ [next()]: v }`), and returns the key
+     * generation knows. A key that runs nothing reads as
+     * {@link propertyName}.
+     */
+    public compilePropertyKey(name: ts.PropertyName): string | undefined {
+        if (
+            !ts.isComputedPropertyName(name) ||
+            !expressionHasEffects(name.expression)
+        )
+            return this.propertyName(name);
+        const value = this.compileValue(name.expression);
+        const key = staticPropertyKey(this.checker, name) ?? staticKeyOf(value);
+        if (key !== undefined) this.emitDiscardedValue(value);
+        return key;
     }
 
     public compileStringLiteral(expression: ts.Expression): string {
@@ -4267,8 +4347,7 @@ class Compiler implements LoweringServices {
                 if (
                     returned &&
                     (ts.isTemplateExpression(returned) ||
-                        ts.isStringLiteral(returned) ||
-                        ts.isNoSubstitutionTemplateLiteral(returned))
+                        ts.isStringLiteralLike(returned))
                 ) {
                     // This is a generation-time source factory, so keep its
                     // numeric arguments in the inliner's static domain. The
@@ -4324,8 +4403,7 @@ class Compiler implements LoweringServices {
                 if (
                     ts.isCallExpression(node) &&
                     node.arguments.length === 2 &&
-                    (ts.isStringLiteral(argumentAt(node, 0)) ||
-                        ts.isNoSubstitutionTemplateLiteral(argumentAt(node, 0)))
+                    ts.isStringLiteralLike(argumentAt(node, 0))
                 ) {
                     const url = this.moduleRelativeAssetUrl(node);
                     if (url !== undefined) candidates.add(url);
@@ -4382,8 +4460,7 @@ class Compiler implements LoweringServices {
                 if (passedExplicitly) return "skip";
                 if (
                     ts.isCallExpression(candidate) &&
-                    (this.checker.getResolvedSignature(candidate)
-                        ?.declaration === owner ||
+                    (calledDeclaration(this.checker, candidate) === owner ||
                         (ownerSymbol !== undefined &&
                             this.unwrappedValueSymbol(candidate.expression) ===
                                 ownerSymbol))
@@ -5019,7 +5096,7 @@ class Compiler implements LoweringServices {
         if (
             !ts.isCallExpression(formatted) ||
             !ts.isPropertyAccessExpression(formatted.expression) ||
-            !PURE_NUMBER_FORMATTERS.has(formatted.expression.name.text) ||
+            !isLibraryNumberFormatter(this.checker, formatted) ||
             !ts.isIdentifier(formatted.expression.expression)
         ) {
             return {
@@ -5034,11 +5111,21 @@ class Compiler implements LoweringServices {
                 this.symbols.valueSymbol(name) ===
                     this.symbols.valueSymbol(formatterTarget),
         );
-        const argument =
+        const input =
             parameterIndex >= 0
-                ? (resolved.arguments[parameterIndex] ??
-                  declaration.parameters[parameterIndex]!.initializer)
+                ? parameterInput(
+                      this.checker,
+                      resolved,
+                      declaration,
+                      parameterIndex,
+                  )
                 : undefined;
+        const argument =
+            input?.kind === "argument"
+                ? input.argument
+                : input?.kind === "default"
+                  ? input.initializer
+                  : undefined;
         if (!argument) {
             return {
                 source: this.compileStaticString(expression),
@@ -5067,7 +5154,7 @@ class Compiler implements LoweringServices {
                 {
                     name: uniformName,
                     type: "f32",
-                    components: [this.compileNumber(argument)],
+                    components: [this.compileNumber(argument, "float")],
                 },
             ],
         };
@@ -5090,12 +5177,7 @@ class Compiler implements LoweringServices {
                 value = this.compileValue(expression);
             });
             if (!value || (!pure && effects.length > 0)) return undefined;
-            return (
-                value.staticString ??
-                (value.staticNumber === undefined
-                    ? undefined
-                    : String(value.staticNumber))
-            );
+            return staticKeyOf(value);
         });
         if (carried !== undefined) return carried;
         if (
@@ -5231,7 +5313,7 @@ class Compiler implements LoweringServices {
                 (pair): pair is [unknown, unknown] =>
                     Array.isArray(pair) && pair[0] === key,
             );
-        if (!entry) return { kind: "json-null", cpp: "std::nullopt" };
+        if (!entry) return undefinedValue();
         // A generation copy of an object entry would be a different identity
         // from the native Map's own value; only scalars stand in.
         const value = jsonToValue(
@@ -5261,7 +5343,7 @@ class Compiler implements LoweringServices {
             ts.isVariableStatement(statement) &&
             ts.isSourceFile(statement.parent) &&
             !statement.parent.isDeclarationFile &&
-            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+            variableKind(statement.declarationList) === "const"
             ? { declaration, name: declaration.name }
             : undefined;
     }
@@ -5306,21 +5388,15 @@ class Compiler implements LoweringServices {
         const initializer = this.unwrap(source.initializer!);
         if (
             !ts.isObjectLiteralExpression(initializer) ||
-            !initializer.properties.every((property) => {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    ts.isComputedPropertyName(property.name)
-                )
-                    return false;
-                const key = propertyNameText(property.name);
-                return (
-                    key !== undefined &&
-                    key !== "__proto__" &&
-                    !typeCanCarryReference(
-                        this.checker.getTypeAtLocation(property.initializer),
-                    )
-                );
-            }) ||
+            !(
+                plainDataMembers(initializer)?.every(
+                    (member) =>
+                        member.kind === "property" &&
+                        !typeCanCarryReference(
+                            this.checker.getTypeAtLocation(member.value),
+                        ),
+                ) ?? false
+            ) ||
             !this.evaluationOrder.isPureExpression(initializer) ||
             this.evaluationOrder.hasModuleEffects(initializer)
         )
@@ -5427,7 +5503,7 @@ class Compiler implements LoweringServices {
                 !ts.isVariableDeclaration(binding) ||
                 binding.initializer !== declaration ||
                 !ts.isVariableDeclarationList(binding.parent) ||
-                (binding.parent.flags & ts.NodeFlags.Const) === 0
+                variableKind(binding.parent) !== "const"
             )
                 return undefined;
         }
@@ -5553,22 +5629,23 @@ class Compiler implements LoweringServices {
         }
         if (ts.isObjectLiteralExpression(node)) {
             const record: { [name: string]: ExecutedArgument } = {};
-            for (const property of node.properties) {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    ts.isComputedPropertyName(property.name)
-                )
-                    return undefined;
-                const name = propertyNameText(property.name);
-                if (name === undefined || name === "__proto__")
-                    return undefined;
-                const value = this.generationArgument(property.initializer);
+            const members = plainDataMembers(node);
+            if (!members) return undefined;
+            for (const member of members) {
+                if (member.kind !== "property") return undefined;
+                const value = this.generationArgument(member.value);
                 if (
                     value?.value === undefined ||
                     !losslessGenerationNumber(value.value)
                 )
                     return undefined;
-                record[name] = value.value;
+                // An own `["__proto__"]` key is data; `=` would set the prototype.
+                Object.defineProperty(record, member.key, {
+                    value: value.value,
+                    enumerable: true,
+                    writable: true,
+                    configurable: true,
+                });
             }
             return { value: record };
         }
@@ -5583,11 +5660,7 @@ class Compiler implements LoweringServices {
         const carried = this.compileValue(node);
         // A present undefined argument still counts toward the authored arity.
         // Nested undefined values remain excluded by the lossless JSON boundary.
-        if (
-            carried.kind === "json-null" &&
-            carried.cpp === "std::nullopt" &&
-            !carried.parameterBinding
-        )
+        if (absenceOf(carried) === "undefined" && !carried.parameterBinding)
             return { value: undefined };
         const value =
             carried.staticString ??
@@ -5618,7 +5691,7 @@ class Compiler implements LoweringServices {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !declaration.initializer ||
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+            variableKind(declaration) !== "const"
         )
             return undefined;
         const call = this.unwrap(declaration.initializer);
@@ -5790,7 +5863,7 @@ class Compiler implements LoweringServices {
         const known = this.stableInitializers.get(declaration);
         if (known !== undefined) return known || undefined;
         const constant = (named: ts.VariableDeclaration): boolean =>
-            (ts.getCombinedNodeFlags(named) & ts.NodeFlags.Const) !== 0 &&
+            variableKind(named) === "const" &&
             !this.evaluator.isWrittenThrough(named);
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
@@ -5820,7 +5893,10 @@ class Compiler implements LoweringServices {
                     named.parent,
                     binding,
                 );
-                return !written.has("") && !written.has(path[0]!);
+                return (
+                    !written.has("") &&
+                    ![...written].some((key) => keysMayMatch(key, path[0]!))
+                );
             }
             return parameterProjectionIsReadOnly(
                 this.checker,
@@ -5839,14 +5915,8 @@ class Compiler implements LoweringServices {
                     this.evaluator.resolveStaticLiteral(node) === node)
             )
                 return false;
-            if (ts.isIdentifier(node)) {
-                const parent = node.parent;
-                const memberName =
-                    (ts.isPropertyAccessExpression(parent) &&
-                        parent.name === node) ||
-                    (ts.isPropertyAssignment(parent) && parent.name === node);
-                return memberName || stableName(node);
-            }
+            if (ts.isIdentifier(node))
+                return !isValueReference(node) || stableName(node);
             return !ts.forEachChild(node, (child) => !stable(child));
         };
         const initializer =
@@ -6027,7 +6097,7 @@ class Compiler implements LoweringServices {
                     compileCondition: (node) =>
                         this.probeEmission(
                             () => this.conditions.compileCondition(node),
-                            (folded) => folded === "true" || folded === "false",
+                            (folded) => knownCondition(folded) !== undefined,
                         ),
                 },
                 resolveStaticExpression: (node) =>
@@ -6371,7 +6441,7 @@ class Compiler implements LoweringServices {
             .getProperty(expression.name.text);
         return declared !== undefined &&
             (declared.flags & ts.SymbolFlags.Optional) !== 0
-            ? { kind: "json-null", cpp: "std::nullopt" }
+            ? undefinedValue()
             : undefined;
     }
 
@@ -6394,13 +6464,17 @@ class Compiler implements LoweringServices {
         owner: Value,
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
+        // The argument already computed (a compound store's new value);
+        // `value` then only locates diagnostics.
+        evaluated?: Value,
     ): void {
         const parameter = setter.parameters[0];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            this.classLowerer.compileSetter(owner, setter, value);
+            this.classLowerer.compileSetter(owner, setter, value, evaluated);
             return;
         }
-        const argument = this.compileClassParameterValue(parameter.name, value);
+        const argument =
+            evaluated ?? this.compileClassParameterValue(parameter.name, value);
         this.withRecordScopes(owner, () =>
             this.classLowerer.compileSetter(owner, setter, value, argument),
         );
@@ -6439,21 +6513,18 @@ class Compiler implements LoweringServices {
             return work();
         }
         const saved = [...this.bindings.variableScopes];
-        const previousThis = this.activeThis();
         if (owner.recordScopes) {
             this.bindings.variableScopes.length = 0;
             this.bindings.variableScopes.push(...owner.recordScopes);
         }
-        if (bindThis) {
-            this.defineThis(owner);
-        }
         try {
-            return this.dataTypes.withTypeArguments(
-                owner.recordTypeArguments,
-                work,
+            return this.withThis(bindThis ? owner : this.activeThis(), () =>
+                this.dataTypes.withTypeArguments(
+                    owner.recordTypeArguments,
+                    work,
+                ),
             );
         } finally {
-            this.defineThis(previousThis);
             if (owner.recordScopes) {
                 this.bindings.variableScopes.length = 0;
                 this.bindings.variableScopes.push(...saved);
@@ -6511,30 +6582,30 @@ class Compiler implements LoweringServices {
         return this.withRecordScopes(owner, () => {
             if (leading.length)
                 this.bindings.pushScope(this.allocateUserFunctionPrefix());
-            const previousThis = this.activeThis();
             // A getter's `this` is its receiver for both class instances and
             // object-literal accessors. The record may have crossed a return
             // boundary that copied its compile-time Value wrapper, so its
             // identity in classInstances is not a reliable dispatch guard.
-            this.defineThis(receiver ?? owner);
             try {
-                // A getter is an evaluation, even when its return happens
-                // to lower to a field read. Optional chains must consume it
-                // once and keep any nested method calls behind their guard.
-                if (resultType)
-                    return {
-                        ...this.userFunctions.emitValueLambda(
-                            this,
-                            statements,
-                            this.dataTypes.ownReturnedArray(resultType),
-                            false,
-                        ),
-                        impure: true,
-                    };
-                emitReachableStatements(this, leading);
-                return { ...this.compileValue(expression), impure: true };
+                return this.withThis(receiver ?? owner, () => {
+                    // A getter is an evaluation, even when its return happens
+                    // to lower to a field read. Optional chains must consume
+                    // it once and keep any nested method calls behind their
+                    // guard.
+                    if (resultType)
+                        return {
+                            ...this.userFunctions.emitValueLambda(
+                                this,
+                                statements,
+                                this.dataTypes.ownReturnedArray(resultType),
+                                false,
+                            ),
+                            impure: true,
+                        };
+                    emitReachableStatements(this, leading);
+                    return { ...this.compileValue(expression), impure: true };
+                });
             } finally {
-                this.defineThis(previousThis);
                 if (leading.length) this.bindings.popScope();
             }
         });
@@ -6575,24 +6646,7 @@ class Compiler implements LoweringServices {
             ? this.compileValue(initializer)
             : undefined;
         if (nullableResource && nullableInitializer?.kind === "json-null") {
-            const cppName = this.allocateTemporaryCppName(
-                `class_field_${name.text}`,
-            );
-            const storage = sharedStorage ? `(*${cppName})` : cppName;
-            this.emit({
-                kind: "declaration",
-                type: sharedStorage
-                    ? `std::shared_ptr<std::optional<${nullableResource.cppType}>>`
-                    : `std::optional<${nullableResource.cppType}>`,
-                name: cppName,
-                initializer: sharedStorage
-                    ? `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`
-                    : "{}",
-            });
-            this.bindings.defineVariable(name, {
-                ...this.nullableResourceValue(nullableResource, storage),
-                ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-            });
+            this.bindNullableClassField(name);
             return;
         }
         if (this.bindClassDataField(name, initializer, declared)) {
@@ -6631,24 +6685,23 @@ class Compiler implements LoweringServices {
     public bindNullableClassField(name: ts.MemberName): Value | undefined {
         const resource = this.nullableResourceKind(name);
         if (!resource) return undefined;
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
-        this.emit({
-            kind: "declaration",
-            type: sharedStorage
-                ? `std::shared_ptr<std::optional<${resource.cppType}>>`
-                : `std::optional<${resource.cppType}>`,
-            name: cppName,
-            initializer: sharedStorage
-                ? `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()`
-                : "{}",
-        });
+        const type = `std::optional<${resource.cppType}>`;
+        const cell = this.classFieldNeedsSharedStorage(name)
+            ? emitSharedCell(this, cppName, { type })
+            : undefined;
+        if (!cell)
+            this.emit({
+                kind: "declaration",
+                type,
+                name: cppName,
+                initializer: "{}",
+            });
         const value: Value = {
-            ...this.nullableResourceValue(resource, storage),
-            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
+            ...this.nullableResourceValue(resource, cell?.cpp ?? cppName),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
         };
         this.bindings.defineVariable(name, value);
         return value;
@@ -6683,23 +6736,7 @@ class Compiler implements LoweringServices {
         ) {
             return undefined;
         }
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
-        );
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
-        const cppType = this.dataTypes.cppType(dataType);
-        this.emit(
-            sharedStorage
-                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>();`
-                : `${cppType} ${cppName}{};`,
-        );
-        this.dataLowerer.registerLocal(storage, "owned");
-        const value = this.dataLowerer.leafValue(storage, dataType);
-        writable(value).nativeLvalue = true;
-        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
-        this.bindings.defineVariable(name, value);
-        return value;
+        return this.bindClassDataStorage(name, dataType, undefined);
     }
 
     /** Predeclare optional storage for a resource-valued expression. */
@@ -6742,8 +6779,6 @@ class Compiler implements LoweringServices {
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const storage = sharedStorage ? `(*${cppName})` : cppName;
         const cpp = knownValue
             ? this.dataLowerer.compileKnownValueForSink(
                   knownValue,
@@ -6751,18 +6786,36 @@ class Compiler implements LoweringServices {
                   initializer,
               )
             : this.dataLowerer.compileForSink(initializer, dataType);
+        return this.bindClassDataStorage(name, dataType, cpp, cppName);
+    }
+
+    /** A class data field's storage, value-initialized without `initializerCpp`. */
+    private bindClassDataStorage(
+        name: ts.MemberName,
+        dataType: DataType,
+        initializerCpp: string | undefined,
+        cppName = this.allocateTemporaryCppName(`class_field_${name.text}`),
+    ): Value {
         const cppType = this.dataTypes.cppType(dataType);
-        this.emit(
-            sharedStorage
-                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${cpp});`
-                : `${cppType} ${cppName} = ${cpp};`,
-        );
+        const cell = this.classFieldNeedsSharedStorage(name)
+            ? emitSharedCell(this, cppName, {
+                  type: cppType,
+                  initializer: initializerCpp,
+              })
+            : undefined;
+        if (!cell)
+            this.emit(
+                initializerCpp === undefined
+                    ? `${cppType} ${cppName}{};`
+                    : `${cppType} ${cppName} = ${initializerCpp};`,
+            );
+        const storage = cell?.cpp ?? cppName;
         this.dataLowerer.registerLocal(storage, "owned");
         // Leaves use the same surface as a container read: numbers stay
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(storage, dataType);
         writable(value).nativeLvalue = true;
-        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
+        if (cell) writable(value).sharedStorageCpp = cell.sharedStorageCpp;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6775,6 +6828,17 @@ class Compiler implements LoweringServices {
 
     public activeThis(): Value | undefined {
         return this.thisInstance;
+    }
+
+    /** Runs `work` with `this` bound to `receiver`, restoring the enclosing `this` after. */
+    public withThis<T>(receiver: Value | undefined, work: () => T): T {
+        const previous = this.thisInstance;
+        this.defineThis(receiver);
+        try {
+            return work();
+        } finally {
+            this.defineThis(previous);
+        }
     }
 
     public registerClassInstance(
@@ -7057,25 +7121,14 @@ class Compiler implements LoweringServices {
                 ],
             };
         }
-        const owner = `${cppName}_owner`;
-        this.emit({
-            kind: "declaration",
-            type: "auto",
-            name: owner,
-            initializer: `bbl::js::make_gc_shared<${type}>()`,
-        });
+        const owner = emitSharedCell(this, `${cppName}_owner`, { type });
         return {
             kind: "callback",
-            cpp: `(*${owner})`,
-            runtimeCallbackIdentityCpp: `(*${owner}).identity()`,
-            sharedStorageCpp: owner,
+            cpp: owner.cpp,
+            runtimeCallbackIdentityCpp: `${owner.cpp}.identity()`,
+            sharedStorageCpp: owner.sharedStorageCpp,
             nativeCaptures: [
-                this.registerNativeBinding(
-                    owner,
-                    false,
-                    false,
-                    `std::shared_ptr<${type}>`,
-                ),
+                this.registerNativeBinding(owner.sharedStorageCpp),
             ],
         };
     }
@@ -7125,6 +7178,7 @@ class Compiler implements LoweringServices {
                 renderNativeEmission,
             );
         const boundary = this.nativeBindingCheckpoint();
+        const allocations = this.temporaryIndex;
         const captured = this.captureNativeDependencies(() =>
             this.captureEmittedStatements(emitBody),
         );
@@ -7134,9 +7188,10 @@ class Compiler implements LoweringServices {
                 name: binding.name,
                 type: this.nativeBindingCaptureType(binding.name),
             }));
-        return this.outlineNativeBody(captured.value, parameters).map(
-            renderNativeEmission,
-        );
+        return this.outlineNativeBody(captured.value, parameters, {
+            bindings: boundary,
+            allocations,
+        }).map(renderNativeEmission);
     }
 
     public captureEmittedStatements(emitBody: () => void): NativeEmission[] {
@@ -7163,24 +7218,40 @@ class Compiler implements LoweringServices {
         }
     }
 
+    /**
+     * `locals` bounds the names the body declares: a native binding or a
+     * temporary created after it began (the entry body's are all its own).
+     */
     private outlineNativeBody(
         body: readonly NativeEmission[],
         parameters: readonly { name: string; type: string | undefined }[],
+        locals = { bindings: 0, allocations: 0 },
     ): readonly NativeEmission[] {
         if (this.options.workers) return body;
         const outlined = outlineEmittedBody({
             body,
             parameters,
             bindingType: (name) => this.nativeBindingCaptureType(name),
-            allocateName: () => `bbl_outlined_${this.nextOutlinedIndex++}`,
+            // Named by shape, two bodies outlining the same code (two
+            // specializations of one function) call one helper and stay one
+            // body for the shared-function interning.
+            allocateName: (shape) =>
+                `bbl_outlined_${createHash("sha256").update(shape).digest("hex").slice(0, 16)}`,
+            isLocal: (name) =>
+                (this.nativeBindings.get(name)?.sequence ?? 0) >
+                    locals.bindings ||
+                (this.allocatedCppNames.get(name) ?? 0) > locals.allocations,
             source: this.emissionSource ?? this.sourceFile.fileName,
         });
-        for (const segment of outlined.segments)
+        for (const segment of outlined.segments) {
+            if (this.outlinedHelpers.has(segment.name)) continue;
+            this.outlinedHelpers.add(segment.name);
             this.nativeEmission.registerNativeFunction(
                 segment.prototype,
                 [...segment.lines],
                 segment.source,
             );
+        }
         for (const declaration of outlined.rewrittenDeclarations)
             this.nativeDeclarations.set(
                 nativeStatementCode(declaration),
@@ -7812,7 +7883,44 @@ class Compiler implements LoweringServices {
         );
         return (
             members.length > 0 &&
-            members.every((member) => member.getSymbol()?.name === "Promise")
+            members.every((member) => libraryName(member) === "Promise")
+        );
+    }
+
+    /**
+     * A native body that runs off its end completes as `return;` does:
+     * undefined for a void or optional result, the end of a generator. A
+     * result without undefined cannot get there (TypeScript proves it; an
+     * exhaustive switch lowered to an if/else chain keeps a defined guard).
+     */
+    public emitFallOffEnd(): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame?.kind !== "native")
+            throw new Error("A body end outside a native function body.");
+        const returnType = frame.type;
+        if (frame.generator || (frame.coroutine && returnType === "void")) {
+            this.emit({
+                kind: "control",
+                code: frame.generator
+                    ? "co_return;"
+                    : "co_return bbl::js::PromiseVoid{};",
+                transfer: "suspend",
+            });
+            return;
+        }
+        if (returnType === "void") return;
+        this.emit(
+            returnType.kind === "optional"
+                ? {
+                      kind: "control",
+                      code: `${frame.coroutine ? "co_return" : "return"} std::nullopt;`,
+                      transfer: frame.coroutine ? "suspend" : "return",
+                  }
+                : {
+                      kind: "control",
+                      code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                      transfer: "throw",
+                  },
         );
     }
 
@@ -8019,7 +8127,7 @@ class Compiler implements LoweringServices {
             );
         const value = !expression.expression
             ? this.dataLowerer.compileKnownValueForSink(
-                  { kind: "json-null", cpp: "std::nullopt" },
+                  undefinedValue(),
                   element,
                   expression,
               )
@@ -8315,7 +8423,7 @@ class Compiler implements LoweringServices {
     public optionalResourceCpp(value: Value): string {
         const cpp = value.storedEngineCpp ?? value.ownedEngineCpp ?? value.cpp;
         const found = presenceFlagCpp(value);
-        return found !== undefined && found !== "true"
+        return found !== undefined && knownCondition(found) !== true
             ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
             : cpp;
     }
@@ -8515,9 +8623,8 @@ class Compiler implements LoweringServices {
         if (!storage) return false;
         const value = this.compileValue(expression.right);
         if (
-            value.kind === "json-null" ||
-            (value.kind === "void" &&
-                provenUndefinedValue(this, expression.right))
+            (value.kind === "json-null" || value.kind === "void") &&
+            !readsErasedVoid(this, value, expression.right)
         ) {
             this.emitDiscardedValue(value);
             this.emit({ kind: "expression", code: `${storage}.reset();` });
@@ -8868,7 +8975,7 @@ class Compiler implements LoweringServices {
      */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
-        const members = type.isUnion() ? type.types : [type];
+        const members = unionMembers(type);
         return (
             members.length > 0 &&
             members.every((member) => {
@@ -8902,7 +9009,7 @@ class Compiler implements LoweringServices {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(declaration.parent) !== "const"
         ) {
             return undefined;
         }
@@ -8954,9 +9061,16 @@ class Compiler implements LoweringServices {
      * through, including the pin's `wgsl` tag -- which records every await
      * it passes into `unwrappedAwaitExpressions` through `onAwait`.
      */
-    public unwrap(expression: ts.Expression): ts.Expression {
-        return this.evaluator.unwrap(expression);
-    }
+    public readonly unwrap = (expression: ts.Expression): ts.Expression =>
+        this.evaluator.unwrap(expression);
+
+    /**
+     * The expression whose value this one is: through an `await` only where
+     * it settles in place. In a worker realm an await suspends, so its
+     * value is the await's own.
+     */
+    public readonly unwrapValue = (expression: ts.Expression): ts.Expression =>
+        this.evaluator.unwrap(expression, { await: !this.options.workers });
 
     /** Captured mutable parameters own their binding, not the caller's slot. */
     public mutableCapturedParameter(
@@ -9389,13 +9503,7 @@ class Compiler implements LoweringServices {
             // restore the same `this` its declaration ran under, or the
             // body would resolve its fields against whichever receiver the
             // enclosing inlined method happened to leave bound.
-            const previousThis = this.thisInstance;
-            this.defineThis(receiver ?? effectiveOwner);
-            try {
-                return compile();
-            } finally {
-                this.defineThis(previousThis);
-            }
+            return this.withThis(receiver ?? effectiveOwner, compile);
         });
     }
 
@@ -9481,9 +9589,11 @@ class Compiler implements LoweringServices {
         imported: string,
         type: DataType<"function">,
     ): string {
-        const signature = this.checker
-            .getTypeAtLocation(expression)
-            .getCallSignatures()[0];
+        const signature = callSignatures(
+            this.checker,
+            this.checker.getTypeAtLocation(expression),
+            "exact",
+        )[0];
         const declaration = signature?.declaration;
         if (
             !signature ||
@@ -9554,17 +9664,18 @@ class Compiler implements LoweringServices {
                         expression,
                         `Stored Babylon Lite intrinsic '${imported}' is not supported.`,
                     );
-                const undefinedValue = (result: Value | undefined): boolean =>
+                const isUndefinedResult = (
+                    result: Value | undefined,
+                ): boolean =>
                     !!result &&
                     !result.erasedVoidCompletion &&
                     (result.kind === "void" ||
-                        (result.kind === "json-null" &&
-                            result.cpp === "std::nullopt") ||
+                        absenceOf(result) === "undefined" ||
                         result.dataType?.kind === "undefined");
                 const undefinedCompletion =
                     synchronous &&
-                    hasNoValueCompletion(sourceReturn) &&
-                    undefinedValue(value);
+                    undefinedOnly(sourceReturn) &&
+                    isUndefinedResult(value);
                 if (type.undefinedCompletion && !undefinedCompletion)
                     this.fail(
                         expression,
@@ -9574,10 +9685,10 @@ class Compiler implements LoweringServices {
                     type.awaitedUndefinedCompletion &&
                     !(
                         awaitedReturn &&
-                        hasNoValueCompletion(awaitedReturn) &&
+                        undefinedOnly(awaitedReturn) &&
                         (undefinedCompletion ||
                             (value.kind === "promise" &&
-                                undefinedValue(value.promiseResult)))
+                                isUndefinedResult(value.promiseResult)))
                     )
                 )
                     this.fail(
@@ -10186,13 +10297,7 @@ class Compiler implements LoweringServices {
         const name = sourceFunctionName(declaration);
         if (name === undefined || !selected.includes(name)) return [];
         // A scope lives on the native stack; a suspended body would outlive it.
-        if (
-            ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Async ||
-            (ts.isFunctionLike(declaration) &&
-                "asteriskToken" in declaration &&
-                declaration.asteriskToken)
-        )
-            return [];
+        if (functionKind(declaration) !== "plain") return [];
         this.reachFeature("profile:source", declaration);
         this.sourceProfileScopes.add(name);
         return sourceProfileScope(
@@ -10390,7 +10495,7 @@ class Compiler implements LoweringServices {
             const type = this.checker.getNonNullableType(
                 this.checker.getTypeAtLocation(expression),
             );
-            return (type.isUnion() ? type.types : [type]).some((member) => {
+            return unionMembers(type).some((member) => {
                 const symbol = member.getSymbol();
                 return (
                     declaredInDomLibrary(symbol) &&

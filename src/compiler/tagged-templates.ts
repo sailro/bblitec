@@ -3,7 +3,7 @@
 // it -- followed by the substitutions, evaluated left to right.
 // `String.raw` is the concatenation of the raw strings and substitutions.
 import ts from "typescript";
-import { declaredInDefaultLibrary } from "./symbols.js";
+import { libraryName } from "./symbols.js";
 
 /** Whether an expression is typed as a tagged template's strings array. */
 export function isTemplateStringsArray(
@@ -11,10 +11,7 @@ export function isTemplateStringsArray(
     expression: ts.Expression,
 ): boolean {
     const { symbol } = checker.getTypeAtLocation(expression);
-    return (
-        symbol?.name === "TemplateStringsArray" &&
-        declaredInDefaultLibrary(symbol)
-    );
+    return libraryName(symbol) === "TemplateStringsArray";
 }
 
 /** One template's literal parts, cooked and raw, and its substitutions. */

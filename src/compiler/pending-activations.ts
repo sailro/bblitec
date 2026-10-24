@@ -7,46 +7,29 @@
 // not have; reaching one compiles the program in the application realm.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { libraryGlobal, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { libraryGlobal, resolvedSymbol, calledDeclaration } from "./symbols.js";
+import { outermostWrapper, referenceSite, unwrapExpression } from "./syntax.js";
+import { promiseReactionOf } from "./promises.js";
 
 type Activation = ts.SignatureDeclaration;
 
 /** How an activation's promise is used where the activation starts. */
 type PromiseUse = "awaited" | "returned" | "discarded" | "stored";
 
-const PROMISE_REACTIONS: ReadonlySet<string> = new Set([
-    "then",
-    "catch",
-    "finally",
-]);
-
-function isTransparentWrapper(node: ts.Node): boolean {
-    return (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAsExpression(node) ||
-        ts.isSatisfiesExpression(node) ||
-        ts.isNonNullExpression(node)
-    );
-}
-
 /**
  * The use of the promise `node` produces. A reaction chained on it
  * (`p.then(...)`) is used as the chain is: the reactions run in place in the
  * synchronous lowering, so a pending promise ends the chain with it.
  */
-function promiseUse(node: ts.Expression): PromiseUse {
+function promiseUse(node: ts.Expression, checker: ts.TypeChecker): PromiseUse {
     let current: ts.Node = node;
     for (;;) {
+        current = outermostWrapper(current);
         const parent = current.parent;
-        if (isTransparentWrapper(parent)) {
-            current = parent;
-            continue;
-        }
         if (
             ts.isPropertyAccessExpression(parent) &&
             parent.expression === current &&
-            PROMISE_REACTIONS.has(parent.name.text) &&
+            promiseReactionOf(parent, checker) !== undefined &&
             ts.isCallExpression(parent.parent) &&
             parent.parent.expression === parent
         ) {
@@ -54,9 +37,7 @@ function promiseUse(node: ts.Expression): PromiseUse {
             continue;
         }
         if (ts.isVoidExpression(parent)) {
-            let statement: ts.Node = parent.parent;
-            while (isTransparentWrapper(statement))
-                statement = statement.parent;
+            const statement = outermostWrapper(parent).parent;
             return ts.isExpressionStatement(statement) ? "discarded" : "stored";
         }
         if (ts.isAwaitExpression(parent)) return "awaited";
@@ -86,14 +67,17 @@ function enclosingStatement(node: ts.Node): ts.Statement | undefined {
 }
 
 /** The activation of the promise `node` produces, through reaction chains. */
-function chainedCall(expression: ts.Expression): ts.CallExpression | undefined {
+function chainedCall(
+    expression: ts.Expression,
+    checker: ts.TypeChecker,
+): ts.CallExpression | undefined {
     let node = unwrapExpression(expression);
     if (ts.isVoidExpression(node)) node = unwrapExpression(node.expression);
     while (ts.isCallExpression(node)) {
         const callee = unwrapExpression(node.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            !PROMISE_REACTIONS.has(callee.name.text)
+            promiseReactionOf(callee, checker) === undefined
         )
             return node;
         const receiver = unwrapExpression(callee.expression);
@@ -137,7 +121,9 @@ export class PendingActivations {
                 if (
                     ts.isNewExpression(node) &&
                     libraryGlobal(checker, node.expression) === "Promise" &&
-                    ["awaited", "returned"].includes(promiseUse(node)) &&
+                    ["awaited", "returned"].includes(
+                        promiseUse(node, checker),
+                    ) &&
                     !handledElsewhere(node)
                 ) {
                     const owner = owningActivation(node);
@@ -145,8 +131,8 @@ export class PendingActivations {
                 }
                 if (!ts.isCallExpression(node)) return;
                 calls.push(node);
-                const use = promiseUse(node);
-                const callee = this.calledActivation(node);
+                const use = promiseUse(node, checker);
+                const callee = calledDeclaration(this.checker, node);
                 const owner = owningActivation(node);
                 if (
                     callee &&
@@ -169,11 +155,11 @@ export class PendingActivations {
         }
         if (this.suspending.size === 0) return;
         for (const call of calls) {
-            const callee = this.calledActivation(call);
+            const callee = calledDeclaration(this.checker, call);
             if (
                 callee &&
                 this.suspending.has(callee) &&
-                promiseUse(call) === "stored"
+                promiseUse(call, this.checker) === "stored"
             )
                 this.record(call);
         }
@@ -203,17 +189,9 @@ export class PendingActivations {
      * that can end at a pending await: the statement the unwinding stops at.
      */
     public discards(statement: ts.ExpressionStatement): boolean {
-        const call = chainedCall(statement.expression);
-        const callee = call && this.calledActivation(call);
+        const call = chainedCall(statement.expression, this.checker);
+        const callee = call && calledDeclaration(this.checker, call);
         return callee !== undefined && this.suspending.has(callee);
-    }
-
-    private calledActivation(call: ts.CallExpression): Activation | undefined {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
-        return declaration && !ts.isJSDocSignature(declaration)
-            ? declaration
-            : undefined;
     }
 
     /** A suspending function used as a value rather than called. */
@@ -223,20 +201,9 @@ export class PendingActivations {
         let activation: Activation | undefined;
         let site: ts.Node = reference;
         if (ts.isIdentifier(reference)) {
-            const parent = reference.parent;
-            if (
-                ts.isImportSpecifier(parent) ||
-                ts.isExportSpecifier(parent) ||
-                ts.isImportClause(parent) ||
-                ((ts.isFunctionDeclaration(parent) ||
-                    ts.isFunctionExpression(parent) ||
-                    ts.isMethodDeclaration(parent) ||
-                    ts.isVariableDeclaration(parent) ||
-                    ts.isPropertyAssignment(parent) ||
-                    ts.isPropertyDeclaration(parent)) &&
-                    parent.name === reference)
-            )
-                return false;
+            // An export names the function; it does not call it.
+            const used = referenceSite(reference);
+            if (!used || ts.isExportSpecifier(reference.parent)) return false;
             const declaration = resolvedSymbol(
                 this.checker,
                 reference,
@@ -255,11 +222,7 @@ export class PendingActivations {
                     : initializer && ts.isFunctionLike(initializer)
                       ? initializer
                       : undefined;
-            if (
-                ts.isPropertyAccessExpression(parent) &&
-                parent.name === reference
-            )
-                site = parent;
+            site = used;
         } else {
             activation = reference;
             const parent = reference.parent;
@@ -272,8 +235,7 @@ export class PendingActivations {
                 return false;
         }
         if (!activation || !this.suspending.has(activation)) return false;
-        let callee: ts.Node = site;
-        while (isTransparentWrapper(callee.parent)) callee = callee.parent;
+        const callee = outermostWrapper(site);
         return !(
             ts.isCallExpression(callee.parent) &&
             callee.parent.expression === callee

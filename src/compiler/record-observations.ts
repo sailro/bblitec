@@ -3,7 +3,12 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
-import { nullability } from "./type-facts.js";
+import {
+    nullability,
+    arrayElementType,
+    arrayShape,
+    unionMembers,
+} from "./type-facts.js";
 import {
     programObservations,
     type ObservedWrite,
@@ -14,13 +19,23 @@ import {
     declarationOrigin,
     declaredSymbol,
     resolvedSymbol,
+    nullishLiteral,
+    calledDeclaration,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     expressionMayRunCode,
     isAssignmentExpression,
-    isUpdateExpression,
+    isOperandSelection,
+    outermostWrapper,
     unwrapExpression,
+    valueOperands,
+    isExpressionWrapper,
+    writeSites,
+    writeSiteOf,
+    referenceSite,
+    equalityOperator,
+    positionalParameter,
+    variableKind,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -181,7 +196,7 @@ export function recordFieldIsWritten(
     // instantiation, which assignability cannot relate to `source`; only a
     // write that names the property is attributed to it.
     const viewedAsSource = (holder: ts.Type): boolean =>
-        (holder.isUnion() ? holder.types : [holder]).some((member) =>
+        unionMembers(holder).some((member) =>
             checker.isTypeAssignableTo(member, source),
         );
     const mayRemove = (write: ObservedWrite): boolean => {
@@ -262,7 +277,7 @@ function observedArrayWrites(
     const observations = programObservations(context.program);
     const { checker } = context;
     const elementOf = (type: ts.Type): ts.Type | undefined =>
-        checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        arrayElementType(checker, type);
     const sourceElement = elementOf(source);
     const targetElement = elementOf(target);
     const assignable = (from: ts.Type, to: ts.Type): boolean =>
@@ -288,19 +303,17 @@ function observedArrayWrites(
                     : assignable(own, sourceElement)),
         ) ||
         observations.assertions.some(({ asserted, open }) => {
+            const shape = arrayShape(checker, asserted);
             const wide =
-                checker.isArrayType(asserted) &&
-                asserted.getSymbol()?.name === "Array"
-                    ? elementOf(asserted)
-                    : undefined;
+                shape?.mutable && !shape.tuple ? shape.element : undefined;
             return (
                 wide !== undefined &&
                 assignable(wide, element) &&
                 (open || assignable(sourceElement, wide))
             );
         });
-    const targetMutable =
-        checker.isArrayType(target) && target.getSymbol()?.name === "Array";
+    const targetShape = arrayShape(checker, target);
+    const targetMutable = targetShape?.mutable === true && !targetShape.tuple;
     const writtenHolder = (holder: ts.Type): boolean =>
         holdsArray(checker, holder, [source, target], (element) => {
             if (
@@ -370,10 +383,7 @@ function observedArrayIdentity(
         [...observations.identities].some((type) =>
             holdsArray(checker, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
-                    const own = checker.getIndexTypeOfType(
-                        copy,
-                        ts.IndexKind.Number,
-                    );
+                    const own = arrayElementType(checker, copy);
                     return (
                         own === undefined ||
                         checker.isTypeAssignableTo(own, element) ||
@@ -490,7 +500,7 @@ function identityUses(
                     ? emptyTokenRoot(checker, other)
                     : undefined;
                 if (partner) tokens.push(partner);
-                else if (!nullishOperand(other))
+                else if (nullishLiteral(checker, other) === undefined)
                     reason = "the program compares it by identity";
             } else if (
                 (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
@@ -503,8 +513,7 @@ function identityUses(
                 parent.expression !== use
             ) {
                 const position = parent.arguments?.indexOf(use) ?? -1;
-                const callee =
-                    checker.getResolvedSignature(parent)?.declaration;
+                const callee = calledDeclaration(checker, parent);
                 // The engine takes what it is handed in its own storage:
                 // a record or array converts at the call.
                 if (
@@ -542,16 +551,14 @@ function storedIdentity(
         ts.isShorthandPropertyAssignment(holder.parent) ||
         ts.isObjectLiteralExpression(holder.parent) ||
         ts.isArrayLiteralExpression(holder.parent) ||
-        ts.isParenthesizedExpression(holder.parent) ||
-        ts.isAsExpression(holder.parent) ||
-        ts.isSatisfiesExpression(holder.parent)
+        isExpressionWrapper(holder.parent)
     )
         holder = holder.parent;
     const call = holder.parent;
     const callee =
         (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
         call.expression !== holder
-            ? checker.getResolvedSignature(call)?.declaration
+            ? calledDeclaration(checker, call)
             : undefined;
     if (callee && declarationOrigin(callee) === "babylon") return undefined;
     const slot = checker.getNonNullableType(
@@ -564,22 +571,9 @@ function storedIdentity(
 
 /** An equality, which compares object operands by identity. */
 function isIdentityComparison(node: ts.Node): node is ts.BinaryExpression {
-    if (!ts.isBinaryExpression(node)) return false;
-    const operator = node.operatorToken.kind;
     return (
-        operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-        operator === ts.SyntaxKind.EqualsEqualsToken ||
-        operator === ts.SyntaxKind.ExclamationEqualsToken
-    );
-}
-
-function nullishOperand(node: ts.Expression): boolean {
-    const unwrapped = unwrapExpression(node);
-    return (
-        unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined") ||
-        ts.isVoidExpression(unwrapped)
+        ts.isBinaryExpression(node) &&
+        equalityOperator(node.operatorToken.kind) !== undefined
     );
 }
 
@@ -603,7 +597,7 @@ function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
         ts.isVoidExpression(parent) ||
         ts.isTemplateSpan(parent) ||
         ts.isPrefixUnaryExpression(parent) ||
-        (isAssignmentExpression(parent) && parent.left === use) ||
+        writeSiteOf(use) !== undefined ||
         (ts.isVariableDeclaration(parent) && !ts.isIdentifier(parent.name)) ||
         (ts.isBinaryExpression(parent) &&
             !isAssignmentExpression(parent) &&
@@ -611,28 +605,9 @@ function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
     );
 }
 
-/**
- * The expression a reference's value flows on as: through wrappers and
- * the arms of a selection (`?:`, `??`, `||`, the right of `&&`).
- */
+/** The expression a reference's value flows on as, past wrappers and the operators that yield it. */
 function flowingUse(reference: ts.Expression): ts.Expression {
-    let current = climb(reference);
-    for (;;) {
-        const parent = current.parent;
-        if (
-            (ts.isConditionalExpression(parent) &&
-                parent.condition !== current) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    (parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken &&
-                        parent.right === current)))
-        )
-            current = climb(parent);
-        else return current;
-    }
+    return outermostWrapper(reference, { branches: "objects" });
 }
 
 /**
@@ -650,12 +625,10 @@ function programParameter(
         !declaration ||
         !ts.isFunctionLike(declaration) ||
         !("body" in declaration) ||
-        !declaration.body ||
-        call.arguments?.slice(0, position).some(ts.isSpreadElement)
+        !declaration.body
     )
         return undefined;
-    const parameter = declaration.parameters[position];
-    return parameter && !parameter.dotDotDotToken ? parameter : undefined;
+    return positionalParameter(call, declaration, position);
 }
 
 /**
@@ -681,7 +654,7 @@ function emptyTokenRoot(
         seen.add(current);
         if (
             !ts.isVariableDeclarationList(current.parent) ||
-            (current.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(current.parent) !== "const"
         )
             return undefined;
         const initializer = unwrapExpression(current.initializer);
@@ -758,17 +731,14 @@ function bindingReferences(
         }
         return [...names].flatMap((name) =>
             (byName.get(name) ?? []).flatMap((identifier) => {
-                const parent = identifier.parent;
+                const site = referenceSite(identifier);
                 // A namespace import reads a module binding as `m.name`.
-                const member =
-                    ts.isPropertyAccessExpression(parent) &&
-                    parent.name === identifier;
-                return identifier !== declared &&
-                    !ts.isImportSpecifier(parent) &&
-                    !ts.isExportSpecifier(parent) &&
-                    (!member || moduleBinding) &&
+                return site &&
+                    identifier !== declared &&
+                    !ts.isExportSpecifier(identifier.parent) &&
+                    (site === identifier || moduleBinding) &&
                     resolvedSymbol(context.checker, identifier) === symbol
-                    ? [member ? parent : identifier]
+                    ? [site]
                     : [];
             }),
         );
@@ -794,9 +764,7 @@ function receiverWrites(initializer: ts.Expression | undefined): string[] {
             (ts.isFunctionLike(node) && !ts.isArrowFunction(node))
         )
             return;
-        if (isAssignmentExpression(node))
-            assignmentTargets(node.left).forEach(written);
-        else if (isUpdateExpression(node)) written(node.operand);
+        for (const { target } of writeSites(node)) written(target);
         ts.forEachChild(node, visit);
     };
     for (const property of literal.properties) {
@@ -829,7 +797,7 @@ function holdsArray(
         return holder.types.some((member) =>
             holdsArray(checker, member, arrays, related),
         );
-    const element = checker.getIndexTypeOfType(holder, ts.IndexKind.Number);
+    const element = arrayElementType(checker, holder);
     if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
         return holdsRecord(checker, holder, arrays);
     // A type parameter's array holds what its constraint admits.
@@ -841,10 +809,7 @@ function holdsArray(
             (constraint.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
                 0 ||
             arrays.some((array) => {
-                const own = checker.getIndexTypeOfType(
-                    array,
-                    ts.IndexKind.Number,
-                );
+                const own = arrayElementType(checker, array);
                 return (
                     own === undefined ||
                     checker.isTypeAssignableTo(own, constraint) ||
@@ -967,7 +932,7 @@ function holdsRecord(
     const holderHandle = pinnedSourceHandleKind(holder);
     // A record union's value is a record of one of its members.
     return records.some((record) =>
-        (record.isUnion() ? record.types : [record]).some((member) => {
+        unionMembers(record).some((member) => {
             const memberHandle = pinnedSourceHandleKind(member);
             if (holderHandle !== undefined || memberHandle !== undefined) {
                 return holderHandle === memberHandle;
@@ -975,20 +940,6 @@ function holdsRecord(
             return checker.isTypeAssignableTo(member, holder);
         }),
     );
-}
-
-/** A wrapper that keeps the value of the expression it encloses. */
-function climb(node: ts.Expression): ts.Expression {
-    let current = node;
-    while (
-        ts.isParenthesizedExpression(current.parent) ||
-        ts.isNonNullExpression(current.parent) ||
-        ts.isAsExpression(current.parent) ||
-        ts.isTypeAssertionExpression(current.parent) ||
-        ts.isSatisfiesExpression(current.parent)
-    )
-        current = current.parent;
-    return current;
 }
 
 /**
@@ -1001,7 +952,7 @@ function readOnlyArgumentCall(
     argument: ts.Node,
 ): ts.CallExpression | undefined {
     if (!ts.isExpression(argument)) return undefined;
-    const use = climb(argument);
+    const use = outermostWrapper(argument);
     const call = use.parent;
     return ts.isCallExpression(call) &&
         call.expression !== use &&
@@ -1025,27 +976,14 @@ export function argumentOnlyRead(
 /**
  * Whether the array `expression` evaluates is read element by element
  * where it is produced, then dropped: the initializer of an array
- * destructuring declaration, reached through wrappers and the arms of a
- * selection (`?:`, `??`, `||`, the right of `&&`), binding names without a
- * default that can run code. Nothing runs between taking a copy of the
- * array and reading it, and nothing keeps the copy, so the two agree.
+ * destructuring declaration, reached through wrappers and the operators
+ * that yield it, binding names without a default that can run code.
+ * Nothing runs between taking a copy of the array and reading it, and
+ * nothing keeps the copy, so the two agree.
  */
 export function arrayDestructuredAtOnce(expression: ts.Expression): boolean {
-    let current = climb(expression);
-    let parent = current.parent;
-    while (
-        (ts.isConditionalExpression(parent) && parent.condition !== current) ||
-        (ts.isBinaryExpression(parent) &&
-            (parent.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken ||
-                parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.AmpersandAmpersandToken &&
-                    parent.right === current)))
-    ) {
-        current = climb(parent);
-        parent = current.parent;
-    }
+    const current = outermostWrapper(expression, { branches: "objects" });
+    const parent = current.parent;
     return (
         ts.isVariableDeclaration(parent) &&
         parent.initializer === current &&
@@ -1142,7 +1080,7 @@ function createdDuringCall(
         !ts.isVariableDeclaration(declaration) ||
         !declaration.initializer ||
         !ts.isVariableDeclarationList(declaration.parent) ||
-        (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(declaration.parent) !== "const" ||
         !newArrayExpression(checker, declaration.initializer)
     )
         return false;
@@ -1160,10 +1098,9 @@ function newArrayExpression(
     expression: ts.Expression,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
-    if (ts.isConditionalExpression(unwrapped))
-        return (
-            newArrayExpression(checker, unwrapped.whenTrue) &&
-            newArrayExpression(checker, unwrapped.whenFalse)
+    if (isOperandSelection(unwrapped))
+        return valueOperands(unwrapped).every((operand) =>
+            newArrayExpression(checker, operand),
         );
     // These methods return their receiver.
     if (
@@ -1194,7 +1131,7 @@ export function returnedRecordLocal(
     if (!ts.isExpression(returned)) return false;
     const unwrapped = unwrapExpression(returned);
     if (!ts.isIdentifier(unwrapped)) return false;
-    const use = climb(unwrapped);
+    const use = outermostWrapper(unwrapped);
     const owner = ts.findAncestor(use.parent, ts.isFunctionLike);
     if (
         !owner ||
@@ -1226,18 +1163,24 @@ export function returnedRecordLocal(
             declaredSymbol(checker, node) !== symbol
         )
             return;
-        const reference = climb(node);
+        const reference = outermostWrapper(node);
         const parent = reference.parent;
-        only =
-            ts.findAncestor(node.parent, ts.isFunctionLike) === owner &&
-            (ts.isPropertyAccessExpression(parent) ||
-                ts.isElementAccessExpression(parent)) &&
-            parent.expression === reference &&
+        if (
+            ts.findAncestor(node.parent, ts.isFunctionLike) !== owner ||
             !(
-                ts.isCallExpression(climb(parent).parent) &&
-                (climb(parent).parent as ts.CallExpression).expression ===
-                    climb(parent)
-            );
+                ts.isPropertyAccessExpression(parent) ||
+                ts.isElementAccessExpression(parent)
+            ) ||
+            parent.expression !== reference
+        ) {
+            only = false;
+            return;
+        }
+        const member = outermostWrapper(parent);
+        only = !(
+            ts.isCallExpression(member.parent) &&
+            member.parent.expression === member
+        );
     });
     return only;
 }

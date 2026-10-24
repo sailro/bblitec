@@ -172,8 +172,8 @@ function scope(
                 return `arenas[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
-            if (!context.expressionMatchesShape(syntax.expression, "arenas"))
+        forOf(iterated, element) {
+            if (!context.expressionMatchesShape(iterated, "arenas"))
                 return undefined;
             return {
                 range: "arenas",

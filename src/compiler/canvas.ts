@@ -2,7 +2,7 @@ import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-import { declaredInDefaultLibrary } from "./symbols.js";
+import { declaredInDefaultLibrary, libraryName } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { documentEngine, requireWindowHost } from "./window-events.js";
@@ -64,7 +64,7 @@ function canvasOwner(
     expression: ts.Expression,
 ): Value | undefined {
     const type = context.checker.getTypeAtLocation(expression);
-    if (type.getSymbol()?.name !== "OffscreenCanvas") return undefined;
+    if (libraryName(type) !== "OffscreenCanvas") return undefined;
     const mapped = context.dataTypes.fromTsType(type, expression);
     if (mapped?.kind !== "handle" || mapped.handle !== "offscreen-canvas")
         return undefined;

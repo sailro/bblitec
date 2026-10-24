@@ -17,6 +17,7 @@ import { writable } from "../emission-transaction.js";
 import {
     DynamicBindingStorageRequired,
     initializedVariableDeclaration,
+    requireHeldRecordStorage,
 } from "../dynamic-binding-storage.js";
 import { unaliasedValue } from "./aliasing.js";
 import {
@@ -41,7 +42,8 @@ import { requireTupleArraySlot } from "../tuple-array-storage.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
-import { provenUndefinedValue } from "../undefined-values.js";
+import { readsErasedVoid } from "../undefined-values.js";
+import { absenceOf } from "../values/model.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -124,7 +126,7 @@ function valueTagged(
     const cppType = context.dataTypes.cppType(dataType);
     const inner = dataType.inner;
     if (value.kind === "json-null")
-        return value.cpp === "std::nullopt"
+        return absenceOf(value) === "undefined"
             ? `${cppType}{}`
             : `${cppType}{${context.dataTypes.absentValue(inner)}, true}`;
     if (isUndefinedDataType(value.dataType)) {
@@ -199,8 +201,7 @@ function valueOptional(
         // this value; its result settles through the activation.
         if (
             !value.abruptCompletion &&
-            (value.erasedVoidCompletion ||
-                !provenUndefinedValue(lowerer.context, node))
+            readsErasedVoid(lowerer.context, value, node)
         )
             lowerer.context.fail(
                 node,
@@ -606,17 +607,7 @@ function valueMap(
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
         }
-        if (value.kind === "record" && ts.isExpression(node)) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                node,
-            );
-            if (
-                declaration &&
-                !lowerer.context.dynamicBindings.has(declaration)
-            )
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+        requireHeldRecordStorage(lowerer.context, value, node);
     }
     if (value.kind === "record") {
         // A key a conditional spread wrote is stored while it is own, in

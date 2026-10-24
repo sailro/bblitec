@@ -8,6 +8,7 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { soleBindingName, declaredKey } from "../compiler/syntax.js";
 
 const modulePath = "src/physics/havok.ts";
 
@@ -98,7 +99,9 @@ export function lowerPhysicsMesh(context: LoweringContext): {
     for (const member of owner.members) {
         const name = ts.isConstructorDeclaration(member)
             ? "constructor"
-            : member.name?.getText(file);
+            : member.name === undefined
+              ? undefined
+              : declaredKey(member.name);
         if (!name || seen.has(name))
             context.contractError(
                 member,
@@ -125,8 +128,9 @@ export function lowerPhysicsMesh(context: LoweringContext): {
             contracts.has(name)
         ) {
             if (
-                member.parameters.map((p) => p.name.getText(file)).join(",") !==
-                    parameters.get(name) ||
+                member.parameters
+                    .map((p) => soleBindingName(p.name))
+                    .join(",") !== parameters.get(name) ||
                 member.parameters.some(
                     (p) => p.initializer || p.questionToken || p.dotDotDotToken,
                 )

@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const pixelsTextureModule = "src/texture/pixels-texture.ts";
 
@@ -38,7 +39,7 @@ export function lowerPixelsTextureWrites(context: LoweringContext): string {
         name,
     );
     const parameters = declaration.parameters.map((parameter) =>
-        parameter.name.getText(file),
+        soleBindingName(parameter.name),
     );
     const expected = ["engine", "tex", "data", ...regionParameters];
     if (parameters.join() !== expected.join())

@@ -7,6 +7,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { propertyPath, isOneOfSources } from "../compiler/syntax.js";
 
 /** Source renderable captures, projected onto the retained material variant metadata. */
 export function lowerThinInstanceBindingCreation(
@@ -180,7 +181,9 @@ export function lowerThinInstanceBindingUpdate(
                     if (!ts.isExpressionStatement(statement)) return undefined;
                     const value = statement.expression;
                     if (ts.isCallExpression(value)) {
-                        const target = value.expression.getText(file);
+                        const target = propertyPath(value.expression)?.join(
+                            ".",
+                        );
                         if (target === "updateCustomUbo")
                             return [`${indent}update_custom();`];
                         if (target === "updatePacket")
@@ -194,15 +197,11 @@ export function lowerThinInstanceBindingUpdate(
                     ) {
                         const call = value.right;
                         if (
-                            [
+                            isOneOfSources(call.expression, [
                                 "tiUpdate",
                                 "syncThinInstanceForDraw",
                                 "material._syncThinInstanceForDraw",
-                            ].includes(
-                                call.expression
-                                    .getText(file)
-                                    .replaceAll("!", ""),
-                            )
+                            ])
                         ) {
                             if (call.arguments.length !== 4)
                                 return context.contractError(

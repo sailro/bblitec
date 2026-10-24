@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /**
  * The pin's `resizeSurface` and `setSurfaceSize` over a Window realm canvas:
@@ -93,8 +94,7 @@ export function lowerSurfaceResize(
     ]);
     const canvasRead = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations[0]!.name.getText(file) ===
-            "canvas";
+        sameSource(statement.declarationList.declarations[0]!.name, "canvas");
     const resizeBody = lowerPinnedBody(
         file,
         resizeStatements.filter((statement) => !canvasRead(statement)),

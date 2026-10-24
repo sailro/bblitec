@@ -292,7 +292,7 @@ function emitFrameGraphTransmission(
         );
     }
     const copyCount = context.objectProperty(options, "copyCount");
-    if (!copyCount || context.compileNumber(copyCount) !== "1.0f") {
+    if (!copyCount || context.compileNumber(copyCount, "float") !== "1.0f") {
         context.fail(
             options,
             "Reached frame-graph transmission requires copyCount: 1.",
@@ -513,7 +513,7 @@ function emitLightVectorComponentAssignment(
         kind: "declaration",
         type: "const float",
         name: value,
-        initializer: context.compileNumber(expression.right),
+        initializer: context.compileNumber(expression.right, "float"),
     });
     context.reachFeature("light:parameters", expression);
     context.emit({
@@ -984,10 +984,7 @@ function optionalNumberPropertyInAssertion(
         ) {
             return false;
         }
-        return (
-            (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
-            member.name.text === property
-        );
+        return propertyKey(member.name) === property;
     });
 }
 
@@ -995,16 +992,8 @@ function explicitOptionalNumberExpandoOwner(
     expression: ts.Expression,
     property: string,
 ): ts.Expression | undefined {
-    let asserted = expression;
-    while (ts.isParenthesizedExpression(asserted)) {
-        asserted = asserted.expression;
-    }
-    if (
-        !ts.isAsExpression(asserted) &&
-        !ts.isTypeAssertionExpression(asserted)
-    ) {
-        return undefined;
-    }
+    const asserted = wrappersUnder(expression).find(isTypeAssertion);
+    if (!asserted) return undefined;
     if (!optionalNumberPropertyInAssertion(asserted.type, property)) {
         return undefined;
     }
@@ -1012,16 +1001,10 @@ function explicitOptionalNumberExpandoOwner(
 }
 
 function propertyAccessName(node: ts.Node): string | undefined {
-    if (ts.isPropertyAccessExpression(node)) return node.name.text;
-    if (
-        ts.isElementAccessExpression(node) &&
-        node.argumentExpression &&
-        (ts.isStringLiteral(node.argumentExpression) ||
-            ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))
-    ) {
-        return node.argumentExpression.text;
-    }
-    return undefined;
+    return ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+        ? accessKey(node)
+        : undefined;
 }
 
 function isSimplePropertyWrite(node: ts.Node): boolean {
@@ -1219,7 +1202,7 @@ export function emitPropertyAssignment(
             context.emit({
                 kind: "expression",
                 code: `bbl::js::throw_nullish_access(${context.cppString(
-                    `Cannot ${simple ? "set" : "read"} properties of ${absent.cpp === "std::nullopt" ? "undefined" : "null"}`,
+                    `Cannot ${simple ? "set" : "read"} properties of ${absenceOfNull(absent)}`,
                 )});`,
             });
             return;
@@ -1236,8 +1219,7 @@ export function emitPropertyAssignment(
     const left = expression.left;
     const regexpType = context.checker.getTypeAtLocation(left.expression);
     const regexpOwner =
-        regexpType.symbol?.name === "RegExp" &&
-        declaredInDefaultLibrary(regexpType.symbol)
+        libraryName(regexpType) === "RegExp"
             ? context.compileValue(left.expression)
             : undefined;
     if (regexpOwner?.dataType?.kind === "regexp") {
@@ -1395,6 +1377,10 @@ export function emitPropertyAssignment(
             const setter = owner.recordSetters?.[left.name.text];
             if (setter) {
                 context.compileRecordSetter(owner, setter, expression.right);
+                return;
+            }
+            if (owner.recordGetters?.[left.name.text]) {
+                emitGetterOnlyWrite(context, expression, left.name.text);
                 return;
             }
             // Probe record wiring without evaluating an arbitrary RHS.
@@ -1644,7 +1630,7 @@ export function emitPropertyAssignment(
         );
         context.emit({
             kind: "expression",
-            code: `${scene.cpp}.environment.${property} ${operator} ${context.compileNumber(expression.right)};`,
+            code: `${numericFieldStore(context, `${scene.cpp}.environment.${property}`, operator, expression.right, "float")};`,
         });
         return;
     }
@@ -2031,13 +2017,13 @@ export function emitPropertyAssignment(
                         initializer: `bbl::scene_node_${trsVector.nativeField}(${engine}, ${target}).${component}`,
                     });
                 }
-                const right = context.compileNumber(
+                const replacement = numericFieldValue(
+                    context,
+                    previous,
+                    operator,
                     expression.right,
                     trsVector.precision,
                 );
-                const replacement = previous
-                    ? `(${previous} ${operator.slice(0, -1)} ${right})`
-                    : right;
                 context.emit({
                     kind: "expression",
                     code:
@@ -2050,16 +2036,13 @@ export function emitPropertyAssignment(
                 `${recordAt(`${engine}.transform_nodes`, mesh.cpp)}.` +
                 trsVector.nativeField;
             const current = `${vectorRead}.${component}`;
-            const replacement =
-                operator === "="
-                    ? context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )
-                    : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )})`;
+            const replacement = numericFieldValue(
+                context,
+                current,
+                operator,
+                expression.right,
+                trsVector.precision,
+            );
             context.emit({
                 kind: "expression",
                 code:
@@ -2123,16 +2106,13 @@ export function emitPropertyAssignment(
             }
             const engine = context.requireEngine(mesh, expression);
             const current = `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${component}`;
-            const replacement =
-                operator === "="
-                    ? context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )
-                    : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
-                          expression.right,
-                          trsVector.precision,
-                      )})`;
+            const replacement = numericFieldValue(
+                context,
+                current,
+                operator,
+                expression.right,
+                trsVector.precision,
+            );
             context.emit({
                 kind: "expression",
                 code:
@@ -2157,7 +2137,10 @@ export function emitPropertyAssignment(
         // field is a double.
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
+            code: `${numericFieldStore(
+                context,
+                `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component}`,
+                operator,
                 expression.right,
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
@@ -2174,6 +2157,76 @@ export function emitPropertyAssignment(
     }
 
     context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
+}
+
+/**
+ * The value `current op= right` gives a numeric field of `width`:
+ * JavaScript computes it in double and rounds once at a float32 store,
+ * where `float op float` would round the right side and then the result.
+ */
+function numericFieldValue(
+    context: AssignmentContext,
+    current: string | undefined,
+    operator: string,
+    right: ts.Expression,
+    width: "float" | "double",
+): string {
+    if (operator === "=" || current === undefined)
+        return context.compileNumber(right, width);
+    const value = `${width === "float" ? `static_cast<double>(${current})` : current} ${operator.slice(0, -1)} ${context.compileNumber(right, "double")}`;
+    return width === "float" ? `static_cast<float>(${value})` : `(${value})`;
+}
+
+/** The width a field write compiles its right side at: double once JavaScript's arithmetic precedes the store. */
+function fieldOperandWidth(
+    operator: string,
+    width: "float" | "double",
+): "float" | "double" {
+    return operator === "=" ? width : "double";
+}
+
+/** `place op= right` at a numeric field of `width`, `right` compiled at {@link fieldOperandWidth}. */
+function numericFieldStoreCpp(
+    place: string,
+    operator: string,
+    right: string,
+    width: "float" | "double",
+): string {
+    return operator === "=" || width === "double"
+        ? `${place} ${operator} ${right}`
+        : `${place} = static_cast<float>(static_cast<double>(${place}) ${operator.slice(0, -1)} ${right})`;
+}
+
+/** `place op= right` as a statement at a numeric field of `width`, by {@link numericFieldValue}'s rule. */
+function numericFieldStore(
+    context: AssignmentContext,
+    place: string,
+    operator: string,
+    right: ts.Expression,
+    width: "float" | "double",
+): string {
+    return numericFieldStoreCpp(
+        place,
+        operator,
+        context.compileNumber(right, fieldOperandWidth(operator, width)),
+        width,
+    );
+}
+
+/**
+ * `o.x = v` where `x` has a getter and no setter: a module is strict, so
+ * the store throws a TypeError once the right side has been evaluated.
+ */
+function emitGetterOnlyWrite(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    key: string,
+): void {
+    context.emitDiscardedValue(context.compileValue(expression.right));
+    context.emit({
+        kind: "expression",
+        code: `std::rethrow_exception(bbl::js::make_error("TypeError", ${context.cppString(`Cannot set property ${key} of #<Object> which has only a getter`)}, std::exception_ptr{}));`,
+    });
 }
 
 /**
@@ -2369,7 +2422,14 @@ import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
 } from "./effect-task-methods.js";
-import { argumentAt, expressionHasEffects } from "./syntax.js";
+import {
+    argumentAt,
+    expressionHasEffects,
+    isTypeAssertion,
+    wrappersUnder,
+    accessKey,
+    propertyKey,
+} from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";
 import { emitBrowserFileAssignment } from "./browser-file.js";
@@ -2386,7 +2446,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
-import { declaredInDefaultLibrary, isGlobalUndefined } from "./symbols.js";
+import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,
@@ -2409,7 +2469,13 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
-import { optionalPresentCpp, optionalValueCpp } from "./values/model.js";
+import {
+    absenceOfNull,
+    knownCondition,
+    optionalPresentCpp,
+    optionalValueCpp,
+    staticBooleanOf,
+} from "./values/model.js";
 import { recordAt } from "./record-access.js";
 import { isPinnedType } from "./data-types.js";
 import { creationInSegment } from "./creation-segments.js";
@@ -2430,7 +2496,9 @@ function compileMeshPrimitiveState(
 ): string {
     const node = context.unwrap(expression);
     if (ts.isConditionalExpression(node))
-        return `(${context.compileBoolean(node.condition)} ? ${compileMeshPrimitiveState(context, node.whenTrue)} : ${compileMeshPrimitiveState(context, node.whenFalse)})`;
+        return context.dataLowerer.selectArms(node, (arm) =>
+            compileMeshPrimitiveState(context, arm),
+        );
     if (isGlobalUndefined(context.checker, node))
         return "std::optional<bbl::MeshPrimitiveState>{}";
     const object = node;
@@ -2495,16 +2563,7 @@ function validateMeshPrimitiveFeatures(
         return;
     }
     if (isGlobalUndefined(context.checker, node)) return;
-    let value = staticNumberValue(context, node);
-    if (
-        value === undefined &&
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken
-    ) {
-        const left = staticNumberValue(context, node.left),
-            right = staticNumberValue(context, node.right);
-        if (left !== undefined && right !== undefined) value = left << right;
-    }
+    const value = staticNumberValue(context, node);
     // gltf-feature-primitive owns winding, topology and uint32-strip in bits11–15.
     // Lower bits select shader inputs and require their own resource/variant admission.
     if (
@@ -2739,7 +2798,7 @@ function emitTargetPropertyAssignment(
         if (property === "invertY") {
             // The one boolean in `TEXTURE_UV_PROPERTIES`, which is why the
             // refusal below can name it.
-            if (rendered !== "true" && rendered !== "false") {
+            if (knownCondition(rendered) === undefined) {
                 context.fail(
                     expression.right,
                     "A texture's `invertY` is composition input — the lightmap " +
@@ -2747,7 +2806,8 @@ function emitTargetPropertyAssignment(
                         "generation.",
                 );
             }
-            writable(target).textureObjectInvertY = rendered === "true";
+            writable(target).textureObjectInvertY =
+                knownCondition(rendered) === true;
         } else if (property === "uAng") {
             // The value reaches composition as well as the record: the pinned
             // lightmap `detect` compares it against `Math.PI`. A write that
@@ -2980,6 +3040,9 @@ function emitTargetPropertyAssignment(
                 return true;
             }
         }
+        const fieldOperator = recordField.simpleOnly ? "=" : operator;
+        const fieldWidth =
+            recordField.collection === "cameras" ? "double" : "float";
         const compiled = context.captureNativeExpression(() =>
             recordField.value === "color3"
                 ? context.compileColor3(expression.right)
@@ -2993,9 +3056,7 @@ function emitTargetPropertyAssignment(
                       })
                     : context.compileNumber(
                           expression.right,
-                          recordField.collection === "cameras"
-                              ? "double"
-                              : "float",
+                          fieldOperandWidth(fieldOperator, fieldWidth),
                       ),
         );
         const value = compiled.cpp;
@@ -3012,10 +3073,10 @@ function emitTargetPropertyAssignment(
                 recordField.property === "backFaceCulling" ||
                 recordField.property === "disableLighting"
             ) {
-                if (value === "true" || value === "false") {
+                if (knownCondition(value) !== undefined) {
                     writable(target.standardMaterialInput)[
                         recordField.property
-                    ] = value === "true";
+                    ] = knownCondition(value) === true;
                 } else {
                     delete writable(target.standardMaterialInput)[
                         recordField.property
@@ -3033,8 +3094,9 @@ function emitTargetPropertyAssignment(
         context.emit({
             kind: "expression",
             code:
-                `${record}.${recordField.field} ` +
-                `${recordField.simpleOnly ? "=" : operator} ${stored};`,
+                recordField.value === "number"
+                    ? `${numericFieldStoreCpp(`${record}.${recordField.field}`, fieldOperator, stored, fieldWidth)};`
+                    : `${record}.${recordField.field} ${fieldOperator} ${stored};`,
         });
         if (
             recordField.kind === "material" &&
@@ -3128,18 +3190,21 @@ function emitTargetPropertyAssignment(
                 `${target.kind} ${property}`,
             );
         }
-        const value =
-            direct.valueKind === "color3"
-                ? context.compileColor3(expression.right)
-                : context.compileNumber(
-                      expression.right,
-                      direct.nativeProperty === "intensity"
-                          ? "double"
-                          : "float",
-                  );
+        const place = `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty}`;
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
+            code:
+                direct.valueKind === "color3"
+                    ? `${place} ${operator} ${context.compileColor3(expression.right)};`
+                    : `${numericFieldStore(
+                          context,
+                          place,
+                          operator,
+                          expression.right,
+                          direct.nativeProperty === "intensity"
+                              ? "double"
+                              : "float",
+                      )};`,
         });
         return true;
     }
@@ -3394,13 +3459,7 @@ function emitReceiveShadowsAssignment(
         requireSimpleAssignment(context, expression, "mesh receiveShadows");
         const enabled = context.compileValue(expression.right);
         context.expectKind(enabled, "boolean", expression.right);
-        const staticEnabled =
-            enabled.staticBoolean ??
-            (enabled.cpp === "true"
-                ? true
-                : enabled.cpp === "false"
-                  ? false
-                  : undefined);
+        const staticEnabled = staticBooleanOf(enabled);
         if (staticEnabled === false) {
             if (target.sceneMeshIndex === undefined) {
                 context.emit({
@@ -3708,7 +3767,7 @@ function emitBoundMinAssignment(
         const side = property === "boundMin" ? "min" : "max";
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right, "float")};`,
         });
         context.emit({
             kind: "expression",

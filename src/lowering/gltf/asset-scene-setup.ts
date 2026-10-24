@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 const module = "src/loader-gltf/load-gltf.ts";
 const registryModule = "src/loader-gltf/gltf-feature-registry.ts";
@@ -57,7 +58,7 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
         calls: new Map(),
 
         forOf(iterated, element) {
-            if (iterated !== "assetFragments" || element !== "frag")
+            if (!sameSource(iterated, "assetFragments") || element !== "frag")
                 return undefined;
             return {
                 range: "assetFragments",
@@ -168,8 +169,10 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
                     callback.parameters.length !== 2 ||
                     callback.parameters.some(
                         (parameter, index) =>
-                            parameter.name.getText(file) !==
-                                ["scene", "target"][index] ||
+                            !sameSource(
+                                parameter.name,
+                                ["scene", "target"][index],
+                            ) ||
                             parameter.initializer ||
                             parameter.dotDotDotToken,
                     )

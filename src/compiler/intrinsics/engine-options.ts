@@ -34,6 +34,7 @@ import {
     type PositiveIntegerContext,
     type StaticBooleanContext,
 } from "../option-helpers.js";
+import { knownCondition } from "../values/model.js";
 
 export interface EngineOptionContext
     extends
@@ -585,7 +586,7 @@ export function requiredObjectNumber(
     context: RequiredObjectNumberContext,
     object: ts.ObjectLiteralExpression,
     name: string,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string {
     const value = context.objectProperty(object, name);
     if (!value) {
@@ -730,10 +731,10 @@ export function compileSceneDefaultRenderTask(
         return true;
     }
     const compiled = context.compileBoolean(value);
-    if (compiled !== "true" && compiled !== "false") {
+    if (knownCondition(compiled) === undefined) {
         context.fail(value, "defaultRenderTask must be a static boolean.");
     }
-    return compiled === "true";
+    return knownCondition(compiled) === true;
 }
 
 /**

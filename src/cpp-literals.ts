@@ -9,6 +9,10 @@
  * `1e+21.0f` — not C++.
  */
 export function floatLiteral(value: number): string {
+    // A finite double past FLT_MAX rounds to an infinity at a float32 store
+    // (Math.fround), where the C++ literal would be out of range.
+    if (Number.isFinite(value) && !Number.isFinite(Math.fround(value)))
+        return `${value < 0 ? "-" : ""}std::numeric_limits<float>::infinity()`;
     // C++ rounds the decimal once, straight to float; JavaScript rounds the
     // double. They differ only for a double exactly halfway between two
     // floats, whose shortest decimal lies past the midpoint.
@@ -273,6 +277,9 @@ export function cppRootName(cpp: string): string {
  * A string holding U+0000 is spelled as a `std::string` sized by the
  * literal itself: every native string sink reads a bare literal through
  * `const char*`, which would stop at the first NUL.
+ *
+ * `??` is spelled `?\?`: `??=`, `??(` and the other trigraphs would
+ * otherwise be read (or warned about) as one character.
  */
 export function stringLiteral(value: string): string {
     const literal = JSON.stringify(value)
@@ -297,7 +304,9 @@ export function stringLiteral(value: string): string {
         .split("\u2028")
         .join("\\u2028")
         .split("\u2029")
-        .join("\\u2029");
+        .join("\\u2029")
+        // No `??` survives to spell a trigraph: each `?` after a `?` escapes.
+        .replace(/(?<=\?)\?/g, "\\?");
     return value.includes("\u0000")
         ? `std::string(${literal}, sizeof(${literal}) - 1)`
         : literal;

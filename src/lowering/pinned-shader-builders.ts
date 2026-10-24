@@ -7,6 +7,7 @@ import {
 } from "../pinned-shader-composer.js";
 import { loadAugmentedModule } from "../pinned-module-loader.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 /**
  * One record in a list a builder loops over -- an extra texture's `name`, an
@@ -132,7 +133,7 @@ export class PinnedShaderBuilders {
             ) {
                 this.context.contractError(
                     parameter,
-                    `Pinned shader builder parameter '${parameter.name.getText()}' is unbound and has no default.`,
+                    `Pinned shader builder parameter '${soleBindingName(parameter.name)}' is unbound and has no default.`,
                 );
             }
         });

@@ -1,10 +1,12 @@
 import ts from "typescript";
+import { jsToInt32Call } from "./pinned-operators.js";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/material/shader/shader-material.ts";
 
@@ -444,8 +446,7 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
         (statement) =>
             ts.isExpressionStatement(statement) &&
             ts.isBinaryExpression(statement.expression) &&
-            statement.expression.left.getText(cachedFile) ===
-                "plan.versions[i]",
+            sameSource(statement.expression.left, "plan.versions[i]"),
     )!;
     const slotGate = lowerPinnedBody(
         cachedFile,
@@ -459,7 +460,7 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
                         cpp: "upload.slot_versions",
                         type: "f64-buffer",
                         indexedStore: (owner, index, value) =>
-                            `${owner}[static_cast<std::size_t>(${index})] = js::to_int32(${value})`,
+                            `${owner}[static_cast<std::size_t>(${index})] = ${jsToInt32Call(value)}`,
                     },
                 ],
                 ["i", { cpp: "index", type: "scalar" }],
@@ -586,7 +587,7 @@ export function lowerShaderUniformRangeUpdates(
     const packed = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
         ["spec", "data", "buffer", "min", "max"].includes(
-            statement.declarationList.declarations[0]!.name.getText(file),
+            soleBindingName(statement.declarationList.declarations[0]!.name),
         );
     const gate = lowerPinnedBody(
         file,

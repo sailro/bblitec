@@ -1,3 +1,7 @@
+import {
+    jsToInt32Call,
+    jsToUint32Call,
+} from "../../lowering/pinned-operators.js";
 import { float32Literal } from "../../cpp-literals.js";
 import { EmissionMap } from "../emission-transaction.js";
 import type { DataType, TypedArrayKind } from "./model.js";
@@ -80,7 +84,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         cppType: "bbl::js::U32Array",
         bytesPerElement: 4,
         elementCppType: "std::uint32_t",
-        store: (value) => `bbl::js::to_uint32(${value})`,
+        store: jsToUint32Call,
         storeLiteral: (value) => `${Uint32Array.of(value)[0]!}u`,
     },
     u8clampedarray: {
@@ -99,7 +103,7 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
         cppType: "bbl::js::I32Array",
         bytesPerElement: 4,
         elementCppType: "std::int32_t",
-        store: (value) => `bbl::js::to_int32(${value})`,
+        store: jsToInt32Call,
         storeLiteral: (value) => `${Int32Array.of(value)[0]!}`,
     },
 };

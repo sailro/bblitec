@@ -16,6 +16,7 @@ import { compileWindowMemberCall, isWindowReceiver } from "./window-members.js";
 import { requireWindowHost } from "./window-events.js";
 import { nativeWindowMember } from "./window-properties.js";
 import { timerCancellation } from "./workers.js";
+import { callSignatures } from "./type-facts.js";
 
 /**
  * `requestIdleCallback`, `cancelIdleCallback` and the IdleDeadline
@@ -276,7 +277,7 @@ export function idleFunctionValue(
     let sourceType = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(node),
     );
-    const signatures = sourceType.getCallSignatures();
+    const signatures = callSignatures(context.checker, sourceType, "exact");
     const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
     // An overloaded library intersection of one signature reads as that signature.
     if (

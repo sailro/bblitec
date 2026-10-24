@@ -9,7 +9,7 @@ import {
 import { persistContinuationLocals } from "./continuation-storage.js";
 import ts from "typescript";
 import { framePollExecutor } from "./frame-poll.js";
-import { resolvedSymbol } from "./symbols.js";
+import { memberAccessors, staticAccessKey } from "./symbols.js";
 import {
     resolveFunctionDeclaration,
     tryResolveFunctionDeclaration,
@@ -769,20 +769,26 @@ export class EngineLifecycle {
                 this.context.browserErasure.isBrowserOnlyExpression(node)
             )
                 return;
-            const properties = ts.isPropertyAccessExpression(node)
-                ? [resolvedSymbol(this.context.checker, node)]
-                : ts.isElementAccessExpression(node)
-                  ? this.context.checker
-                        .getTypeAtLocation(node.expression)
-                        .getProperties()
-                  : [];
-            const accessor = properties.some((property) =>
-                property?.declarations?.some(
-                    (declaration) =>
-                        ts.isGetAccessorDeclaration(declaration) ||
-                        ts.isSetAccessorDeclaration(declaration),
-                ),
-            );
+            // A run-time key may name any member, accessor or not.
+            const accessor =
+                ts.isElementAccessExpression(node) &&
+                staticAccessKey(this.context.checker, node) === undefined
+                    ? this.context.checker
+                          .getTypeAtLocation(node.expression)
+                          .getProperties()
+                          .some((property) =>
+                              property.declarations?.some(
+                                  (declaration) =>
+                                      ts.isGetAccessorDeclaration(
+                                          declaration,
+                                      ) ||
+                                      ts.isSetAccessorDeclaration(declaration),
+                              ),
+                          )
+                    : (ts.isPropertyAccessExpression(node) ||
+                          ts.isElementAccessExpression(node)) &&
+                      memberAccessors(this.context.checker, node, "either")
+                          .length > 0;
             if (
                 ts.isThrowStatement(node) ||
                 ts.isCallExpression(node) ||

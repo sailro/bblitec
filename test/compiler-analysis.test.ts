@@ -8,6 +8,7 @@ import {
     someAnalysisNode,
 } from "../src/compiler/analysis-walk.js";
 import { isNeverResized } from "../src/compiler/data-lowering.js";
+import { foldMathCall } from "../src/compiler/math-intrinsics.js";
 import {
     enclosingLoopControl,
     firstReturn,
@@ -64,9 +65,26 @@ test("value scans skip type annotations and member names, and stop at the first 
     assert.equal(
         someAnalysisNode(source, identifier("Hidden"), {
             types: "skip",
-            memberNames: "skip",
+            names: "references",
         }),
         false,
+    );
+    // Only references: neither the declared name nor a key is one.
+    assert.equal(
+        someAnalysisNode(
+            parse("const value = { value: 1 }; use({ value: other });"),
+            identifier("value"),
+            { names: "references" },
+        ),
+        false,
+    );
+    // A declared name handed in as the root is the walk's subject.
+    const declared = parse("const later = 1;").statements[0]!;
+    assert.ok(ts.isVariableStatement(declared));
+    const name = declared.declarationList.declarations[0]!.name;
+    assert.equal(
+        someAnalysisNode(name, identifier("later"), { names: "references" }),
+        true,
     );
     let calls = 0;
     const first = findAnalysisNode(source, (node) => {
@@ -207,4 +225,19 @@ test("opaque calls do not prove parameter field writes or scalar rebinding", () 
         [false, true],
         [false, true],
     ]);
+});
+
+test("a Math call folds only where every engine agrees", () => {
+    // Exact members and max / min fold; random never does, and an
+    // approximated member folds only into generation-time source text.
+    assert.equal(foldMathCall("floor", [-1.5]), -2);
+    assert.equal(foldMathCall("imul", [0xffffffff, 5]), -5);
+    assert.ok(Object.is(foldMathCall("sign", [-0]), -0));
+    assert.ok(Object.is(foldMathCall("max", [-0, 0]), 0));
+    assert.ok(Number.isNaN(foldMathCall("min", [1, Number.NaN])));
+    assert.equal(foldMathCall("random", []), undefined);
+    assert.equal(foldMathCall("sin", [1]), undefined);
+    assert.equal(foldMathCall("pow", [2, 3]), undefined);
+    assert.equal(foldMathCall("sin", [0], true), 0);
+    assert.equal(foldMathCall("floor", [1, 2]), undefined);
 });

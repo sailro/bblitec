@@ -82,7 +82,7 @@ function clearColor(
     const channel = (name: string, fallback: string): string => {
         const component = context.objectProperty(record, name);
         return component
-            ? `static_cast<float>(${context.compileNumber(component)})`
+            ? `static_cast<float>(${context.compileNumber(component, "float")})`
             : fallback;
     };
     return (

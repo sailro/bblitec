@@ -1,6 +1,10 @@
 import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
-import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
+import {
+    declaredSymbol,
+    resolvedSymbol,
+    libraryName,
+} from "../compiler/symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { cppCondition } from "../cpp-expressions.js";
 import { moduleScopeVariable } from "../pinned-program.js";
@@ -22,6 +26,12 @@ import {
     type PinnedNumericScope,
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
+import { isSuspensionPoint, variableKind } from "../compiler/syntax.js";
+import {
+    valueKindOf,
+    holdsOnly,
+    callSignatures,
+} from "../compiler/type-facts.js";
 
 /** A pinned value with its represented storage and alias lifetime. */
 export interface KernelValue {
@@ -143,11 +153,10 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     /** The kernel representation of a checker type. */
     public representation(type: ts.Type, at: ts.Node): RecordShape {
         const flags = type.flags;
-        if (flags & ts.TypeFlags.NumberLike) return recordScalars.number;
-        if (flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
-        if (flags & ts.TypeFlags.StringLike) return recordScalars.string;
-        if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined))
-            return recordScalars.void;
+        const kind = valueKindOf(type);
+        if (kind === "number" || kind === "boolean" || kind === "string")
+            return recordScalars[kind];
+        if (kind === "undefined" || kind === "void") return recordScalars.void;
         if (flags & ts.TypeFlags.NonPrimitive) return recordScalars.object;
         if (flags & ts.TypeFlags.Unknown && this.schema.unknown)
             return this.schema.unknown;
@@ -185,11 +194,11 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             const [key, value] = this.checker
                 .getTypeArguments(type as ts.TypeReference)
                 .map((argument) => this.representation(argument, at));
-            return symbol!.getName() === "WeakMap" && key?.kind === "object"
+            return libraryName(symbol) === "WeakMap" && key?.kind === "object"
                 ? { kind: "weakmap", value: value! }
                 : { kind: "map", key: key!, value: value! };
         }
-        const signatures = type.getCallSignatures();
+        const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length === 1 && signatures[0]!.parameters.length === 0)
             return {
                 kind: "function",
@@ -291,13 +300,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         }
         const type = this.checker.getTypeAtLocation(node);
         if (type.flags & ts.TypeFlags.Any) return undefined;
-        if (type.flags & ts.TypeFlags.NumberLike) return recordScalars.number;
-        if (type.flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
-        if (
-            type.isUnion() &&
-            type.types.every((member) => member.flags & ts.TypeFlags.NumberLike)
-        )
-            return recordScalars.number;
+        if (holdsOnly(type, ["number"])) return recordScalars.number;
+        if (valueKindOf(type) === "boolean") return recordScalars.boolean;
         return undefined;
     }
 
@@ -342,8 +346,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         declaration: ts.VariableDeclaration,
         indent: string,
     ): string[] {
-        const stable =
-            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+        const stable = variableKind(statement.declarationList) === "const";
         if (!declaration.initializer)
             return this.refuse(
                 declaration,
@@ -492,7 +495,11 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             ts.isVariableDeclarationList(list) && list.declarations.length === 1
                 ? list.declarations[0]!
                 : undefined;
-        if (statement.awaitModifier || !element || !ts.isIdentifier(binding))
+        if (
+            isSuspensionPoint(statement) ||
+            !element ||
+            !ts.isIdentifier(binding)
+        )
             return this.refuse(
                 statement,
                 "Pinned for-of loop requires one ordinary binding.",
@@ -637,7 +644,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         if (
             !bound &&
             constant?.initializer &&
-            (constant.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(constant.parent) === "const" &&
             constant.getSourceFile() === node.getSourceFile() &&
             !isRecordScalar(this.declarationType(constant))
         ) {

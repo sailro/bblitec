@@ -249,10 +249,10 @@ function scope(context: LoweringContext, name: string): PinnedNumericScope {
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
                 !context.expressionMatchesShape(
-                    syntax.expression,
+                    iterated,
                     "layout._fields.values()",
                 )
             )

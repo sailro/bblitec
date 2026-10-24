@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { jsToInt32Call } from "../pinned-operators.js";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
@@ -420,7 +421,7 @@ function lowerTopoOrder(context: LoweringContext): string {
             ) {
                 const assignment = statement.expression;
                 return [
-                    `${indent}order.at(static_cast<std::size_t>(${lowerer.expression((assignment.left as ts.ElementAccessExpression).argumentExpression)})) = bbl::js::to_int32(${lowerer.expression(assignment.right)});`,
+                    `${indent}order.at(static_cast<std::size_t>(${lowerer.expression((assignment.left as ts.ElementAccessExpression).argumentExpression)})) = ${jsToInt32Call(lowerer.expression(assignment.right))};`,
                 ];
             }
             if (

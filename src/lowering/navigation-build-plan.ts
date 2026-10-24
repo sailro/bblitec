@@ -5,7 +5,6 @@ import {
     WRAPPER_CORE,
     WRAPPER_GENERATORS,
     wrapperModule,
-    propertyPath,
     blockArrow,
     declarationOf,
     type BlockArrow,
@@ -56,8 +55,17 @@ import {
     type PinnedRecordMember,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedMathCall } from "./pinned-operators.js";
+import { spelledMathCall } from "../compiler/math-intrinsics.js";
+import { pinnedLibraryGlobal } from "../pinned-program.js";
 import { doubleLiteral } from "../cpp-literals.js";
+import {
+    writeSites,
+    sameSource,
+    propertyPath,
+    soleBindingName,
+    declaredKey,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -179,8 +187,8 @@ function callsOutside(
         statement,
         (node) =>
             ts.isCallExpression(node) &&
-            !pinnedMathCall(node) &&
-            !allowed.has(node.expression.getText()),
+            !spelledMathCall(node, pinnedLibraryGlobal) &&
+            !isOneOfSources(node.expression, allowed),
     );
 }
 
@@ -533,7 +541,7 @@ function generatorConfig(arm: BuildArm): GeneratorConfig {
             ts.isIdentifier(declaration.name) &&
             call &&
             ts.isCallExpression(call) &&
-            call.expression.getText() === "createRcConfig" &&
+            sameSource(call.expression, "createRcConfig") &&
             call.arguments.length === 1 &&
             ts.isIdentifier(call.arguments[0]!)
             ? [
@@ -564,7 +572,7 @@ function generatorConfig(arm: BuildArm): GeneratorConfig {
                   node.name.elements.some(
                       (element) =>
                           element.dotDotDotToken !== undefined &&
-                          element.name.getText() === creation.argument,
+                          sameSource(element.name, creation.argument),
                   )),
     );
     const [source] = sources;
@@ -587,7 +595,7 @@ function generatorConfig(arm: BuildArm): GeneratorConfig {
         !ts.isSpreadAssignment(base) ||
         !ts.isIdentifier(base.expression) ||
         !ts.isSpreadAssignment(given) ||
-        given.expression.getText() !== "navMeshGeneratorConfig"
+        !sameSource(given.expression, "navMeshGeneratorConfig")
     ) {
         return contractError(
             spread,
@@ -811,7 +819,7 @@ function wrapperRcConfigFields(): RcConfigFields {
     if (
         !last ||
         !ts.isReturnStatement(last) ||
-        last.expression?.getText() !== "clone"
+        !sameSource(last.expression, "clone")
     ) {
         return contractError(
             clone,
@@ -879,12 +887,12 @@ function wrapperCreateFields(className: string): readonly CreateField[] {
     const create = declaration?.members.find(
         (member): member is ts.MethodDeclaration =>
             ts.isMethodDeclaration(member) &&
-            member.name.getText() === "create" &&
+            sameSource(member.name, "create") &&
             member.modifiers?.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ) === true,
     );
-    const parameter = create?.parameters[0]?.name.getText();
+    const parameter = soleBindingName(create?.parameters[0]?.name);
     const statements = create?.body?.statements;
     if (
         !create ||
@@ -899,7 +907,7 @@ function wrapperCreateFields(className: string): readonly CreateField[] {
     const [first] = statements;
     const record =
         first && ts.isVariableStatement(first)
-            ? first.declarationList.declarations[0]?.name.getText()
+            ? soleBindingName(first.declarationList.declarations[0]?.name)
             : undefined;
     const fields: CreateField[] = [];
     for (const statement of statements.slice(1, -1)) {
@@ -958,7 +966,7 @@ function wrapperSetterFields(className: string): ReadonlyMap<string, string> {
         if (!ts.isMethodDeclaration(member)) continue;
         const access = methodAccess(member);
         if (access?.kind === "store" && !access.element)
-            setters.set(member.name.getText(), access.field);
+            setters.set(declaredKey(member.name), access.field);
     }
     return setters;
 }
@@ -979,7 +987,7 @@ function lowerCreate(
         ? unwrapExpression(call.arguments[0])
         : undefined;
     if (
-        call.expression.getText() !== `${className}.create` ||
+        !sameSource(call.expression, `${className}.create`) ||
         call.arguments.length !== 1 ||
         !literal ||
         !ts.isObjectLiteralExpression(literal)
@@ -1218,7 +1226,7 @@ function rcConfigFunction(
             ];
         },
         returnValue: (expression) => {
-            if (expression?.getText() !== "rcConfig") {
+            if (!sameSource(expression, "rcConfig")) {
                 return contractError(
                     arrow,
                     "Expected createRcConfig to return rcConfig.",
@@ -1302,22 +1310,11 @@ function configStepFunction(
                 );
             }
         } else if (
-            hasNode(statement, (node) => {
-                const target =
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-                        ? node.left
-                        : (ts.isPrefixUnaryExpression(node) ||
-                                ts.isPostfixUnaryExpression(node)) &&
-                            (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                                node.operator === ts.SyntaxKind.MinusMinusToken)
-                          ? node.operand
-                          : undefined;
-                return (
-                    target !== undefined && propertyPath(target)?.[0] === config
-                );
-            })
+            hasNode(statement, (node) =>
+                writeSites(node).some(
+                    ({ target }) => propertyPath(target)?.[0] === config,
+                ),
+            )
         ) {
             contractError(
                 statement,
@@ -1417,14 +1414,14 @@ function offMeshPackingFunction(): PlanFunction {
     const method = declaration?.members.find(
         (member): member is ts.MethodDeclaration =>
             ts.isMethodDeclaration(member) &&
-            member.name.getText() === "setOffMeshConnections",
+            sameSource(member.name, "setOffMeshConnections"),
     );
     const statements = method?.body?.statements;
     if (
         !method ||
         !statements ||
         method.parameters.length !== 1 ||
-        method.parameters[0]!.name.getText() !== "offMeshConnections"
+        !sameSource(method.parameters[0]!.name, "offMeshConnections")
     ) {
         throw new Error(
             `${WRAPPER_CORE} no longer declares ` +
@@ -1490,14 +1487,16 @@ function offMeshPackingFunction(): PlanFunction {
                     : undefined;
             if (
                 !call ||
-                call.expression.getText() !==
-                    "Raw.DetourNavMeshBuilder.setOffMeshConnections"
+                !sameSource(
+                    call.expression,
+                    "Raw.DetourNavMeshBuilder.setOffMeshConnections",
+                )
             ) {
                 return undefined;
             }
             const [target, count, ...lists] = call.arguments;
             if (
-                target?.getText() !== "this.raw" ||
+                !sameSource(target, "this.raw") ||
                 !count ||
                 lists.length !== 6 ||
                 lists.some(
@@ -2060,13 +2059,13 @@ function tileCacheSizes(generator: GeneratorConfig): {
         generator.body,
         (node): node is ts.NewExpression =>
             ts.isNewExpression(node) &&
-            node.expression.getText() === "Raw.RecastLinearAllocator",
+            sameSource(node.expression, "Raw.RecastLinearAllocator"),
     );
     const chunks = findNodes(
         generator.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
-            node.expression.getText() === "chunkyTriMesh.init",
+            sameSource(node.expression, "chunkyTriMesh.init"),
     );
     const [allocator] = allocators;
     const [chunk] = chunks;

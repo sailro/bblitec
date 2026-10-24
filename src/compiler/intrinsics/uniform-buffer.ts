@@ -75,7 +75,7 @@ export function compileUniformBufferIntrinsic(
     );
     if (buffer) {
         const offset = call.arguments[3]
-            ? context.compileNumber(call.arguments[3])
+            ? context.compileNumber(call.arguments[3], "double")
             : "0.0";
         return {
             kind: "void",

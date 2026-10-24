@@ -2,15 +2,26 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { declarationOrigin, declaredSymbol, libraryGlobal } from "./symbols.js";
 import {
-    assignmentTargets,
+    declarationOrigin,
+    declaredSymbol,
+    libraryGlobal,
+    nullishComparison,
+    libraryName,
+    calledDeclaration,
+} from "./symbols.js";
+import {
     isAssignmentExpression,
-    isUpdateExpression,
-    propertyNameText,
     unwrapExpression,
     wrappedParent,
+    isTypeAssertion,
+    writeSites,
+    writeSiteOf,
+    accessKey,
+    patternSlots,
+    equalityOperator,
 } from "./syntax.js";
+import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
 
 /** A write's location, and the property it writes (absent: any may be). */
 export interface ObservedWrite {
@@ -143,37 +154,36 @@ function readsOnlyAsMember(access: ts.Expression): boolean {
             unwrapExpression(parent.expression) === access) ||
         (ts.isTaggedTemplateExpression(parent) &&
             unwrapExpression(parent.tag) === access) ||
-        (ts.isBinaryExpression(parent) &&
-            unwrapExpression(parent.left) === access &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
-        ts.isDeleteExpression(parent) ||
+        ["assign", "delete", "loop"].includes(
+            writeSiteOf(access)?.kind ?? "",
+        ) ||
         ts.isTypeOfExpression(parent)
     );
 }
 
-/** The property names a destructuring assignment target reads. */
-function assignmentPatternNames(
+/**
+ * What a destructuring assignment target reads of its source: each member
+ * an object pattern names, and the whole object where a rest or a run-time
+ * key reads members the syntax does not name.
+ */
+function assignmentPatternReads(
     pattern: ts.Expression,
-    names: (name: string, node: ts.Node) => void,
+    named: (name: string, node: ts.Node) => void,
+    wholesale: (object: ts.Expression) => void,
 ): void {
     const target = unwrapExpression(pattern);
-    if (ts.isArrayLiteralExpression(target)) {
-        for (const element of target.elements)
-            assignmentPatternNames(
-                ts.isSpreadElement(element) ? element.expression : element,
-                names,
-            );
+    if (
+        !ts.isArrayLiteralExpression(target) &&
+        !ts.isObjectLiteralExpression(target)
+    )
         return;
-    }
-    if (!ts.isObjectLiteralExpression(target)) return;
-    for (const property of target.properties) {
-        if (ts.isShorthandPropertyAssignment(property))
-            names(property.name.text, property);
-        else if (ts.isPropertyAssignment(property)) {
-            const name = propertyNameText(property.name);
-            if (name !== undefined) names(name, property);
-            assignmentPatternNames(property.initializer, names);
+    for (const slot of patternSlots(target)) {
+        if (ts.isObjectLiteralExpression(target)) {
+            if (slot.read.kind === "member" && slot.read.key !== undefined)
+                named(slot.read.key, slot.element);
+            else wholesale(target);
         }
+        assignmentPatternReads(slot.target, named, wholesale);
     }
 }
 
@@ -201,10 +211,10 @@ function observe(program: ts.Program): ProgramObservations {
         evolving?: ts.Symbol;
     }[] = [];
     const arrayLocalElements = new Map<ts.Symbol, ts.Type[]>();
-    const mutableElement = (type: ts.Type): ts.Type | undefined =>
-        checker.isArrayType(type) && type.getSymbol()?.name === "Array"
-            ? checker.getTypeArguments(type as ts.TypeReference)[0]
-            : undefined;
+    const mutableElement = (type: ts.Type): ts.Type | undefined => {
+        const shape = arrayShape(checker, type);
+        return shape?.mutable && !shape.tuple ? shape.element : undefined;
+    };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
@@ -222,20 +232,21 @@ function observe(program: ts.Program): ProgramObservations {
     const arrayLike = (node: ts.Node): boolean =>
         checker.isArrayLikeType(typeOf(node));
     const objectLike = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.some(objectLike)
-            : (type.flags &
-                  (ts.TypeFlags.Object |
-                      ts.TypeFlags.NonPrimitive |
-                      ts.TypeFlags.Intersection |
-                      ts.TypeFlags.Any |
-                      ts.TypeFlags.Unknown |
-                      ts.TypeFlags.TypeParameter |
-                      ts.TypeFlags.Index |
-                      ts.TypeFlags.IndexedAccess |
-                      ts.TypeFlags.Conditional |
-                      ts.TypeFlags.Substitution)) !==
-              0;
+        unionMembers(type).some(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Object |
+                        ts.TypeFlags.NonPrimitive |
+                        ts.TypeFlags.Intersection |
+                        ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.TypeParameter |
+                        ts.TypeFlags.Index |
+                        ts.TypeFlags.IndexedAccess |
+                        ts.TypeFlags.Conditional |
+                        ts.TypeFlags.Substitution)) !==
+                0,
+        );
     const addConsumer = (type: ts.Type, consumer: ts.Node): void => {
         if (ts.isExpression(consumer)) consumer = unwrapExpression(consumer);
         const types = identityConsumers.get(consumer);
@@ -311,27 +322,19 @@ function observe(program: ts.Program): ProgramObservations {
                 property: unwrapped.name.text,
             });
         else if (ts.isElementAccessExpression(unwrapped)) {
-            const key = unwrapExpression(unwrapped.argumentExpression);
+            // A number-typed key indexes; it names no record property.
+            const argument = unwrapExpression(unwrapped.argumentExpression);
             if (
-                !ts.isStringLiteralLike(key) &&
-                (typeOf(key).flags & ts.TypeFlags.NumberLike) !== 0
+                !ts.isStringLiteralLike(argument) &&
+                valueKindOf(typeOf(argument)) === "number"
             )
                 return;
+            const property = accessKey(unwrapped);
             add(writes, typeOf(unwrapped.expression), {
                 node: unwrapped,
-                ...(ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                    ? { property: key.text }
-                    : {}),
+                ...(property === undefined ? {} : { property }),
             });
         }
-    };
-    const nullish = (node: ts.Expression): boolean => {
-        const unwrapped = unwrapExpression(node);
-        return (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined") ||
-            ts.isVoidExpression(unwrapped)
-        );
     };
     // A new array, or an assignment of one (`bucket = []`), is that array.
     const newArrayValue = (node: ts.Expression): boolean => {
@@ -355,9 +358,7 @@ function observe(program: ts.Program): ProgramObservations {
                 else arrayLocalElements.set(symbol, [own]);
             }
             if (own && contextual)
-                for (const member of contextual.isUnion()
-                    ? contextual.types
-                    : [contextual]) {
+                for (const member of unionMembers(contextual)) {
                     const wide = mutableElement(member);
                     if (wide !== undefined && wide !== own)
                         widenedArrays.push({
@@ -369,7 +370,7 @@ function observe(program: ts.Program): ProgramObservations {
                         });
                 }
         }
-        if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
+        if (isTypeAssertion(node)) {
             const asserted = typeOf(node);
             if (
                 (asserted.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
@@ -387,7 +388,7 @@ function observe(program: ts.Program): ProgramObservations {
         // object it is handed: an ambient declaration's, or the engine's
         // unless its pinned bodies only read that parameter.
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-            const declaration = checker.getResolvedSignature(node)?.declaration;
+            const declaration = calledDeclaration(checker, node);
             const origin = declaration && declarationOrigin(declaration);
             if (
                 declaration &&
@@ -405,56 +406,36 @@ function observe(program: ts.Program): ProgramObservations {
                         add(writes, type, { node });
                 });
         }
-        if (ts.isPropertyAccessExpression(node)) {
-            if (!readsOnlyAsMember(node))
-                read(node.name.text, node, node.expression);
-        } else if (ts.isElementAccessExpression(node)) {
-            const key = node.argumentExpression;
-            if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
-                if (!readsOnlyAsMember(node))
-                    read(key.text, node, node.expression);
-            } else if (!readsOnlyAsMember(node))
-                wholesaleReads.push(node.expression);
-        } else if (
-            ts.isBindingElement(node) &&
-            ts.isObjectBindingPattern(node.parent)
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
         ) {
-            const name = node.dotDotDotToken
-                ? undefined
-                : node.propertyName
-                  ? propertyNameText(node.propertyName)
-                  : ts.isIdentifier(node.name)
-                    ? node.name.text
-                    : undefined;
-            if (name !== undefined) read(name, node, node.parent);
-            else wholesaleReads.push(node.parent);
+            const key = accessKey(node);
+            if (readsOnlyAsMember(node)) {
+                // Read as a member of the access around it.
+            } else if (key !== undefined) read(key, node, node.expression);
+            else wholesaleReads.push(node.expression);
+        } else if (ts.isObjectBindingPattern(node)) {
+            for (const { element, read: slot } of patternSlots(node))
+                if (slot.kind === "member" && slot.key !== undefined)
+                    read(slot.key, element, node);
+                else wholesaleReads.push(node);
         }
+        for (const { target } of writeSites(node)) written(target);
         if (isAssignmentExpression(node)) {
-            for (const target of assignmentTargets(node.left)) written(target);
             if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
-                assignmentPatternNames(node.left, read);
-        } else if (isUpdateExpression(node)) written(node.operand);
-        else if (ts.isDeleteExpression(node)) written(node.expression);
-        else if (ts.isBinaryExpression(node)) {
-            const operator = node.operatorToken.kind;
-            if (
-                (operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.EqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsToken) &&
-                !nullish(node.left) &&
-                !nullish(node.right)
-            ) {
-                if (
-                    operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
-                )
-                    identityComparison(node.left, node.right);
+                assignmentPatternReads(node.left, read, (object) =>
+                    wholesaleReads.push(object),
+                );
+        } else if (ts.isBinaryExpression(node)) {
+            const equality = equalityOperator(node.operatorToken.kind);
+            if (equality && !nullishComparison(checker, node)) {
+                if (!equality.loose) identityComparison(node.left, node.right);
                 else {
                     identity(node.left);
                     identity(node.right);
                 }
-            } else if (operator === ts.SyntaxKind.InKeyword)
+            } else if (node.operatorToken.kind === ts.SyntaxKind.InKeyword)
                 enumerated(node.right);
         } else if (ts.isTypeOfExpression(node)) {
             observesObject(node.expression, node);
@@ -545,8 +526,7 @@ function observe(program: ts.Program): ProgramObservations {
         else if (
             method === "register" &&
             first &&
-            typeOf(callee.expression).getSymbol()?.name ===
-                "FinalizationRegistry"
+            libraryName(typeOf(callee.expression)) === "FinalizationRegistry"
         )
             identity(first);
     };

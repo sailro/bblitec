@@ -1,11 +1,18 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachReturn } from "./loop-control.js";
 import {
     declaredInDefaultLibrary,
     libraryGlobal,
     resolvedSymbol,
+    isNullishLiteral,
+    calledFunction,
 } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    unwrapExpression,
+    valueOperands,
+} from "./syntax.js";
 
 /**
  * Whether evaluating an expression yields an object no other reference can
@@ -108,27 +115,17 @@ function fresh(
         ts.isNewExpression(expression)
     )
         return true;
-    if (
-        expression.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(expression) && expression.text === "undefined")
-    )
-        return true;
-    if (ts.isConditionalExpression(expression))
-        return (
-            fresh(checker, expression.whenTrue, active) &&
-            fresh(checker, expression.whenFalse, active)
+    if (isNullishLiteral(checker, expression)) return true;
+    if (isOperandSelection(expression))
+        return valueOperands(expression).every((operand) =>
+            fresh(checker, operand, active),
         );
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
         return returnsOnlyFresh(checker, expression, active);
     if (ts.isCallExpression(expression)) {
-        const declaration =
-            checker.getResolvedSignature(expression)?.declaration;
+        const declaration = calledFunction(checker, expression);
         return (
             declaration !== undefined &&
-            (ts.isFunctionDeclaration(declaration) ||
-                ts.isArrowFunction(declaration) ||
-                ts.isFunctionExpression(declaration) ||
-                ts.isMethodDeclaration(declaration)) &&
             returnsOnlyFresh(checker, declaration, active)
         );
     }
@@ -152,18 +149,11 @@ export function returnsOnly(
         if (!ts.isBlock(body)) return produces(body);
         let returns = 0;
         let only = true;
-        forEachAnalysisNode(
-            body,
-            (node) => {
-                if (!only) return "skip";
-                if (ts.isReturnStatement(node)) {
-                    returns++;
-                    if (!node.expression || !produces(node.expression))
-                        only = false;
-                }
-            },
-            { functions: "skip", types: "skip" },
-        );
+        forEachReturn([body], (node) => {
+            returns++;
+            if (only && (!node.expression || !produces(node.expression)))
+                only = false;
+        });
         return only && returns > 0;
     } finally {
         active.delete(declaration);

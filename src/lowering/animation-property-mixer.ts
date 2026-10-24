@@ -6,6 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { propertyPath } from "../compiler/syntax.js";
 
 /** Source mixer passes over admitted public property tracks and native owner identities. */
 export function lowerPropertyAnimationMixer(context: LoweringContext): string {
@@ -75,7 +76,7 @@ export function lowerPropertyAnimationMixer(context: LoweringContext): string {
             if (context.expressionMatchesShape(node, "bucket?.contested"))
                 return "(bucket && bucket->contested)";
             if (!ts.isCallExpression(node)) return undefined;
-            const callee = node.expression.getText(file);
+            const callee = propertyPath(node.expression)?.join(".");
             if (callee === "trackMaskedOut") {
                 context.assertExpressionShape(
                     node,

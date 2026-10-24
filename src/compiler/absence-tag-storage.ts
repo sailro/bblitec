@@ -4,7 +4,7 @@ import {
     isRetypableDeclaration,
     resolvedSymbol,
 } from "./symbols.js";
-import { contextualProperty } from "./type-facts.js";
+import { contextualProperty, callSignatures } from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -140,9 +140,7 @@ export function storedSignatureParameter(
         );
         slot = property && checker.getTypeOfSymbolAtLocation(property, site);
     } else slot = checker.getContextualType(site);
-    const signatures = slot
-        ? checker.getNonNullableType(slot).getCallSignatures()
-        : [];
+    const signatures = slot ? callSignatures(checker, slot, "present") : [];
     return signatures.length === 1
         ? signatures[0]!.getDeclaration()?.parameters[index]
         : undefined;

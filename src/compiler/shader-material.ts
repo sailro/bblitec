@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { isTypedArrayType, tupleComponents } from "./data-types.js";
 import { presenceCpp } from "./types.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -98,7 +99,10 @@ function absentShaderOption(
             )
                 return false;
             const value = context.compileValue(resolved);
-            if (value.kind !== "json-null" && presenceCpp(value) !== "false")
+            if (
+                value.kind !== "json-null" &&
+                knownCondition(presenceCpp(value)) !== false
+            )
                 return false;
             context.emitDiscardedValue(value);
             return true;
@@ -846,10 +850,7 @@ function compileShaderUniformSignatures(
     }> = [];
     const signatures = elements.map((element) => {
         const resolved = context.resolveStaticLiteral(element);
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (!ts.isObjectLiteralExpression(resolved)) {
@@ -1163,7 +1164,7 @@ export function compileShaderUniformComponents(
 ): string[] {
     const { count } = uniform;
     if (count === 1) {
-        return [context.compileNumber(expression)];
+        return [context.compileNumber(expression, "float")];
     }
     const resolved = context.resolveStaticExpression(expression);
     if (
@@ -1172,7 +1173,7 @@ export function compileShaderUniformComponents(
         !resolved.elements.some(ts.isSpreadElement)
     ) {
         return resolved.elements.map((element) =>
-            context.compileNumber(element),
+            context.compileNumber(element, "float"),
         );
     }
     // `[...lanes]` copies one array-like: the writer reads the same lanes
@@ -1227,7 +1228,7 @@ export function compileShaderUniformComponents(
         value.dataType?.kind === "tuple" &&
         value.dataType.arity === count
     ) {
-        return tupleComponents(value.cpp, count);
+        return tupleComponents(value.cpp, count, "float");
     }
     const numericArray =
         value.dataType?.kind === "vector" &&

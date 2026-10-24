@@ -1,13 +1,29 @@
 import ts from "typescript";
 import {
-    accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredSymbol,
     resolvedSymbol,
+    calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
-import { propertyNameText, unwrapExpression } from "./syntax.js";
-import { typeCanCarryReference } from "./type-facts.js";
-import { isSupportedFunction } from "./user-functions.js";
+import {
+    isOperandSelection,
+    propertyKey,
+    unwrapExpression,
+    valueOperands,
+    arrayLiteralSlots,
+    aliasKey,
+    ANY_KEY,
+    plainDataMembers,
+    functionKind,
+    isFunctionWithBody,
+    variableKind,
+} from "./syntax.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    callSignatures,
+} from "./type-facts.js";
 
 type Path = readonly string[];
 interface SourceValue {
@@ -34,7 +50,7 @@ export function concreteArgumentIdentityPaths(
         const type = checker.getNonNullableType(
             checker.getTypeAtLocation(expression),
         );
-        const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        const element = arrayElementType(checker, type);
         return (
             (checker.isArrayType(type) || checker.isTupleType(type)) &&
             element !== undefined &&
@@ -45,14 +61,8 @@ export function concreteArgumentIdentityPaths(
         const node = unwrapExpression(expression);
         return (
             ts.isObjectLiteralExpression(node) &&
-            node.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) &&
-                        propertyNameText(property.name) !== undefined &&
-                        scalar(property.initializer)) ||
-                    (ts.isShorthandPropertyAssignment(property) &&
-                        scalar(property.name)),
-            )
+            (plainDataMembers(node)?.every((member) => scalar(member.value)) ??
+                false)
         );
     };
     const excludesSelected = (
@@ -73,15 +83,12 @@ export function concreteArgumentIdentityPaths(
                         ts.TypeFlags.Unknown |
                         ts.TypeFlags.TypeParameter)) !==
                     0 ||
-                type.getCallSignatures().length > 0 ||
+                callSignatures(checker, type, "exact").length > 0 ||
                 type.getConstructSignatures().length > 0
             )
                 return false;
             if (checker.isArrayType(type) || checker.isTupleType(type)) {
-                const element = checker.getIndexTypeOfType(
-                    type,
-                    ts.IndexKind.Number,
-                );
+                const element = arrayElementType(checker, type);
                 return (
                     element !== undefined &&
                     excludesSelected(element, activeTypes)
@@ -145,7 +152,7 @@ export function concreteArgumentIdentityPaths(
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
                 ts.isVariableDeclarationList(declaration.parent) &&
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+                variableKind(declaration.parent) === "const"
             ) {
                 const initializer = unwrapExpression(declaration.initializer);
                 // A fresh scalar record cannot hide another object. Other
@@ -166,36 +173,21 @@ export function concreteArgumentIdentityPaths(
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
         ) {
-            const property = accessedPropertySymbol(checker, node);
-            if (
-                property?.declarations?.some(
-                    (declaration) =>
-                        ts.isGetAccessorDeclaration(declaration) ||
-                        ts.isSetAccessorDeclaration(declaration),
-                )
-            )
+            if (memberAccessors(checker, node, "either").length > 0)
                 return undefined;
             return scalarArray(node) ||
                 excludesSelected(checker.getTypeAtLocation(node))
                 ? []
                 : undefined;
         }
-        if (ts.isConditionalExpression(node)) {
-            const left = child(node.whenTrue);
-            const right = child(node.whenFalse);
-            return left && right ? [...left, ...right] : undefined;
-        }
-        if (
-            ts.isBinaryExpression(node) &&
-            [
-                ts.SyntaxKind.QuestionQuestionToken,
-                ts.SyntaxKind.BarBarToken,
-                ts.SyntaxKind.AmpersandAmpersandToken,
-            ].includes(node.operatorToken.kind)
-        ) {
-            const left = child(node.left);
-            const right = child(node.right);
-            return left && right ? [...left, ...right] : undefined;
+        if (isOperandSelection(node)) {
+            const paths: Path[] = [];
+            for (const operand of valueOperands(node)) {
+                const found = child(operand);
+                if (!found) return undefined;
+                paths.push(...found);
+            }
+            return paths;
         }
         if (ts.isObjectLiteralExpression(node)) {
             const paths: Path[] = [];
@@ -214,7 +206,7 @@ export function concreteArgumentIdentityPaths(
                     !ts.isShorthandPropertyAssignment(property)
                 )
                     return undefined;
-                const key = propertyNameText(property.name);
+                const key = propertyKey(property.name);
                 if (key === undefined) return undefined;
                 const member = child(
                     ts.isPropertyAssignment(property)
@@ -228,24 +220,23 @@ export function concreteArgumentIdentityPaths(
         }
         if (ts.isArrayLiteralExpression(node)) {
             const paths: Path[] = [];
-            let variableIndex = false;
-            for (let index = 0; index < node.elements.length; index++) {
-                const element = node.elements[index]!;
+            for (const { element, index } of arrayLiteralSlots(node)) {
                 if (ts.isOmittedExpression(element)) continue;
                 if (ts.isSpreadElement(element)) {
-                    variableIndex = true;
                     const spread = child(element.expression);
                     if (!spread || spread.some((path) => path.length === 0))
                         return undefined;
                     paths.push(
-                        ...spread.map((path) => ["*", ...path.slice(1)]),
+                        ...spread.map((path) => [ANY_KEY, ...path.slice(1)]),
                     );
                 } else {
                     const member = child(element);
                     if (!member) return undefined;
                     paths.push(
                         ...member.map((path) => [
-                            variableIndex ? "*" : String(index),
+                            aliasKey(
+                                index === undefined ? undefined : String(index),
+                            ),
                             ...path,
                         ]),
                     );
@@ -254,7 +245,7 @@ export function concreteArgumentIdentityPaths(
             return paths;
         }
         if (ts.isNewExpression(node)) {
-            const declaration = checker.getResolvedSignature(node)?.declaration;
+            const declaration = calledDeclaration(checker, node);
             return declaration &&
                 declarationInDefaultLibrary(declaration) &&
                 ts.isInterfaceDeclaration(declaration.parent) &&
@@ -271,7 +262,7 @@ export function concreteArgumentIdentityPaths(
             excludesSelected(checker.getTypeAtLocation(node))
         )
             return [];
-        const declaration = checker.getResolvedSignature(node)?.declaration;
+        const declaration = calledDeclaration(checker, node);
         // Default-library scalar arrays cannot carry the selected record.
         // Resolve the declaration so an authored method with the same name
         // cannot acquire this rule.
@@ -288,12 +279,8 @@ export function concreteArgumentIdentityPaths(
             return receiver?.length === 0 ? [] : undefined;
         }
         if (
-            !isSupportedFunction(declaration) ||
-            !declaration.body ||
-            declaration.asteriskToken ||
-            declaration.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            !isFunctionWithBody(declaration) ||
+            functionKind(declaration) !== "plain" ||
             active.has(declaration) ||
             node.arguments.some(ts.isSpreadElement) ||
             node.arguments.length > declaration.parameters.length
@@ -328,7 +315,7 @@ export function concreteArgumentIdentityPaths(
                 }
                 if (
                     !ts.isVariableStatement(statement) ||
-                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+                    variableKind(statement.declarationList) !== "const"
                 )
                     return undefined;
                 for (const local of statement.declarationList.declarations) {

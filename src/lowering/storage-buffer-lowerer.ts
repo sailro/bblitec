@@ -643,10 +643,10 @@ function disposal(context: LoweringContext): string {
                 (args) => `dispose_storage_buffer(engine, ${args.join(", ")})`,
             ],
         ]),
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
                 !context.expressionMatchesShape(
-                    syntax.expression,
+                    iterated,
                     "[...(engine._storageBuffers ?? [])]",
                 )
             )

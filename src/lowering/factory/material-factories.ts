@@ -19,6 +19,7 @@ import {
     lowerShaderUniformRangeUpdates,
     lowerShaderUniformSnapshot,
 } from "../shader-uniforms.js";
+import { unwrapExpression } from "../../compiler/syntax.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -1896,12 +1897,7 @@ void add_material_plugin_file_texture(
         );
         if (!returnStatement?.expression)
             throw new Error("Upstream standard material return was not found.");
-        let object = returnStatement.expression;
-        while (
-            ts.isAsExpression(object) ||
-            ts.isParenthesizedExpression(object)
-        )
-            object = object.expression;
+        const object = unwrapExpression(returnStatement.expression);
         if (!ts.isObjectLiteralExpression(object))
             throw new Error("Upstream standard material defaults changed.");
         const tuple = (name: string): string =>

@@ -48,6 +48,7 @@ import type { AsyncActivations } from "./async-activations.js";
 import type { PageLoader } from "./page-loader.js";
 import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
+import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
@@ -108,6 +109,11 @@ export interface LoweringServices {
     readonly handleCollections: HandleCollections;
     readonly sceneManifest: SceneManifestRecorder;
     readonly bindings: BindingScopes;
+    /** Declarations a storage demand retyped, by declaration. */
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
@@ -244,12 +250,12 @@ export interface LoweringServices {
     staticProperty(access: ts.PropertyAccessExpression): number | undefined;
     compileVec3(
         expression: ts.Expression,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     castNumber(value: Value, precision: "float" | "double"): string;
     compileBoolean(expression: ts.Expression): string;
@@ -257,7 +263,7 @@ export interface LoweringServices {
     compileColor4(expression: ts.Expression): string;
     compileNumber(
         expression: ts.Expression,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string;
     compileEnumSwitchLabel(
         expression: ts.Expression,
@@ -271,6 +277,7 @@ export interface LoweringServices {
         name: string,
     ): ts.Expression | undefined;
     propertyName(name: ts.PropertyName): string | undefined;
+    compilePropertyKey(name: ts.PropertyName): string | undefined;
     compileStringLiteral(expression: ts.Expression): string;
     staticAssetUrlCandidates(): readonly string[];
     moduleRelativeAssetUrl(expression: ts.Expression): string | undefined;
@@ -397,6 +404,7 @@ export interface LoweringServices {
         owner: Value,
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
+        evaluated?: Value,
     ): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
@@ -420,6 +428,7 @@ export interface LoweringServices {
     ): Value | undefined;
     resolveThisField(name: string): Value | undefined;
     activeThis(): Value | undefined;
+    withThis<T>(receiver: Value | undefined, work: () => T): T;
     registerClassInstance(
         instance: Value,
         declaration: ts.ClassLikeDeclaration,
@@ -489,6 +498,7 @@ export interface LoweringServices {
     activeNativeReturnType(): DataType | "void" | undefined;
     activeNativeCoroutine(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
+    emitFallOffEnd(): void;
     emitNativeYield(expression: ts.YieldExpression): void;
     activeGeneratorType(): DataType<"iterator"> | undefined;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;
@@ -575,7 +585,10 @@ export interface LoweringServices {
         node: ts.Node,
         destination: string,
     ): void;
-    unwrap(expression: ts.Expression): ts.Expression;
+    /** Bound, so a walk can take it as its unwrap. */
+    readonly unwrap: (expression: ts.Expression) => ts.Expression;
+    /** As unwrap, but an await that suspends (a worker realm's) is kept. */
+    readonly unwrapValue: (expression: ts.Expression) => ts.Expression;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
     bindClassParameterValue(

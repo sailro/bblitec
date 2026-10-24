@@ -3,6 +3,7 @@ import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
+import { jsonAbsenceCpp } from "./values/model.js";
 
 type Context = Pick<
     LoweringServices,
@@ -104,7 +105,7 @@ export function compileSyntheticEventConstructor(
     });
     const init = args[1]
         ? context.dataLowerer.compileForSink(args[1], { kind: "json" })
-        : "bbl::js::JsonValue::null_value()";
+        : jsonAbsenceCpp("undefined");
     const kind = name === "Event" ? "Event" : name.slice(0, -5);
     return {
         kind: "dom-event",

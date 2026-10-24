@@ -9,11 +9,14 @@ import {
     declarationApi,
     declarationOrigin,
     resolvedSymbol,
+    calledDeclaration,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinDetached } from "./dom-listeners.js";
 import { isWindowReceiver } from "./window-members.js";
+import { requiredParameterCount } from "./syntax.js";
+import { undefinedOnly, nullability } from "./type-facts.js";
 
 export interface DeferredCapabilitySite {
     id: string;
@@ -70,8 +73,8 @@ export function deferredCapabilityDescriptor(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): Descriptor | undefined {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    if (!declaration || ts.isJSDocSignature(declaration)) return undefined;
+    const declaration = calledDeclaration(checker, call);
+    if (!declaration) return undefined;
     const origin = declarationOrigin(declaration);
     return descriptors.get(`${origin}:${declarationApi(declaration)}`);
 }
@@ -296,17 +299,10 @@ export class DeferredCapabilities {
             if (descriptor.timing === "reject" && !context.options.workers)
                 throw new ApplicationRealmRequired();
             const signature = context.checker.getResolvedSignature(call)!;
-            const parameters = signature.declaration!.parameters.filter(
-                ts.isParameter,
-            );
-            const required = parameters.reduce(
-                (count, parameter, index) =>
-                    parameter.questionToken ||
-                    parameter.initializer ||
-                    parameter.dotDotDotToken
-                        ? count
-                        : index + 1,
-                0,
+            const required = requiredParameterCount(
+                calledDeclaration(context.checker, call)!.parameters.filter(
+                    ts.isParameter,
+                ),
             );
             if (call.arguments.length < required)
                 return context.fail(
@@ -315,19 +311,8 @@ export class DeferredCapabilities {
                 );
             const resultType =
                 context.checker.getReturnTypeOfSignature(signature);
-            const resultMembers = resultType.isUnion()
-                ? resultType.types
-                : [resultType];
             const voidResult =
-                resultMembers.some(
-                    (member) => (member.flags & ts.TypeFlags.Void) !== 0,
-                ) &&
-                resultMembers.every(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                        0,
-                );
+                nullability(resultType).void && undefinedOnly(resultType);
             const type = voidResult
                 ? undefined
                 : context.dataTypes.fromTsType(resultType, call);

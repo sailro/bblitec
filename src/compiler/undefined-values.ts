@@ -4,11 +4,18 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
     libraryGlobal,
+    calledDeclaration,
 } from "./symbols.js";
-import { hasNoValueCompletion } from "./native-return-type.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    unwrapExpression,
+    isAsyncFunction,
+    isGeneratorFunction,
+    functionOfDeclaration,
+} from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
+import { undefinedValue } from "./values/model.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -19,7 +26,7 @@ function undefinedLibraryCall(
     if (!ts.isCallExpression(expression)) return false;
     const callee = unwrapExpression(expression.expression);
     const signature = checker.getResolvedSignature(expression);
-    const declaration = signature?.declaration;
+    const declaration = calledDeclaration(checker, expression);
     const global = libraryGlobal(checker, callee);
     const consoleMethod =
         ts.isPropertyAccessExpression(callee) &&
@@ -31,7 +38,7 @@ function undefinedLibraryCall(
         (ts.isFunctionDeclaration(declaration) ||
             ts.isMethodSignature(declaration)) &&
         declarationInDefaultLibrary(declaration) &&
-        hasNoValueCompletion(checker.getReturnTypeOfSignature(signature))
+        undefinedOnly(checker.getReturnTypeOfSignature(signature))
     );
 }
 
@@ -58,13 +65,8 @@ function everyCompletion(
     )
         return false;
     if (
-        (!ts.isArrowFunction(declaration) && declaration.asteriskToken) ||
-        (!awaited &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ))
+        isGeneratorFunction(declaration) ||
+        (!awaited && isAsyncFunction(declaration))
     )
         return false;
     return ts.isBlock(declaration.body)
@@ -167,8 +169,7 @@ export function provenUndefinedValue(
         }
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
-        const signature = context.checker.getResolvedSignature(expression);
-        const declaration = signature?.declaration;
+        const declaration = calledDeclaration(context.checker, expression);
         if (undefinedLibraryCall(context.checker, expression)) return true;
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
@@ -185,18 +186,29 @@ export function provenUndefinedValue(
             // declaration (a specialized callback parameter) calls it.
             if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
                 return true;
-            const declaration = declaredSymbol(
+            const binding = declaredSymbol(
                 context.checker,
                 callee,
             )?.valueDeclaration;
             if (
-                !declaration ||
+                !binding ||
                 !(
-                    ts.isFunctionDeclaration(declaration) ||
-                    context.bindings.isImmutableVariable(declaration)
+                    ts.isFunctionDeclaration(binding) ||
+                    context.bindings.isImmutableVariable(binding)
                 )
             )
                 return false;
+            // A name bound to a function literal calls that literal, whatever
+            // signature its annotation declares (`const f: () => void = ...`).
+            const literal = ts.isVariableDeclaration(binding)
+                ? functionOfDeclaration(binding)
+                : undefined;
+            if (literal)
+                return hasUndefinedCompletion(
+                    context.checker,
+                    literal,
+                    awaited,
+                );
         } else if (
             !ts.isArrowFunction(callee) &&
             !ts.isFunctionExpression(callee)
@@ -205,6 +217,43 @@ export function provenUndefinedValue(
         return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
     return visit(node);
+}
+
+/**
+ * Whether reading `value` as `undefined` would guess. A void annotation
+ * erases whatever the function returned, so a void result is `undefined`
+ * only when its completion is proven so ({@link provenUndefinedValue});
+ * `erasedVoidCompletion` marks an `undefined` converted without that proof.
+ * `node` is the expression that produced `value`; without one, only the
+ * mark counts.
+ */
+export function readsErasedVoid(
+    context: UndefinedContext,
+    value: Value,
+    node: ts.Node | undefined,
+): boolean {
+    return (
+        value.erasedVoidCompletion === true ||
+        (node !== undefined &&
+            value.kind === "void" &&
+            !provenUndefinedValue(context, node))
+    );
+}
+
+/**
+ * The `undefined` a void result converts to where nothing reads it yet:
+ * marked when its completion is not proven, so the read that comes refuses.
+ */
+export function undefinedFromVoid(
+    context: UndefinedContext,
+    node: ts.Node,
+): Value {
+    return {
+        ...undefinedValue(),
+        ...(provenUndefinedValue(context, node)
+            ? {}
+            : { erasedVoidCompletion: true as const }),
+    };
 }
 
 /** Primitive return lanes cannot participate in thenable adoption. */
@@ -234,19 +283,10 @@ export function hasNonThenableCompletion(
             undefinedLibraryCall(checker, expression)
         )
             return true;
-        const type = checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.StringLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.ESSymbolLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Never)) !==
-                0,
+        // A void result may be any value, a thenable included.
+        return holdsOnly(
+            checker.getTypeAtLocation(expression),
+            PRIMITIVE_KINDS,
         );
     });
 }

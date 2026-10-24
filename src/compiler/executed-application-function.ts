@@ -34,7 +34,13 @@ import {
     declaredSymbol,
     libraryGlobal,
 } from "./symbols.js";
-import { rootIdentifier, statementDeclaredNames } from "./syntax.js";
+import {
+    rootIdentifier,
+    statementDeclaredNames,
+    isValueReference,
+    propertyKey,
+    variableKind,
+} from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
@@ -42,6 +48,7 @@ import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
@@ -181,41 +188,6 @@ function errorMessage(error: unknown): string {
         typeof error.message === "string"
         ? error.message
         : String(error);
-}
-
-/** The node's declared name, when it is a declaration's own name. */
-function isDeclaredName(identifier: ts.Identifier): boolean {
-    const parent = identifier.parent;
-    return (
-        (ts.isVariableDeclaration(parent) ||
-            ts.isParameter(parent) ||
-            ts.isFunctionDeclaration(parent) ||
-            ts.isFunctionExpression(parent) ||
-            ts.isClassDeclaration(parent) ||
-            ts.isClassExpression(parent) ||
-            ts.isBindingElement(parent) ||
-            ts.isPropertyAssignment(parent) ||
-            ts.isPropertyDeclaration(parent) ||
-            ts.isMethodDeclaration(parent) ||
-            ts.isGetAccessorDeclaration(parent) ||
-            ts.isSetAccessorDeclaration(parent) ||
-            ts.isEnumMember(parent)) &&
-        parent.name === identifier
-    );
-}
-
-/** Whether an identifier names a member or a label rather than a binding. */
-function isNonReference(identifier: ts.Identifier): boolean {
-    const parent = identifier.parent;
-    return (
-        isDeclaredName(identifier) ||
-        (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
-        (ts.isBindingElement(parent) && parent.propertyName === identifier) ||
-        ((ts.isLabeledStatement(parent) ||
-            ts.isBreakStatement(parent) ||
-            ts.isContinueStatement(parent)) &&
-            parent.label === identifier)
-    );
 }
 
 function contains(outer: ts.Node, inner: ts.Node): boolean {
@@ -383,7 +355,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             !statement ||
             !ts.isIdentifier(target.name) ||
             !ts.isVariableStatement(statement) ||
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            variableKind(statement.declarationList) !== "const"
         ) {
             return this.context.fail(
                 target,
@@ -420,7 +392,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         }
         if (
             ts.isVariableStatement(statement) &&
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0 &&
+            variableKind(statement.declarationList) !== "const" &&
             // A `let` only never-run functions assign keeps its initializer.
             !(
                 this.context.sourceFiles &&
@@ -500,7 +472,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                         `${this.label} reads ${varying}, so a run at generation would not describe the run the program makes.`,
                     );
                 }
-                if (ts.isIdentifier(node) && !isNonReference(node)) {
+                if (ts.isIdentifier(node) && isValueReference(node)) {
                     this.resolve(node, root, file, isTargetWalk);
                 }
             },
@@ -514,7 +486,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
      */
     private varyingRead(node: ts.Node): string | undefined {
         const checker = this.context.checker;
-        if (ts.isIdentifier(node) && !isNonReference(node)) {
+        if (ts.isIdentifier(node) && isValueReference(node)) {
             return libraryGlobal(checker, node) === "Date"
                 ? "the clock ('Date')"
                 : undefined;
@@ -522,8 +494,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         const member = node.name.text;
         if (
-            member === "random" &&
-            libraryGlobal(checker, node.expression) === "Math"
+            mathMemberIsImpure(member) &&
+            mathMemberAccess(node, (owner) => libraryGlobal(checker, owner))
         ) {
             return "'Math.random'";
         }
@@ -726,13 +698,12 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             return text;
         }
         if (ts.isFunctionDeclaration(target)) return `(${text})`;
-        if (
+        const key =
             ts.isMethodDeclaration(target) &&
-            ts.isObjectLiteralExpression(target.parent) &&
-            (ts.isIdentifier(target.name) || ts.isStringLiteral(target.name))
-        ) {
-            return `({ ${text} })[${JSON.stringify(target.name.text)}]`;
-        }
+            ts.isObjectLiteralExpression(target.parent)
+                ? propertyKey(target.name)
+                : undefined;
+        if (key !== undefined) return `({ ${text} })[${JSON.stringify(key)}]`;
         return this.context.fail(
             target,
             `${this.label} is a ${syntaxKindName(target.kind)}, which generation does not execute alone.`,

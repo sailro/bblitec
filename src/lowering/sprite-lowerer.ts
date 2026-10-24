@@ -39,6 +39,7 @@ import {
     ySortHandleModule,
     ySortModule,
 } from "./sprite-y-sort-lowerer.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -553,7 +554,7 @@ ${body}
         }
         const parameters = ["device", "fxBuffer", "timeSeconds", "params"];
         const pinned = declaration.parameters.map((parameter) =>
-            parameter.name.getText(file),
+            soleBindingName(parameter.name),
         );
         if (
             pinned.length !== parameters.length + 1 ||
@@ -717,13 +718,12 @@ ${body}
                         node.thenStatement,
                         (call): call is ts.CallExpression =>
                             ts.isCallExpression(call) &&
-                            call.expression.getText(file) === "rr._layers.sort",
+                            sameSource(call.expression, "rr._layers.sort"),
                     )
                     .some(
                         (call) =>
                             call.arguments.length === 1 &&
-                            call.arguments[0]!.getText(file) ===
-                                "compareLayers",
+                            sameSource(call.arguments[0], "compareLayers"),
                     ),
         );
         const guard = guards[0];
@@ -826,7 +826,7 @@ inline void sort_sprite_renderer_layers(
         );
         const signature = declaration.parameters.map(
             (parameter) =>
-                `${parameter.name.getText(file)}: ${parameter.type?.getText(file)}`,
+                `${soleBindingName(parameter.name)}: ${parameter.type?.getText(file)}`,
         );
         const expected = [
             "layers: ReadonlyArray<Sprite2DLayer>",
@@ -867,14 +867,14 @@ inline void sort_sprite_renderer_layers(
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
-                const name = local.name.getText(file);
+                const name = soleBindingName(local.name);
                 if (name === "layer") {
                     const read = this.context.unwrapExpression(
                         local.initializer!,
                     );
                     if (
                         !ts.isElementAccessExpression(read) ||
-                        read.expression.getText(file) !== "layers"
+                        !sameSource(read.expression, "layers")
                     ) {
                         return this.context.contractError(
                             local,
@@ -1327,7 +1327,7 @@ void set_sprite_2d_uv_offset(
         index >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
             "setSprite2DUvOffset: index " +
-            std::to_string(index) +
+            js::number_to_string(index) +
             " out of range [0, " + std::to_string(layer.count) + ")");
     }
     ensure_sprite_uv_scroll(layer);

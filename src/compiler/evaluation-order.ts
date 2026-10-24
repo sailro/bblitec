@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import {
     classChain,
     localClassOfSymbol,
@@ -16,16 +17,27 @@ import {
     libraryGlobal,
     pinnedConstantProperty,
     resolvedSymbol,
+    calledDeclaration,
+    memberAccessors,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
-    assignmentTargets,
-    isAssignmentExpression,
-    isUpdateExpression,
     unwrapExpression,
+    rootExpression,
+    writeSites,
+    isSuspensionPoint,
 } from "./syntax.js";
+import {
+    holdsOnly,
+    PRIMITIVE_KINDS,
+    valueKinds,
+    valueKindOf,
+    callSignatures,
+    unionMembers,
+} from "./type-facts.js";
 
 /**
  * JavaScript evaluates the operands of one expression left to right. The
@@ -90,7 +102,7 @@ function platformMethodEffect(
     receiver: ts.Type,
     method: string,
 ): PlatformMethodEffect | undefined {
-    for (const member of receiver.isUnion() ? receiver.types : [receiver]) {
+    for (const member of unionMembers(receiver)) {
         const symbol = member.getSymbol();
         if (!symbol || !declaredInDomLibrary(symbol)) continue;
         const effect = PLATFORM_METHOD_EFFECTS.get(symbol.name)?.get(method);
@@ -225,30 +237,10 @@ function encloses(outer: ts.Node, inner: ts.Node): boolean {
 }
 
 /** The object an access chain starts from: `a` for `a.b[0].c`. */
-function accessRoot(expression: ts.Expression): ts.Expression {
-    let current = unwrapExpression(expression);
-    while (
-        ts.isPropertyAccessExpression(current) ||
-        ts.isElementAccessExpression(current)
-    )
-        current = unwrapExpression(current.expression);
-    return current;
-}
-
-/** The targets a `for (x of ...)` / `for (x in ...)` loop assigns. */
-function loopTargets(node: ts.Node): readonly ts.Expression[] {
-    return (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
-        !ts.isVariableDeclarationList(node.initializer)
-        ? assignmentTargets(node.initializer)
-        : [];
-}
-
 /** One analysis of the pinned program per resolver, shared by every scene. */
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
 export class EvaluationOrder {
-    /** @unjournaled A cache of the checker's answers for a file. */
-    private readonly written = new WeakMap<ts.SourceFile, Set<ts.Symbol>>();
     /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
     /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
@@ -397,8 +389,7 @@ export class EvaluationOrder {
                         if (effects) return "skip";
                         if (
                             ts.isThrowStatement(current) ||
-                            ts.isAwaitExpression(current) ||
-                            ts.isYieldExpression(current) ||
+                            isSuspensionPoint(current, { yield: true }) ||
                             ts.isTaggedTemplateExpression(current) ||
                             ts.isWhileStatement(current) ||
                             ts.isDoStatement(current) ||
@@ -411,7 +402,7 @@ export class EvaluationOrder {
                             ts.isCallExpression(current) ||
                             ts.isNewExpression(current)
                         ) {
-                            const callees = this.callees(current);
+                            const callees = this.callUnits(current);
                             if (
                                 !callees ||
                                 (callees === "library" &&
@@ -428,7 +419,7 @@ export class EvaluationOrder {
                             );
                             const root = libraryGlobal(
                                 this.checker,
-                                accessRoot(current),
+                                rootExpression(current),
                             );
                             effects =
                                 declaredInDomLibrary(symbol) ||
@@ -437,16 +428,14 @@ export class EvaluationOrder {
                                         .getTypeAtLocation(current.expression)
                                         .getSymbol(),
                                 ) ||
-                                (symbol?.declarations?.some(
-                                    ts.isGetAccessorDeclaration,
-                                ) ??
-                                    false) ||
+                                memberAccessors(this.checker, current, "get")
+                                    .length > 0 ||
                                 root === "globalThis" ||
                                 root === "window" ||
                                 root === "self";
                         }
                     },
-                    { functions: "skip", types: "skip", memberNames: "skip" },
+                    { functions: "skip", types: "skip", names: "references" },
                 );
                 if (effects) return true;
             }
@@ -469,8 +458,7 @@ export class EvaluationOrder {
     private moduleLocalLibraryCall(
         call: ts.CallExpression | ts.NewExpression,
     ): boolean {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration || declarationOrigin(declaration) !== "default-lib")
             return false;
         if (this.libraryAnswersFromArguments(call)) {
@@ -505,9 +493,8 @@ export class EvaluationOrder {
                 elements.elements.every(
                     (element) =>
                         !ts.isSpreadElement(element) &&
-                        (this.checker.getTypeAtLocation(element).flags &
-                            ts.TypeFlags.NumberLike) !==
-                            0,
+                        valueKindOf(this.checker.getTypeAtLocation(element)) ===
+                            "number",
                 )
             );
         }
@@ -589,16 +576,11 @@ export class EvaluationOrder {
         const receiver = this.checker.getTypeAtLocation(
             unwrapExpression(callee.expression),
         );
+        const receiverKinds = valueKinds(receiver);
         if (
-            (receiver.isUnion() ? receiver.types : [receiver]).some(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Any |
-                            ts.TypeFlags.Unknown)) !==
-                    0,
-            )
+            receiverKinds.has("null") ||
+            receiverKinds.has("undefined") ||
+            receiverKinds.has("unknown")
         )
             return false;
         if (
@@ -710,7 +692,7 @@ export class EvaluationOrder {
             if (!answers) return "skip";
             if (!ts.isCallExpression(current) && !ts.isNewExpression(current))
                 return;
-            const callees = this.callees(current);
+            const callees = this.callUnits(current);
             answers =
                 callees === "library"
                     ? this.libraryAnswersFromArguments(current)
@@ -720,7 +702,7 @@ export class EvaluationOrder {
             forEachAnalysisNode(root, visit, {
                 functions: "skip",
                 types: "skip",
-                memberNames: "skip",
+                names: "references",
             }),
         );
         return answers;
@@ -734,8 +716,11 @@ export class EvaluationOrder {
         if (
             call.arguments.some(
                 (argument) =>
-                    this.checker.getTypeAtLocation(argument).getCallSignatures()
-                        .length > 0,
+                    callSignatures(
+                        this.checker,
+                        this.checker.getTypeAtLocation(argument),
+                        "exact",
+                    ).length > 0,
             )
         )
             return false;
@@ -747,7 +732,7 @@ export class EvaluationOrder {
             );
         if (!ts.isPropertyAccessExpression(callee)) return false;
         if (libraryGlobal(this.checker, callee.expression) === "Math")
-            return callee.name.text !== "random";
+            return !mathMemberIsImpure(callee.name.text);
         return (
             this.isPrimitive(callee.expression) &&
             !callee.name.text.startsWith("toLocale") &&
@@ -925,13 +910,7 @@ export class EvaluationOrder {
             opaque: false,
         };
         const visit = (current: ts.Node): "skip" | void => {
-            const targets = isAssignmentExpression(current)
-                ? assignmentTargets(current.left)
-                : isUpdateExpression(current)
-                  ? [current.operand]
-                  : ts.isDeleteExpression(current)
-                    ? [current.expression]
-                    : loopTargets(current);
+            const targets = writeSites(current).map((site) => site.target);
             if (targets.length > 0) {
                 targets.forEach((target) => this.write(access, target, unit));
             } else if (ts.isAwaitExpression(current)) {
@@ -964,7 +943,7 @@ export class EvaluationOrder {
             forEachAnalysisNode(root, visit, {
                 functions: "skip",
                 types: "skip",
-                memberNames: "skip",
+                names: "references",
             }),
         );
         return access;
@@ -991,12 +970,11 @@ export class EvaluationOrder {
                             (symbol.flags & ts.SymbolFlags.Method) !== 0))))
         )
             return "skip";
-        const getter = symbol?.declarations?.find(
-            (declaration): declaration is ts.GetAccessorDeclaration =>
-                ts.isGetAccessorDeclaration(declaration) &&
-                !declaration.getSourceFile().isDeclarationFile,
-        );
-        if (getter) this.runs(access, getter);
+        if (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        )
+            this.runs(access, this.accessorUnits(node, "get"));
         if (!this.isFresh(node, unit)) access.reads.heap = true;
     }
 
@@ -1017,17 +995,7 @@ export class EvaluationOrder {
             ts.isElementAccessExpression(node)
                 ? node
                 : undefined;
-        if (member) {
-            const setter = resolvedSymbol(
-                this.checker,
-                member,
-            )?.declarations?.find(
-                (declaration): declaration is ts.SetAccessorDeclaration =>
-                    ts.isSetAccessorDeclaration(declaration) &&
-                    !declaration.getSourceFile().isDeclarationFile,
-            );
-            if (setter) this.runs(access, setter);
-        }
+        if (member) this.runs(access, this.accessorUnits(member, "set"));
         if (this.isFresh(node, unit)) return;
         access.writes.heap = true;
         if (
@@ -1088,23 +1056,46 @@ export class EvaluationOrder {
             array && this.checker.getTypeOfSymbol(array).getProperty("isArray");
         const signature =
             isArray &&
-            this.checker.getTypeOfSymbol(isArray).getCallSignatures()[0];
+            callSignatures(
+                this.checker,
+                this.checker.getTypeOfSymbol(isArray),
+                "exact",
+            )[0];
         return (
             signature && this.checker.getTypePredicateOfSignature(signature)
         )?.type;
     }
 
-    /** Record that `access` runs an accessor, or anything when an override may run instead. */
-    private runs(access: DirectAccess, accessor: ts.AccessorDeclaration): void {
-        if (
-            !accessor.body ||
-            (ts.isClassLike(accessor.parent) &&
-                this.hierarchy.subclasses(accessor.parent).length > 0)
-        ) {
-            cannotFollow(access);
-            return;
-        }
-        access.callees.add(accessor);
+    /**
+     * The program accessors a member read (`get`) or write (`set`) runs, or
+     * undefined when one has no body or an override may run instead.
+     */
+    public accessorUnits(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        half: "get" | "set",
+    ): readonly ts.AccessorDeclaration[] | undefined {
+        const accessors = memberAccessors(this.checker, access, half).filter(
+            (accessor) => !accessor.getSourceFile().isDeclarationFile,
+        );
+        return accessors.every(
+            (accessor) =>
+                accessor.body !== undefined &&
+                !(
+                    ts.isClassLike(accessor.parent) &&
+                    this.hierarchy.subclasses(accessor.parent).length > 0
+                ),
+        )
+            ? accessors
+            : undefined;
+    }
+
+    /** Record that `access` runs `accessors`, or anything when they cannot be followed. */
+    private runs(
+        access: DirectAccess,
+        accessors: readonly ts.AccessorDeclaration[] | undefined,
+    ): void {
+        if (!accessors) cannotFollow(access);
+        else for (const accessor of accessors) access.callees.add(accessor);
     }
 
     private call(
@@ -1123,7 +1114,7 @@ export class EvaluationOrder {
             merge(access.writes, engine.writes);
             return;
         }
-        const units = this.callees(call);
+        const units = this.callUnits(call);
         if (units === "library") {
             this.libraryCall(access, call, unit);
             return;
@@ -1147,8 +1138,7 @@ export class EvaluationOrder {
             merge(access.writes, engine.writes);
             return;
         }
-        const declaration =
-            this.checker.getResolvedSignature(node)?.declaration;
+        const declaration = calledDeclaration(this.checker, node);
         const tag = unwrapExpression(node.tag);
         const named =
             declaration &&
@@ -1171,8 +1161,7 @@ export class EvaluationOrder {
             ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression,
     ): Access | undefined {
         if (!this.engine || ts.isNewExpression(call)) return undefined;
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration || !isEngineDeclaration(declaration)) return undefined;
         const engine = this.engine();
         const bodies = engine.bodies(declaration);
@@ -1249,7 +1238,7 @@ export class EvaluationOrder {
                 continue;
             }
             const type = this.checker.getTypeAtLocation(argument);
-            if (type.getCallSignatures().length > 0) {
+            if (callSignatures(this.checker, type, "present").length > 0) {
                 // A library function handed on (`map(Number)`) runs as a
                 // library call over the values it is given.
                 if (this.isRandom(expression)) {
@@ -1292,7 +1281,7 @@ export class EvaluationOrder {
     public callBodies(
         call: ts.CallExpression,
     ): readonly ts.FunctionLikeDeclaration[] | "library" | undefined {
-        const units = this.callees(call);
+        const units = this.callUnits(call);
         if (units === "library" || units === undefined) return units;
         return units.every(
             (unit): unit is ts.FunctionLikeDeclaration =>
@@ -1303,12 +1292,13 @@ export class EvaluationOrder {
     }
 
     /**
-     * The code a call runs: the function bodies it can reach -- every
-     * implementation an overridden method can dispatch to, a constructor
-     * chain with its field initializers -- "library" for a declaration
-     * file's function, or undefined when it cannot be named.
+     * The code a call or construction runs: the function bodies it can
+     * reach -- every implementation an overridden method can dispatch to, a
+     * class chain's constructors with its field initializers -- "library"
+     * for a declaration file's function, or undefined when it cannot be
+     * named.
      */
-    private callees(
+    public callUnits(
         call: ts.CallExpression | ts.NewExpression,
     ): readonly Unit[] | "library" | undefined {
         if (call.expression.kind === ts.SyntaxKind.SuperKeyword) {
@@ -1322,14 +1312,12 @@ export class EvaluationOrder {
             );
             if (declaration && !declaration.getSourceFile().isDeclarationFile)
                 return this.construction(declaration);
-            return this.checker
-                .getResolvedSignature(call)
-                ?.declaration?.getSourceFile().isDeclarationFile || declaration
+            return calledDeclaration(this.checker, call)?.getSourceFile()
+                .isDeclarationFile || declaration
                 ? "library"
                 : undefined;
         }
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         if (!declaration) return undefined;
         if (declaration.getSourceFile().isDeclarationFile) return "library";
         const callee = unwrapExpression(call.expression);
@@ -1348,28 +1336,17 @@ export class EvaluationOrder {
 
     /** Whether an expression is the language's `Math.random`. */
     private isRandom(expression: ts.Expression): boolean {
-        const node = unwrapExpression(expression);
-        return (
-            ts.isPropertyAccessExpression(node) &&
-            libraryGlobal(this.checker, node.expression) === "Math" &&
-            node.name.text === "random"
+        const access = mathMemberAccess(unwrapExpression(expression), (owner) =>
+            libraryGlobal(this.checker, owner),
         );
+        return access !== undefined && mathMemberIsImpure(access.name.text);
     }
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
     private isPrimitive(expression: ts.Expression): boolean {
-        const type = this.checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.StringLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.EnumLike |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Null)) !==
-                0,
+        return holdsOnly(
+            this.checker.getTypeAtLocation(expression),
+            PRIMITIVE_KINDS,
         );
     }
 
@@ -1433,7 +1410,7 @@ export class EvaluationOrder {
         unit: Unit | undefined,
     ): boolean {
         if (!unit) return false;
-        const root = accessRoot(expression);
+        const root = rootExpression(expression);
         if (root.kind === ts.SyntaxKind.ThisKeyword)
             return (
                 ts.isConstructorDeclaration(unit) ||
@@ -1476,30 +1453,11 @@ export class EvaluationOrder {
             : undefined;
     }
 
-    /** Whether any code assigns the variable after its declaration. */
+    /** Whether any code in its file assigns the variable after its declaration. */
     private isWrittenVariable(symbol: ts.Symbol): boolean {
         if ((symbol.flags & ts.SymbolFlags.Variable) === 0) return false;
         const file = symbol.valueDeclaration?.getSourceFile();
-        if (!file) return false;
-        let written = this.written.get(file);
-        if (!written) {
-            const found = new Set<ts.Symbol>();
-            const record = (target: ts.Expression): void => {
-                const node = unwrapExpression(target);
-                if (!ts.isIdentifier(node)) return;
-                const assigned = resolvedSymbol(this.checker, node);
-                if (assigned) found.add(assigned);
-            };
-            forEachAnalysisNode(file, (node) => {
-                if (isAssignmentExpression(node))
-                    assignmentTargets(node.left).forEach(record);
-                else if (isUpdateExpression(node)) record(node.operand);
-                else loopTargets(node).forEach(record);
-            });
-            written = found;
-            this.written.set(file, written);
-        }
-        return written.has(symbol);
+        return file !== undefined && isRebound(this.checker, [file], symbol);
     }
 }
 

@@ -111,6 +111,8 @@ import {
     libraryGlobal,
     resolvedSymbol,
     symbolFieldName,
+    staticPropertyKey,
+    libraryName,
 } from "./symbols.js";
 import {
     absentValueKind,
@@ -119,11 +121,16 @@ import {
     presentMembers,
     isTypeReference,
     type AbsentValueKind,
+    undefinedOnly,
+    isVoid,
+    holdsNoPayload,
+    arrayShape,
+    callSignatures,
+    classInstanceDeclaration,
+    inheritsFrom,
+    unionMembers,
 } from "./type-facts.js";
-import {
-    hasNoValueCompletion,
-    nativeReturnTsType,
-} from "./native-return-type.js";
+import { nativeReturnTsType } from "./native-return-type.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
@@ -141,7 +148,16 @@ import {
     isStaticMember,
 } from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { propertyNameText, unwrapExpression } from "./syntax.js";
+import {
+    propertyKey,
+    unwrapExpression,
+    isTypeAssertion,
+    wrappersUnder,
+    declarationNamed,
+    objectLiteralMembers,
+    variableKind,
+    classBaseExpression,
+} from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
@@ -156,6 +172,7 @@ import {
     finiteArraySources,
     type FiniteArraySources,
 } from "./finite-array-sources.js";
+import { jsonAbsenceCpp } from "./values/model.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -210,7 +227,7 @@ function literalTagValues(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): readonly string[] | undefined {
-    const values = (type.isUnion() ? type.types : [type]).map((member) =>
+    const values = unionMembers(type).map((member) =>
         literalTagValue(checker, member),
     );
     return values.every((value) => value !== undefined) ? values : undefined;
@@ -719,9 +736,7 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
         case "HTMLAudioElement":
             return "audio-element";
     }
-    return (type.getBaseTypes() ?? []).some(
-        (base) => domAudioHandleKind(base) === "audio-node",
-    )
+    return inheritsFrom(type, (base) => libraryName(base) === "AudioNode")
         ? "audio-node"
         : undefined;
 }
@@ -738,15 +753,15 @@ export function platformHandleKind(
     | "video"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
-        if (type.symbol.name === "GPUDevice") return "gpu-device";
-        if (type.symbol.name === "GPUTexture") return "gpu-texture";
+        if (libraryName(type) === "GPUDevice") return "gpu-device";
+        if (libraryName(type) === "GPUTexture") return "gpu-texture";
     }
     if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
-    if (type.symbol.name === "Gamepad") return "gamepad";
-    if (type.symbol.name === "GamepadButton") return "gamepad-button";
-    if (type.symbol.name === "CustomEvent") return "custom-event";
+    if (libraryName(type) === "Gamepad") return "gamepad";
+    if (libraryName(type) === "GamepadButton") return "gamepad-button";
+    if (libraryName(type) === "CustomEvent") return "custom-event";
     // Only a generation-executed producer makes one (executed-video-function.ts).
-    if (type.symbol.name === "HTMLVideoElement") return "video";
+    if (libraryName(type) === "HTMLVideoElement") return "video";
     if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
@@ -767,10 +782,10 @@ export function borrowedPlatformEventKind(
         ].includes(symbol.name)
     )
         return "event";
-    if (symbol.name === "MouseEvent") return "mouse";
-    if (symbol.name === "KeyboardEvent") return "keyboard";
-    if (symbol.name === "ErrorEvent") return "error";
-    if (symbol.name === "PromiseRejectionEvent") return "rejection";
+    if (libraryName(symbol) === "MouseEvent") return "mouse";
+    if (libraryName(symbol) === "KeyboardEvent") return "keyboard";
+    if (libraryName(symbol) === "ErrorEvent") return "error";
+    if (libraryName(symbol) === "PromiseRejectionEvent") return "rejection";
     return undefined;
 }
 
@@ -783,34 +798,28 @@ function isDomEventType(
 ): boolean {
     if (seen.has(candidate)) return false;
     seen.add(candidate);
-    return (
-        (candidate.symbol?.name === "Event" &&
-            declaredInDomLibrary(candidate.symbol) &&
-            checker.isTypeAssignableTo(type, candidate)) ||
-        (candidate.isIntersection() &&
-            candidate.types.some((member) =>
-                isDomEventType(checker, type, member, seen),
-            )) ||
-        (candidate.getBaseTypes() ?? []).some((base) =>
-            isDomEventType(checker, type, base, seen),
-        ) ||
-        (candidate.aliasTypeArguments ?? []).some((argument) =>
-            isDomEventType(checker, type, argument, seen),
-        )
+    return inheritsFrom(
+        candidate,
+        (inherited) =>
+            (libraryName(inherited) === "Event" &&
+                checker.isTypeAssignableTo(type, inherited)) ||
+            (inherited.aliasTypeArguments ?? []).some((argument) =>
+                isDomEventType(checker, type, argument, seen),
+            ),
     );
 }
 
 export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
-        (symbol.name === "Element" ||
+        (libraryName(symbol) === "Element" ||
             /^(?:HTML|SVG)[A-Za-z0-9]*Element$/.test(symbol.name))
     );
 }
 
 /** Text nodes share retained node handles, but are never element interfaces. */
 export function isDomTextType(symbol: ts.Symbol): boolean {
-    return symbol.name === "Text" && declaredInDomLibrary(symbol);
+    return libraryName(symbol) === "Text";
 }
 
 /**
@@ -862,7 +871,7 @@ export function passesByReference(
 export function tupleComponents(
     base: string,
     arity: number,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string[] {
     return Array.from({ length: arity }, (_unused, index) =>
         precision === "float"
@@ -1084,6 +1093,12 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
         (known.kind === "optional" && dataTypesEqual(known.inner, storage))
     );
 }
+
+/**
+ * @unjournaled Pure functions of the checked source: the keys a `const`
+ * Map's lookups take, or none when it is used any other way.
+ */
+const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
 
 /**
  * Maps checker types onto native data types and owns the generated struct,
@@ -1328,8 +1343,7 @@ export class DataTypeRegistry {
             !carried.some((source) => {
                 const type = source.type;
                 const shapes =
-                    this.recordComponentOf(type)?.shapes ??
-                    (type.isUnion() ? type.types : [type]);
+                    this.recordComponentOf(type)?.shapes ?? unionMembers(type);
                 return shapes.some((shape) => shape.getProperty(property));
             })
         )
@@ -1387,10 +1401,7 @@ export class DataTypeRegistry {
             );
         if (type.kind !== "struct") return;
         let source = this.nativeRecordSources.get(type.name)?.type;
-        while (
-            source?.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(source.aliasSymbol)
-        )
+        while (source && libraryName(source.aliasSymbol) === "Readonly")
             source = source.aliasTypeArguments?.[0];
         if (source && this.isNamedRecordAlias(source))
             throw new EnumRecordStorageRequired(
@@ -1548,10 +1559,7 @@ export class DataTypeRegistry {
                     ts.isSetAccessorDeclaration(node)
                 )
                     this.registerAccessor(node);
-                else if (
-                    ts.isAsExpression(node) ||
-                    ts.isTypeAssertionExpression(node)
-                ) {
+                else if (isTypeAssertion(node)) {
                     this.registerAssertedRecord(node);
                     if (ts.isTypeReferenceNode(node.type))
                         this.namedAssertions.push(node);
@@ -1590,7 +1598,7 @@ export class DataTypeRegistry {
     private computePhantomBrandKey(type: ts.Type): string | undefined {
         if (
             type.isUnionOrIntersection() ||
-            type.getCallSignatures().length > 0 ||
+            callSignatures(this.checker, type, "exact").length > 0 ||
             type.getConstructSignatures().length > 0 ||
             this.checker.getIndexInfosOfType(type).length > 0
         )
@@ -1698,9 +1706,9 @@ export class DataTypeRegistry {
             return;
         const type = this.checker.getTypeAtLocation(node);
         if (
-            type.getCallSignatures().length ||
+            callSignatures(this.checker, type, "exact").length ||
             type.getConstructSignatures().length ||
-            type.symbol?.declarations?.some(ts.isClassLike) ||
+            classInstanceDeclaration(type) !== undefined ||
             this.checker.getPropertiesOfType(type).length === 0
         )
             return;
@@ -2439,14 +2447,13 @@ export class DataTypeRegistry {
     private registerAccessor(
         node: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
     ): void {
-        if (!ts.isIdentifier(node.name) && !ts.isStringLiteral(node.name))
-            return;
-        const name = node.name.text;
+        const name = staticPropertyKey(this.checker, node.name);
+        if (name === undefined) return;
         const properties = ts.isGetAccessorDeclaration(node)
             ? this.getterProperties
             : this.setterProperties;
         const noteImplemented = (type: ts.Type, prototype = false): void => {
-            for (const member of type.isUnion() ? type.types : [type])
+            for (const member of unionMembers(type))
                 for (const declaration of this.checker.getPropertyOfType(
                     member,
                     name,
@@ -2817,45 +2824,50 @@ export class DataTypeRegistry {
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
-            !(declaration.parent.flags & ts.NodeFlags.Const) ||
+            variableKind(declaration.parent) !== "const" ||
             !declaration.initializer ||
             !ts.isNewExpression(unwrapExpression(declaration.initializer))
         )
             return undefined;
-        const keys: ts.Expression[] = [];
-        let closed = true;
-        const visit = (child: ts.Node): void => {
-            if (!closed) return;
-            if (
-                ts.isIdentifier(child) &&
-                child !== declaration.name &&
-                resolvedSymbol(this.checker, child) === symbol
-            ) {
-                const access = child.parent;
-                const call = access.parent;
+        let keys = erasedMapKeys.get(symbol);
+        if (keys === undefined) {
+            const found: ts.Expression[] = [];
+            let closed = true;
+            const visit = (child: ts.Node): void => {
+                if (!closed) return;
                 if (
-                    ts.isPropertyAccessExpression(access) &&
-                    access.expression === child &&
-                    ["get", "set", "has", "delete"].includes(
-                        access.name.text,
-                    ) &&
-                    ts.isCallExpression(call) &&
-                    call.expression === access &&
-                    call.arguments[0]
-                )
-                    keys.push(call.arguments[0]);
-                else if (
-                    !ts.isPropertyAccessExpression(access) ||
-                    access.expression !== child ||
-                    !["size", "clear"].includes(access.name.text)
-                )
-                    closed = false;
-                return;
-            }
-            ts.forEachChild(child, visit);
-        };
-        visit(declaration.parent.parent.parent);
-        if (!closed || keys.length === 0) return undefined;
+                    ts.isIdentifier(child) &&
+                    child !== declaration.name &&
+                    resolvedSymbol(this.checker, child) === symbol
+                ) {
+                    const access = child.parent;
+                    const call = access.parent;
+                    if (
+                        ts.isPropertyAccessExpression(access) &&
+                        access.expression === child &&
+                        ["get", "set", "has", "delete"].includes(
+                            access.name.text,
+                        ) &&
+                        ts.isCallExpression(call) &&
+                        call.expression === access &&
+                        call.arguments[0]
+                    )
+                        found.push(call.arguments[0]);
+                    else if (
+                        !ts.isPropertyAccessExpression(access) ||
+                        access.expression !== child ||
+                        !["size", "clear"].includes(access.name.text)
+                    )
+                        closed = false;
+                    return;
+                }
+                ts.forEachChild(child, visit);
+            };
+            visit(declaration.parent.parent.parent);
+            keys = closed ? found : [];
+            erasedMapKeys.set(symbol, keys);
+        }
+        if (keys.length === 0) return undefined;
         const present = (type: DataType | undefined): DataType | undefined =>
             type?.kind === "optional" ? type.inner : type;
         const types = keys.map((key) =>
@@ -2912,16 +2924,16 @@ export class DataTypeRegistry {
         node: ts.Node,
         property?: ts.Symbol,
     ): DataType | undefined {
+        const named = declarationNamed(node);
         const declaration =
             property?.declarations?.length === 1
                 ? property.declarations[0]
                 : ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)
                   ? node
-                  : node.parent &&
-                      (ts.isPropertySignature(node.parent) ||
-                          ts.isPropertyDeclaration(node.parent)) &&
-                      node.parent.name === node
-                    ? node.parent
+                  : named &&
+                      (ts.isPropertySignature(named) ||
+                          ts.isPropertyDeclaration(named))
+                    ? named
                     : undefined;
         return (
             declaration && this.storage.assertedHandleFields.get(declaration)
@@ -3033,10 +3045,11 @@ export class DataTypeRegistry {
         // calls pass (`NumericSlotStorageRequired`) wherever its declared
         // `ArrayLike<number>` position is typed; other types it locates keep
         // their storage.
+        const named = declarationNamed(node);
         const parameter = ts.isParameter(node)
             ? node
-            : ts.isParameter(node.parent) && node.parent.name === node
-              ? node.parent
+            : named && ts.isParameter(named)
+              ? named
               : undefined;
         const kinds = parameter && this.storage.numericSlots.get(parameter);
         return (
@@ -3214,7 +3227,7 @@ export class DataTypeRegistry {
         );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
-            : ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+            : isTypeAssertion(node)
               ? "assertion"
               : "value";
         // A join an earlier replay demanded that left the two apart refuses.
@@ -3606,7 +3619,11 @@ export class DataTypeRegistry {
             // A stored function maps as a layout stores it; the joined
             // layout decides whether one storage holds both signatures.
             const callable = this.checker.getNonNullableType(propertyType);
-            if (callable.getCallSignatures().length > 0 && beforeJoin) continue;
+            if (
+                callSignatures(this.checker, callable, "exact").length > 0 &&
+                beforeJoin
+            )
+                continue;
             // A property only null or undefined is the field's empty state.
             if (
                 (field?.type.kind === "optional" ||
@@ -3616,7 +3633,7 @@ export class DataTypeRegistry {
                 continue;
             const own =
                 field &&
-                (callable.getCallSignatures().length > 0
+                (callSignatures(this.checker, callable, "exact").length > 0
                     ? this.fromFunctionType(callable, declaration ?? node)
                     : this.fromRecordFieldType(
                           propertyType,
@@ -3692,24 +3709,21 @@ export class DataTypeRegistry {
     public fromCheckedObjectInitializer(
         initializer: ts.Expression,
     ): DataType | undefined {
-        while (ts.isParenthesizedExpression(initializer))
-            initializer = initializer.expression;
+        const check = wrappersUnder(initializer).find(ts.isSatisfiesExpression);
         if (
-            !ts.isSatisfiesExpression(initializer) ||
-            !ts.isObjectLiteralExpression(
-                unwrapExpression(initializer.expression),
-            )
+            !check ||
+            !ts.isObjectLiteralExpression(unwrapExpression(check.expression))
         )
             return undefined;
         const target = this.fromTsType(
-            this.checker.getTypeFromTypeNode(initializer.type),
-            initializer.type,
+            this.checker.getTypeFromTypeNode(check.type),
+            check.type,
         );
         if (target?.kind !== "struct") return undefined;
         const properties = this.checker.getPropertiesOfType(
-            this.checker.getTypeAtLocation(initializer.expression),
+            this.checker.getTypeAtLocation(check.expression),
         );
-        const fields = this.structFields(target.name, initializer);
+        const fields = this.structFields(target.name, check);
         if (properties.length !== fields.length) return undefined;
         for (const field of fields) {
             const property = properties.find(
@@ -3719,7 +3733,7 @@ export class DataTypeRegistry {
             const node =
                 property.valueDeclaration ??
                 property.declarations?.[0] ??
-                initializer;
+                check;
             const actual = this.fromTsType(
                 this.checker.getTypeOfSymbolAtLocation(property, node),
                 node,
@@ -3735,8 +3749,7 @@ export class DataTypeRegistry {
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
         const readonlyTarget =
-            type.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(type.aliasSymbol)
+            libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
         if (
@@ -3910,16 +3923,13 @@ export class DataTypeRegistry {
      * document holds, which have no typed storage of their own.
      */
     private holdsOnlyDynamicValues(type: ts.Type): boolean {
-        return (type.isUnion() ? type.types : [type]).every(
+        return presentMembers(type).every(
             (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                    0 ||
-                ((member.flags & ts.TypeFlags.Object) !== 0 &&
-                    ((member as ts.ObjectType).objectFlags &
-                        ts.ObjectFlags.ObjectLiteral) !==
-                        0 &&
-                    this.isNonNullConstraint(member)),
+                (member.flags & ts.TypeFlags.Object) !== 0 &&
+                ((member as ts.ObjectType).objectFlags &
+                    ts.ObjectFlags.ObjectLiteral) !==
+                    0 &&
+                this.isNonNullConstraint(member),
         );
     }
 
@@ -3931,7 +3941,7 @@ export class DataTypeRegistry {
             ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
                 0 &&
             this.checker.getPropertiesOfType(type).length === 0 &&
-            type.getCallSignatures().length === 0 &&
+            callSignatures(this.checker, type, "exact").length === 0 &&
             type.getConstructSignatures().length === 0 &&
             this.checker.getIndexInfosOfType(type).length === 0
         );
@@ -3964,7 +3974,7 @@ export class DataTypeRegistry {
             const fields = this.checker.getPropertiesOfType(concrete);
             const owned = this.checker.getPropertiesOfType(owner);
             if (
-                concrete.getCallSignatures().length ||
+                callSignatures(this.checker, concrete, "exact").length ||
                 concrete.getConstructSignatures().length ||
                 this.checker.getIndexInfosOfType(concrete).length ||
                 fields.length !== owned.length ||
@@ -4132,8 +4142,7 @@ export class DataTypeRegistry {
             type.symbol &&
             ((ERROR_CONSTRUCTORS.has(type.symbol.name) &&
                 declaredInDefaultLibrary(type.symbol)) ||
-                (type.symbol.name === "DOMException" &&
-                    declaredInDomLibrary(type.symbol)))
+                libraryName(type) === "DOMException")
         )
             return { kind: "error" };
         const libraryObject = LIBRARY_OBJECT_KINDS.find(
@@ -4146,10 +4155,7 @@ export class DataTypeRegistry {
         if (libraryObject) return { kind: libraryObject[2] };
         // A tagged template's frozen strings array; its `raw` array is
         // found from its identity (`bbl::js::template_raw`).
-        if (
-            type.symbol?.name === "TemplateStringsArray" &&
-            declaredInDefaultLibrary(type.symbol)
-        )
+        if (libraryName(type) === "TemplateStringsArray")
             return { kind: "vector", element: { kind: "string" } };
         const uninhabited =
             declaredInDomLibrary(type.symbol) &&
@@ -4164,10 +4170,10 @@ export class DataTypeRegistry {
             return byteStream ? { kind: byteStream } : undefined;
         }
         if (declaredIn(type.symbol, "dom", "webgpu")) {
-            if (type.symbol?.name === "GPUAdapterInfo")
+            if (libraryName(type) === "GPUAdapterInfo")
                 return { kind: "gpu-adapter-info" };
-            if (type.symbol?.name === "GPU") return { kind: "gpu" };
-            if (type.symbol?.name === "GPUAdapter")
+            if (libraryName(type) === "GPU") return { kind: "gpu" };
+            if (libraryName(type) === "GPUAdapter")
                 return { kind: "gpu-adapter" };
         }
         // Every name below is the library's own type only when the library
@@ -4176,18 +4182,15 @@ export class DataTypeRegistry {
         // A SharedArrayBuffer is the same storage branded shared.
         if (
             library &&
-            (type.symbol.name === "ArrayBuffer" ||
-                type.symbol.name === "SharedArrayBuffer")
+            (libraryName(type) === "ArrayBuffer" ||
+                libraryName(type) === "SharedArrayBuffer")
         ) {
             return { kind: "arraybuffer" };
         }
-        if (library && type.symbol.name === "DataView") {
+        if (library && libraryName(type) === "DataView") {
             return { kind: "dataview" };
         }
-        if (
-            type.symbol?.name === "ArrayBufferView" &&
-            declaredInDefaultLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "ArrayBufferView") {
             return { kind: "bufferview" };
         }
         const platformHandle = platformHandleKind(type);
@@ -4208,8 +4211,8 @@ export class DataTypeRegistry {
         }
         if (
             library &&
-            (type.symbol.name === "RegExpExecArray" ||
-                type.symbol.name === "RegExpMatchArray")
+            (libraryName(type) === "RegExpExecArray" ||
+                libraryName(type) === "RegExpMatchArray")
         ) {
             return {
                 kind: "vector",
@@ -4243,22 +4246,13 @@ export class DataTypeRegistry {
         ) {
             return { kind: "handle", handle: "ui-element" };
         }
-        if (
-            type.symbol?.name === "OffscreenCanvas" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "OffscreenCanvas") {
             return { kind: "handle", handle: "offscreen-canvas" };
         }
-        if (
-            type.symbol?.name === "MutationObserver" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "MutationObserver") {
             return { kind: "handle", handle: "worker-mutation-observer" };
         }
-        if (
-            type.symbol?.name === "MediaQueryList" &&
-            declaredInDomLibrary(type.symbol)
-        ) {
+        if (libraryName(type) === "MediaQueryList") {
             return { kind: "handle", handle: "worker-media-query" };
         }
         if (
@@ -4308,17 +4302,14 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (library && type.symbol.name === "Promise") {
+            if (library && libraryName(type) === "Promise") {
                 const [argument] = this.checker.getTypeArguments(reference);
                 if (!argument) return undefined;
                 const resolvedType = this.resolveTypeParameter(argument);
                 if (this.asynchronous) {
                     if (
-                        (resolvedType.flags &
-                            (ts.TypeFlags.Void |
-                                ts.TypeFlags.Undefined |
-                                ts.TypeFlags.Never)) !==
-                        0
+                        undefinedOnly(resolvedType) ||
+                        (resolvedType.flags & ts.TypeFlags.Never) !== 0
                     )
                         return { kind: "promise" };
                     const result = this.fromPromiseResultType(
@@ -4336,7 +4327,7 @@ export class DataTypeRegistry {
                 // A promise retained in a data container therefore stores its
                 // resolved value, preserving cache/get/set behavior without adding a
                 // second scheduler or a host Promise object.
-                return (resolvedType.flags & ts.TypeFlags.Void) !== 0
+                return isVoid(resolvedType)
                     ? { kind: "boolean" }
                     : this.fromTsType(resolvedType, node);
             }
@@ -4660,9 +4651,7 @@ export class DataTypeRegistry {
                 ? { awaitedUndefinedCompletion: true as const }
                 : {}),
             ...(synchronous ||
-            (hasNoValueCompletion(
-                this.checker.getReturnTypeOfSignature(signature),
-            ) &&
+            (undefinedOnly(this.checker.getReturnTypeOfSignature(signature)) &&
                 hasNonThenableCompletion(this.checker, declaration)) ||
             demanded
                 ? { nonThenableCompletion: true as const }
@@ -4679,7 +4668,7 @@ export class DataTypeRegistry {
         resultOverride?: ts.Signature,
         restArguments?: readonly ts.Type[],
     ): DataType | undefined {
-        const signatures = type.getCallSignatures();
+        const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length !== 1) return undefined;
         const signature = signatures[0]!;
         for (const origin of [node, signature.declaration]) {
@@ -4689,8 +4678,11 @@ export class DataTypeRegistry {
                     !storedClassField &&
                     ts.isPropertyDeclaration(owner) &&
                     ts.isClassLike(owner.parent) &&
-                    this.checker.getTypeAtLocation(owner).getCallSignatures()
-                        .length > 0
+                    callSignatures(
+                        this.checker,
+                        this.checker.getTypeAtLocation(owner),
+                        "exact",
+                    ).length > 0
                 ) {
                     // Class callback fields use the class lowerer's method-like binding,
                     // including `this`; they are not ordinary stored struct slots.
@@ -4738,23 +4730,20 @@ export class DataTypeRegistry {
                 const override = parameterOverrides?.[index];
                 const declaredCallable =
                     this.checker.getNonNullableType(declaredType);
-                const declaredSignature =
-                    declaredCallable.getCallSignatures()[0];
+                const declaredSignature = callSignatures(
+                    this.checker,
+                    declaredCallable,
+                    "exact",
+                )[0];
                 const actualSignature = override
-                    ? this.checker
-                          .getNonNullableType(override)
-                          .getCallSignatures()[0]
+                    ? callSignatures(this.checker, override, "present")[0]
                     : undefined;
                 const parameterType =
-                    declaredCallable.getCallSignatures().length &&
-                    !actualSignature
+                    callSignatures(this.checker, declaredCallable, "exact")
+                        .length && !actualSignature
                         ? declaredType
                         : (override ?? declaredType);
-                if (
-                    (parameterType.flags &
-                        (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
-                    0
-                ) {
+                if (holdsNoPayload(parameterType)) {
                     erasedParameters.push(index);
                     return [];
                 }
@@ -4774,7 +4763,11 @@ export class DataTypeRegistry {
                               declaration ?? node,
                           )
                         : actualSignature &&
-                            declaredCallable.getCallSignatures().length === 1
+                            callSignatures(
+                                this.checker,
+                                declaredCallable,
+                                "exact",
+                            ).length === 1
                           ? this.fromFunctionType(
                                 declaredCallable,
                                 declaration ?? node,
@@ -4786,11 +4779,11 @@ export class DataTypeRegistry {
                                     ts.TypeFlags.Never) !==
                                     0 &&
                                     declaredSignature &&
-                                    (this.checker.getReturnTypeOfSignature(
-                                        declaredSignature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                        0
+                                    isVoid(
+                                        this.checker.getReturnTypeOfSignature(
+                                            declaredSignature,
+                                        ),
+                                    )
                                     ? undefined
                                     : actualSignature,
                             )
@@ -4846,7 +4839,7 @@ export class DataTypeRegistry {
             this.checker.getReturnTypeOfSignature(resultOverride ?? signature),
         );
         const resultType =
-            this.asynchronous && !hasNoValueCompletion(signatureResult)
+            this.asynchronous && !undefinedOnly(signatureResult)
                 ? signatureResult
                 : nativeReturnTsType(
                       this.checker,
@@ -5132,9 +5125,7 @@ export class DataTypeRegistry {
                     return declared;
                 if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
-                    !this.checker
-                        .getNonNullableType(declared)
-                        .getCallSignatures().length
+                    !callSignatures(this.checker, declared, "present").length
                 )
                     return undefined;
                 const argument = call.arguments[index];
@@ -5242,9 +5233,7 @@ export class DataTypeRegistry {
                 const declared = this.checker.getTypeOfSymbol(parameter);
                 if (
                     (declared.flags & ts.TypeFlags.Unknown) === 0 &&
-                    !this.checker
-                        .getNonNullableType(declared)
-                        .getCallSignatures().length
+                    !callSignatures(this.checker, declared, "present").length
                 )
                     return undefined;
                 return (
@@ -5307,10 +5296,7 @@ export class DataTypeRegistry {
         if (kind !== "error") return undefined;
         const error = this.checker
             .getSymbolsInScope(node, ts.SymbolFlags.Interface)
-            .find(
-                (symbol) =>
-                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
-            );
+            .find((symbol) => libraryName(symbol) === "Error");
         return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
@@ -5335,10 +5321,7 @@ export class DataTypeRegistry {
             return undefined;
         const error = this.checker
             .getSymbolsInScope(name, ts.SymbolFlags.Interface)
-            .find(
-                (symbol) =>
-                    symbol.name === "Error" && declaredInDefaultLibrary(symbol),
-            );
+            .find((symbol) => libraryName(symbol) === "Error");
         return error && this.checker.getDeclaredTypeOfSymbol(error);
     }
 
@@ -5412,7 +5395,7 @@ export class DataTypeRegistry {
                     this.checker.isTupleType(member) ||
                     this.checker.isArrayType(member) ||
                     (declaredInDefaultLibrary(member.symbol) &&
-                        member.symbol?.name === "ReadonlyArray"),
+                        libraryName(member) === "ReadonlyArray"),
             )
         ) {
             if (this.arrayUnionsInProgress.has(type)) return undefined;
@@ -5483,7 +5466,7 @@ export class DataTypeRegistry {
         if (
             !type.types.every(
                 (member) =>
-                    member.getCallSignatures().length > 0 &&
+                    callSignatures(this.checker, member, "exact").length > 0 &&
                     this.checker.getPropertiesOfType(member).length === 0,
             )
         )
@@ -5513,15 +5496,13 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const promises = type.types.filter(
             (member): member is ts.TypeReference =>
-                member.symbol?.name === "Promise" &&
-                declaredInDefaultLibrary(member.symbol) &&
-                isTypeReference(member),
+                libraryName(member) === "Promise" && isTypeReference(member),
         );
         const promise = promises[0];
         if (!promise || promises.length > 1) return undefined;
         const [argument] = this.checker.getTypeArguments(promise);
         if (!argument) return undefined;
-        const settled = argument.isUnion() ? argument.types : [argument];
+        const settled = unionMembers(argument);
         const values = type.types.filter((member) => member !== promise);
         // Two spellings of one object literal type are distinct checker types.
         const same = (left: ts.Type, right: ts.Type): boolean =>
@@ -5771,8 +5752,8 @@ export class DataTypeRegistry {
                 (member) =>
                     // Class instances retain their nominal owner; their fields
                     // alone cannot represent instanceof or private brands.
-                    member.symbol?.declarations?.some(ts.isClassLike) ||
-                    member.getCallSignatures().length > 0 ||
+                    classInstanceDeclaration(member) !== undefined ||
+                    callSignatures(this.checker, member, "exact").length > 0 ||
                     member.getConstructSignatures().length > 0 ||
                     this.checker.getIndexInfosOfType(member).length > 0,
             )
@@ -6111,7 +6092,7 @@ export class DataTypeRegistry {
                 : tagConditions.flat();
             let mapped: DataType | undefined;
             const literalStrings = propertyTypes.flatMap((propertyType) =>
-                propertyType.isUnion() ? propertyType.types : [propertyType],
+                unionMembers(propertyType),
             );
             if (
                 literalStrings.every(
@@ -6654,23 +6635,18 @@ export class DataTypeRegistry {
             return true;
         }
         if (
-            type
-                .getCallSignatures()
-                .some(
-                    (signature) =>
-                        signature
-                            .getParameters()
-                            .some((parameter) =>
-                                this.mentionsSubstitution(
-                                    this.checker.getTypeOfSymbol(parameter),
-                                    seen,
-                                ),
-                            ) ||
-                        this.mentionsSubstitution(
-                            signature.getReturnType(),
-                            seen,
-                        ),
-                )
+            callSignatures(this.checker, type, "exact").some(
+                (signature) =>
+                    signature
+                        .getParameters()
+                        .some((parameter) =>
+                            this.mentionsSubstitution(
+                                this.checker.getTypeOfSymbol(parameter),
+                                seen,
+                            ),
+                        ) ||
+                    this.mentionsSubstitution(signature.getReturnType(), seen),
+            )
         ) {
             return true;
         }
@@ -6735,15 +6711,7 @@ export class DataTypeRegistry {
      */
     public undefinedOnlyStorage(type: ts.Type): DataType | undefined {
         const resolved = this.resolveTypeParameter(type);
-        const members = resolved.isUnion() ? resolved.types : [resolved];
-        return members.every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0,
-        )
-            ? { kind: "undefined" }
-            : undefined;
+        return undefinedOnly(resolved) ? { kind: "undefined" } : undefined;
     }
 
     /** Required undefined fields own a key independently of their payload. */
@@ -6755,19 +6723,12 @@ export class DataTypeRegistry {
         const assertedHandle = this.assertedHandleFieldStorage(node, property);
         if (assertedHandle) return assertedHandle;
         const resolved = this.resolveTypeParameter(type);
-        const members = resolved.isUnion() ? resolved.types : [resolved];
+        const members = unionMembers(resolved);
         // A required null-only field has storage before its record joins
         // another shape; the joined layout can then hold its null value.
         if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
             return { kind: "null" };
-        if (
-            !members.every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                    0,
-            )
-        ) {
+        if (!undefinedOnly(resolved)) {
             const mapped = this.fromTsType(type, node);
             return mapped && property?.declarations?.length === 1
                 ? this.absenceTaggedStorage(property.declarations[0], mapped)
@@ -6791,22 +6752,23 @@ export class DataTypeRegistry {
         if (!literal || !ts.isObjectLiteralExpression(literal))
             return undefined;
         const keys: string[] = [];
-        for (const property of literal.properties) {
-            const names = ts.isSpreadAssignment(property)
-                ? (() => {
-                      const source = this.checker.getNonNullableType(
-                          this.checker.getTypeAtLocation(property.expression),
-                      );
-                      return (
-                          this.objectLiteralKeyOrder(source) ??
-                          this.checker
-                              .getPropertiesOfType(source)
-                              .map((symbol) => symbol.name)
-                      );
-                  })()
-                : property.name && propertyNameText(property.name);
-            if (names === undefined) return undefined;
-            keys.push(...(typeof names === "string" ? [names] : names));
+        for (const member of objectLiteralMembers(literal)) {
+            // A `__proto__` setter creates no own key.
+            if (member.kind === "proto") continue;
+            if (member.kind === "spread") {
+                const source = this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(member.node.expression),
+                );
+                keys.push(
+                    ...(this.objectLiteralKeyOrder(source) ??
+                        this.checker
+                            .getPropertiesOfType(source)
+                            .map((symbol) => symbol.name)),
+                );
+                continue;
+            }
+            if (member.key === undefined) return undefined;
+            keys.push(member.key);
         }
         // An object of these keys orders them as JavaScript does.
         return Object.keys(
@@ -6942,8 +6904,8 @@ export class DataTypeRegistry {
             const callableType = this.checker.getNonNullableType(propertyType);
             // A callable record (a function with properties) is a record.
             const callable =
-                callableType.getCallSignatures().length > 0 &&
-                !this.isCallableRecordType(callableType);
+                callSignatures(this.checker, callableType, "exact").length >
+                    0 && !this.isCallableRecordType(callableType);
             const mapped = callable
                 ? allowStoredFunctions &&
                   declaration !== undefined &&
@@ -7236,7 +7198,7 @@ export class DataTypeRegistry {
      */
     private isCallableRecordType(type: ts.Type): boolean {
         return (
-            type.getCallSignatures().length === 1 &&
+            callSignatures(this.checker, type, "exact").length === 1 &&
             type.getConstructSignatures().length === 0 &&
             this.checker.getPropertiesOfType(type).length > 0
         );
@@ -7390,12 +7352,7 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): void {
         const resolved = this.resolveTypeParameter(source);
-        if (
-            !field.optionalProperty ||
-            (!nullability(resolved).undefined &&
-                (resolved.flags & ts.TypeFlags.Void) === 0)
-        )
-            return;
+        if (!field.optionalProperty || !nullability(resolved).undefined) return;
         let payload = field.type;
         while (payload.kind === "optional" || payload.kind === "tagged")
             payload = payload.inner;
@@ -7855,9 +7812,7 @@ export class DataTypeRegistry {
                 this.withDemandedNumericSlot(member, propertyType, declared);
             if (
                 !mapped &&
-                this.checker
-                    .getNonNullableType(propertyType)
-                    .getCallSignatures().length > 0
+                callSignatures(this.checker, propertyType, "present").length > 0
             ) {
                 this.fail(
                     member,
@@ -8137,7 +8092,8 @@ export class DataTypeRegistry {
         const concrete = this.checker.getNonNullableType(
             this.resolveTypeParameter(sourceType),
         );
-        return concrete.symbol?.name === "ReadonlyArray"
+        const shape = arrayShape(this.checker, concrete);
+        return shape && !shape.mutable && !shape.tuple
             ? this.ownReturnedArray(type)
             : type;
     }
@@ -8167,7 +8123,7 @@ export class DataTypeRegistry {
                 : owned;
         }
         const symbol = concrete.symbol;
-        const declaration = symbol?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(concrete);
         if (
             !symbol ||
             !declaration ||
@@ -8175,9 +8131,7 @@ export class DataTypeRegistry {
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Abstract) !==
                 0 ||
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
+            classBaseExpression(declaration) !== undefined
         )
             return undefined;
         for (const member of classInstanceProperties(declaration)) {
@@ -8309,15 +8263,12 @@ export class DataTypeRegistry {
         // record is the record it wraps, one object and one representation.
         // One asserted from an open dictionary stays that dictionary's view.
         const readonlyTarget =
-            type.aliasSymbol?.name === "Readonly" &&
-            declaredInDefaultLibrary(type.aliasSymbol)
+            libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
         if (readonlyTarget && !this.recordViews.has(this.structIdentity(type)))
             return this.fromRecordType(readonlyTarget, node);
-        const directRecordAlias =
-            type.aliasSymbol?.name === "Record" &&
-            declaredInDefaultLibrary(type.aliasSymbol);
+        const directRecordAlias = libraryName(type.aliasSymbol) === "Record";
         const namedRecordAlias = this.isNamedRecordAlias(type);
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;
@@ -8772,9 +8723,7 @@ export class DataTypeRegistry {
         const shapes = this.recordComponentOf(source.type)?.shapes ?? [
             source.type,
         ];
-        return shapes.flatMap((shape) =>
-            shape.isUnion() ? shape.types : [shape],
-        );
+        return shapes.flatMap((shape) => unionMembers(shape));
     }
 
     /** Membership cannot treat a declared property omitted by a common union layout as absent. */
@@ -9298,9 +9247,9 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): string | undefined {
         if (isUndefinedDataType(type))
-            return `(static_cast<void>(${cpp}), bbl::js::JsonValue{})`;
+            return `(static_cast<void>(${cpp}), ${jsonAbsenceCpp("undefined")})`;
         if (type.kind === "null")
-            return `(static_cast<void>(${cpp}), bbl::js::JsonValue::null_value())`;
+            return `(static_cast<void>(${cpp}), ${jsonAbsenceCpp("null")})`;
         if (type.kind === "tagged") {
             const present = this.jsonPresentValueCpp(
                 type.inner,
@@ -9430,12 +9379,11 @@ export class DataTypeRegistry {
         const stored = this.classStructLayout(type.name);
         if (source)
             for (const member of classInstanceProperties(source.declaration)) {
-                const name = ts.isPrivateIdentifier(member.name)
-                    ? member.name.text
-                    : ts.isObjectBindingPattern(member.name) ||
-                        ts.isArrayBindingPattern(member.name)
-                      ? undefined
-                      : propertyNameText(member.name);
+                const name =
+                    ts.isObjectBindingPattern(member.name) ||
+                    ts.isArrayBindingPattern(member.name)
+                        ? undefined
+                        : propertyKey(member.name);
                 if (
                     name === undefined ||
                     !stored.some((field) => field.sourceName === name)

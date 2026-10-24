@@ -6,6 +6,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export function lightVersionBumpBody(
     context: LoweringContext,
@@ -37,7 +38,7 @@ export function lightVersionBumpBody(
     );
     const bump = state.properties.find(
         (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node) && node.name.getText(file) === "b",
+            ts.isMethodDeclaration(node) && sameSource(node.name, "b"),
     );
     if (!bump?.body)
         context.contractError(state, "Expected light version callback.");
@@ -75,7 +76,7 @@ export function lightParameterHeader(context: LoweringContext): string {
                     const setter = observable.members.find(
                         (node): node is ts.SetAccessorDeclaration =>
                             ts.isSetAccessorDeclaration(node) &&
-                            node.name.getText(observableFile) === lane,
+                            sameSource(node.name, lane),
                     );
                     if (!setter?.body)
                         context.contractError(
@@ -151,10 +152,11 @@ export function lightParameterHeader(context: LoweringContext): string {
                     node.expression.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken
                 ) {
-                    const target = node.expression.left.getText(file);
+                    const target = node.expression.left;
                     if (
-                        target === "light.intensity" ||
-                        target.startsWith("light.diffuse[")
+                        sameSource(target, "light.intensity") ||
+                        (ts.isElementAccessExpression(target) &&
+                            sameSource(target.expression, "light.diffuse"))
                     )
                         return [
                             `${indent}${lowerer.expression(node.expression.left)}=${lowerer.expression(node.expression.right)};`,

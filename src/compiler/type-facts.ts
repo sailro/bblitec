@@ -1,23 +1,125 @@
 import ts from "typescript";
-import { declaredSymbol } from "./symbols.js";
-import { propertyNameText, unwrapExpression, wrappedParent } from "./syntax.js";
+import { declaredSymbol, libraryName, calledDeclaration } from "./symbols.js";
+import {
+    unwrapExpression,
+    wrappedParent,
+    objectLiteralMembers,
+} from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
+
+/**
+ * What a value of one member of a type is at run time. `void` is its own
+ * kind: a result its caller is not meant to read, whose run-time value only
+ * a proven completion makes `undefined`. `unknown` covers `any`, `unknown`
+ * and types only an instantiation decides.
+ */
+export type ValueKind =
+    | "number"
+    | "string"
+    | "boolean"
+    | "bigint"
+    | "symbol"
+    | "null"
+    | "undefined"
+    | "void"
+    | "object"
+    | "unknown";
+
+const scalarKinds: readonly [ts.TypeFlags, ValueKind][] = [
+    [ts.TypeFlags.NumberLike, "number"],
+    [ts.TypeFlags.StringLike, "string"],
+    [ts.TypeFlags.BooleanLike, "boolean"],
+    [ts.TypeFlags.BigIntLike, "bigint"],
+    [ts.TypeFlags.ESSymbolLike, "symbol"],
+    [ts.TypeFlags.Null, "null"],
+    [ts.TypeFlags.Undefined, "undefined"],
+    [ts.TypeFlags.Void, "void"],
+];
+
+/** The kind of value one member of a type (not a union) holds. */
+export function valueKindOf(member: ts.Type): ValueKind {
+    for (const [flags, kind] of scalarKinds)
+        if ((member.flags & flags) !== 0) return kind;
+    if (member.isIntersection()) {
+        // A branded primitive (`number & { brand }`) is its primitive.
+        const kinds = member.types.map(valueKindOf);
+        return (
+            kinds.find((kind) => kind !== "object" && kind !== "unknown") ??
+            (kinds.includes("unknown") ? "unknown" : "object")
+        );
+    }
+    return (member.flags &
+        (ts.TypeFlags.Object | ts.TypeFlags.NonPrimitive)) !==
+        0
+        ? "object"
+        : "unknown";
+}
+
+/**
+ * The operands a string `+` joins, left to right, or undefined when `node`
+ * is no `+` whose type is a string. Every nested `+` whose own type is a
+ * string joins the same concatenation; a nested numeric `+` -- `1 + 2 + "x"`
+ * -- stays one operand, because its sum is what JavaScript spells.
+ */
+export function stringPlusOperands(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression,
+): ts.Expression[] | undefined {
+    const joins = (expression: ts.Expression): boolean => {
+        const unwrapped = unwrap(expression);
+        return (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            valueKindOf(checker.getTypeAtLocation(unwrapped)) === "string"
+        );
+    };
+    if (!joins(node)) return undefined;
+    const operands: ts.Expression[] = [];
+    const collect = (expression: ts.Expression): void => {
+        const unwrapped = unwrap(expression);
+        if (joins(unwrapped) && ts.isBinaryExpression(unwrapped)) {
+            collect(unwrapped.left);
+            collect(unwrapped.right);
+        } else operands.push(expression);
+    };
+    collect(node);
+    return operands;
+}
+
+/** The kinds of value a type's members hold; `never` holds none. */
+export function valueKinds(type: ts.Type): ReadonlySet<ValueKind> {
+    if ((type.flags & ts.TypeFlags.Never) !== 0) return new Set();
+    return new Set(unionMembers(type).map(valueKindOf));
+}
+
+/** Whether every value of a type is of one of `kinds`. */
+export function holdsOnly(type: ts.Type, kinds: readonly ValueKind[]): boolean {
+    return (
+        (type.flags & ts.TypeFlags.Never) !== 0 ||
+        unionMembers(type).every((member) =>
+            kinds.includes(valueKindOf(member)),
+        )
+    );
+}
+
+/** The primitive kinds: no code changes such a value in place. */
+export const PRIMITIVE_KINDS: readonly ValueKind[] = [
+    "number",
+    "string",
+    "boolean",
+    "bigint",
+    "symbol",
+    "null",
+    "undefined",
+];
+
+/** The kinds of value no callee shares: each copies into it. */
+const SCALAR_KINDS: readonly ValueKind[] = [...PRIMITIVE_KINDS, "void"];
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
 export function typeCanCarryReference(type: ts.Type): boolean {
-    if (type.isUnion() || type.isIntersection())
-        return type.types.some(typeCanCarryReference);
-    const scalar =
-        ts.TypeFlags.NumberLike |
-        ts.TypeFlags.StringLike |
-        ts.TypeFlags.BooleanLike |
-        ts.TypeFlags.BigIntLike |
-        ts.TypeFlags.ESSymbolLike |
-        ts.TypeFlags.Null |
-        ts.TypeFlags.Undefined |
-        ts.TypeFlags.Void |
-        ts.TypeFlags.Never;
-    return (type.flags & scalar) === 0;
+    return !holdsOnly(type, SCALAR_KINDS);
 }
 
 const ABSENT = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
@@ -36,6 +138,11 @@ function absentFlags(member: ts.Type): number {
     );
 }
 
+/** A union's members, or the type itself. */
+export function unionMembers(type: ts.Type): readonly ts.Type[] {
+    return type.isUnion() ? type.types : [type];
+}
+
 /**
  * The members of a type that stand for a present value: a union's members
  * less `null`, `undefined`, `void` and the intersections that distribute one
@@ -43,9 +150,28 @@ function absentFlags(member: ts.Type): number {
  * absent. The one statement of the nullable-union member rule.
  */
 export function presentMembers(type: ts.Type): readonly ts.Type[] {
-    return (type.isUnion() ? type.types : [type]).filter(
-        (member) => absentFlags(member) === 0,
-    );
+    return unionMembers(type).filter((member) => absentFlags(member) === 0);
+}
+
+/**
+ * The call signatures of a value of `type`. Its `null`, `undefined` and
+ * `void` members say nothing about calling it: `present` reads the value's
+ * signatures once present (an optional callback is callable after its
+ * test); `exact` gives a nullable type none, for a site that calls, binds
+ * or stores the value as it is. Several function members answer the
+ * checker's merged signature.
+ */
+export function callSignatures(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    absent: "present" | "exact",
+): readonly ts.Signature[] {
+    const members = presentMembers(type);
+    if (absent === "exact" && members.length !== unionMembers(type).length)
+        return [];
+    return members.length === 1
+        ? members[0]!.getCallSignatures()
+        : checker.getNonNullableType(type).getCallSignatures();
 }
 
 /**
@@ -127,6 +253,55 @@ export function absenceKind(
     );
 }
 
+/**
+ * The class whose instances a type describes: a class's instance type (a
+ * generic one's instantiation, its `this`). Undefined for the constructor
+ * (`typeof C`), which shares the class's symbol, and any other type.
+ */
+export function classInstanceDeclaration(
+    type: ts.Type,
+): ts.ClassLikeDeclaration | undefined {
+    const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+    return declaration && type.getConstructSignatures().length === 0
+        ? declaration
+        : undefined;
+}
+
+/**
+ * Whether a type, or a class or interface type it extends at any depth,
+ * passes `test`. An intersection passes when one of its members does; a
+ * union when `unions` says ("some" member, "every" member, or "none").
+ * `through` keeps a type that fails it from lending its bases.
+ */
+export function inheritsFrom(
+    type: ts.Type,
+    test: (type: ts.Type) => boolean,
+    options: {
+        readonly unions?: "some" | "every" | "none";
+        readonly through?: (type: ts.Type) => boolean;
+    } = {},
+): boolean {
+    const seen = new Map<ts.Type, boolean>();
+    const visit = (candidate: ts.Type): boolean => {
+        const known = seen.get(candidate);
+        if (known !== undefined) return known;
+        seen.set(candidate, false);
+        const result =
+            test(candidate) ||
+            (candidate.isIntersection() && candidate.types.some(visit)) ||
+            (candidate.isUnion() &&
+                (options.unions === "some"
+                    ? candidate.types.some(visit)
+                    : options.unions === "every" &&
+                      candidate.types.every(visit))) ||
+            ((options.through?.(candidate) ?? true) &&
+                (candidate.getBaseTypes() ?? []).some(visit));
+        seen.set(candidate, result);
+        return result;
+    };
+    return visit(type);
+}
+
 /** Whether a type is a generic instantiation (`Map<K, V>`, `Array<T>`). */
 export function isTypeReference(type: ts.Type): type is ts.TypeReference {
     return (
@@ -148,6 +323,42 @@ export function arrayElementType(
     );
 }
 
+/** An array or tuple type: its element type, whether writes through it are allowed, and whether it is a tuple. */
+export interface ArrayShape {
+    readonly element: ts.Type;
+    readonly mutable: boolean;
+    readonly tuple: boolean;
+}
+
+/**
+ * The shape of a library array (`T[]`, `Array<T>`, `ReadonlyArray<T>`) or a
+ * tuple; undefined for any other type, a union included.
+ */
+export function arrayShape(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ArrayShape | undefined {
+    if (checker.isTupleType(type)) {
+        const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+        return (
+            element && {
+                element,
+                mutable: !(type as ts.TupleTypeReference).target.readonly,
+                tuple: true,
+            }
+        );
+    }
+    if (!checker.isArrayType(type)) return undefined;
+    const [element] = checker.getTypeArguments(type as ts.TypeReference);
+    return (
+        element && {
+            element,
+            mutable: libraryName(type) === "Array",
+            tuple: false,
+        }
+    );
+}
+
 /** Which absent values a type admits. */
 interface Nullability {
     /** A member is `null`. */
@@ -158,9 +369,39 @@ interface Nullability {
     readonly void: boolean;
 }
 
+/**
+ * Whether a type is `void` itself: a result its caller is not meant to read,
+ * which has no storage (`undefined` has; a `void | T` union is not `void`).
+ */
+export function isVoid(type: ts.Type): boolean {
+    return (type.flags & ts.TypeFlags.Void) !== 0;
+}
+
+/**
+ * Whether a slot of this type holds no payload: `void` or `never`. Such a
+ * parameter only fills a position; its argument is erased.
+ */
+export function holdsNoPayload(type: ts.Type): boolean {
+    return isVoid(type) || (type.flags & ts.TypeFlags.Never) !== 0;
+}
+
+/**
+ * Whether every member of a type is `undefined` or `void`: a value of it is
+ * `undefined`, and a call returning it completes without a value.
+ */
+export function undefinedOnly(type: ts.Type): boolean {
+    return unionMembers(type).every((member) => {
+        const flags = absentFlags(member);
+        return (
+            (flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 &&
+            (flags & ts.TypeFlags.Null) === 0
+        );
+    });
+}
+
 /** See {@link Nullability}; members are those of {@link presentMembers}. */
 export function nullability(type: ts.Type): Nullability {
-    const flags = (type.isUnion() ? type.types : [type]).reduce(
+    const flags = unionMembers(type).reduce(
         (all, member) => all | absentFlags(member),
         0,
     );
@@ -180,22 +421,14 @@ export function presentLiteralKeys(
     literal: ts.ObjectLiteralExpression,
 ): string[] {
     const keys: string[] = [];
-    for (const property of literal.properties) {
+    for (const member of objectLiteralMembers(literal)) {
         if (
-            !ts.isPropertyAssignment(property) &&
-            !ts.isShorthandPropertyAssignment(property)
+            (member.kind !== "property" && member.kind !== "shorthand") ||
+            member.key === undefined
         )
             continue;
-        const key = propertyNameText(property.name);
-        if (key === undefined) continue;
-        const absent = nullability(
-            checker.getTypeAtLocation(
-                ts.isPropertyAssignment(property)
-                    ? property.initializer
-                    : property.name,
-            ),
-        );
-        if (!absent.null && !absent.undefined) keys.push(key);
+        const absent = nullability(checker.getTypeAtLocation(member.value));
+        if (!absent.null && !absent.undefined) keys.push(member.key);
     }
     return keys;
 }
@@ -300,7 +533,7 @@ export function declaredContextualType(
         parent.arguments?.some(
             (argument) => unwrapExpression(argument) === expression,
         )
-            ? checker.getResolvedSignature(parent)?.getDeclaration()
+            ? calledDeclaration(checker, parent)
             : undefined;
     // A constructor's signature carries its class's type parameters.
     return callee &&

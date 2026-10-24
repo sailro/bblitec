@@ -23,6 +23,7 @@ import {
     webAudioMemberAssign,
     webAudioMemberCall,
 } from "../lowering/web-platform-schema.js";
+import { undefinedOnly } from "./type-facts.js";
 
 /**
  * MediaStream and MediaStreamTrack objects (`bblite/pal_media_stream.hpp`):
@@ -403,14 +404,10 @@ export function compileUninhabitedMethod(
 ): Value | undefined {
     const context = lowerer.context;
     const returned = context.checker.getTypeAtLocation(call);
-    const result =
-        (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0
-            ? undefined
-            : context.dataTypes.fromTsType(returned, call);
-    if (
-        result === undefined &&
-        (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) === 0
-    )
+    const result = undefinedOnly(returned)
+        ? undefined
+        : context.dataTypes.fromTsType(returned, call);
+    if (result === undefined && !undefinedOnly(returned))
         return context.fail(
             call,
             `${method} has no owned native representation of its result.`,

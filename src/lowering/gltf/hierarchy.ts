@@ -2,6 +2,7 @@ import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** Pinned parent-map publication over native records. */
 export function lowerGltfHierarchy(context: LoweringContext): string {
@@ -32,7 +33,7 @@ export function lowerGltfHierarchy(context: LoweringContext): string {
         calls: new Map(),
 
         forOf(iterated, element) {
-            return iterated === "children"
+            return sameSource(iterated, "children")
                 ? {
                       range: "children->as_array()",
                       bindings: new Map([

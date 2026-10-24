@@ -2,9 +2,14 @@ import ts from "typescript";
 import { returnsOnly } from "./fresh-records.js";
 import { callMember, type DataType } from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    unwrapExpression,
+    valueOperands,
+} from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
+import { calledFunction } from "./symbols.js";
 
 /** A function expression, or a call whose source returns only new functions. */
 function freshCallable(
@@ -15,19 +20,14 @@ function freshCallable(
     const source = unwrapExpression(expression);
     if (ts.isArrowFunction(source) || ts.isFunctionExpression(source))
         return true;
-    if (ts.isConditionalExpression(source))
-        return (
-            freshCallable(checker, source.whenTrue, active) &&
-            freshCallable(checker, source.whenFalse, active)
+    if (isOperandSelection(source))
+        return valueOperands(source).every((operand) =>
+            freshCallable(checker, operand, active),
         );
     if (!ts.isCallExpression(source)) return false;
-    const declaration = checker.getResolvedSignature(source)?.declaration;
+    const declaration = calledFunction(checker, source);
     return (
         declaration !== undefined &&
-        (ts.isFunctionDeclaration(declaration) ||
-            ts.isArrowFunction(declaration) ||
-            ts.isFunctionExpression(declaration) ||
-            ts.isMethodDeclaration(declaration)) &&
         returnsOnly(declaration, active, (returned) =>
             freshCallable(checker, returned, active),
         )

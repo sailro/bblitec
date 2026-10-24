@@ -35,6 +35,11 @@ import {
     expressionHasEffects,
     identifierText,
     unwrapExpression as unwrapWalkExpression,
+    isExpressionWrapper,
+    equalityOperator,
+    functionKind,
+    isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -67,6 +72,8 @@ import {
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
+import { arrayElementType, unionMembers } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * One engine handle collection an expression names.
@@ -135,7 +142,7 @@ export function emitHandleCollectionLoop<
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
             ts.isForOfStatement(declaration.parent.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+            variableKind(declaration.parent) === "const";
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
@@ -189,11 +196,8 @@ function assetOwnerMapBuilder(
     ): ts.Identifier[] | undefined => {
         if (
             !fn.body ||
-            fn.asteriskToken ||
+            functionKind(fn) !== "plain" ||
             fn.typeParameters?.length ||
-            fn.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
             fn.parameters.length !== count ||
             fn.parameters.some(
                 (parameter) =>
@@ -216,9 +220,9 @@ function assetOwnerMapBuilder(
     ): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
         if (
             !ts.isForOfStatement(statement) ||
-            statement.awaitModifier ||
+            isSuspensionPoint(statement) ||
             !ts.isVariableDeclarationList(statement.initializer) ||
-            !(statement.initializer.flags & ts.NodeFlags.Const) ||
+            variableKind(statement.initializer) !== "const" ||
             statement.initializer.declarations.length !== 1
         )
             return undefined;
@@ -612,32 +616,22 @@ export class HandleCollections {
         expression: ts.Expression,
         unwrapped: ts.Expression,
     ): boolean {
-        const transparent = (
-            node: ts.Node,
-        ): node is
-            | ts.ParenthesizedExpression
-            | ts.NonNullExpression
-            | ts.AsExpression
-            | ts.TypeAssertion
-            | ts.SatisfiesExpression =>
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node) ||
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isSatisfiesExpression(node);
         let node: ts.Node = expression;
         while (node !== unwrapped) {
             if (ts.isAwaitExpression(node)) return true;
-            if (transparent(node)) {
+            if (isExpressionWrapper(node)) {
                 node = node.expression;
-            } else if (ts.isBinaryExpression(node)) {
+            } else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            ) {
                 node = node.left;
             } else {
                 break;
             }
         }
         let above: ts.Node | undefined = unwrapped.parent;
-        while (above && (transparent(above) || ts.isAwaitExpression(above))) {
+        while (above && isExpressionWrapper(above, { await: true })) {
             if (ts.isAwaitExpression(above)) return true;
             above = above.parent;
         }
@@ -752,10 +746,7 @@ export class HandleCollections {
                 `'${unwrapped.name.text}' is a promise of its collection; read it under await.`,
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            awaited,
-            ts.IndexKind.Number,
-        );
+        const elementType = arrayElementType(this.context.checker, awaited);
         if (!elementType) {
             this.context.fail(
                 unwrapped,
@@ -990,7 +981,7 @@ export class HandleCollections {
         if (
             !loop ||
             !ts.isForOfStatement(loop) ||
-            loop.awaitModifier ||
+            isSuspensionPoint(loop) ||
             !ts.isVariableDeclarationList(loop.initializer) ||
             loop.initializer.declarations.length !== 1
         ) {
@@ -1069,11 +1060,9 @@ export class HandleCollections {
                 "The asset handle table does not expose its mesh collection.",
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            this.context.checker.getNonNullableType(
-                this.context.checker.getTypeAtLocation(expression),
-            ),
-            ts.IndexKind.Number,
+        const elementType = arrayElementType(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
         );
         const element = elementType
             ? this.context.dataTypes.fromTsType(elementType, expression)
@@ -1349,8 +1338,8 @@ export class HandleCollections {
             this.context.checker.getTypeAtLocation(collection.expression),
         );
         if (
-            !(ownerType.isUnion() ? ownerType.types : [ownerType]).some(
-                (part) => isPinnedType(part, ["AssetContainer"]),
+            !unionMembers(ownerType).some((part) =>
+                isPinnedType(part, ["AssetContainer"]),
             )
         )
             return undefined;
@@ -2000,7 +1989,11 @@ export class HandleCollections {
                 predicate.parameters[0]!.name,
                 root,
             );
-            if (context.conditions.compileCondition(predicate.body) !== "true")
+            if (
+                knownCondition(
+                    context.conditions.compileCondition(predicate.body),
+                ) !== true
+            )
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
@@ -2629,10 +2622,7 @@ export class HandleCollections {
         const resolved = this.context.unwrap(
             this.context.resolveStaticExpression(expression),
         );
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
@@ -2824,12 +2814,8 @@ export class HandleCollections {
         expression: ts.BinaryExpression,
     ): string | undefined {
         const operator = expression.operatorToken.kind;
-        if (
-            operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-        ) {
-            return undefined;
-        }
+        const equality = equalityOperator(operator);
+        if (!equality || equality.loose) return undefined;
         const leftKind = this.handleOperandKind(expression.left);
         const rightKind = this.handleOperandKind(expression.right);
         if (!leftKind || leftKind !== rightKind) {
@@ -3054,10 +3040,7 @@ function isAssetDescendantNameSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -3099,7 +3082,7 @@ function isAssetDescendantNameSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1 ||
         !isPropertyReadOf(walk.expression, root, "children")
     ) {
@@ -3127,7 +3110,7 @@ function isAssetDescendantNameSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0
+        variableKind(loopStatements[0].declarationList) !== "const"
     ) {
         return false;
     }
@@ -3197,10 +3180,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3245,7 +3225,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1
     ) {
         return false;
@@ -3276,7 +3256,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(loopStatements[0].declarationList) !== "const" ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
         )
@@ -3739,7 +3719,7 @@ function isClosureMeshFlattenCollector(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3792,7 +3772,7 @@ function isClosureMeshFlattenCollector(
     // from every root, so the walk covers the whole container.
     if (
         !ts.isForOfStatement(loop!) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {
@@ -3865,7 +3845,7 @@ function isClosureMeshFlattenCollector(
     const recursion = inner[0]!;
     if (
         !ts.isForOfStatement(recursion) ||
-        recursion.awaitModifier ||
+        isSuspensionPoint(recursion) ||
         !ts.isVariableDeclarationList(recursion.initializer) ||
         recursion.initializer.declarations.length !== 1
     ) {
@@ -3920,10 +3900,11 @@ function isNotNullProbe(
     parameter: ts.Identifier,
 ): boolean {
     const current = unwrapWalkExpression(expression);
+    if (!ts.isBinaryExpression(current)) return false;
+    const equality = equalityOperator(current.operatorToken.kind);
     return (
-        ts.isBinaryExpression(current) &&
-        current.operatorToken.kind ===
-            ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        equality?.loose === false &&
+        equality.negated &&
         isIdentifierRead(current.left, parameter) &&
         unwrapWalkExpression(current.right).kind === ts.SyntaxKind.NullKeyword
     );
@@ -3962,7 +3943,7 @@ function typeGuardConjunction(
 ): { parameter: ts.Identifier; operands: ts.Expression[] } | undefined {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         declaration.body.statements.length !== 1
@@ -4132,7 +4113,7 @@ function isRecursiveMeshFlattenVisitor(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -4206,7 +4187,7 @@ function isRecursiveMeshFlattenVisitor(
         !loop ||
         !children ||
         !names.some((name) => isPropertyReadOf(children, name, "children")) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {
@@ -4239,7 +4220,7 @@ function constAliasOf(
     const declaration = singleConstDeclaration(statement);
     return declaration &&
         ts.isVariableStatement(statement) &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(statement.declarationList) === "const" &&
         isIdentifierRead(declaration.initializer, node)
         ? declaration.name
         : undefined;

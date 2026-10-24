@@ -1,5 +1,6 @@
 import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 import {
@@ -17,6 +18,11 @@ import {
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    sameSource,
+    soleBindingName,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -255,7 +261,7 @@ ${this.lowerDecodePickId()}`,
         return `// ${this.context.provenance(gpuPickerModule, "pickAsyncImpl")}
 // The readback's \`pickId\`, from the colour staging row's first bytes.
 inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
-    return bbl::js::to_uint32(${lowerer.expression(store.right)});
+    return ${jsToUint32Call(lowerer.expression(store.right))};
 }`;
     }
 
@@ -284,8 +290,7 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
         const declares = (statement: ts.Statement, name: string): boolean =>
             ts.isVariableStatement(statement) &&
             statement.declarationList.declarations.length === 1 &&
-            statement.declarationList.declarations[0]!.name.getText(file) ===
-                name;
+            sameSource(statement.declarationList.declarations[0]!.name, name);
         const first = statements.findIndex((statement) =>
             declares(statement, "backingWidth"),
         );
@@ -400,7 +405,7 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
-                const name = local.name.getText(file);
+                const name = soleBindingName(local.name);
                 const initializer = local.initializer;
                 if (!initializer) return undefined;
                 if (name === "viewport") {
@@ -1121,7 +1126,7 @@ ${this.lowerPickedNormalImpl(calls)}
             // optional members dereference where the guard above proved
             // them present.
             const named = lowerer.expression(inner);
-            return PICK_INFO_NORMAL_MEMBERS.has(inner.getText())
+            return isOneOfSources(inner, PICK_INFO_NORMAL_MEMBERS)
                 ? `js::Tuple<3>{*${named}}`
                 : `js::Tuple<3>{${named}}`;
         };
@@ -1364,7 +1369,7 @@ void populate_pick_ray(
             ts.isExpressionStatement(store) &&
             ts.isBinaryExpression(store.expression) &&
             store.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            store.expression.left.getText(file) === "info.distance"
+            sameSource(store.expression.left, "info.distance")
                 ? store.expression
                 : undefined;
         if (statements.length !== 5 || !distanceStore) {

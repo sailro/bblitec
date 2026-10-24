@@ -13,6 +13,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import { pinnedHeader } from "./pinned-header.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export function pinnedQuaternionHeader(context: LoweringContext): string {
     return pinnedHeader(
@@ -157,7 +158,7 @@ export function pinnedEulerProxy(
                     (write
                         ? ts.isSetAccessorDeclaration(property)
                         : ts.isGetAccessorDeclaration(property)) &&
-                    property.name?.getText(proxy.file) === lane,
+                    sameSource(property.name, lane),
             );
             if (
                 !accessor ||

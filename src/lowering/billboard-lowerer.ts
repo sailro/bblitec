@@ -23,6 +23,7 @@ import {
 import { recordAt } from "../compiler/record-access.js";
 import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
 import { lowerBillboardInstances } from "./pinned-billboard-instances.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -301,7 +302,7 @@ export class BillboardLowerer {
             !ts.isArrowFunction(comparator) ||
             ts.isBlock(comparator.body) ||
             comparator.parameters
-                .map((parameter) => parameter.name.getText(file))
+                .map((parameter) => soleBindingName(parameter.name))
                 .join(",") !== "left,right"
         ) {
             return this.context.contractError(
@@ -446,8 +447,10 @@ inline double billboard_sort_compare(
                         node.thenStatement,
                         (call): call is ts.CallExpression =>
                             ts.isCallExpression(call) &&
-                            call.expression.getText(file) ===
+                            sameSource(
+                                call.expression,
                                 "uploadSortedBillboardInstances",
+                            ),
                     )
                     .some(() => true),
         );

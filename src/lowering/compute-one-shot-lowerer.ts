@@ -18,6 +18,7 @@ import {
     pinnedRecordLiteral,
     pinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { soleBindingName, declaredKey } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-one-shot.ts";
 const shotSchema = pinnedRecordSchema("ComputeOneShot", {
@@ -179,9 +180,9 @@ function bodyScope(
         calls,
 
         foldConditions: false,
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
-                !context.expressionMatchesShape(syntax.expression, "batch") ||
+                !context.expressionMatchesShape(iterated, "batch") ||
                 element !== "[oneShot, generation]"
             )
                 return undefined;
@@ -248,7 +249,9 @@ function bodyScope(
             }
             if (ts.isObjectLiteralExpression(node)) {
                 const names = node.properties.map((property) =>
-                    property.name?.getText(file),
+                    property.name === undefined
+                        ? undefined
+                        : declaredKey(property.name),
                 );
                 if (names.includes("task"))
                     return `js::make_gc_shared<ComputeOneShot>(${pinnedRecordLiteral(context, lowerer, node, shotSchema)})`;
@@ -263,7 +266,7 @@ function bodyScope(
                 )
                     return "js::Callback<void()>([](){})";
                 const names = node.parameters.map((parameter) =>
-                    parameter.name.getText(file),
+                    soleBindingName(parameter.name),
                 );
                 if (names.length === 1 && names[0] === "encoder")
                     return closure(
@@ -340,10 +343,9 @@ function bodyScope(
                                 callback,
                                 "Expected completion record destructuring.",
                             );
-                        const field =
-                            each.parameters[0]!.name.elements[0]?.name.getText(
-                                file,
-                            );
+                        const field = soleBindingName(
+                            each.parameters[0]!.name.elements[0]?.name,
+                        );
                         if (field !== (index === 0 ? "resolve" : "reject"))
                             return context.contractError(
                                 each,

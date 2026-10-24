@@ -5,6 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { isExpressionWrapper, sourceEntry } from "../compiler/syntax.js";
 
 type Kind =
     | "engine"
@@ -185,7 +186,7 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
                     statement: (node, lowerer, indent) =>
                         statement(node, lowerer, indent),
                     forOf: (source, element) => {
-                        const value = values.get(source);
+                        const value = sourceEntry(values, source);
                         const kind =
                             value?.kind === "batch"
                                 ? "callback"
@@ -221,11 +222,7 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
             return { kind: "callback", cpp: `[=]() {\n${cpp}\n}` };
         };
         const expression = (node: ts.Expression): Value => {
-            if (
-                ts.isParenthesizedExpression(node) ||
-                ts.isNonNullExpression(node)
-            )
-                return expression(node.expression);
+            if (isExpressionWrapper(node)) return expression(node.expression);
             if (ts.isIdentifier(node)) {
                 if (node.text === "undefined")
                     return { kind: "void", cpp: "(void)0" };

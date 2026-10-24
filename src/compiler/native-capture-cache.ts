@@ -63,9 +63,13 @@ export class NativeCaptureCache {
                 if (seen.has(current)) return;
                 seen.add(current);
                 observe(current);
+                // A class instance's record names its stored instance too.
                 if (
                     (current.kind !== "record" && current.kind !== "tuple") ||
-                    isNativeOwnerRecord(current)
+                    isNativeOwnerRecord(current) ||
+                    (current.kind === "record" &&
+                        current.classDeclaration !== undefined &&
+                        current.cpp !== "")
                 ) {
                     captures(current.nativeCaptures);
                     named(current.cpp);

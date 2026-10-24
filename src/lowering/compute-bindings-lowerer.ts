@@ -250,10 +250,10 @@ function scope(
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
+        forOf(iterated, element) {
             if (
                 context.expressionMatchesShape(
-                    syntax.expression,
+                    iterated,
                     "Object.keys(resources)",
                 )
             )
@@ -263,12 +263,7 @@ function scope(
                         [element, { cpp: `${element}.first`, type: "opaque" }],
                     ]),
                 };
-            if (
-                context.expressionMatchesShape(
-                    syntax.expression,
-                    "shader._decls",
-                )
-            )
+            if (context.expressionMatchesShape(iterated, "shader._decls"))
                 return {
                     range: "shader->decls",
                     bindings: new Map([

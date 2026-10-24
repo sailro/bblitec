@@ -11,6 +11,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
 import { computeDispatchDescriptorCpp } from "./compute-dispatch-descriptor.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-dispatch.ts";
 const methods = {
@@ -35,10 +36,7 @@ const methods = {
         "const std::shared_ptr<ComputeDispatch>& dispatch,const std::string& bindingName,double byteOffset",
     ],
 } as const;
-function scope(
-    context: LoweringContext,
-    file: ts.SourceFile,
-): PinnedNumericScope {
+function scope(context: LoweringContext): PinnedNumericScope {
     const bindings = new Map<string, PinnedBinding>();
     for (const name of [
         "shader",
@@ -176,8 +174,7 @@ function scope(
                     const callback = map.arguments[0];
                     if (
                         callback.parameters.length !== 1 ||
-                        callback.parameters[0]!.name.getText(file) !==
-                            "count" ||
+                        !sameSource(callback.parameters[0]!.name, "count") ||
                         ts.isBlock(callback.body)
                     )
                         return context.contractError(
@@ -240,7 +237,7 @@ export function lowerComputeDispatch(context: LoweringContext): LoweredSource {
             prefix = `const bool enabled = enabled_input.value_or(${fallback.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false"});\n`;
         }
         const body = lowerPinnedBody(file, declaration.body!.statements, {
-            ...scope(context, file),
+            ...scope(context),
             returnValue: (node, lowerer) =>
                 node ? lowerer.expression(node) : "",
         });

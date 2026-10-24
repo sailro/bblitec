@@ -57,6 +57,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 import type { DeploymentOptions } from "./deployment.js";
+import { knownCondition } from "./values/model.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -2007,12 +2008,11 @@ export function isStringValue(value: Value): boolean {
 
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
+    const known = knownCondition(cpp);
     return {
         kind: "boolean",
         cpp,
-        ...(cpp === "true" || cpp === "false"
-            ? { staticBoolean: cpp === "true" }
-            : {}),
+        ...(known === undefined ? {} : { staticBoolean: known }),
         dataType: { kind: "boolean" },
     };
 }

@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { type WriteSite } from "../compiler/syntax.js";
 
 const checked = new WeakSet<LoweringContext>();
 
@@ -23,36 +24,38 @@ export function assertDrawRangesUnreached(context: LoweringContext): void {
     const site = (node: ts.Node) =>
         `${node.getSourceFile().fileName}#${ts.findAncestor(node, ts.isFunctionDeclaration)?.name?.text}`;
     const factories = "src/mesh/mesh-factories.ts";
-    const clears = (write: ts.BinaryExpression) =>
-        site(write) === `${factories}#retainMeshGeometry` &&
-        (context.expressionMatchesShape(write.right, "undefined") ||
-            context.expressionMatchesShape(
-                write.right,
-                "gpu._baseVertex = undefined",
-            ));
+    // A write that computes its value (`++`, `+=`, a pattern leaf) stores
+    // nothing these shapes name, so it is an unexpected writer.
+    const stores = (write: WriteSite, shape: string): boolean =>
+        write.stored !== undefined &&
+        context.expressionMatchesShape(write.stored, shape);
+    const clears = (write: WriteSite) =>
+        site(write.node) === `${factories}#retainMeshGeometry` &&
+        (stores(write, "undefined") ||
+            stores(write, "gpu._baseVertex = undefined"));
     for (const write of context.writersOf("_firstIndex"))
         if (
             !clears(write) &&
-            site(write) !== `${factories}#setMeshDrawRange` &&
+            site(write.node) !== `${factories}#setMeshDrawRange` &&
             !(
-                site(write) ===
+                site(write.node) ===
                     "src/engine/recovery-rebuild.ts#uploadRetainedMesh" &&
-                context.expressionMatchesShape(write.right, "old._firstIndex")
+                stores(write, "old._firstIndex")
             ) &&
-            !context.expressionMatchesShape(write.right, "gpu._firstIndex ?? 0")
+            !stores(write, "gpu._firstIndex ?? 0")
         )
             context.contractError(
-                write,
+                write.node,
                 "Expected only setMeshDrawRange to select a mesh's first index.",
             );
     for (const write of context.writersOf("_drawRangeSource"))
         if (
             !clears(write) &&
-            site(write) !==
+            site(write.node) !==
                 "src/mesh/mesh-draw-range-state.ts#setMeshDrawRangeSource"
         )
             context.contractError(
-                write,
+                write.node,
                 "Expected setMeshDrawRangeSource alone to install a draw-range source.",
             );
     // A caller names the installer, so only modules spelling it are parsed.

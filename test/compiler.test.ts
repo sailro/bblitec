@@ -1560,7 +1560,12 @@ test("shares handle-touching methods beside native siblings", () => {
 
     // Handle parameters use a shared closure over their instance metadata.
     assert.doesNotMatch(result.cpp, /bblscene::Spinner_spin/);
-    assert.equal(result.cpp.match(/rotation\.y \+=/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
     // The plain-data sibling on the same instance still emits once.
     assert.match(result.cpp, /bblscene::Spinner_rate\(/);
 });
@@ -2484,8 +2489,8 @@ test("materializes mutable intersection-typed object locals", () => {
         const moved = move();
     `);
 
-    assert.match(result.cpp, /\.grounded = true;/);
-    assert.match(result.cpp, /\.wall = 1\.0;/);
+    assert.match(result.cpp, /->grounded = true;/);
+    assert.match(result.cpp, /->wall = 1\.0;/);
     assert.doesNotMatch(result.cpp, /false = true|0\.0 =/);
 });
 
@@ -2501,8 +2506,8 @@ test("writes nested mutable record fields through native lvalues", () => {
         actor.box.y += 2;
     `);
 
-    assert.match(result.cpp, /v_actor\.box->x = 4\.0;/);
-    assert.match(result.cpp, /v_actor\.box->y \+= 2\.0;/);
+    assert.match(result.cpp, /v_actor->box->x = 4\.0;/);
+    assert.match(result.cpp, /v_actor->box->y \+= 2\.0;/);
     assert.doesNotMatch(result.cpp, /0\.0 =|70\.0 \* 2\.8\) \+=/);
 });
 
@@ -2688,9 +2693,14 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
         `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];`,
     ).exec(result.cpp);
     assert.ok(iteration);
+    // The pattern binds its lanes from the item in place, as a declaration does.
+    const lane = new RegExp(`double (\\w+_vx) = ${iteration[2]}\\[0\\];`).exec(
+        result.cpp,
+    );
+    assert.ok(lane);
     assert.match(
         result.cpp,
-        new RegExp(`if \\(${iteration[2]}\\[0\\] > 0\\.0\\) \\{\\s+break;`),
+        new RegExp(`if \\(${lane[1]} > 0\\.0\\) \\{\\s+break;`),
     );
 });
 
@@ -2761,7 +2771,7 @@ test("returns the value of chained numeric field assignments", () => {
         box.w = box.h = 42;
     `);
 
-    assert.match(result.cpp, /v_box\.w = \(v_box\.h = 42\.0\);/);
+    assert.match(result.cpp, /->w = \(v_box->h = 42\.0\);/);
 });
 
 test("returns the value of chained scalar-local assignments", () => {
@@ -2793,18 +2803,21 @@ test("spreads a native partial struct into a wider struct", () => {
 
     // Nothing reads a copied key's presence, so an own undefined needs no
     // document: the wider record stays native and copies present fields.
-    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
+    assert.match(
+        result.cpp,
+        /bblscene::Item v_item = bbl::js::make_ref<bblscene::ItemData>\(\);/,
+    );
     for (const key of ["label", "enabled"])
         assert.match(
             result.cpp,
             new RegExp(
-                String.raw`if \(v_options\.${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options\.${key}\);`,
+                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item->${key} = \(\*v_options->${key}\);`,
             ),
         );
     // `label` is never written, so the copy's presence is known statically.
     assert.ok(
         result.cpp.includes(
-            "v_options.enabled = bbl::js::Nullable<bool>{true};",
+            "v_options->enabled = bbl::js::Nullable<bool>{true};",
         ),
     );
 
@@ -2982,7 +2995,7 @@ test("retains tuple array storage through fixed and runtime indices", () => {
     );
     assert.match(
         result.cpp,
-        /v_total \+= \(v_bblite_item_\d+\[0\] \+ v_bblite_item_\d+\[1\]\);/,
+        /double (v_block\d+_left) = (v_bblite_item_\d+)\[0\];\s+\[\[maybe_unused\]\] double (v_block\d+_right) = \2\[1\];\s+v_total \+= \(\1 \+ \3\);/,
     );
 });
 
@@ -3486,7 +3499,7 @@ test("stores and mutates a runtime string local", () => {
         result.cpp,
         /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/,
     );
-    assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
+    assert.match(result.cpp, /v_\w*name = bbl::js::string_to_upper_case/);
 });
 
 test("preserves undefined in typeof for maybe-absent runtime values", () => {
@@ -3666,7 +3679,12 @@ test("erases type-only class implements clauses", () => {
         counter.bump();
     `);
 
-    assert.match(result.cpp, /\(\*v_bblite_class_field_value_\d+\)\+\+/);
+    // An `implements` clause names no base: the class lowers as a plain one,
+    // its method a native function over the field.
+    assert.match(
+        result.cpp,
+        /ImplementedCounter_bump\(\(\*v_bblite_class_field_value_\d+\)\)/,
+    );
 });
 
 test("runs a discarded local-class constructor for its side effects", () => {
@@ -4213,7 +4231,7 @@ test("binds object data-path locals with shared identity", () => {
     // field write still reaches the object stored in the holder.
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -4500,8 +4518,11 @@ test("copies spread objects and destructures reference-backed array entries", ()
     );
     // `original.row` is never written, so the moved row folds.
     assert.match(result.cpp, /v_moved->row = \(1\.0 \+ 1\.0\);/);
-    assert.match(result.cpp, /v_bblite_item_\d+->row/);
-    assert.match(result.cpp, /v_bblite_item_\d+->colors/);
+    // The pattern reads the item in place.
+    assert.match(
+        result.cpp,
+        /auto&& (v_bblite_destructure_\d+) = v_bblite_item_\d+;\s+double v_fn\d+_block\d+_row = \1->row;\s+bbl::js::Array<double> v_fn\d+_block\d+_colors = \1->colors;/,
+    );
 });
 
 test("keeps an object element alive after its container is resized", () => {
@@ -4539,7 +4560,7 @@ test("mutable object aliases retain JavaScript identity", () => {
     `);
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -5364,7 +5385,7 @@ test("indexes runtime strings as one-character strings", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::string_index\([^\r\n]+/);
-    assert.match(result.cpp, /bbl::js::string_lower\(v_fn\d+_text\)/);
+    assert.match(result.cpp, /bbl::js::string_to_lower_case\(v_fn\d+_text\)/);
 });
 
 test("narrows guarded optional strings before trim", () => {
@@ -8338,16 +8359,14 @@ test("snapshots scalar members of records retained by classes", () => {
             result.cpp,
         );
     assert.ok(stored);
-    const initialized = new RegExp(
-        String.raw`auto& (\w+) = v_vehicle;\s*${stored[1]} = \1;`,
-    ).exec(result.cpp);
-    assert.ok(initialized);
-    assert.ok(
-        result.cpp.indexOf(initialized[0]) > result.cpp.indexOf(stored[0]),
-    );
+    // The argument binds first; the field is assigned from it once stored.
+    const argument = /auto& (\w+) = v_vehicle;/.exec(result.cpp);
+    assert.ok(argument);
+    const initialized = `${stored[1]} = ${argument[1]};`;
+    assert.ok(result.cpp.indexOf(initialized) > result.cpp.indexOf(stored[0]));
     assert.ok(result.cpp.includes(`return ${stored[1]}->bodyRestY;`));
     const mutation = result.cpp.indexOf(".position.y = 10.0;");
-    assert.ok(mutation > result.cpp.indexOf(initialized[0]));
+    assert.ok(mutation > result.cpp.indexOf(initialized));
     assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 
@@ -8387,7 +8406,10 @@ test("reads mutated flat-entry variables from live generated state", (t) => {
         );
         assert.match(result.cpp, /\.position\.x = v_counter;/);
         assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0;/);
-        assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+        assert.match(
+            result.cpp,
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.3\)/,
+        );
         assert.equal(
             (result.cpp.match(/bbl::mark_mesh_dirty\(/g) ?? []).length,
             2,
@@ -8575,15 +8597,33 @@ test("preserves compound assignments for numeric properties", () => {
     `);
 
     assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0;/);
-    assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
-    assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
+    assert.match(
+        result.cpp,
+        /\.environment\.exposure = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.exposure\) - 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.environment\.contrast = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.contrast\) \+ 0\.2\)/,
+    );
     assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
     assertCameraScalarWrite(result.cpp, "beta", /\(\w+ - 0\.4\)/);
-    assert.match(result.cpp, /\.alpha \+= 0\.1f/);
-    assert.match(result.cpp, /\.specular_power -= 1\.0f/);
+    assert.match(
+        result.cpp,
+        /\.alpha = static_cast<float>\(static_cast<double>\([^\n]*\.alpha\) \+ 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.specular_power = static_cast<float>\(static_cast<double>\([^\n]*\.specular_power\) - 1\.0\)/,
+    );
     assert.match(result.cpp, /\.position\.x -= 0\.02/);
-    assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
-    assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
+    assert.match(
+        result.cpp,
+        /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.01\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.scaling\.z = static_cast<float>\(static_cast<double>\([^\n]*\.scaling\.z\) \+ 0\.03\)/,
+    );
 });
 
 test("records awaits lowered by static expression evaluation", () => {
@@ -9621,6 +9661,88 @@ test("lowers dynamic retained UI innerHTML substitutions", () => {
     assert.match(result.cpp, /color:#ff6b6b/);
     assert.match(result.cpp, /\.empty\(\)/);
     assert.doesNotMatch(result.cpp, /__BBLITE_UI_MARKUP_/);
+});
+
+test("evaluates a retained UI substitution's || right operand only when taken", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        let reads = 0;
+        function pickLabel(): string { reads++; return reads > 1 ? "k" : ""; }
+        function fallbackLabel(): string { reads += 10; return "?"; }
+        async function main(): Promise<void> {
+            await createEngine({});
+            const stats = document.createElement("div");
+            window.addEventListener("keydown", () => {
+                stats.innerHTML = \`<span>KEY \${pickLabel() || fallbackLabel()}</span>\`;
+            });
+            document.body.appendChild(stats);
+        }
+        void main();
+    `);
+    // The fallback's effect sits under the left operand's falsy test.
+    assert.match(
+        result.cpp,
+        /if \([^\n]*empty\(\)[^\n]*\) \{\n\s*\(\*v_reads\) \+= 10\.0;/,
+    );
+    assert.equal(result.cpp.match(/\(\*v_reads\) \+= 10\.0;/g)?.length, 1);
+});
+
+test("a float field's compound store rounds once, at the store", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.scaling.x = 3;
+            box.scaling.x *= 1.1;
+            box.scaling.y = 1e39;
+        }
+        void main();
+    `);
+    // JavaScript computes 3 * 1.1 in double and rounds at the float32
+    // store; an out-of-range number stores as an infinity.
+    assert.match(
+        result.cpp,
+        /scaling\.x = static_cast<float>\(static_cast<double>\([^\n]*scaling\.x\) \* 1\.1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /scaling\.y = std::numeric_limits<float>::infinity\(\);/,
+    );
+    assert.doesNotMatch(result.cpp, /\*= 1\.1f|1e\+39f/);
+});
+
+test("shares one cell between the closures that capture and write a by-value binding", () => {
+    // A for-of variable gets one cell per iteration; a destructured binding
+    // one cell where the pattern binds it.
+    for (const source of [
+        "const incs: Array<() => void> = [], gets: Array<() => number> = []; for (let x of [1, 10]) { incs.push(() => { x++; }); gets.push(() => x); } incs[0]!(); console.log(gets[0]!());",
+        "function counter(o: { n: number }) { let { n } = o; return { inc: () => { n++; }, get: () => n }; } const c = counter({ n: 0 }); c.inc(); console.log(c.get());",
+    ])
+        assert.match(
+            compileSource(source).cpp,
+            /auto \w*shared_binding\w* = bbl::js::make_gc_shared<double>\(/,
+        );
+});
+
+test("refuses a captured var declared in a loop body", () => {
+    // JavaScript has one binding per function; a cell made where the
+    // declaration sits would be one per iteration.
+    assert.throws(
+        () =>
+            compileSource(
+                "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
+            ),
+        /A `var` declared in a loop body and captured by a stored closure/,
+    );
+    // `var x;` re-run each iteration keeps the earlier iteration's value.
+    assert.throws(
+        () =>
+            compileSource(
+                "const seen: string[] = []; for (let i = 0; i < 2; i++) { var x: number | undefined; if (i === 0) x = 5; seen.push(String(x)); } console.log(seen.join());",
+            ),
+        /A `var` declared without an initializer in a loop body keeps its value/,
+    );
 });
 
 test("folds static string concatenation assigned to retained UI text", () => {
@@ -11831,7 +11953,7 @@ test("lowers boolean data-field assignment expression callbacks", () => {
         invoke((value) => (state.left = value));
     `);
 
-    assert.match(result.cpp, /v_state\.left = true/);
+    assert.match(result.cpp, /v_state->left = true/);
 });
 
 test("projects an audited native host-page UI companion without changing scene source", () => {
@@ -13796,6 +13918,20 @@ test("refuses to erase a DOM call on a receiver erasure cannot classify", () => 
                 `),
             /would erase on a receiver that is not browser state/,
         );
+});
+
+test("refuses to erase a browser call handed the program's own binary data", () => {
+    // The browser fills the buffer it is handed; erasing the call left the
+    // bytes zero.
+    assert.throws(
+        () =>
+            compileSource(`
+                const bytes = new Uint8Array(16);
+                crypto.getRandomValues(bytes);
+                console.log(bytes[0]);
+            `),
+        /'crypto\.getRandomValues' would erase a call handed the program's own binary data/,
+    );
 });
 
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
@@ -19570,7 +19706,9 @@ test("does not erase a bounded wait through a shadowed Promise", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+        // `globalThis.Promise` is the language's Promise, not erasable
+        // browser state: the alias itself refuses as a value.
+        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)|Unknown or unsupported variable 'globalThis'/,
     );
 });
 
@@ -21275,7 +21413,7 @@ test("a storage buffer a nested callback replaces is read through its shared cel
     const engineAlias = /auto& (\w+) = v_engine;/.exec(result.cpp);
     assert.ok(engineAlias, "the palette borrows the entry engine");
     const buffer =
-        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/.exec(
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_cell\(bbl::create_storage_buffer\(/.exec(
             result.cpp,
         );
     assert.ok(buffer, "the replaceable buffer has shared storage");

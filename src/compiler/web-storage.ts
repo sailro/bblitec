@@ -3,7 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 
 import type { DataType } from "./data-types.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { libraryName } from "./symbols.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
@@ -119,11 +119,7 @@ export function compileWebStorageCall(
         const type = context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(callee.expression),
         );
-        if (
-            type.symbol?.name !== "Storage" ||
-            !declaredInDomLibrary(type.symbol)
-        )
-            return undefined;
+        if (libraryName(type) !== "Storage") return undefined;
     }
     const owner = context.probeEmission(() => {
         const value = context.compileValue(callee.expression);

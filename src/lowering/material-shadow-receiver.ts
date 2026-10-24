@@ -6,6 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Project the pin's shadow-light collection to its observed length. */
 export function materialShadowReceiverCpp(context: LoweringContext): string {
@@ -66,7 +67,7 @@ export function materialShadowReceiverCpp(context: LoweringContext): string {
             const call = node.expression;
             if (
                 !ts.isPropertyAccessExpression(call.expression) ||
-                call.expression.expression.getText(file) !== "shadowLights" ||
+                !sameSource(call.expression.expression, "shadowLights") ||
                 call.expression.name.text !== "push"
             )
                 return undefined;

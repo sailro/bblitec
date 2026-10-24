@@ -11,6 +11,7 @@ import {
 } from "./pinned-body-lowerer.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const helpers = [
     ["texture", "Texture", "ComputeTextureResource", "resource"],
@@ -205,7 +206,7 @@ function registrySource(context: LoweringContext): string {
                         node.declarationList.declarations.length === 1
                     ) {
                         const decl = node.declarationList.declarations[0]!;
-                        if (decl.name.getText(file) === "resolvers") {
+                        if (sameSource(decl.name, "resolvers")) {
                             context.assertExpressionShape(
                                 decl.initializer!,
                                 "(_resolvers ??= [])",
@@ -215,7 +216,7 @@ function registrySource(context: LoweringContext): string {
                                 `${indent}auto& resolvers = js::realm_scratch<ComputeResolverRegistry>().values;`,
                             ];
                         }
-                        if (decl.name.getText(file) === "resolver")
+                        if (sameSource(decl.name, "resolver"))
                             return [
                                 `${indent}const auto resolver = ${lowerer.expression(decl.initializer!)};`,
                             ];

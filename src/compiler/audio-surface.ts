@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { argumentAt } from "./syntax.js";
 import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
 
@@ -35,6 +36,7 @@ import {
     PANNER_PROPERTIES,
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
+import { presentMembers, callSignatures } from "./type-facts.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -187,7 +189,7 @@ export function audioPrototypeValue(
         recordProperties: Object.fromEntries(
             Object.keys(UNAVAILABLE_CONTEXT_METHODS).map((name) => [
                 name,
-                { kind: "json-null" as const, cpp: "std::nullopt" },
+                undefinedValue(),
             ]),
         ),
     };
@@ -537,9 +539,7 @@ function compileAudioListener(
     context.callbacks.hoistForwardCallbackBindings(callback);
     const removing = callee.name.text === "removeEventListener";
     const callbackType = context.checker.getTypeAtLocation(callback);
-    const absent =
-        (callbackType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-        0;
+    const absent = presentMembers(callbackType).length === 0;
     let identity = "0u",
         listener = "";
     if (!absent) {
@@ -560,9 +560,9 @@ function compileAudioListener(
             );
         } else {
             if (
-                callbackType
-                    .getCallSignatures()
-                    .some((signature) => signature.parameters.length > 0)
+                callSignatures(context.checker, callbackType, "exact").some(
+                    (signature) => signature.parameters.length > 0,
+                )
             )
                 context.fail(callback, refusals.payload);
             const compiled = context.callbacks.compilePlatformCallback(
@@ -1226,14 +1226,11 @@ export function emitAudioPropertyAssignment(
             left.expression,
         );
         const callbackType = context.checker.getTypeAtLocation(right);
-        const absent =
-            (callbackType.flags &
-                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-            0;
+        const absent = presentMembers(callbackType).length === 0;
         if (
-            callbackType
-                .getCallSignatures()
-                .some((signature) => signature.parameters.length > 0)
+            callSignatures(context.checker, callbackType, "exact").some(
+                (signature) => signature.parameters.length > 0,
+            )
         )
             context.fail(
                 right,

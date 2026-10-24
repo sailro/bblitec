@@ -12,7 +12,16 @@ import { CPP_SCALAR } from "../lowering/cpp-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { syntaxKindName } from "../source-location.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { isDeclaredInside, literalMember, unwrapExpression } from "./syntax.js";
+import {
+    isDeclaredInside,
+    literalMember,
+    unwrapExpression,
+    isExpressionWrapper,
+    functionOfDeclaration,
+    isSupportedFunction,
+    variableKind,
+    isBlockScopedVariable,
+} from "./syntax.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     isHandleKind,
@@ -40,6 +49,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { numberConstantValue } from "./number-intrinsics.js";
 import { recordAt } from "./record-access.js";
 import { ScopedValueIndex } from "./scoped-value-index.js";
+import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { retainTextValue } from "./text-surface.js";
 import {
     commonResourceValue,
@@ -58,10 +68,6 @@ import {
     type VariableBinding,
 } from "./types.js";
 import {
-    functionOfDeclaration,
-    isSupportedFunction,
-} from "./user-functions.js";
-import {
     parameterIsMutated,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
@@ -70,6 +76,8 @@ import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
+import { calledFunction } from "./symbols.js";
+import { knownCondition, rebaseSpelling } from "./values/model.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -326,7 +334,7 @@ export class BindingScopes {
     /** The earliest live declaration sharing this record, before any lexical aliases. */
     public recordDeclaration(
         value: Value,
-        expression: ts.Expression,
+        expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         return this.aggregateDeclaration(
             value.recordProperties,
@@ -366,7 +374,7 @@ export class BindingScopes {
     private aggregateDeclaration(
         members: object | undefined,
         membersOf: (value: Value) => object | undefined,
-        expression: ts.Expression,
+        expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         if (!members) return undefined;
         let origin: ts.Declaration | undefined;
@@ -384,10 +392,11 @@ export class BindingScopes {
             }
             if (origin) break;
         }
-        const source = unwrapExpression(expression);
-        const symbol = ts.isIdentifier(source)
-            ? this.context.symbols.valueSymbol(source)
-            : undefined;
+        const source = expression && unwrapExpression(expression);
+        const symbol =
+            source && ts.isIdentifier(source)
+                ? this.context.symbols.valueSymbol(source)
+                : undefined;
         // A container's source node can accompany one of its nested values.
         // Only an unbound name may stand in for an aggregate not found above.
         if (
@@ -405,7 +414,7 @@ export class BindingScopes {
             visited.add(declaration);
             const initializer = unwrapExpression(declaration.initializer);
             if (
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                variableKind(declaration.parent) !== "const" ||
                 !ts.isIdentifier(initializer)
             )
                 break;
@@ -622,12 +631,11 @@ export class BindingScopes {
             code,
             (node) => {
                 if (ts.isCallExpression(node)) {
-                    const declaration =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
-                    if (isSupportedFunction(declaration) && declaration.body)
-                        calls.add(declaration);
+                    const declaration = calledFunction(
+                        this.context.checker,
+                        node,
+                    );
+                    if (declaration) calls.add(declaration);
                     return;
                 }
                 if (!ts.isIdentifier(node)) return;
@@ -647,7 +655,7 @@ export class BindingScopes {
                         functions.add(body);
                 }
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
         const reads = {
             names,
@@ -765,7 +773,7 @@ export class BindingScopes {
             declaration &&
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.BlockScoped) !== 0;
+            isBlockScopedVariable(declaration.parent);
         const declaringScope = declaration
             ? ts.findAncestor(
                   declaration,
@@ -786,7 +794,7 @@ export class BindingScopes {
                 ts.isTryStatement(node) ||
                 ts.isExpressionStatement(node) ||
                 ts.isBinaryExpression(node) ||
-                ts.isParenthesizedExpression(node) ||
+                isExpressionWrapper(node) ||
                 ts.isSourceFile(node)
             ) {
                 continue;
@@ -994,6 +1002,7 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        value = this.closureSharedCell(identifier, value);
         const storedType =
             value.dataType?.kind === "optional"
                 ? value.dataType.inner
@@ -1027,7 +1036,8 @@ export class BindingScopes {
                 value.dataType?.kind === "handle" && value.dataType.ownedEngine
             ) &&
             cppIdentifierPattern.test(handleStorage) &&
-            (value.cpp === handleStorage || value.cpp === `(*${handleStorage})`)
+            (value.cpp === handleStorage ||
+                value.cpp === sharedCellCpp(handleStorage))
         ) {
             // A materialized handle captures its own local, not the optional
             // slot from which its initializer selected the value.
@@ -1097,6 +1107,55 @@ export class BindingScopes {
         });
     }
 
+    /**
+     * A destructured or for-of binding a stored closure captures and any code
+     * writes lives in one shared cell (one per for-of iteration) that every
+     * closure reads and writes, instead of the copy each would hold: a write
+     * after the capture, in a closure or in the binding's own body, would
+     * leave the copy behind.
+     */
+    private closureSharedCell(identifier: ts.MemberName, value: Value): Value {
+        if (
+            !ts.isIdentifier(identifier) ||
+            value.sharedStorageCpp !== undefined
+        )
+            return value;
+        const declaration = copiedBindingDeclaration(identifier);
+        if (
+            !declaration ||
+            !this.context.sharedClosures.needsSharedClosureStorage(
+                declaration,
+                identifier,
+            ) ||
+            !this.context.sharedClosures.identifierIsRebound(identifier)
+        )
+            return value;
+        const type =
+            value.dataType ??
+            this.context.dataLowerer.dataTypeAt(identifier) ??
+            this.context.fail(
+                identifier,
+                "A binding closures share and write needs a represented type.",
+            );
+        const cell = emitSharedCell(
+            this.context,
+            this.context.allocateTemporaryCppName("shared_binding"),
+            {
+                type: this.context.dataTypes.cppType(type),
+                initializer: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    identifier,
+                ),
+            },
+        );
+        this.context.dataLowerer.registerLocal(cell.cpp, "owned");
+        return {
+            ...this.context.dataLowerer.leafValue(cell.cpp, type),
+            sharedStorageCpp: cell.sharedStorageCpp,
+        };
+    }
+
     /** A picking result's engine, read through the storage now holding it. */
     private withPickingEngine<T extends Value>(value: T, storage: string): T {
         if (value.kind !== "picking-info") return value;
@@ -1141,7 +1200,7 @@ export class BindingScopes {
             declaration.initializer !== undefined &&
             name !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             !this.context.sharedClosures.identifierIsRebound(name)
         );
     }
@@ -1460,10 +1519,17 @@ export class BindingScopes {
             this.defineVariable(identifier, value);
             return;
         }
+        // A local code reassigns holds no fact of its initializer, and a
+        // compile-time string binds as itself only until it is reassigned.
+        const reboundLocal =
+            !parameter &&
+            ts.isIdentifier(identifier) &&
+            this.context.sharedClosures.identifierIsRebound(identifier);
         if (
             (value.kind === "string" &&
-                (!parameter ||
-                    (readOnlyParameter && !readsNativeStorage(value)))) ||
+                (parameter
+                    ? readOnlyParameter && !readsNativeStorage(value)
+                    : !reboundLocal)) ||
             value.kind === "callback" ||
             (isCompileTimeOnlyValue(value.kind) && !nativeRecordOwner)
         ) {
@@ -1563,31 +1629,25 @@ export class BindingScopes {
             this.context.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
         }
-        if (sharedStorage) {
-            if (isHandleKind(value.kind)) {
-                const cppType = this.context.dataTypes.cppType(
-                    resourceStorage?.type ?? {
-                        kind: "handle",
-                        handle: value.kind,
-                    },
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            } else {
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_cell(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            }
-        } else {
+        // A shared handle cell declares its native type, so closures that
+        // capture it have a concrete environment.
+        const cell = sharedStorage
+            ? emitSharedCell(this.context, cppName, {
+                  ...(isHandleKind(value.kind)
+                      ? {
+                            type: this.context.dataTypes.cppType(
+                                resourceStorage?.type ?? {
+                                    kind: "handle",
+                                    handle: value.kind,
+                                },
+                            ),
+                        }
+                      : {}),
+                  initializer: initializerCpp,
+                  attributes: "[[maybe_unused]] ",
+              })
+            : undefined;
+        if (!cell) {
             this.context.emit({
                 kind: "declaration",
                 type: nativeType,
@@ -1599,29 +1659,15 @@ export class BindingScopes {
                 attributes: "[[maybe_unused]] ",
             });
         }
-        // A shared handle cell declares its native type, so closures that
-        // capture it have a concrete environment.
-        if (isHandleKind(value.kind) && sharedStorage) {
-            const handleType = this.context.dataTypes.cppType(
-                resourceStorage?.type ?? {
-                    kind: "handle",
-                    handle: value.kind,
-                },
-            );
-            this.context.registerNativeBindingType(
-                cppName,
-                `std::shared_ptr<${handleType}>`,
-            );
-        }
         // So does a shared cell of a resource whose native value has one type
         // (`defineVariable` types the plain local).
         const resourceType = resourceValueCppType(value.kind);
-        if (resourceType && sharedStorage)
+        if (resourceType && cell)
             this.context.registerNativeBindingType(
-                cppName,
+                cell.sharedStorageCpp,
                 `std::shared_ptr<${resourceType}>`,
             );
-        const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
+        const storedCpp = cell?.cpp ?? cppName;
         const constantParameter =
             readOnlyParameter &&
             ((value.kind === "number" && value.staticNumber !== undefined) ||
@@ -1640,7 +1686,7 @@ export class BindingScopes {
         const stored: Value = {
             ...bound,
             cpp: ownedResource ? bound.cpp : storedCpp,
-            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
             ...(parameter ? { parameterBinding: !constantParameter } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
@@ -1649,7 +1695,7 @@ export class BindingScopes {
                   }
                 : {}),
         };
-        if (parameter && !readOnlyParameter) {
+        if ((parameter && !readOnlyParameter) || reboundLocal) {
             delete writable(stored).staticNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
@@ -1672,9 +1718,10 @@ export class BindingScopes {
                 ? !reboundParameter
                 : ts.isIdentifier(identifier) &&
                   !this.context.sharedClosures.identifierIsRebound(identifier);
+            const known = knownCondition(found);
             reference.optionalFoundCpp =
-                stable && (found === "true" || found === "false")
-                    ? found
+                stable && known !== undefined
+                    ? String(known)
                     : `static_cast<bool>(${storedCpp})`;
             reference.truthinessCpp = reference.optionalFoundCpp;
         }
@@ -2196,8 +2243,8 @@ export class BindingScopes {
                 "optionalStorageCpp",
             ] as const) {
                 const spelling = pinned[key];
-                if (spelling?.includes(value.cpp))
-                    pinned[key] = spelling.replaceAll(value.cpp, cpp);
+                if (spelling !== undefined)
+                    pinned[key] = rebaseSpelling(spelling, value.cpp, cpp);
             }
             this.context.registerNativeConstBinding(cpp);
             this.context.describeNativeValue(pinned);
@@ -2390,20 +2437,20 @@ export class BindingScopes {
     ): Value {
         const dataType =
             this.context.dataTypes.markStoredObjectReferences(mapped);
-        const storage = this.context.allocateTemporaryCppName(label);
-        const initial = this.context.dataLowerer.compileKnownValueForSink(
-            value,
-            dataType,
-            node,
+        const cell = emitSharedCell(
+            this.context,
+            this.context.allocateTemporaryCppName(label),
+            {
+                type: this.context.dataTypes.cppType(dataType),
+                initializer: this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    node,
+                ),
+            },
         );
-        this.context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: storage,
-            initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(dataType)}>(${initial})`,
-        });
         const represented = this.context.dataLowerer.leafValue(
-            `(*${storage})`,
+            cell.cpp,
             dataType,
         );
         if (mapped.kind === "struct" && represented.kind !== "data")
@@ -2422,7 +2469,7 @@ export class BindingScopes {
                 writable(represented).recordOwnKeys = value.recordOwnKeys;
         }
         const metadata = {
-            sharedStorageCpp: storage,
+            sharedStorageCpp: cell.sharedStorageCpp,
             nativeLvalue: true as const,
         };
         return represented.kind === "data"
@@ -2989,7 +3036,7 @@ export class BindingScopes {
                 !(
                     classFields &&
                     property.sharedStorageCpp &&
-                    property.cpp === `(*${property.sharedStorageCpp})`
+                    property.cpp === sharedCellCpp(property.sharedStorageCpp)
                 ) &&
                 (property.kind === "number" ||
                     property.kind === "boolean" ||
@@ -3021,7 +3068,7 @@ export class BindingScopes {
                 property.sharedRecordScalar ||
                 (classFields &&
                     property.sharedStorageCpp &&
-                    property.cpp === `(*${property.sharedStorageCpp})`)
+                    property.cpp === sharedCellCpp(property.sharedStorageCpp))
             ) {
                 properties[name] = property;
                 continue;
@@ -3050,23 +3097,21 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 this.isMutableRecordContainer(property.dataType)
             ) {
-                const cppName = this.context.allocateTemporaryCppName(
-                    `${label}_${name}`,
-                );
-                const cppType = this.context.dataTypes.cppType(
-                    property.dataType,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...property,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(
+                        this.context,
+                        this.context.allocateTemporaryCppName(
+                            `${label}_${name}`,
+                        ),
+                        {
+                            type: this.context.dataTypes.cppType(
+                                property.dataType,
+                            ),
+                            initializer: property.cpp,
+                            attributes: "[[maybe_unused]] ",
+                        },
+                    ),
                     sharedRecordContainer: true,
                 };
                 continue;
@@ -3125,21 +3170,17 @@ export class BindingScopes {
             if (property.kind === "number") {
                 const { staticNumber: _staticNumber, ...dynamicProperty } =
                     property;
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<double>(${
-                        property.staticNumber === undefined
-                            ? property.cpp
-                            : numberConstantValue(property.staticNumber).cpp
-                    })`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...dynamicProperty,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.number,
+                        initializer:
+                            property.staticNumber === undefined
+                                ? property.cpp
+                                : numberConstantValue(property.staticNumber)
+                                      .cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
@@ -3147,33 +3188,27 @@ export class BindingScopes {
             if (property.kind === "boolean") {
                 const { staticBoolean: _staticBoolean, ...dynamicProperty } =
                     property;
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<bool>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...dynamicProperty,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.boolean,
+                        initializer: property.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
             }
             if (property.staticString !== undefined) {
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<std::string>(${this.context.cppString(property.staticString)})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     kind: "data",
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: CPP_SCALAR.string,
+                        initializer: this.context.cppString(
+                            property.staticString,
+                        ),
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     dataType: { kind: "string" },
                     sharedRecordScalar: true,
                 };
@@ -3201,20 +3236,13 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 !this.context.hasStableNativeBinding(property)
             ) {
-                const cppType = this.context.dataTypes.cppType(
-                    property.dataType,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
                 properties[name] = {
                     ...property,
-                    cpp: `(*${cppName})`,
-                    sharedStorageCpp: cppName,
+                    ...emitSharedCell(this.context, cppName, {
+                        type: this.context.dataTypes.cppType(property.dataType),
+                        initializer: property.cpp,
+                        attributes: "[[maybe_unused]] ",
+                    }),
                     sharedRecordScalar: true,
                 };
                 continue;
@@ -3222,21 +3250,20 @@ export class BindingScopes {
             properties[name] = property;
         }
         if (packedScalars.length) {
-            const storage = this.context.allocateTemporaryCppName(
-                `${label}_scalars`,
+            // One cell holds every packed scalar.
+            const cell = emitSharedCell(
+                this.context,
+                this.context.allocateTemporaryCppName(`${label}_scalars`),
+                {
+                    type: `std::tuple<${packedScalars.map((field) => field.type).join(", ")}>`,
+                    initializer: `std::tuple{${packedScalars.map((field) => field.cpp).join(", ")}}`,
+                },
             );
-            const type = `std::tuple<${packedScalars.map((field) => field.type).join(", ")}>`;
-            this.context.emit({
-                kind: "declaration",
-                type: `std::shared_ptr<${type}>`,
-                name: storage,
-                initializer: `bbl::js::make_gc_shared<${type}>(std::tuple{${packedScalars.map((field) => field.cpp).join(", ")}})`,
-            });
             packedScalars.forEach((field, index) => {
                 properties[field.name] = {
                     ...field.value,
-                    cpp: `std::get<${index}>(*${storage})`,
-                    sharedStorageCpp: storage,
+                    cpp: `std::get<${index}>(*${cell.sharedStorageCpp})`,
+                    sharedStorageCpp: cell.sharedStorageCpp,
                     sharedRecordScalar: true,
                 };
             });
@@ -3324,4 +3351,30 @@ export function sceneNodeVectorProperties(
             } satisfies Value,
         ]),
     );
+}
+
+/**
+ * The declaration of a binding the lowering binds by value: a destructured
+ * name, or a for-of / for-in variable.
+ */
+function copiedBindingDeclaration(
+    identifier: ts.Identifier,
+): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
+    let node: ts.Node = identifier.parent;
+    if (ts.isVariableDeclaration(node))
+        return ts.isVariableDeclarationList(node.parent) &&
+            (ts.isForOfStatement(node.parent.parent) ||
+                ts.isForInStatement(node.parent.parent))
+            ? node
+            : undefined;
+    if (!ts.isBindingElement(node)) return undefined;
+    while (
+        ts.isBindingElement(node) ||
+        ts.isObjectBindingPattern(node) ||
+        ts.isArrayBindingPattern(node)
+    )
+        node = node.parent;
+    return ts.isVariableDeclaration(node) || ts.isParameter(node)
+        ? node
+        : undefined;
 }

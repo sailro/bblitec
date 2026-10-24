@@ -174,10 +174,10 @@ export function lowerProceduralSkyUpdate(
                 calls,
 
                 foldConditions: false,
-                forOf(_iterated, element, _binding, syntax) {
+                forOf(iterated, element) {
                     if (
                         !context.expressionMatchesShape(
-                            syntax.expression,
+                            iterated,
                             "environment._mipmaps",
                         )
                     )

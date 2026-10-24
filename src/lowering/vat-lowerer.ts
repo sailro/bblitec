@@ -5,6 +5,7 @@ import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
 
@@ -545,8 +546,7 @@ void set_vat_instance_storage(Engine& engine, MeshHandle mesh,
             !texels ||
             !ts.isVariableStatement(texels) ||
             texels.declarationList.declarations.length !== 1 ||
-            texels.declarationList.declarations[0]!.name.getText(file) !==
-                "texels"
+            !sameSource(texels.declarationList.declarations[0]!.name, "texels")
         ) {
             return this.context.contractError(
                 upload,

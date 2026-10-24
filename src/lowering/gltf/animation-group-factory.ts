@@ -79,10 +79,7 @@ export function lowerGltfAnimationGroupFactory(
         node = context.unwrapExpression(node);
         if (context.expressionMatchesShape(node, "clip.name"))
             return "clip_name";
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        )
+        if (ts.isStringLiteralLike(node))
             return `std::string{${stringLiteral(node.text)}}`;
         if (ts.isTemplateExpression(node)) {
             const parts = [`std::string{${stringLiteral(node.head.text)}}`];

@@ -1,7 +1,7 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyNameText } from "./syntax.js";
+import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -18,9 +18,8 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { isSupportedFunction } from "./user-functions.js";
 import { isSymbolPropertyKey } from "./symbols.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { callableRecordValue } from "./callable-records.js";
@@ -28,6 +27,8 @@ import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
+import { callSignatures } from "./type-facts.js";
+import { absenceOfNull, jsonAbsenceCpp, staticKeyOf } from "./values/model.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -39,6 +40,7 @@ type ObjectStaticContext = Pick<
     | "captureManagedClosureLines"
     | "registerNativeBinding"
     | "activeThis"
+    | "withThis"
     | "defineThis"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -54,6 +56,7 @@ type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
+    | "dynamicBindings"
     | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"
@@ -455,9 +458,7 @@ function compileObjectIs(
     const erased = (value: Value, node: ts.Expression): string | undefined => {
         if (isJsonValue(value)) return value.cpp;
         if (value.kind === "json-null")
-            return value.cpp === "std::nullopt"
-                ? "bbl::js::JsonValue{}"
-                : "bbl::js::JsonValue::null_value()";
+            return jsonAbsenceCpp(absenceOfNull(value));
         if (numeric(value))
             return `bbl::js::JsonValue::from_number(${value.cpp})`;
         if (textual(value))
@@ -689,11 +690,7 @@ function compileObjectFromEntries(
             if (entry.kind !== "tuple" || entry.tupleElements?.length !== 2)
                 return undefined;
             const [key, value] = entry.tupleElements;
-            const name =
-                key?.staticString ??
-                (key?.staticNumber !== undefined
-                    ? String(key.staticNumber)
-                    : undefined);
+            const name = staticKeyOf(key);
             if (name === undefined) return undefined;
             if (properties[name]) context.emitDiscardedValue(properties[name]);
             properties[name] = value!;
@@ -752,8 +749,7 @@ function compileObjectAssign(
         (context.checker.getAwaitedType(contextualType) ?? contextualType);
     const callable = context.dataTypes.fromStoredTsType(
         contextual &&
-            context.checker.getNonNullableType(contextual).getCallSignatures()
-                .length === 1
+            callSignatures(context.checker, contextual, "present").length === 1
             ? context.checker.getNonNullableType(contextual)
             : context.checker.getTypeAtLocation(call),
         call,
@@ -851,15 +847,7 @@ function compileObjectAssign(
         const values = sources.map((source) => {
             const value = context.compileValue(source);
             if (value.kind === "record") {
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             const cpp = context.dataLowerer.compileKnownValueForSink(
                 value,
@@ -893,15 +881,7 @@ function compileObjectAssign(
                 readPairs(source, value);
                 // A later argument can mutate an earlier source. Retain that
                 // source's identity rather than snapshotting its scalar fields.
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             return context.bindings.pinValueToTemporary(
                 value,
@@ -993,15 +973,7 @@ function compileObjectAssign(
             const value = context.compileValue(source);
             if (value.kind === "record") {
                 readPairs(source, value, true);
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             if (value.dataType?.kind === "struct")
                 context.dataTypes.markStoredObjectReferences(value.dataType);
@@ -1066,6 +1038,37 @@ function compileObjectAssign(
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);
         }
+        return owner;
+    }
+    // A Record stored as a map: each own enumerable source property is a
+    // key. A JavaScript Map's entries are no properties, so it stays refused.
+    if (
+        target.kind === "data" &&
+        target.dataType?.kind === "map" &&
+        target.dataType.dictionary &&
+        target.dataType.key.kind === "string"
+    ) {
+        const mapType = target.dataType;
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
+        // Every argument is evaluated before the first source's keys are read.
+        const values = sources.map((source) =>
+            context.bindings.pinValueToTemporary(
+                context.compileValue(source),
+                "assign_source",
+                source,
+            ),
+        );
+        sources.forEach((source, index) => {
+            for (const [key, value] of sourcePairs(source, values[index]))
+                context.emit({
+                    kind: "expression",
+                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
+                });
+        });
         return owner;
     }
     // Nothing else has stored fields to copy into: an engine handle's
@@ -1156,7 +1159,7 @@ function propertyDefinition(
             return refuse(
                 "needs literal descriptors without spreads or descriptor accessors.",
             );
-        const name = propertyNameText(property.name);
+        const name = propertyKey(property.name);
         if (name === undefined || names.has(name))
             return refuse("needs distinct, non-computed descriptor members.");
         names.add(name);
@@ -1230,12 +1233,7 @@ function definitionTarget(
     const expression = argumentAt(call, 0);
     const target = context.compileValue(expression);
     if (target.kind === "record") {
-        const declaration = context.bindings.recordDeclaration(
-            target,
-            expression,
-        );
-        if (declaration)
-            throw new DynamicBindingStorageRequired(declaration, "source");
+        requireHeldRecordStorage(context, target, expression);
     }
     if (target.kind !== "data" || target.dataType?.kind !== "struct")
         return context.fail(
@@ -1299,23 +1297,23 @@ function definitionAccessor(
         const receiver = argument(receiverName, receiverType);
         const values =
             member.name === "get" ? [] : [argument(valueName, field.type)];
-        const previousThis = context.activeThis();
-        if (!ts.isArrowFunction(callback)) context.defineThis(receiver);
-        try {
-            const value = context.compileCallbackWithValues(
-                callback,
-                values,
-                callback,
-                member.name === "set",
-            );
-            context.emit(
-                member.name === "get"
-                    ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
-                    : "return true;",
-            );
-        } finally {
-            context.defineThis(previousThis);
-        }
+        // An arrow callback keeps the enclosing `this`.
+        context.withThis(
+            ts.isArrowFunction(callback) ? context.activeThis() : receiver,
+            () => {
+                const value = context.compileCallbackWithValues(
+                    callback,
+                    values,
+                    callback,
+                    member.name === "set",
+                );
+                context.emit(
+                    member.name === "get"
+                        ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
+                        : "return true;",
+                );
+            },
+        );
     });
     return member.name === "get"
         ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
@@ -1477,7 +1475,7 @@ function compileObjectDefineProperties(
     const definitions: PropertyDefinition[] = [];
     const keys = new Set<string>();
     for (const property of descriptors.properties) {
-        const key = property.name && propertyNameText(property.name);
+        const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
             key === undefined ||

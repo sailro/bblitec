@@ -2,6 +2,7 @@ import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
+import { sameReference } from "./symbols.js";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
@@ -50,6 +51,8 @@ import {
     classifyUiQuerySelector,
     uiQuerySelectorCpp,
 } from "./ui-query-selectors.js";
+import { valueKindOf } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -252,7 +255,7 @@ export class PlatformCalls {
         const type = argument
             ? this.context.checker.getTypeAtLocation(argument)
             : undefined;
-        if (!argument || (type && type.flags & ts.TypeFlags.BooleanLike)) {
+        if (!argument || (type && valueKindOf(type) === "boolean")) {
             const top = argument
                 ? this.context.compileBoolean(argument)
                 : "true";
@@ -1043,13 +1046,13 @@ export class PlatformCalls {
             if (onceExpression) {
                 const compiled =
                     this.context.conditions.compileCondition(onceExpression);
-                if (compiled !== "true" && compiled !== "false") {
+                if (knownCondition(compiled) === undefined) {
                     this.context.fail(
                         onceExpression,
                         "The event listener 'once' option must be static.",
                     );
                 }
-                once = compiled === "true";
+                once = knownCondition(compiled) === true;
             }
         }
         if (
@@ -1728,9 +1731,6 @@ export class PlatformCalls {
                         return { kind: "void", cpp: "" };
                     }
                     this.context.expectSameEngine(element, source, call);
-                    const sourceText = this.context
-                        .unwrap(argumentAt(call, 0))
-                        .getText();
                     const extent = (
                         argumentIndex: number,
                         axis: "width" | "height",
@@ -1770,9 +1770,11 @@ export class PlatformCalls {
                         if (
                             !ts.isPropertyAccessExpression(dimension) ||
                             dimension.name.text !== axis ||
-                            this.context
-                                .unwrap(dimension.expression)
-                                .getText() !== sourceText
+                            !sameReference(
+                                this.context.checker,
+                                dimension.expression,
+                                argumentAt(call, 0),
+                            )
                         ) {
                             this.context.fail(
                                 argumentAt(call, argumentIndex),

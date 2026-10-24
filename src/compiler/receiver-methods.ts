@@ -1,6 +1,12 @@
 import ts from "typescript";
 import { EmissionSet } from "./emission-transaction.js";
-import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    libraryGlobal,
+    calledDeclaration,
+} from "./symbols.js";
+import { callSignatures } from "./type-facts.js";
+import { unwrapExpression } from "./syntax.js";
 
 /**
  * The built-in methods that change the container they are called on, read
@@ -96,12 +102,73 @@ export function callbackTakesReceiver(
         method === "reduce" || method === "reduceRight" ? 3 : 2;
     return (
         callback !== undefined &&
-        checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()
-            .some(
-                (signature) => signature.parameters.length > receiverParameter,
-            )
+        callSignatures(
+            checker,
+            checker.getTypeAtLocation(callback),
+            "exact",
+        ).some((signature) => signature.parameters.length > receiverParameter)
+    );
+}
+
+/** Library methods that call the function they are handed before returning. */
+const synchronousCallbackMethods: ReadonlySet<string> = new EmissionSet([
+    "every",
+    "filter",
+    "find",
+    "findIndex",
+    "findLast",
+    "findLastIndex",
+    "flatMap",
+    "forEach",
+    "map",
+    "reduce",
+    "reduceRight",
+    "replace",
+    "replaceAll",
+    "some",
+    "sort",
+    "toSorted",
+]);
+
+/**
+ * Whether `call` calls its function `argument` before it returns and keeps
+ * nothing of it: a default-library iteration, search, sort or replace
+ * method, `Array.from`'s mapper, or a `new Promise` executor.
+ */
+export function callsArgumentInPlace(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    argument: ts.Node,
+): boolean {
+    const index =
+        call.arguments?.findIndex((candidate) => candidate === argument) ?? -1;
+    if (index < 0) return false;
+    if (ts.isNewExpression(call))
+        return (
+            index === 0 && libraryGlobal(checker, call.expression) === "Promise"
+        );
+    const callee = unwrapExpression(call.expression);
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    if (
+        callee.name.text === "from" &&
+        libraryGlobal(checker, callee.expression) === "Array"
+    )
+        return index === 1;
+    const declaration = calledDeclaration(checker, call);
+    return (
+        declaration !== undefined &&
+        declarationInDefaultLibrary(declaration) &&
+        synchronousCallbackMethods.has(callee.name.text)
+    );
+}
+
+/** `target.addEventListener(type, listener)`: it keeps the listener. */
+export function isListenerRegistration(call: ts.CallExpression): boolean {
+    const callee = unwrapExpression(call.expression);
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "addEventListener" &&
+        call.arguments.length >= 2
     );
 }
 
@@ -124,7 +191,7 @@ export function isStoringDataCall(
     checker: ts.TypeChecker,
 ): node is ts.CallExpression | ts.NewExpression {
     if (ts.isCallExpression(node)) {
-        const signature = checker.getResolvedSignature(node)?.declaration;
+        const signature = calledDeclaration(checker, node);
         // Resolver signatures originate in the default library constructor,
         // including when the source renames or forwards its executor parameter.
         const parameter = signature?.parent;

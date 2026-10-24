@@ -276,6 +276,6 @@ test("runtime object rest refuses dynamic exclusion keys", () => {
         const calls:Array<typeof read>=[read];
         if(calls[0]!({value:3,other:4},'other')!==4) throw new Error('computed key');
     `),
-        /Object destructuring requires a literal property key/,
+        /Object destructuring requires a key known at generation/,
     );
 });

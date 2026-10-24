@@ -3,6 +3,7 @@ import {
     assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
+    bindingElementKey,
 } from "../../compiler/syntax.js";
 import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
@@ -13,6 +14,9 @@ import type {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
+    exponentiationCall,
+    jsBitwiseCall,
+    pinnedRemainderCall,
 } from "../pinned-operators.js";
 
 const numericOperators = new Map([
@@ -357,14 +361,14 @@ export function lowerGltfMaterialObjectFunction(
                 if (operator === ts.SyntaxKind.PlusToken)
                     return `${value(node.left, lowerer)}.add(${value(node.right, lowerer)})`;
                 if (operator === ts.SyntaxKind.PercentToken)
-                    return `GltfPbrValue{std::fmod(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number())}`;
+                    return `GltfPbrValue{${pinnedRemainderCall(`${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`)}}`;
                 const token = numericOperators.get(operator);
                 if (token)
                     return `GltfPbrValue{${value(node.left, lowerer)}.number() ${token} ${value(node.right, lowerer)}.number()}`;
                 if (operator === ts.SyntaxKind.AsteriskAsteriskToken)
-                    return `GltfPbrValue{std::pow(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number())}`;
+                    return `GltfPbrValue{${exponentiationCall(`${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`, ts.isNumericLiteral(node.right) ? Number(node.right.text) : undefined).cpp}}`;
                 if (operator === ts.SyntaxKind.BarToken)
-                    return `GltfPbrValue{double(bbl::js::bitwise_or(${value(node.left, lowerer)}.number(), ${value(node.right, lowerer)}.number()))}`;
+                    return `GltfPbrValue{double(${jsBitwiseCall(operator, `${value(node.left, lowerer)}.number()`, `${value(node.right, lowerer)}.number()`)})}`;
             }
             if (ts.isCallExpression(node)) {
                 const resource = lowerResourceCall?.(node, lowerer);
@@ -607,10 +611,9 @@ export function lowerGltfMaterialObjectFunction(
                             );
                         lowerer.expression(imported);
                         for (const element of variable.name.elements) {
-                            const importedName =
-                                element.propertyName ?? element.name;
+                            const importedName = bindingElementKey(element);
                             if (
-                                !ts.isIdentifier(importedName) ||
+                                importedName === undefined ||
                                 !ts.isIdentifier(element.name) ||
                                 element.initializer ||
                                 element.dotDotDotToken
@@ -619,7 +622,7 @@ export function lowerGltfMaterialObjectFunction(
                                     element,
                                     "Unsupported material import binding.",
                                 );
-                            const cpp = resolveCall(importedName.text);
+                            const cpp = resolveCall(importedName);
                             if (!cpp)
                                 context.contractError(
                                     element,

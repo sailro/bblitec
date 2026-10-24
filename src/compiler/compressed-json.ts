@@ -1,5 +1,10 @@
 import type { LoweringServices } from "./lowering-services.js";
-import { isGlobalUndefined, libraryGlobal, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    isGlobalUndefined,
+    libraryGlobal,
+    resolvedSymbol,
+} from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -24,9 +29,18 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { Value } from "./types.js";
+import { promiseReactionOf } from "./promises.js";
 import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
-import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    unwrapExpression,
+    functionKind,
+    isAsyncFunction,
+    isSuspensionPoint,
+    variableKind,
+} from "./syntax.js";
 
 interface CompressedJsonContext extends Pick<
     LoweringServices,
@@ -60,10 +74,10 @@ function propertyCall(
     const call = unwrapExpression(expression);
     if (
         !ts.isCallExpression(call) ||
-        call.questionDotToken ||
+        // Any `?.` in the chain may skip the call (`a?.b.decode()` too).
+        ts.isOptionalChain(call) ||
         (call.typeArguments?.length ?? 0) !== 0 ||
         !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.questionDotToken ||
         call.expression.name.text !== property
     ) {
         return undefined;
@@ -76,7 +90,7 @@ function constBinding(
 ): { name: string; initializer: ts.Expression } | undefined {
     if (
         !ts.isVariableStatement(statement) ||
-        (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(statement.declarationList) !== "const" ||
         statement.declarationList.declarations.length !== 1
     ) {
         return undefined;
@@ -228,8 +242,8 @@ function forOfBinding(
     if (
         !ts.isForOfStatement(statement) ||
         !ts.isVariableDeclarationList(statement.initializer) ||
-        statement.awaitModifier ||
-        (statement.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        isSuspensionPoint(statement) ||
+        variableKind(statement.initializer) !== "const" ||
         statement.initializer.declarations.length !== 1 ||
         !identifierIs(statement.expression, collection) ||
         !ts.isBlock(statement.statement)
@@ -252,10 +266,7 @@ function isGzipBase64JsonDecoder(
 ): boolean {
     if (
         !declaration.body ||
-        !declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "async" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 3
@@ -295,9 +306,7 @@ function isGzipBase64JsonDecoder(
         decoded.arguments.length !== 1 ||
         !identifierIs(decoded.arguments[0], encoded) ||
         !ts.isArrowFunction(mapper) ||
-        mapper.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        isAsyncFunction(mapper) ||
         mapper.parameters.length !== 1 ||
         !plainIdentifierParameter(mapper.parameters[0]!) ||
         ts.isBlock(mapper.body)
@@ -458,10 +467,7 @@ function isInputNameAliasRestorer(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 4
@@ -580,11 +586,12 @@ function derivedJsonPass(
     declaration: ts.FunctionDeclaration,
 ): { value: unknown } | undefined {
     const returnType = declaration.type;
-    if (
-        !returnType ||
-        !ts.isTypeReferenceNode(returnType) ||
-        returnType.typeName.getText(returnType.getSourceFile()) !== "Record"
-    ) {
+    // The library's `Record`, however the file names it.
+    const record =
+        returnType && ts.isTypeReferenceNode(returnType)
+            ? resolvedSymbol(context.checker, returnType.typeName)
+            : undefined;
+    if (record?.name !== "Record" || !declaredInDefaultLibrary(record)) {
         return undefined;
     }
     const modulePath = declaration.getSourceFile().fileName;
@@ -688,7 +695,7 @@ export function compileCompressedJsonPromiseThen(
     const callback = call.arguments[0];
     if (
         !ts.isPropertyAccessExpression(then) ||
-        then.name.text !== "then" ||
+        promiseReactionOf(then, context.checker) !== "then" ||
         call.arguments.length !== 1 ||
         !callback ||
         !ts.isIdentifier(callback) ||

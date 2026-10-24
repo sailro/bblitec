@@ -92,6 +92,91 @@ export function hasScalarFacts(value: Value): boolean {
     );
 }
 
+/**
+ * `undefined` as a value: the json-null kind spelling the empty native
+ * optional. {@link absenceOf} reads which absence a json-null value is.
+ */
+export function undefinedValue(): Value<"json-null"> {
+    return { kind: "json-null", cpp: "std::nullopt" };
+}
+
+/** The property key a value folds to: its static text, or its static number's. */
+export function staticKeyOf(value: Value | undefined): string | undefined {
+    return (
+        value?.staticString ??
+        (value?.staticNumber === undefined
+            ? undefined
+            : String(value.staticNumber))
+    );
+}
+
+/** The boolean a value is known to be: its static fact, or a literal spelling. */
+export function staticBooleanOf(value: Value): boolean | undefined {
+    return value.staticBoolean ?? knownCondition(value.cpp);
+}
+
+/**
+ * `spelling` with each whole occurrence of the C++ expression `from` read as
+ * `to`: a fact spelled over a value's C++ (its presence, truthiness or
+ * identity) carried to the binding that now holds the value. An occurrence
+ * inside a longer name, or a member of that name, is not `from`.
+ */
+export function rebaseSpelling(
+    spelling: string,
+    from: string,
+    to: string,
+): string {
+    if (from.length === 0) return spelling;
+    const name = /[\w$]/;
+    const opensName = name.test(from[0]!);
+    const closesName = name.test(from.at(-1)!);
+    let rebased = "";
+    let index = 0;
+    for (
+        let at = spelling.indexOf(from);
+        at >= 0;
+        at = spelling.indexOf(from, index)
+    ) {
+        const before = spelling.slice(Math.max(0, at - 2), at);
+        const after = spelling[at + from.length] ?? "";
+        const whole =
+            !(opensName && /(?:[\w$.]|->|::)$/.test(before)) &&
+            !(closesName && name.test(after));
+        rebased += spelling.slice(index, at) + (whole ? to : from);
+        index = at + from.length;
+    }
+    return rebased + spelling.slice(index);
+}
+
+/**
+ * The boolean a compiled condition is known to be: the `true` / `false`
+ * spelling a condition, presence or truthiness lowering folds to.
+ */
+export function knownCondition(cpp: string | undefined): boolean | undefined {
+    return cpp === "true" ? true : cpp === "false" ? false : undefined;
+}
+
+/** Which absence a json-null value is; undefined for any other value. */
+export function absenceOf(value: Value): "undefined" | "null" | undefined {
+    if (value.kind !== "json-null") return undefined;
+    return value.cpp === "std::nullopt" ? "undefined" : "null";
+}
+
+/** A JsonValue holding an absence: `undefined` is the empty value, `null` JSON null. */
+export function jsonAbsenceCpp(absence: "undefined" | "null"): string {
+    return absence === "undefined"
+        ? "bbl::js::JsonValue{}"
+        : "bbl::js::JsonValue::null_value()";
+}
+
+/** Which absence a value the caller knows is json-null is. */
+export function absenceOfNull(value: Value): "undefined" | "null" {
+    const absence = absenceOf(value);
+    if (absence === undefined)
+        throw new Error(`A ${value.kind} value is no absence.`);
+    return absence;
+}
+
 /** Whether a record member's generation-known shape survives a copy of the record. */
 export function keepsStaticMember(value: Value): boolean {
     return (

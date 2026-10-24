@@ -1,6 +1,23 @@
 import ts from "typescript";
-import { declarationOrigin, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    countedLoopShape,
+    counterWrite,
+    stepsUpByOne,
+} from "./counted-loops.js";
+import { declarationOrigin, resolvedSymbol, sameReference } from "./symbols.js";
+import {
+    outermostWrapper,
+    referenceSite,
+    unwrapExpression,
+    writeSiteOf,
+    isDeclaredInside,
+    isSuspensionPoint,
+    jumpBinding,
+    jumpsTo,
+    variableKind,
+} from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
+import type { EvaluationOrder } from "./evaluation-order.js";
 
 /**
  * The fill loop that makes `xs.length = n` growth unobservable:
@@ -29,6 +46,7 @@ export interface FilledLengthGrowth {
 export function filledLengthGrowth(
     program: ts.Program,
     checker: ts.TypeChecker,
+    order: EvaluationOrder,
     assignment: ts.BinaryExpression,
 ): FilledLengthGrowth | undefined {
     const statement = assignment.parent;
@@ -63,16 +81,16 @@ export function filledLengthGrowth(
         !ts.isElementAccessExpression(write) ||
         stablePathSymbol(checker, unwrapExpression(write.expression)) !==
             arraySymbol ||
-        !samePath(checker, unwrapExpression(write.expression), array) ||
+        !sameReference(checker, write.expression, array) ||
         resolvedSymbol(checker, unwrapExpression(write.argumentExpression)) !==
             counter.symbol
     )
         return undefined;
     if (identityEscapes(program, checker, arraySymbol)) return undefined;
-    const reach = new ReachedReferences(program, checker, arraySymbol);
+    const reach = new ReachedReferences(order, checker, arraySymbol);
     if (
         reach.names(first.expression.right) ||
-        rest.some((node) => reach.names(node) || exitsLoop(node))
+        rest.some((node) => reach.names(node) || exitsLoop(node, loop))
     )
         return undefined;
     const start = constantBindingSymbol(checker, counter.start)
@@ -105,6 +123,23 @@ const enclosedArrayMethods = new Set([
  * local is read only in its declaring scope; anything else, program-wide.
  */
 function identityEscapes(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    symbol: ts.Symbol,
+): boolean {
+    let escapes = escapingIdentities.get(symbol);
+    if (escapes === undefined) {
+        escapes = walkIdentityEscapes(program, checker, symbol);
+        escapingIdentities.set(symbol, escapes);
+    }
+    return escapes;
+}
+
+/** @unjournaled Pure functions of the checked source: each array binding's answer. */
+const escapingIdentities = new WeakMap<ts.Symbol, boolean>();
+
+/** {@link identityEscapes}, walking the scopes that may read the binding. */
+function walkIdentityEscapes(
     program: ts.Program,
     checker: ts.TypeChecker,
     symbol: ts.Symbol,
@@ -143,7 +178,8 @@ function identityEscapes(
             resolvedSymbol(checker, node) === symbol &&
             node !== declaration.name
         ) {
-            escapes = !enclosedReference(node);
+            const site = referenceSite(node);
+            escapes = site !== undefined && !enclosedReference(site);
             return;
         }
         ts.forEachChild(node, visit);
@@ -153,17 +189,8 @@ function identityEscapes(
 }
 
 /** A reference that reads or stores through the binding without sharing it. */
-function enclosedReference(
-    name: ts.Identifier | ts.PrivateIdentifier,
-): boolean {
-    let reference: ts.Node = name;
-    if (ts.isPropertyAccessExpression(name.parent) && name.parent.name === name)
-        reference = name.parent;
-    while (
-        ts.isParenthesizedExpression(reference.parent) ||
-        ts.isNonNullExpression(reference.parent)
-    )
-        reference = reference.parent;
+function enclosedReference(site: ts.Expression): boolean {
+    const reference = outermostWrapper(site);
     const parent = reference.parent;
     if (
         ts.isPropertyAccessExpression(parent) &&
@@ -175,15 +202,13 @@ function enclosedReference(
                 ts.isCallExpression(parent.parent) &&
                 parent.parent.expression === parent)
         );
+    const write = writeSiteOf(reference);
     return (
         (ts.isElementAccessExpression(parent) &&
             parent.expression === reference) ||
         (ts.isForOfStatement(parent) && parent.expression === reference) ||
         ts.isSpreadElement(parent) ||
-        (ts.isBinaryExpression(parent) &&
-            parent.left === reference &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            freshArray(parent.right))
+        (write?.kind === "assign" && freshArray(write.stored))
     );
 }
 
@@ -210,31 +235,6 @@ function stablePathSymbol(
     return undefined;
 }
 
-function samePath(
-    checker: ts.TypeChecker,
-    left: ts.Expression,
-    right: ts.Expression,
-): boolean {
-    if (left.kind === ts.SyntaxKind.ThisKeyword)
-        return right.kind === ts.SyntaxKind.ThisKeyword;
-    if (ts.isIdentifier(left) || ts.isIdentifier(right))
-        return (
-            ts.isIdentifier(left) &&
-            ts.isIdentifier(right) &&
-            resolvedSymbol(checker, left) === resolvedSymbol(checker, right)
-        );
-    return (
-        ts.isPropertyAccessExpression(left) &&
-        ts.isPropertyAccessExpression(right) &&
-        resolvedSymbol(checker, left) === resolvedSymbol(checker, right) &&
-        samePath(
-            checker,
-            unwrapExpression(left.expression),
-            unwrapExpression(right.expression),
-        )
-    );
-}
-
 /** A `const` or never-assigned parameter binding `node` names. */
 function constantBindingSymbol(
     checker: ts.TypeChecker,
@@ -247,7 +247,7 @@ function constantBindingSymbol(
         declaration &&
         ts.isVariableDeclaration(declaration) &&
         ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        variableKind(declaration.parent) === "const"
     )
         return symbol;
     return undefined;
@@ -263,304 +263,88 @@ function loopCounter(
     loop: ts.ForStatement,
     lengthSymbol: ts.Symbol,
 ): { symbol: ts.Symbol; start: ts.Expression } | undefined {
-    const initializer = loop.initializer;
+    const shape = countedLoopShape(loop, (identifier) =>
+        resolvedSymbol(checker, identifier),
+    );
+    const condition = shape?.condition;
     if (
-        !initializer ||
-        !ts.isVariableDeclarationList(initializer) ||
-        initializer.declarations.length !== 1
-    )
-        return undefined;
-    const [declaration] = initializer.declarations;
-    if (
-        !declaration ||
-        !ts.isIdentifier(declaration.name) ||
-        !declaration.initializer
-    )
-        return undefined;
-    const symbol = resolvedSymbol(checker, declaration.name);
-    const condition = loop.condition && unwrapExpression(loop.condition);
-    if (
-        !symbol ||
+        !shape ||
         !condition ||
-        !ts.isBinaryExpression(condition) ||
-        condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-        resolvedSymbol(checker, unwrapExpression(condition.left)) !== symbol ||
-        resolvedSymbol(checker, unwrapExpression(condition.right)) !==
+        condition.mirrored ||
+        condition.operator !== "<" ||
+        resolvedSymbol(checker, unwrapExpression(condition.bound)) !==
             lengthSymbol ||
-        !incrementsByOne(checker, loop.incrementor, symbol) ||
-        assigns(loop.statement, symbol, checker)
+        !stepsUpByOne(shape) ||
+        counterWrite(checker, shape.symbol, loop.statement) !== undefined
     )
         return undefined;
-    return { symbol, start: unwrapExpression(declaration.initializer) };
+    return { symbol: shape.symbol, start: unwrapExpression(shape.start) };
 }
 
-function incrementsByOne(
-    checker: ts.TypeChecker,
-    incrementor: ts.Expression | undefined,
-    symbol: ts.Symbol,
-): boolean {
-    const node = incrementor && unwrapExpression(incrementor);
-    if (!node) return false;
-    if (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node))
-        return (
-            node.operator === ts.SyntaxKind.PlusPlusToken &&
-            resolvedSymbol(checker, unwrapExpression(node.operand)) === symbol
-        );
-    return (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-        resolvedSymbol(checker, unwrapExpression(node.left)) === symbol &&
-        ts.isNumericLiteral(node.right) &&
-        node.right.text === "1"
+/**
+ * Whether `node`, a statement of `loop`'s body, can leave the loop other
+ * than by finishing or throwing, or suspend inside it: a `return`, `await`,
+ * `yield`, a `break` out of `node`, or a `continue` past `loop`. Nested
+ * functions and classes are other activations.
+ */
+function exitsLoop(node: ts.Node, loop: ts.IterationStatement): boolean {
+    return someAnalysisNode(
+        node,
+        (child) =>
+            ts.isClassLike(child)
+                ? "skip"
+                : ts.isReturnStatement(child) ||
+                  isSuspensionPoint(child, { yield: true }) ||
+                  (ts.isBreakStatement(child) &&
+                      !isDeclaredInside(jumpBinding(child) ?? loop, node)) ||
+                  (ts.isContinueStatement(child) &&
+                      !isDeclaredInside(jumpBinding(child) ?? loop, node) &&
+                      !jumpsTo(child, loop)),
+        { functions: "skip" },
     );
 }
 
-/** Whether `node` writes the binding `symbol` names. */
-function assigns(
-    node: ts.Node,
-    symbol: ts.Symbol,
-    checker: ts.TypeChecker,
-): boolean {
-    let found = false;
-    const visit = (child: ts.Node): void => {
-        if (found) return;
-        if (
-            (ts.isBinaryExpression(child) &&
-                child.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                child.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                resolvedSymbol(checker, unwrapExpression(child.left)) ===
-                    symbol) ||
-            ((ts.isPostfixUnaryExpression(child) ||
-                ts.isPrefixUnaryExpression(child)) &&
-                (child.operator === ts.SyntaxKind.PlusPlusToken ||
-                    child.operator === ts.SyntaxKind.MinusMinusToken) &&
-                resolvedSymbol(checker, unwrapExpression(child.operand)) ===
-                    symbol)
-        ) {
-            found = true;
-            return;
-        }
-        ts.forEachChild(child, visit);
-    };
-    visit(node);
-    return found;
-}
-
 /**
- * Whether `node` can leave the loop other than by finishing or throwing, or
- * suspend inside it: a `return`, `await`, `yield`, a labeled jump, or a
- * `break` that is not inside a nested loop or `switch`. Nested functions
- * are other activations.
- */
-function exitsLoop(node: ts.Node): boolean {
-    let found = false;
-    const visit = (child: ts.Node, nestedBreakTarget: boolean): void => {
-        if (found || ts.isFunctionLike(child) || ts.isClassLike(child)) return;
-        if (
-            ts.isReturnStatement(child) ||
-            ts.isAwaitExpression(child) ||
-            ts.isYieldExpression(child) ||
-            ((ts.isBreakStatement(child) || ts.isContinueStatement(child)) &&
-                child.label !== undefined) ||
-            (ts.isBreakStatement(child) && !nestedBreakTarget) ||
-            (ts.isForOfStatement(child) && child.awaitModifier !== undefined)
-        ) {
-            found = true;
-            return;
-        }
-        const nested =
-            nestedBreakTarget ||
-            ts.isIterationStatement(child, false) ||
-            ts.isSwitchStatement(child);
-        ts.forEachChild(child, (grandchild) => visit(grandchild, nested));
-    };
-    visit(node, false);
-    return found;
-}
-
-/**
- * Whether code reaches a name of `target`: directly, or through a program
- * function, method, accessor or constructor it calls (overrides included).
- * A call whose program target has no body to read proves nothing.
+ * Whether code reaches a name of `target`: directly, or through the bodies
+ * a call, construction or accessor runs (EvaluationOrder: overrides,
+ * construction chains and field initializers included). Code it cannot
+ * follow reaches anything.
  */
 class ReachedReferences {
     /** @unjournaled One proof's walk, over the program alone. */
     private readonly visited = new Set<ts.Node>();
 
     public constructor(
-        private readonly program: ts.Program,
+        private readonly order: EvaluationOrder,
         private readonly checker: ts.TypeChecker,
         private readonly target: ts.Symbol,
     ) {}
 
     public names(node: ts.Node): boolean {
-        let found = false;
-        const visit = (child: ts.Node): void => {
-            if (found) return;
-            if (ts.isIdentifier(child) || ts.isPrivateIdentifier(child)) {
-                if (resolvedSymbol(this.checker, child) === this.target)
-                    found = true;
-                return;
-            }
-            if (
-                (ts.isCallExpression(child) ||
-                    ts.isNewExpression(child) ||
-                    ts.isPropertyAccessExpression(child) ||
-                    ts.isElementAccessExpression(child) ||
-                    ts.isTaggedTemplateExpression(child)) &&
-                this.reachesTarget(child)
+        return someAnalysisNode(node, (child) => {
+            if (ts.isIdentifier(child) || ts.isPrivateIdentifier(child))
+                return resolvedSymbol(this.checker, child) === this.target;
+            if (ts.isCallExpression(child) || ts.isNewExpression(child)) {
+                const units = this.order.callUnits(child);
+                if (units === undefined) return true;
+                if (units !== "library" && units.some(this.bodyReaches))
+                    return true;
+            } else if (ts.isTaggedTemplateExpression(child)) return true;
+            else if (
+                ts.isPropertyAccessExpression(child) ||
+                ts.isElementAccessExpression(child)
             ) {
-                found = true;
-                return;
+                const getters = this.order.accessorUnits(child, "get");
+                if (getters === undefined || getters.some(this.bodyReaches))
+                    return true;
             }
-            ts.forEachChild(child, visit);
-        };
-        visit(node);
-        return found;
+            return false;
+        });
     }
 
-    /** Whether a call, construction or accessor read reaches the target. */
-    private reachesTarget(
-        node:
-            | ts.CallExpression
-            | ts.NewExpression
-            | ts.PropertyAccessExpression
-            | ts.ElementAccessExpression
-            | ts.TaggedTemplateExpression,
-    ): boolean {
-        const callee =
-            ts.isCallExpression(node) || ts.isNewExpression(node)
-                ? unwrapExpression(node.expression)
-                : ts.isTaggedTemplateExpression(node)
-                  ? unwrapExpression(node.tag)
-                  : node;
-        if (ts.isFunctionExpression(callee) || ts.isArrowFunction(callee))
-            return this.bodyReaches(callee);
-        if (ts.isElementAccessExpression(callee) && callee !== node)
-            return true;
-        const symbol =
-            ts.isPropertyAccessExpression(callee) || ts.isIdentifier(callee)
-                ? resolvedSymbol(this.checker, callee)
-                : undefined;
-        const calls = callee !== node;
-        if (!symbol) return calls && !ts.isElementAccessExpression(node);
-        for (const declaration of symbol.declarations ?? []) {
-            if (declarationOrigin(declaration) !== "program") continue;
-            if (this.declarationReaches(declaration, calls, node)) return true;
-        }
-        return false;
-    }
-
-    private declarationReaches(
-        declaration: ts.Declaration,
-        calls: boolean,
-        site: ts.Node,
-    ): boolean {
-        if (
-            ts.isFunctionDeclaration(declaration) ||
-            ts.isMethodDeclaration(declaration) ||
-            ts.isGetAccessorDeclaration(declaration) ||
-            ts.isSetAccessorDeclaration(declaration)
-        ) {
-            if (!declaration.body) return true;
-            if (this.bodyReaches(declaration)) return true;
-            return ts.isMethodDeclaration(declaration) ||
-                ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration)
-                ? this.overridesReach(declaration)
-                : false;
-        }
-        if (
-            ts.isClassDeclaration(declaration) ||
-            ts.isClassExpression(declaration)
-        )
-            return ts.isNewExpression(site) && this.bodyReaches(declaration);
-        if (
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-        ) {
-            const initializer = unwrapExpression(declaration.initializer);
-            if (
-                ts.isArrowFunction(initializer) ||
-                ts.isFunctionExpression(initializer)
-            )
-                return calls && this.bodyReaches(initializer);
-        }
-        // A stored function value, an abstract or interface member, or any
-        // other binding: called, its target is unknown; read, it is data.
-        return calls;
-    }
-
-    private bodyReaches(node: ts.Node): boolean {
+    private readonly bodyReaches = (node: ts.Node): boolean => {
         if (this.visited.has(node)) return false;
         this.visited.add(node);
         return this.names(node);
-    }
-
-    /** Methods of the same name in program classes deriving from the owner. */
-    private overridesReach(
-        member: ts.MethodDeclaration | ts.AccessorDeclaration,
-    ): boolean {
-        const owner = member.parent;
-        if (
-            !ts.isClassLike(owner) ||
-            !member.name ||
-            !ts.isIdentifier(member.name)
-        )
-            return false;
-        const name = member.name.text;
-        const ownerType = this.checker.getTypeAtLocation(owner);
-        return this.programClasses().some(
-            (node) =>
-                node !== owner &&
-                derivesFrom(this.checker, node, ownerType) &&
-                node.members.some(
-                    (candidate) =>
-                        candidate.name !== undefined &&
-                        ts.isIdentifier(candidate.name) &&
-                        candidate.name.text === name &&
-                        this.bodyReaches(candidate),
-                ),
-        );
-    }
-
-    /** @unjournaled The program's classes, collected once. */
-    private classes?: ts.ClassLikeDeclaration[];
-
-    private programClasses(): ts.ClassLikeDeclaration[] {
-        if (this.classes) return this.classes;
-        const classes: ts.ClassLikeDeclaration[] = [];
-        const visit = (node: ts.Node): void => {
-            if (ts.isClassLike(node) && node.heritageClauses)
-                classes.push(node);
-            ts.forEachChild(node, visit);
-        };
-        for (const file of this.program.getSourceFiles())
-            if (
-                !file.isDeclarationFile &&
-                declarationOrigin(file) === "program"
-            )
-                visit(file);
-        return (this.classes = classes);
-    }
-}
-
-function derivesFrom(
-    checker: ts.TypeChecker,
-    node: ts.ClassLikeDeclaration,
-    base: ts.Type,
-): boolean {
-    const type = checker.getTypeAtLocation(node);
-    const pending = [
-        ...(type.isClassOrInterface() ? checker.getBaseTypes(type) : []),
-    ];
-    while (pending.length > 0) {
-        const next = pending.pop()!;
-        if (next.symbol === base.symbol) return true;
-        if (next.isClassOrInterface())
-            pending.push(...checker.getBaseTypes(next));
-    }
-    return false;
+    };
 }

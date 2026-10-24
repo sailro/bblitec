@@ -5,7 +5,7 @@
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { isNullable } from "./type-facts.js";
+import { isNullable, holdsOnly } from "./type-facts.js";
 import {
     compileClassInstanceOf,
     conditionComparison,
@@ -26,7 +26,13 @@ import {
     ERROR_CONSTRUCTORS,
 } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { isAssignmentExpression, unwrapExpression } from "./syntax.js";
+import {
+    isAssignmentExpression,
+    unwrapExpression,
+    equalityOperator,
+    containsSuspension,
+    variableKind,
+} from "./syntax.js";
 import { recordAt } from "./record-access.js";
 import { declaredIn, resolvedSymbol } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -42,6 +48,8 @@ import {
     sameCompiledValue,
     type Value,
 } from "./types.js";
+import { readsErasedVoid } from "./undefined-values.js";
+import { knownCondition } from "./values/model.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -78,6 +86,7 @@ interface ConditionContext
             | "sharedClosures"
             | "symbols"
             | "unwrap"
+            | "unwrapValue"
         > {}
 
 /** The collection classes `instanceof` names, by their storage. */
@@ -133,7 +142,7 @@ export class ConditionLowerer {
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
-                ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const
+                variableKind(declaration) === "const"
             ) {
                 node = this.context.unwrap(declaration.initializer);
                 continue;
@@ -245,14 +254,8 @@ export class ConditionLowerer {
         );
         if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
-        const unwrapped = this.context.options.workers
-            ? unwrapExpression(expression)
-            : this.context.unwrap(expression);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            this.context.symbols.isGlobalUndefined(unwrapped)
-        )
-            return "false";
+        const unwrapped = this.context.unwrapValue(expression);
+        if (this.context.symbols.isNullishLiteral(unwrapped)) return "false";
         // A BigInt is truthy unless it is zero.
         if (isBigIntTyped(this.context.checker, unwrapped)) {
             const condition = this.context.dataLowerer.truthinessCondition(
@@ -263,6 +266,11 @@ export class ConditionLowerer {
         if (this.context.options.workers && ts.isAwaitExpression(unwrapped)) {
             const value = this.context.compileValue(unwrapped);
             if (value.kind === "void") {
+                if (readsErasedVoid(this.context, value, unwrapped))
+                    this.context.fail(
+                        unwrapped,
+                        "A tested void result requires a proven undefined completion.",
+                    );
                 this.context.emitDiscardedValue(value);
                 return "false";
             }
@@ -350,9 +358,7 @@ export class ConditionLowerer {
             if (rightLines.length > 0) {
                 if (
                     this.context.options.workers &&
-                    someAnalysisNode(unwrapped.right, ts.isAwaitExpression, {
-                        functions: "skip",
-                    })
+                    containsSuspension(unwrapped.right)
                 ) {
                     const result =
                         this.context.allocateTemporaryCppName("logical_result");
@@ -405,10 +411,7 @@ export class ConditionLowerer {
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken)
+            equalityOperator(unwrapped.operatorToken.kind)?.loose === false
         ) {
             const isPointerLockElement = (operand: ts.Expression): boolean => {
                 const value = this.context.unwrap(operand);
@@ -447,8 +450,8 @@ export class ConditionLowerer {
             unwrapped.operator === ts.SyntaxKind.ExclamationToken
         ) {
             const operand = this.compileCondition(unwrapped.operand);
-            if (operand === "true") return "false";
-            if (operand === "false") return "true";
+            if (knownCondition(operand) === true) return "false";
+            if (knownCondition(operand) === false) return "true";
             return `!(${operand})`;
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
@@ -643,9 +646,10 @@ export class ConditionLowerer {
                                   : brand
                                     ? brand(`(${value.cpp})`)
                                     : "true";
-                        return present === undefined || test === "false"
+                        return present === undefined ||
+                            knownCondition(test) === false
                             ? test
-                            : test === "true"
+                            : knownCondition(test) === true
                               ? present
                               : `(${present} && ${test})`;
                     }
@@ -722,10 +726,7 @@ export class ConditionLowerer {
             }
             // `base !== pkg` where `const base = extra ?? pkg` and `extra` is
             // known absent: both name one object, whatever storage holds it.
-            if (
-                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
-            ) {
+            if (equalityOperator(comparison.kind)?.loose === false) {
                 const left = this.identityRoot(unwrapped.left);
                 if (left && left === this.identityRoot(unwrapped.right))
                     return comparison.kind ===
@@ -759,9 +760,7 @@ export class ConditionLowerer {
             if (textKind(rightValue))
                 rightValue = retainTextValue(this.context, rightValue);
             const operator = comparison.cpp;
-            const equality =
-                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+            const equality = equalityOperator(comparison.kind)?.loose === false;
             if (
                 equality &&
                 (leftValue.dataType?.kind === "error" ||
@@ -879,6 +878,28 @@ export class ConditionLowerer {
                   )
                 : undefined;
             if (strict !== undefined) return strict;
+            // Two strings order by UTF-16 code units, not by number or by
+            // their UTF-8 bytes; a dynamic value typed string is one.
+            const text = (value: Value, node: ts.Expression): string =>
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    { kind: "string" },
+                    node,
+                );
+            if (
+                !equality &&
+                holdsOnly(
+                    this.context.checker.getTypeAtLocation(unwrapped.left),
+                    ["string"],
+                ) &&
+                holdsOnly(
+                    this.context.checker.getTypeAtLocation(unwrapped.right),
+                    ["string"],
+                )
+            ) {
+                this.context.reachJsData();
+                return `bbl::js::string_code_units(${text(leftValue, unwrapped.left)}) ${operator} bbl::js::string_code_units(${text(rightValue, unwrapped.right)})`;
+            }
             return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
         }
         if (

@@ -1,8 +1,17 @@
 import ts from "typescript";
 import { encodePinnedErrorContracts } from "./pinned-error.js";
 import {
-    propertyNameText,
+    isExpressionWrapper,
+    propertyKey,
     unwrapExpression as unwrapSyntaxWrappers,
+    writeSites,
+    type WriteSite,
+    lastWriter,
+    objectLiteralMembers,
+    propertyPath,
+    sameSource,
+    sameSyntax,
+    variableKind,
 } from "../compiler/syntax.js";
 import {
     sharedUpstreamStore,
@@ -10,10 +19,12 @@ import {
 } from "../upstream-source.js";
 import {
     moduleScopeVariable,
+    pinnedLibraryGlobal,
     pinnedNamesOf,
     registerPinnedSource,
     type PinnedProgram,
 } from "../pinned-program.js";
+import { mathConstantAccess } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
@@ -97,7 +108,7 @@ export function findNodes<T extends ts.Node>(
 
 /** The name a property is declared under, where it is a plain name or literal. */
 export function propertyName(name: ts.PropertyName): string | undefined {
-    return propertyNameText(name);
+    return propertyKey(name);
 }
 
 /** The expression under every `as`, `<T>`, `(...)`, `!` and `satisfies` the pin wraps it in. */
@@ -120,18 +131,24 @@ export function unwrapExpression(expression: ts.Expression): ts.Expression {
  * initial value: a binding the pin mutates at run time (`MAX_LIGHTS`, which
  * `setMaxLights` grows) that this port freezes and refuses the mutation of.
  */
+/** A `const`, or with `frozen` a `let` too: the bindings a pinned module constant reads. */
+function admitsModuleConstant(
+    variable: ts.Node,
+    frozen: boolean | undefined,
+): boolean {
+    const kind = variableKind(variable);
+    return kind === "const" || (frozen === true && kind === "let");
+}
+
 function moduleScopeConstant(
     file: ts.SourceFile,
     name: string,
     options: { frozen?: boolean } = {},
 ): ts.Expression | undefined {
-    const admitted = options.frozen
-        ? ts.NodeFlags.Const | ts.NodeFlags.Let
-        : ts.NodeFlags.Const;
     for (const statement of file.statements) {
         if (
             !ts.isVariableStatement(statement) ||
-            (statement.declarationList.flags & admitted) === 0
+            !admitsModuleConstant(statement.declarationList, options.frozen)
         ) {
             continue;
         }
@@ -303,10 +320,7 @@ export function constantOf(
 ): PinnedConstant | undefined {
     const declaration = moduleScopeVariable(declarationOf(identifier));
     if (!declaration?.initializer) return undefined;
-    const admitted = options.frozen
-        ? ts.NodeFlags.Const | ts.NodeFlags.Let
-        : ts.NodeFlags.Const;
-    if ((declaration.parent.flags & admitted) === 0) return undefined;
+    if (!admitsModuleConstant(declaration, options.frozen)) return undefined;
     const file = declaration.getSourceFile();
     if (
         options.sameFile &&
@@ -348,14 +362,8 @@ export function numericValue(
         );
         if (folded !== undefined) return folded;
     }
-    if (
-        ts.isPropertyAccessExpression(unwrapped) &&
-        ts.isIdentifier(unwrapped.expression) &&
-        unwrapped.expression.text === "Math" &&
-        unwrapped.name.text === "PI"
-    ) {
-        return Math.PI;
-    }
+    const mathConstant = mathConstantAccess(unwrapped, pinnedLibraryGlobal);
+    if (mathConstant) return mathConstant.value;
     if (ts.isBinaryExpression(unwrapped)) {
         const folded = foldNumericBinary(
             unwrapped.operatorToken.kind,
@@ -831,35 +839,31 @@ export class LoweringContext {
     }
 
     /**
-     * Every assignment (`=`, `??=`) anywhere in the pinned sources whose
+     * Every write anywhere in the pinned sources ({@link writeSites}) whose
      * target is the binding or property `name`, whatever the receiver.
      */
-    public writersOf(name: string): readonly ts.BinaryExpression[] {
+    public writersOf(name: string): readonly WriteSite[] {
         let index = writerIndexes.get(this);
         if (!index) {
-            const built = new Map<string, ts.BinaryExpression[]>();
+            const built = new Map<string, WriteSite[]>();
             for (const modulePath of this.store.listSources()) {
                 if (!modulePath.startsWith("src/")) continue;
-                for (const write of findNodes(
-                    this.sourceFile(modulePath),
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        (node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken ||
-                            node.operatorToken.kind ===
-                                ts.SyntaxKind.QuestionQuestionEqualsToken),
-                )) {
-                    const target = unwrapExpression(write.left);
-                    const written = ts.isIdentifier(target)
-                        ? target.text
-                        : ts.isPropertyAccessExpression(target)
-                          ? target.name.text
-                          : undefined;
-                    if (written === undefined) continue;
-                    const writes = built.get(written) ?? [];
-                    writes.push(write);
-                    built.set(written, writes);
-                }
+                const visit = (node: ts.Node): void => {
+                    for (const write of writeSites(node)) {
+                        const target = write.target;
+                        const written = ts.isIdentifier(target)
+                            ? target.text
+                            : ts.isPropertyAccessExpression(target)
+                              ? target.name.text
+                              : undefined;
+                        if (written === undefined) continue;
+                        const writes = built.get(written) ?? [];
+                        writes.push(write);
+                        built.set(written, writes);
+                    }
+                    ts.forEachChild(node, visit);
+                };
+                visit(this.sourceFile(modulePath));
             }
             index = built;
             writerIndexes.set(this, index);
@@ -879,7 +883,7 @@ export class LoweringContext {
         installer: string,
     ): void {
         const owner = this.functionDeclaration(module, installer).declaration;
-        const writes = this.writersOf(name);
+        const writes = this.writersOf(name).map((write) => write.node);
         // By span, not node identity: a store may parse a module per read.
         const inOwner = (write: ts.Node): boolean =>
             write.getSourceFile().fileName === owner.getSourceFile().fileName &&
@@ -905,12 +909,9 @@ export class LoweringContext {
         const file = literal.getSourceFile();
         const members = new Map<string, number>();
         for (const member of literal.properties) {
-            const name =
-                ts.isPropertyAssignment(member) &&
-                (ts.isIdentifier(member.name) ||
-                    ts.isStringLiteral(member.name))
-                    ? member.name.text
-                    : undefined;
+            const name = ts.isPropertyAssignment(member)
+                ? propertyKey(member.name)
+                : undefined;
             if (name === undefined || !ts.isPropertyAssignment(member))
                 return this.contractError(
                     member,
@@ -1016,15 +1017,7 @@ export class LoweringContext {
     }
 
     public propertyPath(expression: ts.Expression): string[] | undefined {
-        const unwrapped = this.unwrapExpression(expression);
-        if (ts.isIdentifier(unwrapped)) {
-            return [unwrapped.text];
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const owner = this.propertyPath(unwrapped.expression);
-            return owner ? [...owner, unwrapped.name.text] : undefined;
-        }
-        return undefined;
+        return propertyPath(expression);
     }
 
     /**
@@ -1039,19 +1032,7 @@ export class LoweringContext {
         actual: ts.Expression,
         expectedSource: string,
     ): boolean {
-        const expected = this.expectedFingerprint(expectedSource);
-        // A fingerprint walks the whole subtree, and most candidates a
-        // counting walk offers are not even the expected node kind; the
-        // head is free where the walk is not.
-        const head = this.fingerprintHead(actual);
-        if (
-            head !== undefined &&
-            expected !== head &&
-            !expected.startsWith(`${head}(`)
-        ) {
-            return false;
-        }
-        return this.nodeFingerprint(actual) === expected;
+        return sameSource(actual, expectedSource, "expression");
     }
 
     /** Select a canonical expression case by AST, retaining its native projection key. */
@@ -1135,10 +1116,7 @@ export class LoweringContext {
             expected.map(statementKind),
         );
         for (const [index, statement] of statements.entries()) {
-            if (
-                this.nodeFingerprint(statement) !==
-                this.nodeFingerprint(expected[index]!)
-            ) {
+            if (!sameSyntax(statement, expected[index]!)) {
                 this.contractError(
                     statement,
                     `${label} statement ${index + 1} changed; the native seam must be re-read.`,
@@ -1158,13 +1136,13 @@ export class LoweringContext {
         label: string,
         count = 1,
     ): void {
-        // A parenthesized expression fingerprints as its operand, and the
-        // walk visits both; the operand is the shape, the parenthesis is
-        // not a second statement of it.
+        // A wrapper fingerprints as its operand, and the walk visits both;
+        // the operand is the shape, the wrapper is not a second statement
+        // of it.
         const found = this.findNodes(
             root,
             (node): node is ts.Expression =>
-                !ts.isParenthesizedExpression(node) &&
+                !isExpressionWrapper(node) &&
                 this.expressionMatchesShape(node as ts.Expression, expected),
         ).length;
         if (found !== count) {
@@ -1174,36 +1152,6 @@ export class LoweringContext {
             );
         }
     }
-
-    /**
-     * The fingerprint of an expected shape, parsed once per process: it is
-     * a pure function of the string, and the shape helpers ask for the
-     * same handful of strings across every scene compiled in one run.
-     */
-    private expectedFingerprint(expectedSource: string): string {
-        const cached = LoweringContext.expectedFingerprints.get(expectedSource);
-        if (cached !== undefined) return cached;
-        const expectedFile = ts.createSourceFile(
-            "expected-expression.ts",
-            `const expected = ${expectedSource};`,
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.TS,
-        );
-        const statement = expectedFile.statements[0];
-        const declaration =
-            statement && ts.isVariableStatement(statement)
-                ? statement.declarationList.declarations[0]
-                : undefined;
-        if (!declaration?.initializer) {
-            throw new Error(`Invalid expected expression '${expectedSource}'.`);
-        }
-        const fingerprint = this.nodeFingerprint(declaration.initializer);
-        LoweringContext.expectedFingerprints.set(expectedSource, fingerprint);
-        return fingerprint;
-    }
-
-    private static readonly expectedFingerprints = new Map<string, string>();
 
     public assertExpressionShape(
         actual: ts.Expression,
@@ -1248,10 +1196,7 @@ export class LoweringContext {
             !declaration.body
         )
             throw new Error(`Invalid function body contract: ${label}.`);
-        if (
-            this.nodeFingerprint(declaration.body) !==
-            this.nodeFingerprint(expected.body)
-        )
+        if (!sameSyntax(declaration.body, expected.body))
             this.contractError(
                 declaration,
                 `${label} changed; re-establish its complete structural specialization.`,
@@ -1323,10 +1268,7 @@ export class LoweringContext {
 
     public stringValue(expression: ts.Expression, file: ts.SourceFile): string {
         const unwrapped = this.unwrapExpression(expression);
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isTemplateExpression(unwrapped)) {
@@ -1336,8 +1278,7 @@ export class LoweringContext {
                     .map((span) => {
                         const value = this.unwrapExpression(span.expression);
                         return (
-                            (ts.isStringLiteral(value) ||
-                            ts.isNoSubstitutionTemplateLiteral(value)
+                            (ts.isStringLiteralLike(value)
                                 ? value.text
                                 : String(this.numericValue(value, file))) +
                             span.literal.text
@@ -1398,25 +1339,32 @@ export class LoweringContext {
         );
     }
 
+    /**
+     * The member a pinned literal writes for `name` itself: its last explicit
+     * writer. A later spread is the caller's contract (an intrinsic merges
+     * `...options.textureOptions` over the pin's defaults); a later run-time
+     * key that may write `name` is refused.
+     */
     public propertyInitializer(
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression {
-        const property = object.properties.find(
-            (candidate) =>
-                (ts.isPropertyAssignment(candidate) ||
-                    ts.isShorthandPropertyAssignment(candidate)) &&
-                ts.isIdentifier(candidate.name) &&
-                candidate.name.text === name,
+        const writer = lastWriter(
+            objectLiteralMembers(object),
+            name,
+            () => false,
         );
-        if (!property) {
-            this.contractError(object, `Expected object property '${name}'.`);
-        }
-        if (ts.isPropertyAssignment(property)) return property.initializer;
-        if (ts.isShorthandPropertyAssignment(property)) return property.name;
-        return this.contractError(
-            property,
-            `Expected object property '${name}'.`,
+        if (writer === "unknown")
+            return this.contractError(
+                object,
+                `Expected object property '${name}' no run-time key may override.`,
+            );
+        return (
+            writer?.value ??
+            this.contractError(
+                writer?.node ?? object,
+                `Expected object property '${name}'.`,
+            )
         );
     }
 
@@ -1687,78 +1635,13 @@ export class LoweringContext {
     public unwrapExpression(expression: ts.Expression): ts.Expression {
         return unwrapExpression(expression);
     }
-
-    /**
-     * The leading segment of `nodeFingerprint(node)` without the walk, or
-     * undefined for the wrappers the fingerprint sees through.
-     */
-    private fingerprintHead(node: ts.Node): string | undefined {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node)
-        ) {
-            return undefined;
-        }
-        if (ts.isIdentifier(node)) {
-            return `identifier:${node.text}`;
-        }
-        if (ts.isNumericLiteral(node)) {
-            return `number:${Number(node.text)}`;
-        }
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
-            return `string:${node.text}`;
-        }
-        return ts.SyntaxKind[node.kind];
-    }
-
-    private nodeFingerprint(node: ts.Node): string {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node)
-        ) {
-            return this.nodeFingerprint(node.expression);
-        }
-        if (ts.isIdentifier(node)) {
-            return `identifier:${node.text}`;
-        }
-        if (ts.isNumericLiteral(node)) {
-            return `number:${Number(node.text)}`;
-        }
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
-            return `string:${node.text}`;
-        }
-        const children = node
-            .getChildren(node.getSourceFile())
-            .filter(
-                (child) =>
-                    !ts.isJSDoc(child) &&
-                    child.kind !== ts.SyntaxKind.CommaToken &&
-                    child.kind !== ts.SyntaxKind.SemicolonToken,
-            );
-        if (children.length === 0) {
-            return ts.SyntaxKind[node.kind];
-        }
-        return `${ts.SyntaxKind[node.kind]}(${children
-            .map((child) => this.nodeFingerprint(child))
-            .join(",")})`;
-    }
 }
 
 let sharedPinned: LoweringContext | undefined;
 /** `LoweringContext.writersOf`'s index, one per context's sources. */
 const writerIndexes = new WeakMap<
     LoweringContext,
-    ReadonlyMap<string, ts.BinaryExpression[]>
+    ReadonlyMap<string, WriteSite[]>
 >();
 
 /**

@@ -2,10 +2,19 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
-import { aliasTarget, declaredIn, declaredSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    aliasTarget,
+    declaredIn,
+    declaredSymbol,
+    computedEnumMember,
+} from "./symbols.js";
+import {
+    unwrapExpression,
+    containsSuspension,
+    variableKind,
+    classBaseExpression,
+} from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { someAnalysisNode } from "./analysis-walk.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -14,6 +23,8 @@ import {
     planEntryModuleState,
     runtimeModuleDependencies,
 } from "./module-initializers.js";
+import { callSignatures } from "./type-facts.js";
+import { emitSharedCell } from "./shared-cells.js";
 
 /** A reached lazy module needs its lexical homes before entry emission. */
 export class ModuleActivationRequired extends Error {
@@ -108,18 +119,11 @@ export class ModuleNamespaces {
         required.forEach(visit);
         for (const [file, { cpp }] of this.activations) {
             context.reachJsData();
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: cpp,
-                initializer: `bbl::js::make_gc_shared<bbl::js::ModuleActivation>(${context.cppString(file.fileName)})`,
+            emitSharedCell(context, cpp, {
+                type: "bbl::js::ModuleActivation",
+                initializer: context.cppString(file.fileName),
             });
-            context.registerNativeBinding(
-                cpp,
-                false,
-                false,
-                "std::shared_ptr<bbl::js::ModuleActivation>",
-            );
+            context.registerNativeBinding(cpp);
         }
         for (const [file, { prefix }] of this.activations) {
             context.bindings.pushScope(prefix);
@@ -142,21 +146,13 @@ export class ModuleNamespaces {
                         );
                     if (
                         ts.isEnumDeclaration(statement) &&
-                        statement.members.some(
-                            (member) =>
-                                context.checker.getConstantValue(member) ===
-                                undefined,
-                        )
+                        computedEnumMember(context.checker, statement)
                     )
                         context.fail(
                             statement,
                             "Lazy enum evaluation requires represented module storage.",
                         );
-                    if (
-                        someAnalysisNode(statement, ts.isAwaitExpression, {
-                            functions: "skip",
-                        })
-                    )
+                    if (containsSuspension(statement))
                         context.fail(
                             statement,
                             "Top-level await in a lazy module requires asynchronous module activation.",
@@ -278,12 +274,13 @@ export class ModuleNamespaces {
             );
             if (constant) return constant;
             if (
-                !this.context.checker.getSignaturesOfType(
+                !callSignatures(
+                    this.context.checker,
                     this.context.checker.getTypeOfSymbolAtLocation(
                         target,
                         node,
                     ),
-                    ts.SignatureKind.Call,
+                    "exact",
                 ).length
             )
                 return this.context.fail(
@@ -315,8 +312,7 @@ export class ModuleNamespaces {
                 value.kind === "number" &&
                 value.staticNumber === undefined &&
                 ts.isVariableDeclaration(declaration) &&
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                    0
+                variableKind(declaration) === "const"
                     ? staticNumberValue(this.context, declaration.name)
                     : undefined;
             return staticNumber !== undefined && Number.isFinite(staticNumber)
@@ -378,9 +374,10 @@ export class ModuleNamespaces {
         const then = this.exports(type).get("then");
         if (
             then &&
-            this.context.checker.getSignaturesOfType(
+            callSignatures(
+                this.context.checker,
                 this.context.checker.getTypeOfSymbolAtLocation(then, call),
-                ts.SignatureKind.Call,
+                "exact",
             ).length
         )
             return this.context.fail(
@@ -437,7 +434,7 @@ export class ModuleNamespaces {
                 if (
                     ts.isModuleDeclaration(statement) ||
                     (ts.isClassDeclaration(statement) &&
-                        (statement.heritageClauses?.length ||
+                        (classBaseExpression(statement) !== undefined ||
                             statement.members.some(
                                 (member) =>
                                     member.name &&
@@ -450,11 +447,7 @@ export class ModuleNamespaces {
                     );
                 if (
                     ts.isEnumDeclaration(statement) &&
-                    statement.members.some(
-                        (member) =>
-                            this.context.checker.getConstantValue(member) ===
-                            undefined,
-                    )
+                    computedEnumMember(this.context.checker, statement)
                 )
                     this.context.fail(
                         statement,
@@ -469,8 +462,7 @@ export class ModuleNamespaces {
                     continue;
                 if (
                     ts.isVariableStatement(statement) &&
-                    (statement.declarationList.flags & ts.NodeFlags.Const) !==
-                        0 &&
+                    variableKind(statement.declarationList) === "const" &&
                     statement.declarationList.declarations.every(
                         (declaration) =>
                             ts.isIdentifier(declaration.name) &&

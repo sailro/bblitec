@@ -439,7 +439,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `${scene.cpp}.environment.rotation_y = ` +
-                    context.compileNumber(argumentAt(call, 1)),
+                    context.compileNumber(argumentAt(call, 1), "float"),
             };
         }
 
@@ -525,9 +525,9 @@ export function compileSceneIntrinsic(
                 cpp:
                     `bbl::set_scene_fog(${scene.cpp}, ` +
                     `${mode.staticNumber}.0f, ` +
-                    `${context.compileNumber(property("density"))}, ` +
-                    `${context.compileNumber(property("start"))}, ` +
-                    `${context.compileNumber(property("end"))}, ` +
+                    `${context.compileNumber(property("density"), "float")}, ` +
+                    `${context.compileNumber(property("start"), "float")}, ` +
+                    `${context.compileNumber(property("end"), "float")}, ` +
                     `${context.compileColor3(property("color"))})`,
             };
         }

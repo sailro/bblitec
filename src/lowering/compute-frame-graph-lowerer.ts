@@ -141,16 +141,13 @@ export function lowerComputeFrameGraph(
                 ["pass._execute", () => "pass->execute()"],
                 ["task.execute", () => "task->execute()"],
             ]),
-            forOf(_iterated, element, _binding, syntax) {
+            forOf(iterated, element) {
                 const range = context.expressionMatchesShape(
-                    syntax.expression,
+                    iterated,
                     "fg._tasks",
                 )
                     ? "tasks"
-                    : context.expressionMatchesShape(
-                            syntax.expression,
-                            "task._passes",
-                        )
+                    : context.expressionMatchesShape(iterated, "task._passes")
                       ? "task->passes"
                       : undefined;
                 if (!range) return undefined;

@@ -22,6 +22,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
+import { compoundAssignmentStore } from "./pinned-operators.js";
 import {
     hasNode,
     nullishDefault,
@@ -40,6 +41,11 @@ import {
 } from "./pinned-option-defaults.js";
 
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+import {
+    isExpressionWrapper,
+    writeSites,
+    bindingElementKey,
+} from "../compiler/syntax.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -333,7 +339,7 @@ function templateOffsetField(
 
 /** The absolute float lane a `data[...]` index refers to. */
 function dataLane(state: WriterState, expression: ts.Expression): number {
-    if (ts.isNonNullExpression(expression))
+    if (isExpressionWrapper(expression))
         return dataLane(state, expression.expression);
     if (
         ts.isCallExpression(expression) &&
@@ -374,9 +380,6 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         Number(expression.right.text) === 4
     ) {
         return dataLane(state, expression.left);
-    }
-    if (ts.isParenthesizedExpression(expression)) {
-        return dataLane(state, expression.expression);
     }
     if (
         ts.isBinaryExpression(expression) &&
@@ -440,16 +443,8 @@ function guardedFieldByHas(condition: ts.Expression): string | undefined {
 function collectMutatedLocals(body: ts.Node): Set<string> {
     const mutated = new Set<string>();
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isBinaryExpression(node) &&
-            ts.isIdentifier(node.left) &&
-            (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken ||
-                node.operatorToken.kind === ts.SyntaxKind.AsteriskEqualsToken)
-        ) {
-            mutated.add(node.left.text);
-        }
+        for (const { target } of writeSites(node))
+            if (ts.isIdentifier(target)) mutated.add(target.text);
         ts.forEachChild(node, visit);
     };
     visit(body);
@@ -484,7 +479,7 @@ function readsNullLocal(
     expression: ts.Expression,
 ): boolean {
     let node = expression;
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     while (
         ts.isPropertyAccessExpression(node) ||
         ts.isPropertyAccessChain(node) ||
@@ -508,9 +503,9 @@ function vectorPropertyLanes(
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (!ts.isPropertyAccessExpression(node)) return undefined;
-    return state.request.vectorProperties?.[node.name.getText()];
+    return state.request.vectorProperties?.[node.name.text];
 }
 
 /** Whether a read names a property our records do not carry. */
@@ -519,14 +514,14 @@ function readsAbsentProperty(
     expression: ts.Expression,
 ): boolean {
     let node = expression;
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (
         !ts.isPropertyAccessExpression(node) &&
         !ts.isPropertyAccessChain(node)
     ) {
         return false;
     }
-    const property = node.name.getText();
+    const property = node.name.text;
     return state.request.propertySources[property] === null;
 }
 
@@ -590,18 +585,18 @@ function aliasesRecord(state: WriterState, expression: ts.Expression): boolean {
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (
         !ts.isPropertyAccessExpression(node) &&
         !ts.isPropertyAccessChain(node)
     ) {
         return false;
     }
-    const source = state.request.propertySources[node.name.getText()];
+    const source = state.request.propertySources[node.name.text];
     return (
         typeof source === "string" &&
         !source.includes(".") &&
-        state.request.vectorProperties?.[node.name.getText()] === undefined
+        state.request.vectorProperties?.[node.name.text] === undefined
     );
 }
 
@@ -614,9 +609,9 @@ function vectorOriginProperty(expression: ts.Expression): string | undefined {
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     return ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)
-        ? node.name.getText()
+        ? node.name.text
         : undefined;
 }
 
@@ -636,9 +631,9 @@ function discardedProperty(
     ) {
         node = node.left;
     }
-    if (ts.isNonNullExpression(node)) node = node.expression;
+    node = unwrapExpression(node);
     if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
-        return node.name.getText();
+        return node.name.text;
     }
     if (
         ts.isIdentifier(node) &&
@@ -871,9 +866,7 @@ function emitRecordExpression(
                 staticResult ? node.whenTrue : node.whenFalse,
             );
         }
-        const condition = ts.isNonNullExpression(node.condition)
-            ? node.condition.expression
-            : node.condition;
+        const condition = unwrapExpression(node.condition);
         const guardsVectorLocal =
             ts.isIdentifier(condition) &&
             state.vectorLocals.has(condition.text);
@@ -925,7 +918,7 @@ function emitRecordExpression(
         // `thick?.max` — a native record member is never absent, so the
         // optional chain reads exactly like the plain access.
         const property = ts.isPropertyAccessChain(node)
-            ? node.name.getText()
+            ? node.name.text
             : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
@@ -944,7 +937,7 @@ function emitRecordExpression(
         (ts.isPropertyAccessExpression(node.expression) ||
             ts.isPropertyAccessChain(node.expression))
     ) {
-        const owner = node.expression.name.getText();
+        const owner = node.expression.name.text;
         const direct =
             state.request.laneSources?.[owner]?.[
                 Number(node.argumentExpression.text)
@@ -969,7 +962,7 @@ function emitRecordExpression(
         ts.isElementAccessExpression(node)
     ) {
         const property = ts.isPropertyAccessExpression(node)
-            ? node.name.getText()
+            ? node.name.text
             : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
@@ -1183,9 +1176,13 @@ function emitPlainStatement(
                                 `${element.getText(state.file)}.`,
                         );
                     }
-                    const property =
-                        element.propertyName?.getText(state.file) ??
-                        element.name.text;
+                    const property = bindingElementKey(element);
+                    if (property === undefined)
+                        throw new Error(
+                            `Unsupported destructuring key in pinned ` +
+                                `${state.request.symbolName}: ` +
+                                `${element.getText(state.file)}.`,
+                        );
                     const local = element.name.text;
                     const source = state.request.propertySources[property];
                     if (source === undefined || source === null) {
@@ -1362,16 +1359,12 @@ function emitPlainStatement(
             statement.expression.operatorToken.kind ===
                 ts.SyntaxKind.AsteriskEqualsToken)
     ) {
-        const operators = new Map<ts.SyntaxKind, string>([
-            [ts.SyntaxKind.EqualsToken, "="],
-            [ts.SyntaxKind.PlusEqualsToken, "+="],
-            [ts.SyntaxKind.MinusEqualsToken, "-="],
-            [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-        ]);
         return [
-            `    ${statement.expression.left.text} ${operators.get(
+            `    ${compoundAssignmentStore(
                 statement.expression.operatorToken.kind,
-            )} ${emitExpression(state, statement.expression.right)};`,
+                statement.expression.left.text,
+                emitExpression(state, statement.expression.right),
+            )};`,
         ];
     }
     if (

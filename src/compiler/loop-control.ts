@@ -23,18 +23,25 @@ import {
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
+import { calledDeclaration } from "./symbols.js";
 
-/** Emit one body until its lowered control flow proves the remainder unreachable. */
+/**
+ * Emit one body until its lowered control flow leaves (true) or, given
+ * `staticIterationCompleted`, a static unrolled iteration completes (false):
+ * what follows either is unreachable in this emission.
+ */
 export function emitReachableStatements(
     context: {
         emitStatement(statement: ts.Statement): void;
         statementTerminatesAfterLowering(statement: ts.Statement): boolean;
+        staticIterationCompleted?(): boolean;
     },
     statements: readonly ts.Statement[],
 ): boolean {
     for (const statement of statements) {
         context.emitStatement(statement);
         if (context.statementTerminatesAfterLowering(statement)) return true;
+        if (context.staticIterationCompleted?.()) return false;
     }
     return false;
 }
@@ -105,6 +112,15 @@ interface ReturnQuery {
     readonly valued?: boolean;
 }
 
+/** The `return` a block body ends with, or undefined (a concise body, another statement). */
+export function finalReturn(
+    body: ts.Node | undefined,
+): ts.ReturnStatement | undefined {
+    if (!body || !ts.isBlock(body)) return undefined;
+    const last = body.statements.at(-1);
+    return last && ts.isReturnStatement(last) ? last : undefined;
+}
+
 /** The first `return` below the roots, in source order, or undefined. */
 export function firstReturn(
     roots: readonly ts.Node[],
@@ -135,7 +151,7 @@ export function callsNever(
 ): boolean {
     const call = unwrapExpression(expression, { await: true });
     if (!ts.isCallExpression(call)) return false;
-    const declaration = checker.getResolvedSignature(call)?.getDeclaration();
+    const declaration = calledDeclaration(checker, call);
     return (
         declaration !== undefined &&
         "type" in declaration &&

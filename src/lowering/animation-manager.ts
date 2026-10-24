@@ -3,6 +3,7 @@ import { LoweringContext } from "./context.js";
 import { renderCppExpression } from "./gltf/cpp-expression.js";
 import { cppPrecedence } from "./pinned-numeric-expression.js";
 import type { CppExpressionScope } from "./gltf/shared.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The clock arithmetic and state writes come from the manager, while RAF
  * registration belongs to the PAL's existing ordered frame conductor. */
@@ -144,7 +145,7 @@ export function lowerAnimationManagerClock(context: LoweringContext): {
         },
         callRead: (expression) => {
             if (
-                expression.expression.getText(file) !== "Number.isFinite" ||
+                !sameSource(expression.expression, "Number.isFinite") ||
                 expression.arguments.length !== 1
             ) {
                 context.contractError(

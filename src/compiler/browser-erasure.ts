@@ -17,13 +17,21 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
+import { undefinedValue, absenceOfNull } from "./values/model.js";
+import { cancelledSchedulerOf, schedulerOf } from "./schedulers.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     argumentAt,
     identifierText,
     isAssignmentExpression,
     outermostWrapper,
+    isOperandSelection,
     stringLiteralText,
+    valueOperands,
+    plainDataMembers,
+    equalityOperator,
+    functionKind,
+    variableKind,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -33,14 +41,16 @@ import {
     hasOnlyReportingEffects,
     writesUnobservedCanvasMetadata,
 } from "./canvas-instrumentation.js";
-import { staticClassMember } from "./class-members.js";
+import { isStaticMember, staticClassMember } from "./class-members.js";
 import { platformHandleKind } from "./data-types.js";
 import {
     declaredIn,
     declaredInDomLibrary,
     ecmascriptGlobalTypeof,
+    libraryName,
+    resolvedSymbol,
 } from "./symbols.js";
-import { mathUnaryFold } from "./math-intrinsics.js";
+import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
 import {
@@ -51,6 +61,12 @@ import {
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
 import { nativeHostUiElements } from "../native-host-ui.js";
+import {
+    isNullable,
+    presentMembers,
+    isVoid,
+    callSignatures,
+} from "./type-facts.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -81,14 +97,6 @@ export function isNumberParserCallee(
             context.libraryGlobal(callee.expression) === "Number")
     );
 }
-
-/** The library timer functions `platform-calls.ts` and `compileDeferredCallback` lower. */
-const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
-    "setTimeout",
-    "clearTimeout",
-    "setInterval",
-    "clearInterval",
-]);
 
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
@@ -446,7 +454,7 @@ export function constInitializer(
     return declaration &&
         ts.isVariableDeclaration(declaration) &&
         ts.isVariableDeclarationList(declaration.parent) &&
-        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(declaration.parent) === "const" &&
         declaration.initializer
         ? context.unwrap(declaration.initializer)
         : undefined;
@@ -491,8 +499,8 @@ function nativeNavigatorProperties(): Record<string, Value> {
             cpp: "bbl::logical_processor_count()",
         },
         onLine: { kind: "boolean", cpp: "true", staticBoolean: true },
-        userAgentData: { kind: "json-null", cpp: "std::nullopt" },
-        deviceMemory: { kind: "json-null", cpp: "std::nullopt" },
+        userAgentData: undefinedValue(),
+        deviceMemory: undefinedValue(),
         gpu: gpuValue(graphics),
         clipboard: {
             kind: "record",
@@ -522,7 +530,7 @@ export function browserEnvironmentValue(
             truthinessCpp: "true",
             objectIdentityCpp: "bbl::native_performance_identity()",
             recordProperties: {
-                memory: { kind: "json-null", cpp: "std::nullopt" },
+                memory: undefinedValue(),
                 now: {
                     kind: "data",
                     cpp: "bbl::pal::performance_milliseconds",
@@ -762,7 +770,11 @@ export class BrowserErasure {
                                 declaration,
                             );
                         return (
-                            propertyType.getCallSignatures().length === 0 &&
+                            callSignatures(
+                                this.context.checker,
+                                propertyType,
+                                "exact",
+                            ).length === 0 &&
                             this.context.dataTypes.fromTsType(
                                 propertyType,
                                 declaration,
@@ -787,18 +799,22 @@ export class BrowserErasure {
                             property.valueDeclaration ??
                             property.declarations?.[0];
                         if (!site) return false;
-                        const signatures = this.context.checker
-                            .getTypeOfSymbolAtLocation(property, site)
-                            .getCallSignatures();
+                        const signatures = callSignatures(
+                            this.context.checker,
+                            this.context.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                site,
+                            ),
+                            "exact",
+                        );
                         return (
                             signatures.length > 0 &&
-                            signatures.every(
-                                (signature) =>
-                                    (this.context.checker.getReturnTypeOfSignature(
+                            signatures.every((signature) =>
+                                isVoid(
+                                    this.context.checker.getReturnTypeOfSignature(
                                         signature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                    0,
+                                    ),
+                                ),
                             )
                         );
                     })
@@ -817,7 +833,7 @@ export class BrowserErasure {
                     value.kind !== "search-params")
             );
         });
-        const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
+        const returnsVoid = isVoid(observableResult);
         if (
             !hasBrowserInput ||
             (!returnsVoid &&
@@ -858,19 +874,8 @@ export class BrowserErasure {
         if (!result || (result.flags & ts.TypeFlags.Union) === 0) {
             return false;
         }
-        const resultMembers = (result as ts.UnionType).types;
-        const nullable = resultMembers.some(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                0,
-        );
-        const concrete = resultMembers.filter(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                0,
-        );
+        const nullable = isNullable(result);
+        const concrete = presentMembers(result);
         if (
             !nullable ||
             concrete.length !== 1 ||
@@ -882,9 +887,6 @@ export class BrowserErasure {
         const isPrivateOrProtected = (member: ts.ClassElement): boolean =>
             (ts.getCombinedModifierFlags(member) &
                 (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) !==
-            0;
-        const isStatic = (member: ts.ClassElement): boolean =>
-            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !==
             0;
         const domOwned = declaration.members.some(
             (member) =>
@@ -920,7 +922,7 @@ export class BrowserErasure {
 
         const publicSurfaceIsWriteOnly = declaration.members.every((member) => {
             if (
-                isStatic(member) ||
+                isStaticMember(member) ||
                 isPrivateOrProtected(member) ||
                 ts.isConstructorDeclaration(member)
             ) {
@@ -931,10 +933,7 @@ export class BrowserErasure {
                 this.context.checker.getSignatureFromDeclaration(member);
             return (
                 signature !== undefined &&
-                (this.context.checker.getReturnTypeOfSignature(signature)
-                    .flags &
-                    ts.TypeFlags.Void) !==
-                    0
+                isVoid(this.context.checker.getReturnTypeOfSignature(signature))
             );
         });
         return (
@@ -985,10 +984,12 @@ export class BrowserErasure {
             return true;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return unwrapped.properties.every(
-                (property) =>
-                    ts.isPropertyAssignment(property) &&
-                    this.isBrowserHelperArgument(property.initializer),
+            return (
+                plainDataMembers(unwrapped)?.every(
+                    (member) =>
+                        member.kind === "property" &&
+                        this.isBrowserHelperArgument(member.value),
+                ) ?? false
             );
         }
         if (ts.isArrayLiteralExpression(unwrapped)) {
@@ -1002,19 +1003,20 @@ export class BrowserErasure {
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
-        const unwrapped = this.context.unwrap(expression);
-        const candidate =
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-                ? this.context.unwrap(unwrapped.left)
-                : unwrapped;
+        // An operand the expression may yield that lowers natively keeps it native.
         if (
-            ts.isCallExpression(candidate) &&
-            this.context.options.deferredCapabilities &&
-            deferredCapabilityDescriptor(this.context.checker, candidate)
+            valueOperands(expression, this.context.unwrap).some(
+                (candidate) =>
+                    (ts.isCallExpression(candidate) &&
+                        this.context.options.deferredCapabilities &&
+                        deferredCapabilityDescriptor(
+                            this.context.checker,
+                            candidate,
+                        )) ||
+                    hasDomLowering(this.context.checker, candidate),
+            )
         )
             return false;
-        if (hasDomLowering(this.context.checker, candidate)) return false;
         return this.isBrowserOnlyNode(expression);
     }
 
@@ -1031,6 +1033,10 @@ export class BrowserErasure {
             this.browserValueOf(unwrapped) !== undefined
         )
             return true;
+        if (isOperandSelection(unwrapped))
+            return valueOperands(unwrapped, this.context.unwrap).every(
+                (operand) => this.isBrowserOwner(operand),
+            );
         if (ts.isIdentifier(unwrapped)) {
             if (this.context.libraryGlobal(unwrapped) !== undefined)
                 return true;
@@ -1061,26 +1067,9 @@ export class BrowserErasure {
             );
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped) ||
-            ts.isNonNullExpression(unwrapped) ||
-            ts.isAwaitExpression(unwrapped)
+            ts.isElementAccessExpression(unwrapped)
         )
             return this.isBrowserOwner(unwrapped.expression);
-        if (ts.isConditionalExpression(unwrapped))
-            return (
-                this.isBrowserOwner(unwrapped.whenTrue) &&
-                this.isBrowserOwner(unwrapped.whenFalse)
-            );
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-        )
-            return (
-                this.isBrowserOwner(unwrapped.left) &&
-                this.isBrowserOwner(unwrapped.right)
-            );
         if (ts.isNewExpression(unwrapped))
             return (
                 this.context.libraryGlobal(unwrapped.expression) !== undefined
@@ -1198,11 +1187,7 @@ export class BrowserErasure {
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(unwrapped),
         );
-        if (
-            type.symbol?.name === "Storage" &&
-            declaredInDomLibrary(type.symbol)
-        )
-            return true;
+        if (libraryName(type) === "Storage") return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
@@ -1233,9 +1218,10 @@ export class BrowserErasure {
      * exactly as `clearTimeout(id)` does.
      */
     private isPlatformTimerCall(call: ts.CallExpression): boolean {
-        return PLATFORM_TIMER_FUNCTIONS.has(
-            this.context.libraryGlobal(call.expression) ?? "",
-        );
+        const kind =
+            schedulerOf(this.context.checker, call.expression) ??
+            cancelledSchedulerOf(this.context.checker, call.expression);
+        return kind === "timeout" || kind === "interval";
     }
 
     /** @unjournaled Query-local memoization is cleared in finally, including declined probes. */
@@ -1273,6 +1259,31 @@ export class BrowserErasure {
         );
     }
 
+    /** A member access that names, through the global object, a global only the language library declares. */
+    private languageGlobalRead(node: ts.Expression): boolean {
+        for (
+            let current = node;
+            ts.isPropertyAccessExpression(current) ||
+            ts.isCallExpression(current);
+            current = this.context.unwrap(current.expression)
+        ) {
+            if (!ts.isPropertyAccessExpression(current)) continue;
+            const owner = this.context.unwrap(current.expression);
+            if (
+                ts.isIdentifier(owner) &&
+                GLOBAL_OBJECT_NAMES.has(owner.text) &&
+                this.context.libraryGlobal(current) !== undefined
+            ) {
+                const symbol = resolvedSymbol(this.context.checker, current);
+                return (
+                    declaredIn(symbol, "default-lib") &&
+                    !declaredIn(symbol, "dom")
+                );
+            }
+        }
+        return false;
+    }
+
     private browserValueOf(expression: ts.Expression): Value["browserValue"] {
         return this.evaluateOnce(
             expression,
@@ -1284,6 +1295,9 @@ export class BrowserErasure {
     private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        // `globalThis.Object` is the language's `Object` read through the
+        // global object, which every realm has: not browser state.
+        if (this.languageGlobalRead(unwrapped)) return false;
         if (hasDomLowering(this.context.checker, unwrapped)) return false;
         if (
             this.context.options.deferredCapabilities &&
@@ -1650,11 +1664,14 @@ export class BrowserErasure {
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);
-            if (ts.isConditionalExpression(unwrapped)) {
-                // Either arm is the owner: both must bridge the same kind.
-                const whenTrue = owner(unwrapped.whenTrue);
-                return whenTrue?.kind === owner(unwrapped.whenFalse)?.kind
-                    ? whenTrue
+            if (isOperandSelection(unwrapped)) {
+                // Any yielded operand is the owner: all must bridge one kind.
+                const owners = valueOperands(
+                    unwrapped,
+                    this.context.unwrap,
+                ).map(owner);
+                return owners.every((each) => each?.kind === owners[0]?.kind)
+                    ? owners[0]
                     : undefined;
             }
             if (
@@ -1860,8 +1877,7 @@ export class BrowserErasure {
                 if (bound.browserValue !== undefined) return bound.browserValue;
                 if (bound.kind === "json-null")
                     return {
-                        kind:
-                            bound.cpp === "std::nullopt" ? "undefined" : "null",
+                        kind: absenceOfNull(bound),
                     };
                 // Inlining can bind a module constant before a browser
                 // helper evaluates it. Its native binding still carries
@@ -2054,12 +2070,8 @@ export class BrowserErasure {
                     value: numeric(left.value, right.value),
                 };
             }
-            if (
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsToken
-            ) {
+            const equality = equalityOperator(unwrapped.operatorToken.kind);
+            if (equality?.loose) {
                 const right = this.browserValueOf(unwrapped.right);
                 if (
                     !left ||
@@ -2072,11 +2084,7 @@ export class BrowserErasure {
                     isNullishBrowserValue(left) && isNullishBrowserValue(right);
                 return {
                     kind: "boolean",
-                    value:
-                        unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsEqualsToken
-                            ? equal
-                            : !equal,
+                    value: equality.negated ? !equal : equal,
                 };
             }
             // A browser-derived value compared against a literal is how the
@@ -2084,22 +2092,13 @@ export class BrowserErasure {
             // is `null !== "off"` once the query string is known empty. Only
             // the strict forms fold here: loose equality coerces, and only its
             // nullish case folds, above.
-            if (
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken
-            ) {
+            if (equality && !equality.loose) {
                 const right = this.browserValueOf(unwrapped.right);
                 const equal = strictlyEqualBrowserValues(left, right);
                 if (equal === undefined) return undefined;
                 return {
                     kind: "boolean",
-                    value:
-                        unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsEqualsEqualsToken
-                            ? equal
-                            : !equal,
+                    value: equality.negated ? !equal : equal,
                 };
             }
             // `seekTimeParam > 0` -- how the corpus separates a query that
@@ -2202,11 +2201,14 @@ export class BrowserErasure {
                 isParseFloatCallee(unwrapped.expression, this.context) &&
                 unwrapped.arguments.length === 1
             ) {
+                // A browser string folds; any other argument is ordinary
+                // program data the runtime path converts, never an empty
+                // string (an unknown value folded to NaN).
                 const argument = this.browserValueOf(argumentAt(unwrapped, 0));
-                const text = argument?.kind === "string" ? argument.value : "";
+                if (argument?.kind !== "string") return undefined;
                 return {
                     kind: "number",
-                    value: Number.parseFloat(text),
+                    value: Number.parseFloat(argument.value),
                 };
             }
             if (
@@ -2267,24 +2269,25 @@ export class BrowserErasure {
             // taint rule in `isBrowserOnlyExpression` already documents
             // this call as one whose argument the query answers; folding
             // it here is what lets the helper around it answer too.
-            if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.context.libraryGlobal(unwrapped.expression.expression) ===
-                    "Math" &&
-                unwrapped.arguments.length === 1
-            ) {
-                // The names read off the table `staticNumberValue` folds
-                // through rather than one spelled here, so this rule and
-                // the taint rule above -- which treats every Math call over
-                // a resolved value alike -- cannot disagree about which
-                // ones resolve. A transcendental is deliberately absent
-                // from that table, and stays unfoldable here too.
-                const fold = mathUnaryFold(unwrapped.expression.name.text);
-                if (fold === undefined) return undefined;
-                const argument = this.browserValueOf(argumentAt(unwrapped, 0));
-                return argument?.kind === "number"
-                    ? { kind: "number", value: fold(argument.value) }
+            const math = mathMemberCall(unwrapped, (expression) =>
+                this.context.libraryGlobal(expression),
+            );
+            if (math) {
+                // The fold every reader shares, so this rule and the taint
+                // rule above -- which treats every Math call over a resolved
+                // value alike -- cannot disagree about which ones resolve.
+                const values = unwrapped.arguments.map((argument) => {
+                    const value = this.browserValueOf(argument);
+                    return value?.kind === "number" ? value.value : undefined;
+                });
+                const folded = values.every(
+                    (value): value is number => value !== undefined,
+                )
+                    ? foldMathCall(math.name, values)
                     : undefined;
+                return folded === undefined
+                    ? undefined
+                    : { kind: "number", value: folded };
             }
             const helper = this.evaluateBrowserHelperCall(unwrapped);
             if (helper !== undefined) return helper;
@@ -2442,10 +2445,7 @@ export class BrowserErasure {
                     parameter.initializer !== undefined ||
                     parameter.dotDotDotToken !== undefined,
             ) ||
-            declaration.asteriskToken !== undefined ||
-            declaration.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
+            functionKind(declaration) !== "plain" ||
             this.helperBodies.some((frame) => frame.body === body)
         ) {
             return undefined;
@@ -2528,10 +2528,7 @@ export class BrowserErasure {
     ): HelperOutcome | undefined {
         for (const statement of statements) {
             if (ts.isVariableStatement(statement)) {
-                if (
-                    (statement.declarationList.flags & ts.NodeFlags.Const) ===
-                    0
-                ) {
+                if (variableKind(statement.declarationList) !== "const") {
                     return undefined;
                 }
                 for (const declaration of statement.declarationList

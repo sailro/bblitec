@@ -27,6 +27,7 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
+import { knownCondition } from "../values/model.js";
 
 export interface LineIntrinsicContext
     extends
@@ -337,7 +338,7 @@ function lineMaterialFlags(
         if (!expression) {
             return fallback;
         }
-        return context.compileBoolean(expression) === "true";
+        return knownCondition(context.compileBoolean(expression)) === true;
     };
     const useThinInstances = flag("useThinInstances", false);
     const useThinInstanceColors = flag("useThinInstanceColors", false);
@@ -364,7 +365,9 @@ function lineMaterialFlags(
         ...(depthWriteExpression
             ? {
                   depthWrite:
-                      context.compileBoolean(depthWriteExpression) === "true",
+                      knownCondition(
+                          context.compileBoolean(depthWriteExpression),
+                      ) === true,
               }
             : {}),
     };
@@ -390,7 +393,9 @@ function compileLines(
                 context.fail(expression, "Expected a static array literal.");
             counts.push(points.length);
             return `{${points
-                .map((point) => context.vec3FromRecord(point, expression))
+                .map((point) =>
+                    context.vec3FromRecord(point, expression, "float"),
+                )
                 .join(", ")}}`;
         });
         return {
@@ -404,7 +409,7 @@ function compileLines(
         const points = context.expectStaticArrayLiteral(line);
         counts.push(points.elements.length);
         return `{${points.elements
-            .map((point) => context.compileVec3(point))
+            .map((point) => context.compileVec3(point, "float"))
             .join(", ")}}`;
     });
     return {

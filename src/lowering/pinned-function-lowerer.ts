@@ -20,6 +20,7 @@ import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Scalar member bindings for a pinned Vec3 and its native storage. */
 export function vec3MemberBindings(
@@ -650,12 +651,12 @@ export function lowerPinnedFunctionParts(
                   defaulted.kind === ts.SyntaxKind.FalseKeyword
                 ? "boolean"
                 : undefined;
-        const pinnedAnnotation =
-            parameter.type?.getText(file) ?? defaultAnnotation;
         if (
             !ts.isIdentifier(parameter.name) ||
             parameter.name.text !== spec.pinned ||
-            pinnedAnnotation !== annotation
+            (parameter.type
+                ? !sameSource(parameter.type, annotation)
+                : defaultAnnotation !== annotation)
         ) {
             context.contractError(
                 parameter,

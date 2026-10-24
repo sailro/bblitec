@@ -10,6 +10,7 @@ import { pinOperand } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { expressionMayRunCode, isUpdateExpression } from "./syntax.js";
 import { isStringValue, type Value } from "./types.js";
+import { valueKinds } from "./type-facts.js";
 
 type BigIntContext = Pick<
     LoweringServices,
@@ -78,12 +79,8 @@ export function isBigIntTyped(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
-    const type = checker.getTypeAtLocation(expression);
-    return (
-        (type.isUnion() ? type.types : [type]).every(
-            (member) => (member.flags & ts.TypeFlags.BigIntLike) !== 0,
-        ) && (type.flags & ts.TypeFlags.Never) === 0
-    );
+    const kinds = valueKinds(checker.getTypeAtLocation(expression));
+    return kinds.size === 1 && kinds.has("bigint");
 }
 
 /** A literal's value as C++: an int64 when it fits, else its decimal digits. */

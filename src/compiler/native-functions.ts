@@ -5,15 +5,22 @@ import {
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
+import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
 import {
     expressionMayRunCode,
-    isAssignmentExpression,
-    isUpdateExpression,
     soleReturnedExpression,
     unwrapExpression,
+    writeSites,
+    functionKind,
+    isGeneratorFunction,
+    isSuspensionPoint,
+    isSupportedFunction,
+    type SupportedFunction,
+    classBaseExpression,
 } from "./syntax.js";
-import { emitReachableStatements } from "./loop-control.js";
+import { emitReachableStatements, finalReturn } from "./loop-control.js";
 import { functionBodyPrologue } from "./recent-strings.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
@@ -23,6 +30,8 @@ import {
     isNullishLiteral,
     libraryGlobal,
     resolvedSymbol,
+    calledDeclaration,
+    calledFunction,
 } from "./symbols.js";
 import {
     dataTypesEqual,
@@ -32,31 +41,38 @@ import {
     passesByReference,
     type DataType,
 } from "./data-types.js";
-import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
+import {
+    MATH_MEMBERS,
+    mathMemberCall,
+    mathMemberIsImpure,
+} from "./math-intrinsics.js";
 import {
     classMemberTable,
     classMethod,
     localClassOfSymbol,
+    isStaticMember,
 } from "./class-members.js";
 import { readsNativeStorage, type Value } from "./types.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import { sourceTypeRequiresReferenceStorage } from "./storage-demand-index.js";
 import { programObservations } from "./program-observations.js";
 import {
-    bindingIsOnlyCalledDirectly,
     generationKnownStringArgument,
     borrowsReferenceParameter,
-    isSupportedFunction,
     requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
     snapshotArrayLiteral,
-    type SupportedFunction,
 } from "./user-functions.js";
 import {
     fixedLengthParameterWrites,
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
+import { isVoid } from "./type-facts.js";
+import {
+    callsArgumentInPlace,
+    isListenerRegistration,
+} from "./receiver-methods.js";
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
@@ -78,6 +94,7 @@ export interface NativeFunctionContext extends Pick<
     | "conditions"
     | "emitStatement"
     | "statementTerminatesAfterLowering"
+    | "emitFallOffEnd"
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
@@ -122,10 +139,9 @@ function returnsFreshRecord(body: ts.ConciseBody): boolean {
         expression !== undefined &&
         ts.isObjectLiteralExpression(unwrapExpression(expression));
     if (!ts.isBlock(body)) return record(body);
-    const last = body.statements.at(-1);
+    const last = finalReturn(body);
     return (
         last !== undefined &&
-        ts.isReturnStatement(last) &&
         record(last.expression) &&
         !someAnalysisNode(
             body,
@@ -387,12 +403,7 @@ export class NativeFunctionLowerer {
             callee,
             (node, message) => this.context.fail(node, message),
         );
-        if (
-            declaration &&
-            "asteriskToken" in declaration &&
-            declaration.asteriskToken
-        )
-            return undefined;
+        if (declaration && isGeneratorFunction(declaration)) return undefined;
         if (!declaration) {
             return undefined;
         }
@@ -1444,13 +1455,6 @@ export class NativeFunctionLowerer {
                 (type.kind === "numberindex" || isTypedArrayType(type))
             );
         }
-        if (ts.isArrayLiteralExpression(node))
-            return node.elements.every(
-                (element) =>
-                    ts.isOmittedExpression(element) ||
-                    (!ts.isSpreadElement(element) &&
-                        this.writesLocalOrNumericStorage(element, locals)),
-            );
         return false;
     }
 
@@ -1463,9 +1467,11 @@ export class NativeFunctionLowerer {
             const math = mathMemberCall(call, (expression) =>
                 libraryGlobal(this.context.checker, expression),
             );
-            const member =
-                math === undefined ? undefined : MATH_MEMBERS.get(math.name);
-            if (member !== undefined && member.reach !== "js-random")
+            if (
+                math !== undefined &&
+                MATH_MEMBERS.has(math.name) &&
+                !mathMemberIsImpure(math.name)
+            )
                 return true;
         }
         const called = this.directCallDeclaration(call);
@@ -1478,9 +1484,8 @@ export class NativeFunctionLowerer {
     private directCallDeclaration(
         call: ts.CallExpression,
     ): SupportedFunction | undefined {
-        const declared =
-            this.context.checker.getResolvedSignature(call)?.declaration;
-        if (declared && isSupportedFunction(declared)) return declared;
+        const declared = calledDeclaration(this.context.checker, call);
+        if (isSupportedFunction(declared)) return declared;
         const callee = unwrapExpression(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
         const receiver = unwrapExpression(callee.expression);
@@ -1533,18 +1538,16 @@ export class NativeFunctionLowerer {
                 }
                 if (
                     ts.isNewExpression(node) ||
-                    ts.isDeleteExpression(node) ||
-                    ts.isAwaitExpression(node) ||
-                    ts.isYieldExpression(node) ||
+                    isSuspensionPoint(node, { yield: true }) ||
                     ts.isThrowStatement(node)
                 )
                     return true;
-                if (isAssignmentExpression(node))
-                    return !this.writesLocalOrNumericStorage(node.left, locals);
-                if (isUpdateExpression(node))
-                    return !this.writesLocalOrNumericStorage(
-                        node.operand,
-                        locals,
+                const writes = writeSites(node);
+                if (writes.length > 0)
+                    return writes.some(
+                        ({ target, kind }) =>
+                            kind === "delete" ||
+                            !this.writesLocalOrNumericStorage(target, locals),
                     );
                 if (ts.isPropertyAccessExpression(node)) {
                     if (
@@ -1620,7 +1623,7 @@ export class NativeFunctionLowerer {
             this.context.checker.getReturnTypeOfSignature(checkerSignature);
         let returnType: DataType | undefined;
         let arrayStorage: ReturnType<typeof arrayReturnStorage>;
-        if ((returnTsType.flags & ts.TypeFlags.Void) === 0) {
+        if (!isVoid(returnTsType)) {
             let mapped = this.context.dataTypes.fromTsType(
                 returnTsType,
                 declaration,
@@ -1897,7 +1900,7 @@ export class NativeFunctionLowerer {
         // A class in a hierarchy resolves `this` calls per run-time class,
         // which one emitted function over field channels cannot.
         if (
-            classDeclaration.heritageClauses?.length ||
+            classBaseExpression(classDeclaration) !== undefined ||
             this.context.dataTypes.classHierarchy.inHierarchy(
                 classDeclaration,
             ) ||
@@ -2051,7 +2054,7 @@ export class NativeFunctionLowerer {
             !ts.isMemberName(member.name) ||
             !member.body ||
             !ts.isBlock(member.body) ||
-            member.asteriskToken !== undefined ||
+            functionKind(member) !== "plain" ||
             member.questionToken !== undefined ||
             member.typeParameters?.length ||
             (ts.canHaveDecorators(member) && ts.getDecorators(member)?.length)
@@ -2059,11 +2062,10 @@ export class NativeFunctionLowerer {
             return false;
         }
         if (
+            isStaticMember(member) ||
             (ts.getCombinedModifierFlags(member) &
-                (ts.ModifierFlags.Static |
-                    ts.ModifierFlags.Abstract |
-                    ts.ModifierFlags.Async)) !==
-            0
+                ts.ModifierFlags.Abstract) !==
+                0
         ) {
             return false;
         }
@@ -2219,10 +2221,10 @@ export class NativeFunctionLowerer {
                             ts.isPropertyAccessExpression(callee) &&
                             callee.expression.kind !== ts.SyntaxKind.ThisKeyword
                         ) {
-                            const called =
-                                this.context.checker.getResolvedSignature(
-                                    node,
-                                )?.declaration;
+                            const called = calledDeclaration(
+                                this.context.checker,
+                                node,
+                            );
                             if (
                                 called &&
                                 (ts.isMethodDeclaration(called) ||
@@ -2289,8 +2291,7 @@ export class NativeFunctionLowerer {
                 this.context,
                 signature.parameters,
                 signature.returnType,
-                () =>
-                    this.emitValueBody(body.statements, !!signature.returnType),
+                () => this.emitValueBody(body.statements),
                 {
                     namespaceScope: signature.method,
                     bindLeading: () =>
@@ -2366,12 +2367,9 @@ export class NativeFunctionLowerer {
                     ) {
                         return true;
                     }
-                    const called =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
+                    const called = calledFunction(this.context.checker, node);
                     if (
-                        isSupportedFunction(called) &&
+                        called &&
                         this.containsGenerationTimeFetch(called, active)
                     ) {
                         return true;
@@ -2389,18 +2387,6 @@ export class NativeFunctionLowerer {
     private containsRetainedCallbackRegistration(
         declaration: EligibleMember,
     ): boolean {
-        const immediateCallbackMethods = new EmissionSet([
-            "every",
-            "filter",
-            "find",
-            "findIndex",
-            "flatMap",
-            "forEach",
-            "map",
-            "reduce",
-            "some",
-            "sort",
-        ]);
         const onlyCalledDirectly = (
             callback:
                 | ts.ArrowFunction
@@ -2439,9 +2425,7 @@ export class NativeFunctionLowerer {
                 const immediateMethodArgument =
                     functionExpression &&
                     ts.isCallExpression(parent) &&
-                    parent.arguments.includes(node) &&
-                    ts.isPropertyAccessExpression(parent.expression) &&
-                    immediateCallbackMethods.has(parent.expression.name.text);
+                    callsArgumentInPlace(this.context.checker, parent, node);
                 if (
                     !immediatelyInvoked &&
                     !immediateMethodArgument &&
@@ -2450,12 +2434,7 @@ export class NativeFunctionLowerer {
                     return true;
                 }
             }
-            if (
-                ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "addEventListener" &&
-                node.arguments.length >= 2
-            ) {
+            if (ts.isCallExpression(node) && isListenerRegistration(node)) {
                 return true;
             }
             return false;
@@ -2483,10 +2462,10 @@ export class NativeFunctionLowerer {
                     ) {
                         return true;
                     }
-                    const called =
-                        this.context.checker.getResolvedSignature(
-                            node,
-                        )?.declaration;
+                    const called = calledDeclaration(
+                        this.context.checker,
+                        node,
+                    );
                     if (
                         called?.getSourceFile().isDeclarationFile &&
                         ts.isFunctionDeclaration(called) &&
@@ -2518,15 +2497,8 @@ export class NativeFunctionLowerer {
                     // binding to queue against, and a counted wait through one
                     // would lose the count -- its body is emitted once for
                     // every call and every iteration.
-                    const name = ts.isIdentifier(callee)
-                        ? callee.text
-                        : ts.isPropertyAccessExpression(callee)
-                          ? callee.name.text
-                          : undefined;
-                    if (
-                        name === "setTimeout" ||
-                        name === "requestAnimationFrame"
-                    ) {
+                    const scheduler = schedulerOf(this.context.checker, callee);
+                    if (scheduler === "timeout" || scheduler === "frame") {
                         return true;
                     }
                 }
@@ -2637,12 +2609,12 @@ export class NativeFunctionLowerer {
                         }
                     }
                     if (ts.isCallExpression(node)) {
-                        const called =
-                            this.context.checker.getResolvedSignature(
-                                node,
-                            )?.declaration;
+                        const called = calledFunction(
+                            this.context.checker,
+                            node,
+                        );
                         if (
-                            isSupportedFunction(called) &&
+                            called &&
                             this.capturesEnclosingBindings(
                                 called,
                                 root,
@@ -2655,7 +2627,7 @@ export class NativeFunctionLowerer {
                     }
                     return false;
                 },
-                skipMemberNames ? { memberNames: "skip" } : {},
+                skipMemberNames ? { names: "references" } : {},
             );
         active.delete(declaration);
         return captured;
@@ -2718,7 +2690,7 @@ export class NativeFunctionLowerer {
             this.context,
             signature.parameters,
             signature.returnType,
-            () => this.emitValueBody(body.statements, !!signature.returnType),
+            () => this.emitValueBody(body.statements),
             { namespaceScope: signature.declaration },
         );
         this.registerDataFunction(
@@ -2729,20 +2701,9 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private emitValueBody(
-        statements: readonly ts.Statement[],
-        returnsValue: boolean,
-    ): void {
-        const terminated = emitReachableStatements(this.context, statements);
-        if (returnsValue && !terminated) {
-            // An exhaustive source switch may lower to a native if/else chain.
-            // Keep the impossible fallthrough defined on all native compilers.
-            this.context.emit({
-                kind: "control",
-                code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                transfer: "throw",
-            });
-        }
+    private emitValueBody(statements: readonly ts.Statement[]): void {
+        if (!emitReachableStatements(this.context, statements))
+            this.context.emitFallOffEnd();
     }
 
     /**

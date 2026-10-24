@@ -82,6 +82,7 @@ import {
 } from "./render-task-pass.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { recordAt } from "../compiler/record-access.js";
+import { unwrapExpression } from "../compiler/syntax.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -167,24 +168,11 @@ interface LoweredShader {
     positionFirst?: boolean;
 }
 
-/** `as`/parenthesis/non-null unwrap for the pinned stamp walks. */
-function unwrapStampExpression(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isAsExpression(current) ||
-        ts.isParenthesizedExpression(current) ||
-        ts.isNonNullExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
-}
-
 /** The non-transparent `mesh.renderOrder ?? …` arms of one module. */
 function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
     const arms: number[] = [];
     const numeric = (expression: ts.Expression): number => {
-        const node = unwrapStampExpression(expression);
+        const node = unwrapExpression(expression);
         if (!ts.isNumericLiteral(node)) {
             throw new Error(
                 `Pinned ${file.fileName} order stamp is not a ` +
@@ -233,7 +221,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
                 ) {
                     continue;
                 }
-                const value = unwrapStampExpression(property.initializer);
+                const value = unwrapExpression(property.initializer);
                 if (value.kind === ts.SyntaxKind.TrueKeyword) {
                     return true;
                 }
@@ -254,7 +242,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
             ) {
                 return;
             }
-            const read = unwrapStampExpression(node.left);
+            const read = unwrapExpression(node.left);
             if (
                 !(
                     ts.isPropertyAccessExpression(read) ||
@@ -268,7 +256,7 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
                         "transports none).",
                 );
             }
-            const fallback = unwrapStampExpression(node.right);
+            const fallback = unwrapExpression(node.right);
             if (ts.isConditionalExpression(fallback)) {
                 // `transparent ? a : b` — the opaque arm is whenFalse;
                 // both arms must be constants.

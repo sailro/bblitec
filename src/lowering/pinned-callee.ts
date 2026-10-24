@@ -13,6 +13,7 @@ import ts from "typescript";
 import { declaredSymbol } from "../compiler/symbols.js";
 import { moduleSymbols } from "../pinned-program.js";
 import type { LoweringContext } from "./context.js";
+import { specifierSourceName, sameSource } from "../compiler/syntax.js";
 
 /**
  * The declaration an identifier in a pinned module resolves to. A
@@ -52,7 +53,7 @@ export function pinnedCallee(
         return { module: file.fileName, name: callee.text };
     }
     if (declaration && ts.isImportSpecifier(declaration)) {
-        const imported = (declaration.propertyName ?? declaration.name).text;
+        const imported = specifierSourceName(declaration);
         const module = context.moduleOfImport(file.fileName, imported);
         return module ? { module, name: imported } : undefined;
     }
@@ -109,7 +110,7 @@ export function webGpuQueueMethod(
     }
     const module = context.moduleOfImport(file.fileName, "EngineContext");
     if (!module) return undefined;
-    const { file: engineFile, declaration } = context.interfaceDeclaration(
+    const { declaration } = context.interfaceDeclaration(
         module,
         "EngineContext",
     );
@@ -118,7 +119,5 @@ export function webGpuQueueMethod(
             ts.isPropertySignature(member) &&
             context.propertyName(member.name) === "_device",
     );
-    return device?.type?.getText(engineFile) === "GPUDevice"
-        ? path[3]
-        : undefined;
+    return sameSource(device?.type, "GPUDevice") ? path[3] : undefined;
 }

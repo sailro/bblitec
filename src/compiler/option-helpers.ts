@@ -12,23 +12,32 @@ import type { DataLowerer } from "./data-lowering.js";
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
 import ts from "typescript";
+import { absenceOf, knownCondition } from "./values/model.js";
 import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
-import { argumentAt } from "./syntax.js";
+import {
+    isExpressionWrapper,
+    unwrapExpression,
+    literalMember,
+    lastWriter,
+    objectLiteralMembers,
+    plainDataMembers,
+} from "./syntax.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { pinCpp } from "./evaluation-order.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
+    foldMathCall,
     MATH_CONSTANTS,
     mathMemberAccess,
     mathMemberCall,
-    mathUnaryFold,
 } from "./math-intrinsics.js";
 import {
     foldNumericBinary,
     foldNumericUnary,
 } from "../lowering/pinned-operators.js";
+import { presentMembers, undefinedOnly } from "./type-facts.js";
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
@@ -200,7 +209,7 @@ export function compileBooleanOptions<N extends string>(
     const result: Partial<Record<N, string>> = {};
     if (!expression) return result;
     const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0) {
+    if (presentMembers(type).length === 0) {
         context.emitDiscardedValue(context.compileValue(expression));
         return result;
     }
@@ -227,8 +236,7 @@ export function compileBooleanOptions<N extends string>(
         if (fallback === undefined) return converted;
         if (isJsonValue(value))
             return `(${value.cpp}.is_undefined() ? ${fallback} : ${converted})`;
-        if (value.kind === "json-null" && value.cpp === "std::nullopt")
-            return String(fallback);
+        if (absenceOf(value) === "undefined") return String(fallback);
         if (
             value.dataType?.kind !== "optional" ||
             !value.dataType.undefinedOnly
@@ -374,9 +382,9 @@ export function compileBooleanOptions<N extends string>(
             else {
                 const value = context.compileValue(initializer);
                 if (
-                    (context.checker.getTypeAtLocation(initializer).flags &
-                        ts.TypeFlags.Undefined) !==
-                    0
+                    undefinedOnly(
+                        context.checker.getTypeAtLocation(initializer),
+                    )
                 ) {
                     context.emitDiscardedValue(value);
                     store(name, String(spelling.undefinedDefaults[name]));
@@ -544,11 +552,13 @@ export function selectedStaticExpression(
         const condition = context.conditions.compileCondition(
             selected.condition,
         );
-        if (condition !== "true" && condition !== "false") {
+        if (knownCondition(condition) === undefined) {
             return undefined;
         }
         selected = context.resolveStaticExpression(
-            condition === "true" ? selected.whenTrue : selected.whenFalse,
+            knownCondition(condition) === true
+                ? selected.whenTrue
+                : selected.whenFalse,
         );
     }
     return selected;
@@ -573,13 +583,13 @@ export function compileOptionalStaticBoolean(
     const compiled = context.compileBoolean(
         context.resolveStaticExpression(expression),
     );
-    if (compiled !== "true" && compiled !== "false") {
+    if (knownCondition(compiled) === undefined) {
         context.fail(
             expression,
             `${what} must be a static boolean: generation decides on it.`,
         );
     }
-    return compiled === "true";
+    return knownCondition(compiled) === true;
 }
 
 /**
@@ -635,19 +645,21 @@ export function staticJsonValue(
 ): unknown {
     const node = context.resolveStaticExpression(expression);
     if (ts.isObjectLiteralExpression(node)) {
+        // A `__proto__` setter, spread, method or run-time key is no JSON.
+        const members = plainDataMembers(node);
+        if (!members) return notJson;
         const value: Record<string, unknown> = {};
-        for (const property of node.properties) {
-            if (!ts.isPropertyAssignment(property)) return notJson;
-            const name =
-                ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name) ||
-                ts.isNumericLiteral(property.name)
-                    ? property.name.text
-                    : undefined;
-            if (name === undefined) return notJson;
-            const member = staticJsonValue(context, property.initializer);
+        for (const { kind, key, value: initializer } of members) {
+            if (kind !== "property") return notJson;
+            const member = staticJsonValue(context, initializer);
             if (member === notJson) return notJson;
-            value[name] = member;
+            // An own `["__proto__"]` key is data; `=` would set the prototype.
+            Object.defineProperty(value, key, {
+                value: member,
+                enumerable: true,
+                writable: true,
+                configurable: true,
+            });
         }
         return value;
     }
@@ -671,7 +683,7 @@ export function staticJsonValue(
 
 /** The JSON scalar a literal node spells, or `notJson`. */
 export function jsonScalarLiteral(node: ts.Expression): unknown {
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    if (ts.isStringLiteralLike(node)) {
         return node.text;
     }
     if (ts.isNumericLiteral(node)) return Number(node.text);
@@ -738,8 +750,8 @@ export function staticNumberValue(
         const value = Number(node.text);
         return Number.isFinite(value) ? value : undefined;
     }
-    if (ts.isParenthesizedExpression(node)) {
-        return staticNumberValue(context, node.expression);
+    if (isExpressionWrapper(node)) {
+        return staticNumberValue(context, unwrapExpression(node));
     }
     if (ts.isPrefixUnaryExpression(node)) {
         const operand = staticNumberValue(context, node.operand);
@@ -768,14 +780,8 @@ export function staticNumberValue(
                 return entry.staticNumber;
             }
         }
-        if (
-            !ts.isArrayLiteralExpression(target) ||
-            index === undefined ||
-            !Number.isInteger(index)
-        ) {
-            return undefined;
-        }
-        const element = target.elements[index];
+        if (index === undefined || !Number.isInteger(index)) return undefined;
+        const element = literalMember(target, index);
         return element ? staticNumberValue(context, element) : undefined;
     }
     const libraryGlobal = (expression: ts.Expression): string | undefined =>
@@ -788,33 +794,12 @@ export function staticNumberValue(
     }
     const mathCall = mathMemberCall(node, libraryGlobal);
     if (mathCall) {
-        const { name, call } = mathCall;
-        if (call.arguments.length === 1) {
-            const fold = mathUnaryFold(name);
-            if (fold) {
-                const argument = staticNumberValue(
-                    context,
-                    argumentAt(call, 0),
-                );
-                return argument === undefined ? undefined : fold(argument);
-            }
-        }
-        if ((name === "max" || name === "min") && call.arguments.length >= 2) {
-            const values = call.arguments.map((argument) =>
-                staticNumberValue(context, argument),
-            );
-            if (
-                values.every(
-                    (value): value is number =>
-                        value !== undefined &&
-                        Number.isFinite(value) &&
-                        !Object.is(value, -0),
-                )
-            ) {
-                return Math[name](...values);
-            }
-        }
-        return undefined;
+        const values = mathCall.call.arguments.map((argument) =>
+            staticNumberValue(context, argument),
+        );
+        return values.every((value): value is number => value !== undefined)
+            ? foldMathCall(mathCall.name, values)
+            : undefined;
     }
     if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
         return context.staticProperty(node);
@@ -890,17 +875,14 @@ export function staticVec3Value(
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
     if (!ts.isObjectLiteralExpression(node)) return undefined;
+    // A missing axis is 0; one a spread or run-time key may write is unknown.
+    const members = objectLiteralMembers(node);
     const axis = (name: "x" | "y" | "z"): number | undefined => {
-        const property = node.properties.find(
-            (candidate) =>
-                candidate.name !== undefined &&
-                (ts.isIdentifier(candidate.name) ||
-                    ts.isStringLiteral(candidate.name)) &&
-                candidate.name.text === name,
-        );
-        if (!property) return 0;
-        if (!ts.isPropertyAssignment(property)) return undefined;
-        return staticNumberValue(context, property.initializer);
+        const writer = lastWriter(members, name);
+        if (writer === undefined) return 0;
+        return writer !== "unknown" && writer.value
+            ? staticNumberValue(context, writer.value)
+            : undefined;
     };
     const x = axis("x");
     const y = axis("y");

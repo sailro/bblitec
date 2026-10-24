@@ -7,7 +7,7 @@ import {
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
-import { nullability } from "./type-facts.js";
+import { nullability, arrayElementType } from "./type-facts.js";
 import type { Value } from "./types.js";
 import {
     NativeRecordStorageRequired,
@@ -71,10 +71,7 @@ export function demandedStorageType(
     }
     if (storage === "array")
         return dataTypes.withDynamicJsonTypes(true, () => {
-            const indexed = checker.getIndexTypeOfType(
-                source,
-                ts.IndexKind.Number,
-            );
+            const indexed = arrayElementType(checker, source);
             const element =
                 indexed &&
                 (dataTypes.fromStoredTsType(indexed, declaration) ??
@@ -173,6 +170,45 @@ export interface OneObjectContext
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+}
+
+/** What keeping a stored record's object reads of the compiler. */
+export interface HeldRecordContext {
+    readonly bindings: Pick<BindingScopes, "recordDeclaration">;
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+    fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * A compile-time record stored where it stays one object: the binding that
+ * holds it -- found by its members, whatever node the store reads it from
+ * (a spread operand, a member, the name) -- takes native storage, so the
+ * store keeps that binding's object rather than a copy. `expression` is
+ * the store's source expression, where there is one: an unbound container
+ * name there stands in for a nested record it holds.
+ */
+export function requireHeldRecordStorage(
+    context: HeldRecordContext,
+    value: Value,
+    node: ts.Node,
+    expression: ts.Expression | undefined = ts.isExpression(node)
+        ? node
+        : undefined,
+): void {
+    if (value.kind !== "record") return;
+    const declaration = context.bindings.recordDeclaration(value, expression);
+    if (!declaration) return;
+    // A binding already given its own storage is still a record only when
+    // lowering its initializer into that storage refused.
+    if (context.dynamicBindings.get(declaration) !== undefined)
+        context.fail(
+            node,
+            `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+        );
+    throw new DynamicBindingStorageRequired(declaration, "source");
 }
 
 /** Replay a mutable compile-time array using its declared or represented source storage. */

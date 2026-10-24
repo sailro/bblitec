@@ -1,6 +1,7 @@
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
+import { absenceOf, knownCondition, staticBooleanOf } from "../values/model.js";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { renderClosure } from "../closure-captures.js";
@@ -347,7 +348,7 @@ function numberOption(
     options: Value | undefined,
     name: string,
     fallback: string,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string {
     const value = property(options, name);
     return value ? `static_cast<${precision}>(${value.cpp})` : fallback;
@@ -379,10 +380,7 @@ function sprite2DPropsCpp(
                 Object.entries(props.recordProperties).filter(
                     ([, value]) =>
                         !isUndefinedDataType(value.dataType) &&
-                        !(
-                            value.kind === "json-null" &&
-                            value.cpp === "std::nullopt"
-                        ),
+                        !(absenceOf(value) === "undefined"),
                 ),
             ),
         };
@@ -450,7 +448,7 @@ function tupleOption(
     name: string,
     node: ts.Node,
     arity: number,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string[] | undefined {
     const value = property(options, name);
     if (!value) {
@@ -934,8 +932,8 @@ function compileCreateRenderTexture2D(
         textureStorage: "render",
         cpp:
             `bbl::create_sprite_render_texture(${engine.cpp}, ` +
-            `${context.compileNumber(argumentAt(call, 1))}, ` +
-            `${context.compileNumber(argumentAt(call, 2))})`,
+            `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+            `${context.compileNumber(argumentAt(call, 2), "double")})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
     };
 }
@@ -1001,7 +999,7 @@ function compileCreateSpriteAtlasFromFrames(
         );
     }
     const srgb = property(options, "srgb");
-    if (srgb && srgb.cpp !== "false") {
+    if (srgb && staticBooleanOf(srgb) !== false) {
         context.fail(
             argumentAt(call, 2),
             "sRGB in-memory sprite atlases are not lowered yet.",
@@ -1016,7 +1014,7 @@ function compileCreateSpriteAtlasFromFrames(
     }
     const capacity = property(options, "capacityPx");
     const capacityLanes = capacity
-        ? tupleOption(context, options, "capacityPx", call, 2)
+        ? tupleOption(context, options, "capacityPx", call, 2, "float")
         : undefined;
     context.reachFeature("sprite:2d", call);
     return {
@@ -1081,7 +1079,7 @@ function compileCreateGridSpriteAtlas(
     const rows = property(options, "rows");
     const margin = property(options, "marginPx");
     const spacing = property(options, "spacingPx");
-    const pivot = tupleOption(context, options, "pivot", call, 2);
+    const pivot = tupleOption(context, options, "pivot", call, 2, "float");
     const premultiplied = property(options, "premultipliedAlpha");
     const engine = context.engineFor(texture, call);
     const numberValue = (value: Value, name: string): string => {
@@ -1140,7 +1138,14 @@ function compileLoadSpriteAtlas(
         call.arguments[2],
         "loadSpriteAtlas",
     );
-    const gridSize = tupleOption(context, options, "gridSize", call, 2);
+    const gridSize = tupleOption(
+        context,
+        options,
+        "gridSize",
+        call,
+        2,
+        "float",
+    );
     if (!gridSize) {
         context.fail(call, "loadSpriteAtlas: gridSize required.");
     }
@@ -1288,9 +1293,9 @@ function compileCreateSprite2DLayer(
             `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
             `${numberOption(options, "capacity", doubleLiteral(defaults.capacity), "double")}, ` +
             `${blendCpp}, ` +
-            `${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `${numberOption(options, "opacity", floatLiteral(defaults.opacity), "float")}, ` +
             `${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
-            `${numberOption(options, "order", floatLiteral(defaults.order))}, ` +
+            `${numberOption(options, "order", floatLiteral(defaults.order), "float")}, ` +
             `bbl::Sprite2DDepthMode::${
                 depthMode === "test-write" ? "test_write" : depthMode
             }, ` +
@@ -1508,15 +1513,9 @@ function compileUpdateSprite2DIndex(
     };
     const unwrappedOptions = context.unwrap(options);
     if (ts.isConditionalExpression(unwrappedOptions)) {
-        const condition = context.conditions.compileCondition(
-            unwrappedOptions.condition,
-        );
         return {
             kind: "void",
-            cpp:
-                `(${condition} ? ` +
-                `${updateCpp(unwrappedOptions.whenTrue)} : ` +
-                `${updateCpp(unwrappedOptions.whenFalse)})`,
+            cpp: context.dataLowerer.selectArms(unwrappedOptions, updateCpp),
             engineCpp,
         };
     }
@@ -1593,7 +1592,7 @@ function compilePlaySprite2DAnimation(
     const removeWhenFinished = removeWhenFinishedValue
         ? removeWhenFinishedValue.cpp
         : "false";
-    if (removeWhenFinished !== "true" && removeWhenFinished !== "false") {
+    if (knownCondition(removeWhenFinished) === undefined) {
         context.fail(
             argumentAt(call, 6),
             importedName +
@@ -1771,16 +1770,16 @@ function compileCreateFacingBillboardSystem(
             `${atlas.cpp}, bbl::BillboardOrientation::` +
             `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
             `bbl::BillboardSystemOptions{` +
-            `.capacity = ${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
+            `.capacity = ${numberOption(options, "capacity", floatLiteral(defaults.capacity), "float")}, ` +
             `.blend = ${blendCpp}, ` +
-            `.opacity = ${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `.opacity = ${numberOption(options, "opacity", floatLiteral(defaults.opacity), "float")}, ` +
             `.visible = ${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
-            `.order = ${numberOption(options, "order", "0.0")}, ` +
+            `.order = ${numberOption(options, "order", "0.0", "float")}, ` +
             `.has_order = ${property(options, "order") ? "true" : "false"}, ` +
             // resolveAlphaCutoff and the order default both follow
             // the descriptor's own depth mode, so they are resolved
             // beside it rather than from the name at this call site.
-            `.alpha_cutoff = ${numberOption(options, "alphaCutoff", "0.0f")}, ` +
+            `.alpha_cutoff = ${numberOption(options, "alphaCutoff", "0.0f", "float")}, ` +
             `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
             `.custom_shader = ${custom.program}, ` +
             `.custom_textures = ${custom.textures}, ` +
@@ -2237,7 +2236,7 @@ function compileSetSprite2DUvOffset(
     context.expectArgumentCount(call, 3, 3);
     const layer = context.compileValue(argumentAt(call, 0));
     context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
-    const index = context.compileNumber(argumentAt(call, 1));
+    const index = context.compileNumber(argumentAt(call, 1), "double");
     const offset = context.evaluator.compileVec2(argumentAt(call, 2));
     const engineCpp = context.engineFor(layer, call);
     context.reachFeature("sprite:2d", call);

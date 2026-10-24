@@ -1,14 +1,17 @@
 import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
+import { finalReturn } from "./loop-control.js";
 import { framePollExecutor } from "./frame-poll.js";
 import { PendingActivations } from "./pending-activations.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { DataType } from "./data-types.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
-    tryResolveFunctionDeclaration,
+    unwrapExpression,
+    outermostWrapper,
+    isAsyncFunction,
     type SupportedFunction,
-} from "./user-functions.js";
-import { unwrapExpression } from "./syntax.js";
+} from "./syntax.js";
 import type { Value } from "./types.js";
 import type {
     LoweringServices,
@@ -206,10 +209,7 @@ export class AsyncActivations {
 
     private isAsyncReturn(expression: ts.Expression): boolean {
         const owner = ts.findAncestor(expression.parent, ts.isFunctionLike);
-        return (
-            owner !== undefined &&
-            (ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) !== 0
-        );
+        return owner !== undefined && isAsyncFunction(owner);
     }
 
     /** Refuse source thenables before a typed return sink erases their shape. */
@@ -246,15 +246,8 @@ export class AsyncActivations {
     @journaled private accessor orderedSetupInput: ts.Expression | undefined;
 
     private immediatelyAwaited(node: ts.Node): boolean {
-        let consumer = node;
-        while (
-            consumer.parent &&
-            (ts.isParenthesizedExpression(consumer.parent) ||
-                ts.isAsExpression(consumer.parent) ||
-                ts.isNonNullExpression(consumer.parent))
-        )
-            consumer = consumer.parent;
-        return !!consumer.parent && ts.isAwaitExpression(consumer.parent);
+        const consumer = outermostWrapper(node).parent;
+        return consumer !== undefined && ts.isAwaitExpression(consumer);
     }
 
     private withOrderedSetupInput<T>(
@@ -298,24 +291,10 @@ export class AsyncActivations {
         const declaration = ts.isIdentifier(target)
             ? tryResolveFunctionDeclaration(this.context.checker, target)
             : target;
-        if (
-            !declaration?.body ||
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
-            return body();
-        const returned = ts.isBlock(declaration.body)
-            ? declaration.body.statements.at(-1)
+        if (!declaration?.body || isAsyncFunction(declaration)) return body();
+        const expression = ts.isBlock(declaration.body)
+            ? finalReturn(declaration.body)?.expression
             : declaration.body;
-        const expression =
-            returned && ts.isReturnStatement(returned)
-                ? returned.expression
-                : returned && ts.isExpression(returned)
-                  ? returned
-                  : undefined;
         return expression
             ? this.withOrderedSetupInput(expression, body)
             : body();

@@ -1,12 +1,18 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     declaredInDefaultLibrary,
     resolvedSymbol,
-    symbolPropertyKey,
+    staticPropertyKey,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
-import { unwrapExpression, wrappedParent } from "./syntax.js";
+import {
+    unwrapExpression,
+    wrappedParent,
+    expressionHasEffects,
+    variableKind,
+    classBaseExpression,
+} from "./syntax.js";
 
 /**
  * The local class a name's symbol declares: a class declaration, or a
@@ -20,7 +26,7 @@ export function localClassOfSymbol(
         const initializer =
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.initializer
                 ? unwrapExpression(declaration.initializer)
                 : undefined;
@@ -139,10 +145,28 @@ function isAbstractClass(declaration: ts.ClassLikeDeclaration): boolean {
 }
 
 /** A static property the program folds from its initializer at generation. */
+/**
+ * Whether a static field reads as its initializer wherever it is read: it
+ * is readonly, and evaluating the initializer again changes nothing and
+ * builds no fresh object (`next++`, `[]` or a function make it a field the
+ * class definition evaluates once).
+ */
 function isStaticConstant(member: ts.PropertyDeclaration): boolean {
+    const initializer = member.initializer;
     return (
-        member.initializer !== undefined &&
-        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !== 0
+        initializer !== undefined &&
+        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !==
+            0 &&
+        !expressionHasEffects(initializer) &&
+        !someAnalysisNode(
+            initializer,
+            (node) =>
+                ts.isArrayLiteralExpression(node) ||
+                ts.isObjectLiteralExpression(node) ||
+                ts.isRegularExpressionLiteral(node) ||
+                ts.isFunctionLike(node) ||
+                ts.isClassLike(node),
+        )
     );
 }
 
@@ -167,9 +191,7 @@ function resolveHeritage(
     | { unsupported: ts.ExpressionWithTypeArguments }
     | { errorBase: string }
     | undefined {
-    const heritage = declaration.heritageClauses?.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types[0];
+    const heritage = classBaseExpression(declaration);
     if (!heritage) return undefined;
     const symbol = resolvedSymbol(checker, heritage.expression);
     if (
@@ -218,16 +240,14 @@ export function classMemberTable(
             staticElements.push(member);
             continue;
         }
-        // A method a unique symbol names (`*[Symbol.iterator]()`) is keyed
-        // by that symbol's property key.
+        // A method or accessor is keyed as its name declares it: `"a-b"()`,
+        // `1()`, `*[Symbol.iterator]()`. A field the class layout cannot
+        // name (computed or quoted) is refused there.
         const name = !member.name
             ? undefined
-            : ts.isMemberName(member.name)
-              ? member.name.text
-              : ts.isMethodDeclaration(member) &&
-                  ts.isComputedPropertyName(member.name)
-                ? symbolPropertyKey(checker, member.name.expression)
-                : undefined;
+            : ts.isPropertyDeclaration(member) && !ts.isMemberName(member.name)
+              ? undefined
+              : staticPropertyKey(checker, member.name);
         if (name === undefined) continue;
         if (ts.isMethodDeclaration(member)) {
             recordImplementation(
@@ -320,6 +340,22 @@ export function classChain(table: ClassMemberTable): ClassMemberTable[] {
         chain.push(current);
     }
     return chain;
+}
+
+/**
+ * The names an instance of `table`'s class inherits from its prototype
+ * chain: its classes' methods and accessors (fields are own properties).
+ */
+export function classPrototypeKeys(table: ClassMemberTable): Set<string> {
+    const keys = new Set<string>();
+    for (const link of classChain(table))
+        for (const name of [
+            ...link.methods.keys(),
+            ...Object.keys(link.getters),
+            ...Object.keys(link.setters),
+        ])
+            keys.add(name);
+    return keys;
 }
 
 /** Whether `table`'s class is `ancestor` or extends it. */
@@ -415,6 +451,51 @@ export function classChainInstanceProperties(
         }
     }
     return properties;
+}
+
+/** A constructor's direct write of one of its parameters to a field. */
+export interface ConstructorFieldParameter {
+    readonly field: string;
+    readonly parameter: number;
+    readonly assignment: ts.BinaryExpression;
+    readonly statement: ts.ExpressionStatement;
+}
+
+/**
+ * The constructor's top-level `this.field = parameter` statements, in
+ * source order, each with its parameter's index.
+ */
+export function constructorFieldParameters(
+    constructorDeclaration: ts.ConstructorDeclaration,
+): readonly ConstructorFieldParameter[] {
+    const parameters = new Map<string, number>();
+    constructorDeclaration.parameters.forEach((parameter, index) => {
+        if (ts.isIdentifier(parameter.name))
+            parameters.set(parameter.name.text, index);
+    });
+    const writes: ConstructorFieldParameter[] = [];
+    for (const statement of constructorDeclaration.body?.statements ?? []) {
+        if (!ts.isExpressionStatement(statement)) continue;
+        const assignment = unwrapExpression(statement.expression);
+        if (
+            !ts.isBinaryExpression(assignment) ||
+            assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(assignment.left) ||
+            assignment.left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+            !ts.isIdentifier(assignment.left.name) ||
+            !ts.isIdentifier(assignment.right)
+        )
+            continue;
+        const parameter = parameters.get(assignment.right.text);
+        if (parameter !== undefined)
+            writes.push({
+                field: assignment.left.name.text,
+                parameter,
+                assignment,
+                statement,
+            });
+    }
+    return writes;
 }
 
 /** The class whose constructor runs for `new` of `table`'s class, following implicit constructors. */

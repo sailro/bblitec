@@ -5,6 +5,13 @@ import {
     type DeclarationOrigin,
 } from "./symbols.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import {
+    holdsOnly,
+    arrayElementType,
+    callSignatures,
+    classInstanceDeclaration,
+    unionMembers,
+} from "./type-facts.js";
 
 /**
  * Record types a record converted between stays one object under.
@@ -120,10 +127,10 @@ export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
         parts.some(
             (part) =>
                 (part.flags & ts.TypeFlags.Object) === 0 ||
-                part.symbol?.declarations?.some(ts.isClassLike) === true,
+                classInstanceDeclaration(part) !== undefined,
         ) ||
         checker.isArrayLikeType(type) ||
-        type.getCallSignatures().length > 0 ||
+        callSignatures(checker, type, "exact").length > 0 ||
         type.getConstructSignatures().length > 0 ||
         checker.getIndexInfosOfType(type).length > 0
     )
@@ -362,9 +369,7 @@ export function recordComponents(
         const shapes = [
             ...new Map(
                 concrete
-                    .flatMap((member) =>
-                        member.isUnion() ? member.types : [member],
-                    )
+                    .flatMap((member) => unionMembers(member))
                     .map((shape) => [recordIdentity(checker, shape), shape]),
             ).values(),
         ];
@@ -415,8 +420,8 @@ function heldRecords(
     if (compared.has(b)) return [];
     compared.add(b);
     if (checker.isArrayLikeType(a) && checker.isArrayLikeType(b)) {
-        const elementA = checker.getIndexTypeOfType(a, ts.IndexKind.Number);
-        const elementB = checker.getIndexTypeOfType(b, ts.IndexKind.Number);
+        const elementA = arrayElementType(checker, a);
+        const elementB = arrayElementType(checker, b);
         return elementA && elementB
             ? heldRecords(checker, elementA, elementB, seen)
             : [];
@@ -454,8 +459,8 @@ function compatibleSignatures(
     left: ts.Type,
     right: ts.Type,
 ): [ts.Signature, ts.Signature] | undefined {
-    const [a, ...overloadsA] = left.getCallSignatures();
-    const [b, ...overloadsB] = right.getCallSignatures();
+    const [a, ...overloadsA] = callSignatures(checker, left, "exact");
+    const [b, ...overloadsB] = callSignatures(checker, right, "exact");
     return a &&
         b &&
         overloadsA.length === 0 &&
@@ -526,21 +531,15 @@ function layoutsHoldBoth(
     if (!compared) seen.set(a, (compared = new Set()));
     if (compared.has(b)) return true;
     compared.add(b);
-    const like = (type: ts.Type, flags: ts.TypeFlags): boolean =>
-        (type.isUnion() ? type.types : [type]).every(
-            (member) => (member.flags & flags) !== 0,
-        );
     if (
-        (like(a, ts.TypeFlags.StringLike) &&
-            like(b, ts.TypeFlags.StringLike)) ||
-        (like(a, ts.TypeFlags.NumberLike) &&
-            like(b, ts.TypeFlags.NumberLike)) ||
-        (like(a, ts.TypeFlags.BooleanLike) && like(b, ts.TypeFlags.BooleanLike))
+        (["string", "number", "boolean"] as const).some(
+            (kind) => holdsOnly(a, [kind]) && holdsOnly(b, [kind]),
+        )
     )
         return true;
     const element = (type: ts.Type): ts.Type | undefined =>
         checker.isArrayLikeType(type)
-            ? checker.getIndexTypeOfType(type, ts.IndexKind.Number)
+            ? arrayElementType(checker, type)
             : undefined;
     const elementA = element(a);
     const elementB = element(b);
@@ -549,15 +548,7 @@ function layoutsHoldBoth(
     const dictionary = (record: ts.Type, view: ts.Type): boolean => {
         if (!isPlainRecord(checker, record)) return false;
         const value = checker.getIndexTypeOfType(view, ts.IndexKind.String);
-        if (
-            !value ||
-            !like(
-                value,
-                ts.TypeFlags.StringLike |
-                    ts.TypeFlags.NumberLike |
-                    ts.TypeFlags.BooleanLike,
-            )
-        )
+        if (!value || !holdsOnly(value, ["string", "number", "boolean"]))
             return false;
         return checker
             .getPropertiesOfType(record)
@@ -573,9 +564,9 @@ function layoutsHoldBoth(
     if (dictionary(a, b) || dictionary(b, a)) return true;
     if (isRecordLike(checker, a) && isRecordLike(checker, b)) {
         const fields = (type: ts.Type, name: string): readonly ts.Type[] =>
-            type.isUnion()
-                ? type.types.flatMap((arm) => propertyTypes(checker, arm, name))
-                : propertyTypes(checker, type, name);
+            unionMembers(type).flatMap((arm) =>
+                propertyTypes(checker, arm, name),
+            );
         return recordProperties(checker, b).every((property) =>
             fields(a, property.name).every((held) =>
                 fields(b, property.name).every((field) =>

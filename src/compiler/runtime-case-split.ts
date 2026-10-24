@@ -1,11 +1,18 @@
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { isStorageDemand } from "./storage-demand-planner.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import {
+    functionOfDeclaration,
+    isSuspensionPoint,
+    isValueReference,
+    writeSites,
+} from "./syntax.js";
+import { knownCondition } from "./values/model.js";
 
 type CaseSplitContext = Pick<
     LoweringServices,
@@ -48,8 +55,8 @@ export function compileWithRuntimeCaseSplit(
     call: ts.CallExpression,
     compile: () => Value | undefined,
 ): Value | undefined {
-    const candidates = runtimeSelectors(context, call);
-    if (candidates === undefined) return compile();
+    const tests = selectorTests(context, call);
+    if (tests === undefined) return compile();
     try {
         return context.probeEmission(compile, () => true);
     } catch (error) {
@@ -57,6 +64,9 @@ export function compileWithRuntimeCaseSplit(
         // the runtime test forced; per outcome it may not be needed, so it
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
+        // Which tests stay runtime ones is asked only of a call that refused.
+        const candidates = runtimeSelectors(context, tests);
+        if (candidates === undefined) throw error;
         const selectors = dependedSelectors(context, candidates, compile);
         if (selectors === undefined) throw error;
         const split = context.probeEmission(
@@ -158,20 +168,24 @@ function moduleLevelCallee(
         return ts.isSourceFile(declaration.parent);
     return (
         ts.isVariableDeclaration(declaration) &&
-        !!declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer)) &&
+        functionOfDeclaration(declaration) !== undefined &&
         ts.isVariableStatement(declaration.parent.parent) &&
         ts.isSourceFile(declaration.parent.parent.parent)
     );
 }
 
-function runtimeSelectors(
+/**
+ * The distinct tests a call's arguments select with, each with every node
+ * spelling it, when the call can be split on them: no argument assigns,
+ * constructs or suspends, its calls go to module-level functions handed
+ * none of the bindings the tests read, and no test writes.
+ */
+function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
 ): Selector[] | undefined {
-    const conditions = new Map<string, ts.Expression>();
-    const sameTests = new Map<string, ts.Expression[]>();
+    // Each distinct test with every place it appears.
+    const groups: { test: ts.Expression; nodes: ts.Expression[] }[] = [];
     const calls: ts.CallExpression[] = [];
     let effects = false;
     const visit = (node: ts.Node): void => {
@@ -185,41 +199,27 @@ function runtimeSelectors(
         } else if (
             ts.isNewExpression(node) ||
             ts.isTaggedTemplateExpression(node) ||
-            ts.isAwaitExpression(node) ||
-            ts.isYieldExpression(node) ||
-            ts.isDeleteExpression(node) ||
-            ((ts.isPrefixUnaryExpression(node) ||
-                ts.isPostfixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken)) ||
-            (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+            isSuspensionPoint(node, { yield: true }) ||
+            writeSites(node).length > 0
         ) {
             effects = true;
             return;
         }
         if (ts.isConditionalExpression(node)) {
-            const text = node.condition.getText();
-            if (!conditions.has(text)) conditions.set(text, node.condition);
-            sameTests.set(text, [
-                ...(sameTests.get(text) ?? []),
-                node.condition,
-            ]);
+            const group = groups.find(({ test }) =>
+                sameExpression(context.checker, test, node.condition),
+            );
+            if (group) group.nodes.push(node.condition);
+            else groups.push({ test: node.condition, nodes: [node.condition] });
         }
         ts.forEachChild(node, visit);
     };
     call.arguments.forEach(visit);
-    if (effects || conditions.size === 0) return undefined;
+    if (effects || groups.length === 0) return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
     const roots = new Set<ts.Symbol>();
-    // A member name is no binding.
     const binding = (node: ts.Node): node is ts.Identifier =>
-        ts.isIdentifier(node) &&
-        !(
-            ts.isPropertyAccessExpression(node.parent) &&
-            node.parent.name === node
-        );
+        ts.isIdentifier(node) && isValueReference(node);
     const collect = (node: ts.Node): void => {
         if (binding(node)) {
             const symbol = declaredSymbol(context.checker, node);
@@ -227,7 +227,7 @@ function runtimeSelectors(
         }
         ts.forEachChild(node, collect);
     };
-    for (const condition of conditions.values()) {
+    for (const { test: condition } of groups) {
         if (context.evaluationOrder.writesStorage(condition)) return undefined;
         collect(condition);
     }
@@ -245,18 +245,23 @@ function runtimeSelectors(
         (ts.forEachChild(node, receivesRoot) ?? false);
     if (calls.some((inner) => inner.arguments.some(receivesRoot)))
         return undefined;
-    const runtime = [...conditions.values()].filter((condition) => {
+    return groups;
+}
+
+/** The tests that stay runtime ones, when few enough to split on. */
+function runtimeSelectors(
+    context: CaseSplitContext,
+    groups: readonly Selector[],
+): readonly Selector[] | undefined {
+    const runtime = groups.filter(({ test }) => {
         const folded = context.probeEmission(
-            () => context.conditions.compileCondition(condition),
+            () => context.conditions.compileCondition(test),
             () => false,
         );
-        return folded !== "true" && folded !== "false";
+        return knownCondition(folded) === undefined;
     });
     return runtime.length > 0 && runtime.length <= MAX_CANDIDATE_SELECTORS
-        ? runtime.map((test) => ({
-              test,
-              nodes: sameTests.get(test.getText()) ?? [test],
-          }))
+        ? runtime
         : undefined;
 }
 
@@ -277,15 +282,10 @@ function splitCall(
         return name;
     });
     const resultTsType = context.checker.getTypeAtLocation(call);
-    const resultType =
-        (resultTsType.flags & ts.TypeFlags.Void) !== 0
-            ? undefined
-            : context.dataTypes.fromTsType(resultTsType, call);
-    if (
-        resultType === undefined &&
-        (resultTsType.flags & ts.TypeFlags.Void) === 0
-    )
-        return undefined;
+    const resultType = isVoid(resultTsType)
+        ? undefined
+        : context.dataTypes.fromTsType(resultTsType, call);
+    if (resultType === undefined && !isVoid(resultTsType)) return undefined;
     const result = resultType && {
         name: context.allocateTemporaryCppName("case_result"),
         type: resultType,

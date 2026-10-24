@@ -7,6 +7,7 @@ import { documentEngine } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 import { isStringValue, type Value } from "./types.js";
+import { libraryName } from "./symbols.js";
 
 /**
  * The bounded browser file surface is a host service, like Web Storage.  This
@@ -15,6 +16,7 @@ import { isStringValue, type Value } from "./types.js";
  */
 export interface BrowserFileContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "checker"
     | "options"
     | "defaultEngine"
@@ -161,19 +163,15 @@ function runtimeBlobType(
     if (!options) return undefined;
     const resolved = context.unwrap(context.resolveStaticExpression(options));
     if (!ts.isObjectLiteralExpression(resolved)) return undefined;
-    const type = resolved.properties.find(
-        (property): property is ts.PropertyAssignment =>
-            ts.isPropertyAssignment(property) &&
-            context.propertyName(property.name) === "type",
-    );
+    const type = context.objectProperty(resolved, "type");
     if (
         resolved.properties.length !== 1 ||
         !type ||
-        ts.isStringLiteralLike(context.unwrap(type.initializer))
+        ts.isStringLiteralLike(context.unwrap(type))
     )
         return undefined;
     return (current) =>
-        current.dataLowerer.compileForSink(type.initializer, {
+        current.dataLowerer.compileForSink(type, {
             kind: "string",
         });
 }
@@ -344,17 +342,17 @@ export function compileBrowserFileCall(
     const receiverType = context.checker.getTypeAtLocation(receiver);
     if (boundReceiver?.kind === "file-reader")
         return compileFileReaderCall(context, call, callee, boundReceiver);
-    if (receiverType.getSymbol()?.getName() === "FileReader")
+    if (libraryName(receiverType) === "FileReader")
         context.fail(
             receiver,
             "A FileReader is read through the local binding its constructor initializes.",
         );
     const receiverMayBeFile =
         (boundReceiver && isFileValue(boundReceiver, "file")) ||
-        receiverType.getSymbol()?.getName() === "File" ||
+        libraryName(receiverType) === "File" ||
         ((receiverType.flags & ts.TypeFlags.Union) !== 0 &&
             (receiverType as ts.UnionType).types.some(
-                (member) => member.getSymbol()?.getName() === "File",
+                (member) => libraryName(member) === "File",
             ));
     if (!receiverMayBeFile) return undefined;
     const owner = context.dataLowerer.narrowOptional(
@@ -483,7 +481,7 @@ export function compileBrowserFileElementAccess(
         ? context.unwrap(ownerExpression.expression)
         : undefined;
     const mayBeFileList =
-        ownerType.getSymbol()?.getName() === "FileList" ||
+        libraryName(ownerType) === "FileList" ||
         (propertyFiles &&
             propertyBase &&
             ts.isIdentifier(propertyBase) &&

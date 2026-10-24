@@ -27,16 +27,14 @@ import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
+import { enclosingLoopControl } from "../compiler/loop-control.js";
+import { pinnedCheckerOf, pinnedLibraryGlobal } from "../pinned-program.js";
+import { declaredSymbol } from "../compiler/symbols.js";
 import {
-    moduleSymbols,
-    pinnedCheckerOf,
-    pinnedNamesOf,
-} from "../pinned-program.js";
-import {
-    declarationInDefaultLibrary,
-    declaredSymbol,
-} from "../compiler/symbols.js";
-import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
+    MATH_MEMBERS,
+    mathCallSpelling,
+    mathMemberAccess,
+} from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -46,6 +44,15 @@ import { isPinnedErrorCall } from "./pinned-error.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    writeSites,
+    writeSiteOf,
+    namesMember,
+    declarationNamed,
+    isSuspensionPoint,
+    variableKind,
+    sameSyntax,
+    sourceEntry,
+    isOneOfSources,
 } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import {
@@ -61,11 +68,16 @@ import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
+    compoundAssignmentStore,
     PINNED_COMPARISON_OPERATORS,
     JS_BITWISE_FUNCTIONS,
+    foldNumericBinary,
     foldNumericUnary,
     jsBitwiseCall,
+    jsBitwiseNotCall,
+    jsToUint32Call,
 } from "./pinned-operators.js";
+import { isNullable, holdsOnly } from "../compiler/type-facts.js";
 
 /**
  * Each list-shaped binding's C++ storage, and what indexing it yields.
@@ -144,19 +156,11 @@ function enclosingFunction(node: ts.Node): ts.Node {
     );
 }
 
-/** Every identifier naming `name` under `root`, as a value reference. */
+/** Every identifier naming the binding `name` under `root`: its declarations and uses. */
 function identifierReferences(root: ts.Node, name: string): ts.Identifier[] {
     const found: ts.Identifier[] = [];
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isIdentifier(node) &&
-            node.text === name &&
-            !(
-                ts.isPropertyAccessExpression(node.parent) &&
-                node.parent.name === node
-            ) &&
-            !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)
-        ) {
+        if (ts.isIdentifier(node) && node.text === name && !namesMember(node)) {
             found.push(node);
         }
         ts.forEachChild(node, visit);
@@ -313,11 +317,10 @@ function recordBindings(
 export function callShapeOf(
     callShapes: ReadonlyMap<string, PinnedBinding["type"]> | undefined,
     call: ts.CallExpression,
-    file: ts.SourceFile,
 ): PinnedBinding["type"] | undefined {
     return (
-        callShapes?.get(call.getText(file)) ??
-        callShapes?.get(call.expression.getText(file))
+        sourceEntry(callShapes, call) ??
+        sourceEntry(callShapes, call.expression)
     );
 }
 
@@ -668,11 +671,12 @@ export interface PinnedNumericScope {
      * by name rather than guessing a range.
      */
     forOf?: (
-        iterated: string,
+        /** The iterated expression, matched by its syntax. */
+        iterated: ts.Expression,
         element: string,
         /** What the iterated expression is bound to, where it is bound. */
         binding: PinnedBinding | undefined,
-        syntax: { expression: ts.Expression; binding: ts.BindingName },
+        syntax: { binding: ts.BindingName },
     ) =>
         | {
               /** The C++ range expression, e.g. `scene.caster_meshes`. */
@@ -1055,7 +1059,7 @@ export class PinnedNumericLowerer {
         if (ts.isForOfStatement(statement)) {
             const list = statement.initializer;
             if (
-                statement.awaitModifier ||
+                isSuspensionPoint(statement) ||
                 !ts.isVariableDeclarationList(list) ||
                 list.declarations.length !== 1
             )
@@ -1197,18 +1201,21 @@ export class PinnedNumericLowerer {
                       return entry.name.text;
                   })
                   .join(", ")}]`;
-        const iterated = statement.expression.getText(this.file);
         const resolved =
             this.scope.forOf?.(
-                iterated,
+                statement.expression,
                 element,
                 this.binding(statement.expression),
-                { expression: statement.expression, binding },
+                { binding },
             ) ??
             (ts.isIdentifier(binding)
                 ? this.recordListForOf(statement.expression, element)
                 : undefined);
-        if (!resolved) return this.fail(statement, `for-of over '${iterated}'`);
+        if (!resolved)
+            return this.fail(
+                statement,
+                `for-of over '${statement.expression.getText(this.file)}'`,
+            );
         this.bindPorts(resolved.bindings, statement.statement);
         return { header: `const auto& ${element} : ${resolved.range}` };
     }
@@ -1444,17 +1451,7 @@ export class PinnedNumericLowerer {
         let written = false;
         const visit = (node: ts.Node): void => {
             if (written) return;
-            if (
-                (ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                    ownsMember(node.left)) ||
-                ((ts.isPrefixUnaryExpression(node) ||
-                    ts.isPostfixUnaryExpression(node)) &&
-                    (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                        node.operator === ts.SyntaxKind.MinusMinusToken) &&
-                    ownsMember(node.operand))
-            ) {
+            if (writeSites(node).some(({ target }) => ownsMember(target))) {
                 written = true;
                 return;
             }
@@ -1514,7 +1511,7 @@ export class PinnedNumericLowerer {
         return owned && references > 0;
     }
 
-    /** Whether the function declaring `name` assigns it again. */
+    /** Whether the function declaring `name` writes it again, by any write. */
     private reassigned(
         declaration: ts.VariableDeclaration,
         name: string,
@@ -1522,10 +1519,7 @@ export class PinnedNumericLowerer {
         return identifierReferences(enclosingFunction(declaration), name).some(
             (reference) =>
                 reference !== declaration.name &&
-                ts.isBinaryExpression(reference.parent) &&
-                reference.parent.left === reference &&
-                reference.parent.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken,
+                writeSiteOf(reference) !== undefined,
         );
     }
 
@@ -1534,14 +1528,11 @@ export class PinnedNumericLowerer {
         declaration: ts.VariableDeclaration,
         source: ts.Expression,
     ): boolean {
-        const text = source.getText();
         return (
-            findAnalysisNode(
-                enclosingFunction(declaration),
-                (node) =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    unwrapExpression(node.left).getText() === text,
+            findAnalysisNode(enclosingFunction(declaration), (node) =>
+                writeSites(node).some(({ target }) =>
+                    sameSyntax(target, source),
+                ),
             ) !== undefined
         );
     }
@@ -1550,7 +1541,7 @@ export class PinnedNumericLowerer {
         list: ts.VariableDeclarationList,
         indent: string,
     ): string[] {
-        const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+        const isConst = variableKind(list) === "const";
         const lines: string[] = [];
         for (const declaration of list.declarations) {
             // `const { width, height } = f(...)` -- the one destructuring the
@@ -2038,8 +2029,10 @@ export class PinnedNumericLowerer {
             }
             if (
                 ts.isCallExpression(initializer) &&
-                this.scope.nullableMatrixCalls?.has(
-                    initializer.expression.getText(this.file),
+                this.scope.nullableMatrixCalls !== undefined &&
+                isOneOfSources(
+                    initializer.expression,
+                    this.scope.nullableMatrixCalls,
                 )
             ) {
                 this.bindLocal(declaration.name, {
@@ -2058,9 +2051,7 @@ export class PinnedNumericLowerer {
             if (
                 this.scope.matrixCalls &&
                 ts.isCallExpression(initializer) &&
-                this.scope.matrixCalls.has(
-                    initializer.expression.getText(this.file),
-                )
+                isOneOfSources(initializer.expression, this.scope.matrixCalls)
             ) {
                 this.bindLocal(declaration.name, { cpp, type: "f32" });
                 lines.push(
@@ -2471,10 +2462,14 @@ export class PinnedNumericLowerer {
         }
         const owner = enclosingFunction(expression);
         const declared = identifierReferences(owner, right.text).find(
-            (reference) =>
-                ts.isVariableDeclaration(reference.parent) &&
-                reference.parent.name === reference &&
-                reference.pos < expression.pos,
+            (reference) => {
+                const named = declarationNamed(reference);
+                return (
+                    named !== undefined &&
+                    ts.isVariableDeclaration(named) &&
+                    reference.pos < expression.pos
+                );
+            },
         );
         const loopOutside = ts.findAncestor(expression.parent, (ancestor) => {
             if (ancestor === owner) return "quit";
@@ -2526,10 +2521,7 @@ export class PinnedNumericLowerer {
         ) {
             return undefined;
         }
-        const receiver = unwrapExpression(call.expression.expression).getText(
-            this.file,
-        );
-        if (receiver !== unwrapExpression(expression.left).getText(this.file)) {
+        if (!sameSyntax(call.expression.expression, expression.left)) {
             return undefined;
         }
         return this.expression(call);
@@ -2604,7 +2596,11 @@ export class PinnedNumericLowerer {
                 "compound bitwise assignment to a non-scalar",
             );
         }
-        return `${cpp} = static_cast<double>(${jsBitwiseCall(bitwise!, cpp, this.expression(expression.right))})`;
+        return compoundAssignmentStore(
+            kind,
+            cpp,
+            this.expression(expression.right),
+        )!;
     }
 
     /** A `for (const x of list)` over a record list, element by element. */
@@ -2831,11 +2827,7 @@ export class PinnedNumericLowerer {
             return [];
         }
         if (ts.isCallExpression(initializer)) {
-            const shape = callShapeOf(
-                this.scope.callShapes,
-                initializer,
-                this.file,
-            );
+            const shape = callShapeOf(this.scope.callShapes, initializer);
             if (shape === "f32" || shape === "f64-buffer") {
                 if (!isConst)
                     this.fail(declaration, "mutable buffer call binding");
@@ -2918,7 +2910,7 @@ export class PinnedNumericLowerer {
         // undefined outside it -- a cluster mask's bit 31 arrives as a
         // negative int32 -- so the conversion is the spec's rather than the
         // language's. A bitwise lane converts from its own 32 bits.
-        if (element === "std::uint32_t") return `bbl::js::to_uint32(${text})`;
+        if (element === "std::uint32_t") return jsToUint32Call(text);
         if (element === "std::uint8_t") return `bbl::js::to_uint8(${text})`;
         return text;
     }
@@ -3059,10 +3051,7 @@ export class PinnedNumericLowerer {
      */
     protected stringExpression(expression: ts.Expression): string {
         const node = unwrapExpression(expression);
-        if (
-            ts.isStringLiteral(node) ||
-            ts.isNoSubstitutionTemplateLiteral(node)
-        ) {
+        if (ts.isStringLiteralLike(node)) {
             return `std::string(${stringLiteral(node.text)})`;
         }
         const bound = this.binding(node);
@@ -3521,16 +3510,15 @@ export class PinnedNumericLowerer {
         // A binding under its own name first, so a constant that names
         // itself recurses no further than one step and fails there.
         this.moduleConstants.set(initializer, undefined);
-        // A literal constant is also a value generation knows, which is
+        // A constant number is also a value generation knows, which is
         // what lets a serialized enumerator compare against it at
         // generation (`lockMode === LOCK_PER_PARTICLE`).
-        const literal = unwrapExpression(initializer);
+        const cpp = `(${this.expression(initializer)})`;
+        const staticNumber = this.staticNumberOf(initializer);
         const binding: PinnedBinding = {
-            cpp: `(${this.expression(initializer)})`,
+            cpp,
             type: "scalar",
-            ...(ts.isNumericLiteral(literal)
-                ? { staticNumber: Number(literal.text) }
-                : {}),
+            ...(staticNumber !== undefined ? { staticNumber } : {}),
         };
         this.moduleConstants.set(initializer, binding);
         return binding;
@@ -3567,6 +3555,7 @@ export class PinnedNumericLowerer {
                 node,
                 (child) => this.renderExpression(child),
                 this.scope.expressionSpelling,
+                (child) => this.staticNumberOf(child),
             ) ??
             this.fail(
                 node,
@@ -3594,7 +3583,7 @@ export class PinnedNumericLowerer {
         }
         if (ts.isPrefixUnaryExpression(node)) {
             if (node.operator === ts.SyntaxKind.TildeToken)
-                return `js::bitwise_not(${this.expression(node.operand)})`;
+                return jsBitwiseNotCall(this.expression(node.operand));
             // `--buffer.alive` in value position: the pin reads the slot it
             // just released, and both sides mean the decremented value.
             if (
@@ -3710,6 +3699,7 @@ export class PinnedNumericLowerer {
                         ? cppPrimary(this.condition(child))
                         : this.renderExpression(child),
                 this.scope.expressionSpelling,
+                (child) => this.staticNumberOf(child),
             );
         }
         if (ts.isPropertyAccessExpression(node)) {
@@ -3984,7 +3974,8 @@ export class PinnedNumericLowerer {
 
     /**
      * The number an expression already is: a literal, a binding the caller
-     * fixed, or a module constant the file declares as a literal.
+     * fixed, a module constant the file declares as a literal, or
+     * arithmetic over those (`1 / 2.4`).
      */
     private staticNumberOf(expression: ts.Expression): number | undefined {
         const node = unwrapExpression(expression);
@@ -3994,6 +3985,14 @@ export class PinnedNumericLowerer {
             return inner === undefined
                 ? undefined
                 : foldNumericUnary(node.operator, inner);
+        }
+        if (ts.isBinaryExpression(node)) {
+            const left = this.staticNumberOf(node.left);
+            if (left === undefined) return undefined;
+            const right = this.staticNumberOf(node.right);
+            return right === undefined
+                ? undefined
+                : foldNumericBinary(node.operatorToken.kind, left, right);
         }
         if (!ts.isIdentifier(node)) return undefined;
         const bound = this.binding(node) ?? this.moduleConstant(node);
@@ -4036,6 +4035,47 @@ export class PinnedNumericLowerer {
      * given a different meaning.
      */
     private switchStatement(
+        statement: ts.SwitchStatement,
+        indent: string,
+    ): string[] {
+        // A `break` before a clause's end leaves the switch; the if-chain is
+        // then one pass of a loop, so that `break` leaves the pass and not
+        // the enclosing loop. A `continue` there would continue the pass.
+        const clauses = statement.caseBlock.clauses;
+        const earlyBreak = clauses.some((clause) => {
+            const [only] = clause.statements;
+            const statements = [
+                ...(clause.statements.length === 1 && only && ts.isBlock(only)
+                    ? only.statements
+                    : clause.statements),
+            ];
+            const last = statements[statements.length - 1];
+            if (last && ts.isBreakStatement(last)) statements.pop();
+            return statements.some(
+                (inner) =>
+                    enclosingLoopControl(inner, { continues: false }) !==
+                    undefined,
+            );
+        });
+        if (!earlyBreak) return this.switchChain(statement, indent);
+        const continued = clauses
+            .flatMap((clause) => clause.statements)
+            .find(
+                (inner) =>
+                    enclosingLoopControl(inner, { breaks: false }) !==
+                    undefined,
+            );
+        if (continued)
+            this.fail(continued, "switch with an early break and a continue");
+        return [
+            `${indent}do {`,
+            ...this.switchChain(statement, indent + "    "),
+            `${indent}} while (false);`,
+        ];
+    }
+
+    /** The if-chain (or the selected clause) a switch lowers to. */
+    private switchChain(
         statement: ts.SwitchStatement,
         indent: string,
     ): string[] {
@@ -4204,7 +4244,7 @@ export class PinnedNumericLowerer {
         }
         if (
             ts.isCallExpression(node) &&
-            callShapeOf(this.scope.callShapes, node, this.file) === "bool"
+            callShapeOf(this.scope.callShapes, node) === "bool"
         )
             return "boolean";
         if (
@@ -4237,13 +4277,8 @@ export class PinnedNumericLowerer {
                 return this.valueKind(node.left);
         }
         const type = pinnedCheckerOf(this.file).getTypeAtLocation(node);
-        const parts = type.isUnion() ? type.types : [type];
-        if (
-            parts.every((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0)
-        )
-            return "boolean";
-        if (parts.every((part) => (part.flags & ts.TypeFlags.StringLike) !== 0))
-            return "string";
+        if (holdsOnly(type, ["boolean"])) return "boolean";
+        if (holdsOnly(type, ["string"])) return "string";
         // The numeric port's untyped adapters and arithmetic return numbers.
         return "number";
     }
@@ -4340,14 +4375,9 @@ export class PinnedNumericLowerer {
     private provenPresent(node: ts.Expression): boolean {
         const at = ts.isNonNullExpression(node.parent) ? node.parent : node;
         const type = pinnedCheckerOf(this.file).getTypeAtLocation(at);
-        const absent =
-            ts.TypeFlags.Undefined |
-            ts.TypeFlags.Null |
-            ts.TypeFlags.Void |
-            ts.TypeFlags.Any |
-            ts.TypeFlags.Unknown;
-        return (type.isUnion() ? type.types : [type]).every(
-            (part) => (part.flags & absent) === 0,
+        return (
+            !isNullable(type) &&
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
         );
     }
 
@@ -4464,7 +4494,7 @@ export class PinnedNumericLowerer {
         // keeps the pin's numeric arguments and drops the getters and
         // scratch it was specialized over. Only the caller can give that
         // spelling, so it is keyed by the call rather than the callee.
-        const site = this.scope.calls.get(node.getText(this.file));
+        const site = sourceEntry(this.scope.calls, node);
         if (site) {
             const result = site(args);
             this.translationActivity?.request("call", node, this.file);
@@ -4620,38 +4650,26 @@ export class PinnedNumericLowerer {
             return builtin.spell(args);
         }
         const spelling = this.scope.calls.get(name);
-        if (
-            !spelling &&
-            ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Math"
-        ) {
-            const declaration = pinnedNamesOf(
-                callee.getSourceFile(),
-            ).declarationOf(callee.expression);
-            const global = declaration
-                ? declarationInDefaultLibrary(declaration)
-                : !declaredSymbol(
-                      moduleSymbols(callee.getSourceFile()),
-                      callee.expression,
-                  );
-            if (global) {
-                const method = callee.name.text;
-                const member = MATH_MEMBERS.get(method);
-                if (
-                    member &&
-                    (member.variadic
-                        ? args.length < member.arity
-                        : args.length !== member.arity)
-                )
-                    this.fail(node, `'${name}' arity`);
-                const arguments_ = this.scope.mathValue
-                    ? args.map(this.scope.mathValue.argument)
-                    : args;
-                const result = mathCallSpelling(method)?.(arguments_);
-                if (result !== undefined)
-                    return this.scope.mathValue?.result(result) ?? result;
-            }
+        const math = mathMemberAccess(callee, pinnedLibraryGlobal);
+        if (!spelling && math) {
+            const method = math.name.text;
+            const member = MATH_MEMBERS.get(method);
+            if (
+                member &&
+                (member.variadic
+                    ? args.length < member.arity
+                    : args.length !== member.arity)
+            )
+                this.fail(node, `'${name}' arity`);
+            const arguments_ = this.scope.mathValue
+                ? args.map(this.scope.mathValue.argument)
+                : args;
+            const result = mathCallSpelling(method)?.(
+                arguments_,
+                node.arguments.map((argument) => this.staticNumberOf(argument)),
+            );
+            if (result !== undefined)
+                return this.scope.mathValue?.result(result) ?? result;
         }
         if (!spelling) this.fail(node, `call '${name}'`);
         const result = spelling(args);

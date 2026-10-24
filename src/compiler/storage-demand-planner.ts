@@ -2,14 +2,12 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { declaredSymbol } from "./symbols.js";
 import {
-    assignmentTargets,
     bindingNameIdentifiers,
     expressionMayRunCode,
-    isAssignmentExpression,
-    isUpdateExpression,
     rootIdentifier,
     statementDeclaredNames,
     unwrapExpression,
+    writeSites,
 } from "./syntax.js";
 import { CompileError } from "./compile-error.js";
 import { AbsenceTagStorageRequired } from "./absence-tag-storage.js";
@@ -29,6 +27,7 @@ import { EnumRecordStorageRequired } from "./enum-record-storage.js";
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { callSignatures } from "./type-facts.js";
 
 type StorageDemand =
     | DynamicBindingStorageRequired
@@ -203,8 +202,11 @@ function independentGenericCall(
         }
         return (
             !expressionMayRunCode(value) &&
-            context.checker.getTypeAtLocation(value).getCallSignatures()
-                .length === 0
+            callSignatures(
+                context.checker,
+                context.checker.getTypeAtLocation(value),
+                "exact",
+            ).length === 0
         );
     });
 }
@@ -249,18 +251,7 @@ function rolledBackWrites(
                 node.name
             )
                 names.push(node.name);
-            const targets = isAssignmentExpression(node)
-                ? assignmentTargets(node.left)
-                : isUpdateExpression(node)
-                  ? [node.operand]
-                  : ts.isDeleteExpression(node)
-                    ? [node.expression]
-                    : (ts.isForInStatement(node) ||
-                            ts.isForOfStatement(node)) &&
-                        !ts.isVariableDeclarationList(node.initializer)
-                      ? assignmentTargets(node.initializer)
-                      : [];
-            for (const target of targets) {
+            for (const { target } of writeSites(node)) {
                 const root = rootIdentifier(target);
                 if (!root) return true;
                 names.push(root);
@@ -373,7 +364,7 @@ export class StorageDemandPlanner {
                         this.lostDeclarations.has(symbol)
                     );
                 },
-                { types: "skip", memberNames: "skip" },
+                { types: "skip", names: "references" },
             );
             if (dependent) throw new PlanningDependency();
             for (const node of checked)

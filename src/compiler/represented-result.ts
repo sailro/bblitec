@@ -1,5 +1,6 @@
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import type { Value } from "./types.js";
+import { absenceOfNull } from "./values/model.js";
 
 /** A callback's concrete storage when a checked predicate erased its source fields. */
 export function representedResultType(
@@ -14,8 +15,7 @@ export function representedResultType(
         value.kind === "boolean"
     )
         return { kind: value.kind };
-    if (value.kind === "json-null")
-        return { kind: value.cpp === "std::nullopt" ? "undefined" : "null" };
+    if (value.kind === "json-null") return { kind: absenceOfNull(value) };
     if (seen.has(value)) return undefined;
     seen.add(value);
     try {

@@ -16,6 +16,191 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "a store through a call result writes the object the call returns",
+    `
+    const st: { v?: number } = {};
+    const obj = () => st;
+    obj().v = 3;
+    function named() { return st; }
+    named().v ??= 9;
+    if (st.v !== 3) throw new Error("annotated object written through a call " + st.v);
+`,
+);
+
+check(
+    "a-binding-pattern-binds-alike-in-every-position",
+    `
+    function f([a, b = 3]: [number, number?], { p: [x, y] }: { p: [number, number] }): number { return a * 10 + b + x - y; }
+    if (f([1], { p: [5, 2] }) !== 16 || f([1, 2], { p: [0, 0] }) !== 12) throw new Error("parameters");
+    const rows: [string, number?][] = [["a"], ["b", 2]];
+    if (rows.map(([k, v = 0]) => k + v).join() !== "a0,b2") throw new Error("callback");
+    let [text, amount] = ["before", 3] as [string, number];
+    text = "after";
+    amount += 2;
+    let { s, n } = { s: "a", n: 1 };
+    s = "b";
+    n++;
+    if (text + amount !== "after5" || s + n !== "b2") throw new Error("rebound " + text + amount + s + n);
+    const m = new Map<string, { n: number; w?: number }>([["a", { n: 1 }], ["b", { n: 2, w: 3 }]]);
+    let out = "";
+    for (const [k, { n: count, w = 10 }] of m) out += k + count * w;
+    for (const [i, [first, second]] of ([[1], [2, 3]] as [number, number?][]).entries()) out += i + String(second) + first;
+    for (let [a, b] of [[1, 2]] as [number, number][]) { a *= 10; out += a + b; }
+    if (out !== "a10b60undefined113212") throw new Error("for-of patterns " + out);
+`,
+);
+
+check(
+    "a-compound-assignment-reads-its-old-value-first-and-is-a-value",
+    `
+    let x = 1;
+    const bump = (): number => { x = 10; return 1; };
+    x += bump();
+    if (x !== 2) throw new Error("local order " + x);
+    const st = { v: 1 };
+    const obj = () => st;
+    const write = (): number => { st.v = 10; return 1; };
+    obj().v += write();
+    if (st.v !== 2) throw new Error("receiver order " + st.v);
+    class S { private n = 1; get v(): number { return this.n; } set v(k: number) { this.n = Math.min(k, 2); } }
+    const s = new S();
+    const r = (s.v += 5);
+    if (r !== 6 || s.v !== 2) throw new Error("setter value " + r);
+    const m: Record<string, number> = { a: 1 };
+    let b = 6;
+    const u = new Uint8Array(1);
+    u[0] = 200;
+    let t = 0;
+    while ((t += 3) < 10) b |= 1;
+    if ((m["a"] += 4) !== 5 || (b >>>= 1) !== 3 || (u[0] += 100) !== 300 || u[0] !== 44 || t !== 12)
+        throw new Error("values");
+    let text = "a";
+    const rewrite = (): string => { text = "z"; return "b"; };
+    text += rewrite();
+    const label = { s: "x" };
+    if (text !== "ab" || (label.s += 1) !== "x1" || (text += "c") !== "abc") throw new Error("strings " + text);
+`,
+);
+
+check(
+    "split-evaluates-its-separator-once-and-keeps-a-limit",
+    `
+    const log: string[] = [];
+    const sep = () => { log.push("sep"); return ","; };
+    const lim = () => { log.push("lim"); return Math.random() < 2 ? 2 : 1; };
+    const s = Math.random() < 2 ? "a,b,c" : "";
+    const out = s.split(sep(), lim());
+    if (out.join("|") !== "a|b" || log.join() !== "sep,lim") throw new Error("split " + out.join("|") + " " + log.join());
+    if (s.split(",", 0).length !== 0 || s.split(",").length !== 3) throw new Error("split limits");
+`,
+);
+
+check(
+    "a-rebound-object-binding-reads-its-current-object",
+    `
+    let cfg = { n: 1, s: "a" };
+    const read = () => cfg.n;
+    cfg = { n: 2, s: "b" };
+    if (cfg.n !== 2 || cfg.s !== "b" || read() !== 2) throw new Error("rebound let");
+    let last = { n: 0 };
+    for (let i = 1; i <= 3; i++) last = { n: i };
+    if (last.n !== 3) throw new Error("rebound in a loop");
+`,
+);
+
+check(
+    "an-array-literal-of-runtime-elements-joins-at-run-time",
+    `
+    const s = Math.random() > 2 ? "a" : "b";
+    const n = Math.random() > 2 ? 1 : 2;
+    if ([s, "c"].join("-") !== "b-c" || [n, 3].join() !== "2,3") throw new Error("join");
+`,
+);
+
+check(
+    "a-discarded-getter-read-runs-the-getter-once",
+    `
+    let reads = 0;
+    class G { get v(): number { reads++; return 1; } }
+    const g = new G();
+    void g.v;
+    g.v;
+    if (reads !== 2) throw new Error("getter runs " + reads);
+`,
+);
+
+check(
+    "a-stored-closure-calling-a-method-shares-the-bindings-it-writes",
+    `
+    let n = 0;
+    class C { m(): void { n++; } }
+    const c = new C();
+    const fs: Array<() => void> = [];
+    fs.push(() => c.m());
+    fs[0]!(); fs[0]!();
+    if (n !== 2) throw new Error("method write through a stored closure");
+    let reads = 0, made = 0;
+    class G { get v(): number { reads++; return 1; } }
+    class K { constructor() { made++; } }
+    const g = new G();
+    const more: Array<() => void> = [() => { void g.v; }, () => { new K(); }];
+    more[0]!(); more[1]!();
+    if (reads !== 1 || made !== 1) throw new Error("getter or constructor write through a stored closure");
+`,
+);
+
+check(
+    "a-static-initializer-reads-this-as-its-class",
+    `
+    class R { static readonly F = 10; static readonly H = this.F / 2; value(): number { return R.H; } }
+    if (new R().value() !== 5 || R.H !== 5) throw new Error("static this");
+`,
+);
+
+check(
+    "construction-evaluates-arguments-before-own-members",
+    `
+    let c = 0;
+    class A { f = c++; constructor(public a: number) {} }
+    const x = new A(c++);
+    if (x.a !== 0 || x.f !== 1) throw new Error("base order");
+    const log: string[] = [];
+    const t = (s: string) => { log.push(s); return s.length; };
+    class B { b = t("bfield"); constructor(_x: number) { t("bbody"); } }
+    class D extends B { d = t("dfield"); constructor(public p: number) { super(t("superarg")); t("dbody"); } }
+    const v = new D(t("arg"));
+    if (log.join() !== "arg,superarg,bfield,bbody,dfield,dbody" || v.p !== 3) throw new Error("derived order");
+`,
+);
+
+check(
+    "a-body-running-off-its-end-returns-undefined",
+    `
+    function f(x: number): number | undefined { if (x > 0) return x; }
+    function g(n: number): number | undefined { if (n === 0) return 0; if (n > 0) return g(n - 1); }
+    function s(x: number): string | undefined { if (x > 0) return "p"; }
+    function find(xs: number[], t: number): number | undefined { for (const x of xs) { if (x === t) return x; } }
+    class A { m(x: number): number | undefined { if (x > 0) return x; } }
+    if (f(-1) !== undefined || f(2) !== 2) throw new Error("function");
+    if (g(-1) !== undefined || g(3) !== 0) throw new Error("recursive function");
+    if (s(-1) !== undefined || s(1) !== "p") throw new Error("string result");
+    if (find([1, 2], 3) !== undefined || find([1, 2], 2) !== 2) throw new Error("loop");
+    if (new A().m(-1) !== undefined) throw new Error("method");
+`,
+);
+
+check(
+    "outlined-member-body-reads-its-receiver",
+    `
+    class A { v(): number { return 1; } twice(): number { return this.v() * 2; } isB(): boolean { return this instanceof B; } }
+    class B extends A { override v(): number { return 5; } }
+    const xs: A[] = [new A(), new B()];
+    if (xs.map((x) => x.twice()).join() !== "2,10") throw new Error("virtual call on this");
+    if (xs.map((x) => x.isB()).join() !== "false,true") throw new Error("instanceof this");
+`,
+);
+
+check(
     "indexed-boolean-presence-in-optional-sinks",
     `
     const flags: boolean[] = [false, true];
@@ -14676,3 +14861,739 @@ test("module records and tokens refuse what one object cannot represent", () => 
         /A write through `this` needs the object its literal creates stored where a binding names it\./,
     );
 });
+
+// Write sites: every write form counts where a proof depends on a binding
+// or an array staying unchanged.
+check(
+    "a loop bound by an array it reassigns keeps checked reads",
+    `
+    function sum(input: number[]): number {
+        let rows = input;
+        let total = 0;
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i]! < 0) rows = [];
+            total += rows[i] ?? 100;
+        }
+        return total;
+    }
+    if (sum([1, -1, 2]) !== 101) throw new Error("reassigned bound");
+    `,
+);
+check(
+    "a nested write through a local literal keeps it from folding",
+    `
+    function configured(): number {
+        const config = { limits: { count: 1 }, names: [] as string[] };
+        config.limits.count = 2;
+        config.names.push("late");
+        [config.limits.count] = [config.limits.count + config.names.length];
+        return config.limits.count;
+    }
+    if (configured() !== 3) throw new Error("stale literal");
+    `,
+);
+check(
+    "a counter its loop writes by destructuring bounds no growth",
+    `
+    const limit = 2;
+    const values: number[] = [];
+    for (let i = 0; i < limit; i++) {
+        [i] = [i + 3];
+        values[i] = i;
+    }
+    if (values.length !== 4 || values[3] !== 3)
+        throw new Error("counter written in its loop");
+    `,
+);
+check(
+    "a bigint key is its decimal text",
+    `
+    const o = { 1n: "one" };
+    if (o[1] !== "one") throw new Error("bigint key");
+    `,
+);
+check(
+    "an element after a spread is read at its shifted index",
+    `
+    const xs = [2, 3];
+    const picked = [1, ...xs, 5][2];
+    if (picked !== 3) throw new Error(String(picked));
+    `,
+);
+check(
+    "a write through an element read reaches the literal's record",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const second = values[1]!;
+        second.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("index alias");
+    `,
+);
+check(
+    "a write through an object destructuring reaches the literal's record",
+    `
+    function second(): number {
+        const record = { a: { v: 1 }, b: { v: 2 } };
+        const { b } = record;
+        b.v = 7;
+        return record.b.v;
+    }
+    if (second() !== 7) throw new Error("object alias");
+    `,
+);
+check(
+    "a write through an array destructuring reaches the literal's record",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const [, second] = values;
+        second!.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("element alias");
+    `,
+);
+check(
+    "an array rest binding shifts its indices",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        const [, ...rest] = values;
+        rest[0]!.v = 7;
+        return values[1]!.v;
+    }
+    if (second() !== 7) throw new Error("rest not shifted");
+    `,
+);
+check(
+    "an array rest assignment shifts its indices",
+    `
+    function second(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        let first: { v: number } = { v: 0 };
+        let rest: { v: number }[] = [];
+        [first, ...rest] = values;
+        rest[0]!.v = 7;
+        return values[1]!.v + first.v;
+    }
+    if (second() !== 8) throw new Error("rest assignment");
+    `,
+);
+check(
+    "a nested write through a literal's element reaches its record",
+    `
+    function f(): number {
+        const values = [{ v: 1 }, { v: 2 }];
+        values[1]!.v = 7;
+        return values[1]!.v;
+    }
+    if (f() !== 7) throw new Error("direct nested");
+    `,
+);
+check(
+    "a write through an assigned destructuring reaches the literal's record",
+    `
+    function f(): number {
+        const record = { a: { v: 1 }, b: { v: 2 } };
+        let b = { v: 0 };
+        ({ b } = record);
+        b.v = 7;
+        return record.b.v;
+    }
+    if (f() !== 7) throw new Error("assigned destructuring");
+    `,
+);
+check(
+    "a write through a destructured member reaches a module constant",
+    `
+    const CONFIG = { inner: { v: 1 }, list: [{ v: 1 }] };
+    const { inner } = CONFIG;
+    inner.v = 2;
+    const [first] = CONFIG.list;
+    first!.v = 3;
+    if (CONFIG.inner.v !== 2 || CONFIG.list[0]!.v !== 3)
+        throw new Error("module const alias");
+    `,
+);
+check(
+    "a tag's rest parameter at index zero takes the strings and every substitution",
+    `
+    function parts(...values: unknown[]): string {
+        return values.length + ":" + String(values[1]);
+    }
+    if (parts\`a\${7}b\` !== "2:7") throw new Error(parts\`a\${7}b\`);
+    `,
+);
+checkInRealm(
+    "for await suspends inside catch and finally blocks",
+    `
+    async function fails(): Promise<void> {
+        await Promise.resolve();
+        throw new Error("x");
+    }
+    async function* values(): AsyncGenerator<number, void, unknown> {
+        yield 1;
+    }
+    void (async () => {
+        let n = 0;
+        try {
+            await fails();
+        } catch {
+            for await (const v of values()) n += v;
+        }
+        try {
+            await Promise.resolve();
+        } finally {
+            for await (const v of values()) n += v * 2;
+        }
+        if (n !== 3) throw new Error(String(n));
+        globalThis.close();
+    })();
+    `,
+);
+check(
+    "a void call proven undefined reads undefined and still runs",
+    `
+    let calls = 0;
+    function quiet(): void { calls++; }
+    const silent: () => void = () => { calls++; };
+    function pick(a: unknown = 5): unknown { return a; }
+    if (typeof quiet() !== "undefined" || typeof silent() !== "undefined") throw new Error("typeof");
+    if (pick(quiet()) !== 5 || pick(silent()) !== 5) throw new Error("default");
+    if (calls !== 4) throw new Error("calls " + calls);
+    `,
+);
+test("a void result read without a proven undefined completion refuses", () => {
+    for (const source of [
+        "const ask: () => void = () => 3; const kind = typeof ask(); export {};",
+        "function three(): number { return 3; } const ask: () => void = three; const kind = typeof ask(); export {};",
+        "const ask: () => void = () => 3; function pick(a: unknown = 5): unknown { return a; } const v = pick(ask()); export {};",
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /requires a proven undefined completion/,
+        );
+});
+check(
+    "an undefined-typed method result compares as undefined",
+    `
+    class C {
+        n = 0;
+        add(): undefined { this.n += 10; return undefined; }
+    }
+    const c = new C();
+    if (c.add() !== undefined || c.n !== 10) throw new Error("undefined result " + c.n);
+    `,
+);
+check(
+    "a branded primitive is its primitive",
+    `
+    type Id = number & { readonly brand: unique symbol };
+    const make = (n: number): Id => n as Id;
+    const ids: Id[] = [make(3), make(4)];
+    const total = ids.reduce((sum, id) => sum + id, 0);
+    if (total !== 7 || typeof ids[0] !== "number") throw new Error("branded " + total);
+    `,
+);
+check(
+    "an enum's reverse mapping reads the last member with a value",
+    `
+    enum D { A = 0, B = 0, C = 1 }
+    let k = 0;
+    if (D[0] !== "B" || D[k] !== "B" || D[1] !== "C") throw new Error("reverse " + D[0]);
+    `,
+);
+check(
+    "a case's final break to an enclosing loop leaves the loop",
+    `
+    let hits = 0;
+    outer: for (let i = 0; i < 3; i++) {
+        switch (i) {
+            case 1: hits += 10; break outer;
+        }
+        hits++;
+    }
+    let braced = 0;
+    outer2: for (let i = 0; i < 3; i++) {
+        switch (i) {
+            case 1: { braced += 10; break outer2; }
+        }
+        braced++;
+    }
+    let own = 0;
+    for (let i = 0; i < 3; i++) {
+        sw: switch (i) {
+            case 1: own += 10; break sw;
+        }
+        own++;
+    }
+    if (hits !== 11 || braced !== 11 || own !== 13) throw new Error(hits + ":" + braced + ":" + own);
+    `,
+);
+check(
+    "closures capture each iteration's own for-let binding",
+    `
+    const plain: Array<() => number> = [];
+    for (let i = 0; i < 3; i++) plain.push(() => i);
+    const written: Array<() => number> = [];
+    for (let i = 0; i < 4; i++) { written.push(() => i * 10); if (i === 1) i++; }
+    const skipped: Array<() => number> = [];
+    for (let i = 0; i < 4; i++) { if (i % 2) continue; skipped.push(() => i); }
+    const manual: Array<() => number> = [];
+    for (let i = 0; i < 3;) { manual.push(() => i); i++; }
+    const pairs: Array<() => string> = [];
+    for (let i = 0, j = 10; i < 2; i++, j--) pairs.push(() => i + ":" + j);
+    const seen = [plain, written, skipped, manual].map((list) => list.map((f) => f()).join()).join("|") + "|" + pairs.map((f) => f()).join();
+    if (seen !== "0,1,2|0,20,30|0,2|1,2,3|0:10,1:9") throw new Error(seen);
+    `,
+);
+check(
+    "in sees a class instance's inherited methods and accessors",
+    `
+    class B { b(): number { return 1; } get g(): number { return 2; } }
+    class C extends B { v = 1; c(): number { return 3; } }
+    const c = new C();
+    if (!("b" in c) || !("g" in c) || !("c" in c) || !("v" in c) || ("z" in c) || !("toString" in c))
+        throw new Error("in chain");
+    `,
+);
+check(
+    "a static readonly field with effects or a fresh object is evaluated once",
+    `
+    let next = 0;
+    class Q { static readonly id = next++; static readonly free: number[] = []; static readonly HALF = Math.PI / 2; }
+    const a = Q.id, b = Q.id;
+    Q.free.push(1);
+    Q.free.push(2);
+    if (a !== 0 || b !== 0 || next !== 1 || Q.free.length !== 2 || Q.HALF !== Math.PI / 2)
+        throw new Error("static once " + a + b + next + Q.free.length);
+    `,
+);
+check(
+    "an erased console call still runs its arguments' effects",
+    `
+    let calls = 0;
+    let formats = 0;
+    function tag(s: TemplateStringsArray): string { calls++; return s[0]!; }
+    class Meter { v = 2; toFixed(d: number): string { formats++; return this.v.toFixed(d); } }
+    const meter = new Meter();
+    console.log(tag\`x\`, meter.toFixed(2), (3.14159).toFixed(2));
+    if (calls !== 1 || formats !== 1) throw new Error("erased effects " + calls + formats);
+    `,
+);
+check(
+    "strings compare by UTF-16 code units",
+    `
+    const words = JSON.parse('["pear", "apple", "fig"]') as string[];
+    const sorted = words.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const pair = JSON.parse('["\\ud83d\\ude00", "\\ufffd"]') as string[];
+    const [emoji, replacement] = [pair[0]!, pair[1]!];
+    const constants = "apple" < "banana" && "Zebra" < "apple";
+    if (sorted.join() !== "apple,fig,pear" || !(emoji < replacement) || !constants)
+        throw new Error(sorted.join());
+    `,
+);
+check(
+    "Math.round of a small negative value is negative zero",
+    `
+    let d = -0.4;
+    const values = [Math.round(d), Math.round(d - 0.1), Math.round(-0.4)];
+    if (!values.every((v) => Object.is(v, -0)) || Math.round(d - 0.2) !== -1) throw new Error("round sign");
+    `,
+);
+check(
+    "a method call on a nullish receiver throws a TypeError",
+    `
+    let kind = "";
+    const o: { m(): number } | null = Math.random() > 2 ? { m: () => 1 } : null;
+    try { o!.m(); } catch (e) { kind = e instanceof TypeError ? "TypeError" : "other"; }
+    if (kind !== "TypeError") throw new Error("kind " + kind);
+    `,
+);
+check(
+    "an optional callback argument's writes order the arguments read before it",
+    `
+    function pair(a: number, b: number[]): number { return a; }
+    let n = 0;
+    function s(xs: number[], cmp?: (a: number, b: number) => number): number { return pair(n, xs.sort(cmp)); }
+    const before = s([2, 1], (a, b) => { n++; return a - b; });
+    if (before !== 0 || n === 0) throw new Error("order " + before + " " + n);
+    `,
+);
+check(
+    "a record's member kept by a constructed instance or a literal is the same object",
+    `
+    class H { constructor(public o: { n: number }) {} bump(): void { this.o.n++; } }
+    const CFG = { a: { n: 1 }, b: { n: 1 } };
+    new H(CFG.a).bump();
+    const holder = { o: CFG.b, list: [CFG.b] };
+    holder.o.n = 3;
+    holder.list[0]!.n += 1;
+    const scalar = { speed: 2 };
+    const opts = { s: scalar.speed };
+    opts.s = 9;
+    if (CFG.a.n !== 2 || CFG.b.n !== 4 || scalar.speed !== 2) throw new Error("kept member " + CFG.a.n + " " + CFG.b.n);
+    `,
+);
+check(
+    "case labels evaluate in order until one matches",
+    `
+    let log = "";
+    function c(n: number): number { log += n; return n; }
+    function pick(x: number): string {
+        switch (x) { case c(1): return "a"; case c(2): return "b"; case c(3): return "c"; }
+        return "none";
+    }
+    function fall(x: number): string {
+        let out = "";
+        switch (x) { case c(1): out += "a"; case c(2): out += "b"; break; default: out += "d"; case c(3): out += "c"; }
+        return out;
+    }
+    const first = pick(2) + ":" + log;
+    log = "";
+    const second = fall(1) + ":" + log;
+    log = "";
+    const third = fall(5) + ":" + log;
+    if (first !== "b:12" || second !== "ab:1" || third !== "dc:123") throw new Error("case order " + first + " " + second + " " + third);
+    `,
+);
+checkInRealm(
+    "Promise.all settles to a new array",
+    `
+    const arr = [1, 2];
+    void Promise.all(arr).then((out) => {
+        out.push(3);
+        if (arr.length !== 2 || out.length !== 3) throw new Error("all identity " + arr.length);
+        globalThis.close();
+    });
+    `,
+);
+check(
+    "an optional chain skips an element call on an absent owner",
+    `
+    const pick = (present: boolean): Record<string, () => number> | undefined => (present ? { m: () => 1 } : undefined);
+    const k = "m";
+    const absent = pick(Math.random() > 2)?.[k]();
+    const present = pick(Math.random() < 2)?.[k]();
+    const lists: (() => number)[] | undefined = Math.random() > 2 ? [() => 2] : undefined;
+    const none = lists?.[0]();
+    if (absent !== undefined || present !== 1 || none !== undefined) throw new Error("optional element call " + absent + " " + present + " " + none);
+    `,
+);
+check(
+    "a string holding a trigraph sequence compiles as written",
+    `
+    const marks = "??= ??( ??) ??< ??> ??! ??' ??- ??/";
+    if (marks.length !== 35 || marks[2] !== "=" || !marks.includes("??/")) throw new Error("trigraph text " + marks.length);
+    const run = "a???=b????/";
+    if (run.length !== 11 || run[4] !== "=" || run[10] !== "/") throw new Error("trigraph run " + run.length);
+    `,
+);
+check(
+    "a callback kept by splice or fill shares the bindings it captures",
+    `
+    let n = 0;
+    const fns: (() => void)[] = [];
+    fns.splice(0, 0, () => { n++; });
+    fns[0]!();
+    fns.fill(() => { n += 10; });
+    fns[0]!();
+    if (n !== 11) throw new Error("kept callback " + n);
+    `,
+);
+check(
+    "string case maps every script as JavaScript does",
+    `
+    const words = JSON.parse('["é","ÉÀ","ß","ΟΔΟΣ","αβγ","привет","İstanbul","ﬀ","Σ","ΑΣ.Β","abc"]') as string[];
+    const up = words.map((w) => w.toUpperCase()).join("|");
+    const low = words.map((w) => w.toLowerCase()).join("|");
+    if (up !== "É|ÉÀ|SS|ΟΔΟΣ|ΑΒΓ|ПРИВЕТ|İSTANBUL|FF|Σ|ΑΣ.Β|ABC" || low !== "é|éà|ß|οδος|αβγ|привет|i̇stanbul|ﬀ|σ|ασ.β|abc") throw new Error("case " + up + " " + low);
+    `,
+);
+check(
+    "an empty split separates UTF-16 code units",
+    `
+    const s = String.fromCodePoint(97, Math.floor(Math.random() * 0) + 0x1f600, 98);
+    const parts = s.split("");
+    if (parts.length !== 4 || parts[1]!.charCodeAt(0) !== 0xd83d || parts[1]! + parts[2]! !== s.slice(1, 3)) throw new Error("split " + parts.length);
+    `,
+);
+check(
+    "a parsed string iterates its code points",
+    `
+    const s = JSON.parse('"a😀b"') as string;
+    let count = 0;
+    for (const c of s) count += c.length > 0 ? 1 : 0;
+    if ([...s].length !== 3 || count !== 3) throw new Error("parsed string " + count);
+    `,
+);
+check(
+    "slice and padding count UTF-16 units",
+    `
+    const s = String.fromCodePoint(Math.floor(Math.random() * 0) + 0xe9, 0x1f600, 98);
+    if (s.slice(1, 3) !== s.substring(1, 3) || s.slice(-1) !== "b" || s.slice(2, 3).charCodeAt(0) !== 0xde00)
+        throw new Error("slice " + s.slice(1, 3).length);
+    if (s.padStart(6, "-") !== "--" + s || s.padEnd(5, "é") !== s + "é" || "x".padStart(3, "é") !== "ééx")
+        throw new Error("pad " + s.padStart(6, "-"));
+    `,
+);
+check(
+    "a module Map written through a reassigned alias or a returning helper",
+    `
+    function entries(): [string, number][] { return [["a", 1], ["b", 1]]; }
+    const M = new Map(entries());
+    let view = new Map<string, number>();
+    view = M;
+    view.set("a", 2);
+    function registry(): Map<string, number> { return M; }
+    registry().set("b", 3);
+    if (M.get("a") !== 2 || M.get("b") !== 3) throw new Error("map aliases " + M.get("a") + " " + M.get("b"));
+    `,
+);
+check(
+    "an element read the source tests for absence, on every owner kind",
+    `
+    function local(i: number): number { const L = [3, 0, 5]; return L[i] ?? 9; }
+    function truthy(i: number): number { const L = [3, 0, 5]; return L[i] || 7; }
+    function present(i: number): boolean { const L = [3, 4, 5]; return L[i] !== undefined; }
+    function kind(i: number): string { const L = [3, 4, 5]; return typeof L[i]; }
+    function table(i: number, j: number): number { const T = [[1, 2], [3, 4]]; return T[i]?.[j] ?? 9; }
+    const rows: number[][] = [];
+    rows.push([1, 2], [3, 4]);
+    function vectorRows(i: number, j: number): number { return rows[i]?.[j] ?? 9; }
+    let out = 1;
+    for (let k = 0; k < 2; k++) out += 2;
+    const results = [local(out), local(1), truthy(out), truthy(1), truthy(2), table(out, 0), table(1, 1), table(0, out), vectorRows(out, 0), vectorRows(1, 1)];
+    if (results.join() !== "9,0,7,7,5,9,4,9,9,4" || present(out) || !present(0) || kind(out) !== "undefined" || kind(0) !== "number")
+        throw new Error("absent elements " + results.join() + kind(out));
+    `,
+);
+check(
+    "a record member reached by identity is the member itself",
+    `
+    function bump(o: { n: number }): void { o.n += 4; }
+    function helper(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; bump(R["a"]!); return R["a"]!.n; }
+    function pushed(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; const list: { n: number }[] = []; list.push(R["a"]!); list[0]!.n = 5; return R["a"]!.n; }
+    function held(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; const h = { o: R["a"]! }; h.o.n = 5; return R["a"]!.n; }
+    function values(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; Object.values(R)[0]!.n = 5; return R["a"]!.n; }
+    function looped(): number { const R: Record<string, { n: number }> = { a: { n: 1 } }; for (const v of Object.values(R)) v.n = 5; return R["a"]!.n; }
+    function plain(): number { const R = { a: { n: 1 } }; Object.values(R)[0]!.n = 5; return R.a.n; }
+    const results = [helper(), pushed(), held(), values(), looped(), plain()];
+    if (results.join() !== "5,5,5,5,5,5") throw new Error("members " + results.join());
+    `,
+);
+check(
+    "a write through a call's fresh result lands on that result",
+    `
+    let calls = 0;
+    function make(): { n: number; list: number[] } { calls++; return { n: 1, list: [1, 2] }; }
+    make().n = 5;
+    make().n += 5;
+    make().list[0] = 5;
+    make().list.push(3);
+    const fresh = make();
+    if (calls !== 5 || fresh.n !== 1 || fresh.list.join() !== "1,2") throw new Error("fresh " + calls + fresh.n + fresh.list.join());
+    `,
+);
+check(
+    "Object.assign into a Record adds and replaces its keys",
+    `
+    function run(): string { const R: Record<string, number> = { a: 1 }; const extra = { c: 3 }; Object.assign(R, { a: 5, b: 2 }, extra); return Object.keys(R).join() + ":" + R["a"] + R["b"] + R["c"]; }
+    function same(): number { const R: Record<string, number> = { a: 1 }; const result = Object.assign(R, { b: 2 }); result["c"] = 3; return Object.keys(R).length; }
+    if (run() !== "a,b,c:523" || same() !== 3) throw new Error("assign " + run() + same());
+    `,
+);
+check(
+    "a folded if that breaks leaves the switch clause, not the switch",
+    `
+    const T = true;
+    function f(k: number): number { switch (k) { case 0: if (T) break; default: return 2; } return 1; }
+    function g(n: number): number { let s = 0; for (let i = 0; i < n; i++) { switch (i) { case 0: if (T) break; default: s += 10; } s += 1; } return s; }
+    if (f(0) !== 1 || f(5) !== 2 || g(3) !== 23) throw new Error("folded break " + f(0) + f(5) + g(3));
+    `,
+);
+check(
+    "a setter runs for a write by a static key",
+    `
+    let writes = 0;
+    class A { private v = 0; set x(n: number) { writes++; this.v = n; } get x(): number { return this.v; } }
+    const a = new A();
+    a["x"] = 3;
+    a.x = 4;
+    let seen = 0;
+    const o = { set x(n: number) { seen = n; } };
+    o["x"] = 7;
+    if (writes !== 2 || a.x !== 4 || seen !== 7) throw new Error("setters " + writes + " " + a.x + " " + seen);
+    `,
+);
+check(
+    "a class's own then is an ordinary method",
+    `
+    class Task { then(f: (n: number) => void): void { f(42); } catch(n: number): number { return n + 1; } }
+    let seen = 0;
+    new Task().then((n) => { seen = n; });
+    const caught = new Task().catch(1);
+    if (seen !== 42 || caught !== 2) throw new Error("own then " + seen + " " + caught);
+    `,
+);
+check(
+    "a numeric sum inside a folded string keeps its sum",
+    `
+    const joined = [1 + 2 + "x", 4].join("-");
+    const parts = [1 + 2, "y" + 1 + 2].join("|");
+    if (joined !== "3x-4" || parts !== "3|y12") throw new Error("plus " + joined + " " + parts);
+    `,
+);
+check(
+    "a compound store and an update through an accessor run its setter",
+    `
+    let gets = 0, sets = 0;
+    class A { private x = 1; get v(): number { gets++; return this.x; } set v(n: number) { sets++; this.x = n; } }
+    const a = new A();
+    a.v += 4;
+    a.v++;
+    if (a.v !== 6 || gets !== 3 || sets !== 2) throw new Error("compound accessor " + gets + " " + sets);
+    `,
+);
+check(
+    "writing a getter-only member throws a TypeError",
+    // A module is strict code; the reference run is a script, so it says so.
+    `"use strict";
+    const o = { get x(): number { return 1; } };
+    let threw = false;
+    try { (o as { x: number }).x = 5; } catch (e) { threw = e instanceof TypeError; }
+    if (!threw || o.x !== 1) throw new Error("getter-only write " + threw);
+    `,
+);
+check(
+    "a setter runs for a write by a const key",
+    `
+    let order = "";
+    class A { set v(n: number) { order += "s" + n; } get v(): number { return 0; } }
+    const a = new A();
+    const k = "v";
+    function rhs(): number { order += "r"; return 1; }
+    a[k] = rhs();
+    if (order !== "rs1") throw new Error("const key setter " + order);
+    `,
+);
+check(
+    "a switch clause's early break reaches the code after the switch",
+    `
+    function grade(k: number, x: boolean): number {
+        switch (k) { case 1: if (x) break; return 10; default: return 20; }
+        return 30;
+    }
+    let n = 0;
+    function run(k: number, x: boolean): number {
+        try { switch (k) { case 1: if (x) break; return 1; default: return 2; } }
+        finally { n++; }
+        return 3;
+    }
+    const k = Date.now() > 0 ? 1 : 2;
+    if (grade(k, true) !== 30 || grade(k, false) !== 10 || grade(k + 1, true) !== 20) throw new Error("grade");
+    if (run(k, true) + run(k, false) * 10 !== 13 || n !== 2) throw new Error("try break " + n);
+    `,
+);
+check(
+    "a clause that falls into a returning default ends the function",
+    `
+    function fail(m: string): never { throw new Error(m); }
+    function f(n: number): number { switch (n) { case 0: fail("zero"); default: return n * 2; } }
+    function g(n: number): string { switch (n) { case 1: n += 1; case 2: n += 1; default: return "v" + n; } }
+    let caught = "";
+    try { f(Date.now() > 0 ? 0 : 1); } catch (e) { caught = (e as Error).message; }
+    if (caught !== "zero" || f(3) !== 6 || g(1) !== "v3" || g(5) !== "v5") throw new Error("fallthrough end " + caught);
+    `,
+);
+check(
+    "a callee's write through a run-time key reaches the argument",
+    `
+    function pushAt(p: Record<string, number[]>, k: string): void { p[k]!.push(9); }
+    const obj = { list: [1] };
+    pushAt(obj, Date.now() > 0 ? "list" : "x");
+    if (obj.list.length !== 2) throw new Error("run-time key write " + obj.list.length);
+    `,
+);
+check(
+    "a class method is called by a quoted, numeric or const key",
+    `
+    class K { private n = 2; "my-key"(): number { return 4; } 1(): number { return 5; } twice(): number { return this.n * 2; } }
+    const k = new K();
+    const m = "twice";
+    if (k["my-key"]() !== 4 || k[1]() !== 5 || k[m]() !== 4) throw new Error("keyed method");
+    `,
+);
+check(
+    "a language global read through globalThis is the global",
+    `
+    const st = { s: 1 };
+    function next(): number { globalThis.Object.assign(st, { s: st.s * 2 }); return st.s; }
+    const a = next(), b = next();
+    const text = globalThis.JSON.stringify({ id: 1, meta: { tag: "m" } });
+    if (a !== 2 || b !== 4 || text !== '{"id":1,"meta":{"tag":"m"}}') throw new Error("globalThis " + a + b + text);
+    `,
+);
+check(
+    "a spread copy shares the objects its source holds",
+    `
+    function main(): void {
+        const inner = { n: 1 };
+        const o = { inner };
+        const c = { ...o };
+        c.inner.n = 5;
+        const d = { ...c, extra: 1 };
+        d.inner.n += 1;
+        const leaf = { n: 1 };
+        const top = { mid: { leaf } };
+        const copy = { ...top };
+        copy.mid.leaf.n = 6;
+        if (inner.n !== 6 || o.inner.n !== 6 || leaf.n !== 6) throw new Error("spread member " + inner.n + " " + leaf.n);
+        const state = { x: 1 };
+        const own = { ...state };
+        own.x = 9;
+        if (state.x !== 1) throw new Error("spread own slot");
+    }
+    main();
+    `,
+);
+check(
+    "a callee writing a spread copy's member writes the source's object",
+    `
+    function write(q: { inner: { x: number } }): void { q.inner.x += 7; }
+    function pass(p: { inner: { x: number } }): void { write(p); }
+    function first(p: { a: { n: number }; b: { n: number } }): void { const v = Object.values(p)[0]!; v.n = 8; }
+    function setOwn(p: { x: number; inner: { y: number } }): number { p.x = 9; return p.x + p.inner.y; }
+    function main(): void {
+        const obj = { inner: { x: 1 } };
+        write({ ...obj });
+        pass({ ...obj });
+        const pair = { a: { n: 1 }, b: { n: 2 } };
+        first({ ...pair });
+        const own = { x: 1, inner: { y: 2 } };
+        const sum = setOwn({ ...own });
+        if (obj.inner.x !== 15 || pair.a.n !== 8 || own.x !== 1 || sum !== 11) throw new Error("copy writes " + obj.inner.x + " " + pair.a.n + " " + own.x);
+    }
+    main();
+    `,
+);
+check(
+    "a closure over a for-of binding sees a later write in the loop body",
+    `
+    const fns: (() => number)[] = [];
+    for (let v of [1, 2]) {
+        fns.push(() => v);
+        v *= 10;
+    }
+    function make(o: { n: number }): () => number {
+        let { n } = o;
+        const get = () => n;
+        n = 5;
+        return get;
+    }
+    if (fns.map((f) => f()).join() !== "10,20" || make({ n: 1 })() !== 5) throw new Error("late write " + fns.map((f) => f()).join());
+    `,
+);

@@ -99,7 +99,7 @@ export class IntrinsicOptions {
 
     public compileBoxOptions(
         expression: ts.Expression,
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): [string, string, string] {
         return compileBoxOptions(this.context, expression, precision);
     }

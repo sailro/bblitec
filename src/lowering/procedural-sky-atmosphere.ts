@@ -12,6 +12,7 @@ import {
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 export const proceduralSkyModule =
     "src/loader-env/procedural-sky-environment.ts";
@@ -90,7 +91,7 @@ export function lowerProceduralSkyAtmosphere(
         };
         const parameters = new Set(
             declaration.parameters.map((parameter) =>
-                parameter.name.getText(file),
+                soleBindingName(parameter.name),
             ),
         );
         for (const scalar of ["value", "offset", "x", "y", "z", "minimum"])
@@ -176,8 +177,8 @@ export function lowerProceduralSkyAtmosphere(
                             node,
                             "Sky numeric map requires value and index parameters.",
                         );
-                    const value = callback.parameters[0]!.name.getText(file),
-                        index = callback.parameters[1]!.name.getText(file);
+                    const value = soleBindingName(callback.parameters[0]!.name),
+                        index = soleBindingName(callback.parameters[1]!.name);
                     lowerer.bindPorts(
                         [
                             [value, { cpp: value, type: "scalar" }],

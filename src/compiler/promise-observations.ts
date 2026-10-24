@@ -1,9 +1,18 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
-import { declaredInDefaultLibrary, declarationOrigin } from "./symbols.js";
-import { declaredContextualType, isTypeReference } from "./type-facts.js";
-import { unwrapExpression, wrappedParent } from "./syntax.js";
+import { declarationOrigin, libraryName } from "./symbols.js";
+import {
+    declaredContextualType,
+    isTypeReference,
+    callSignatures,
+} from "./type-facts.js";
+import {
+    outermostWrapper,
+    unwrapExpression,
+    isTypeAssertion,
+    isAsyncFunction,
+} from "./syntax.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type Context = Pick<
@@ -13,42 +22,15 @@ type Context = Pick<
 
 /** Await and async returns consume the promise's settlement, not its object. */
 function adoptsPromise(expression: ts.Expression): boolean {
-    let current = expression;
-    for (;;) {
-        const parent = wrappedParent(current);
-        if (ts.isAwaitExpression(parent)) return true;
-        if (
-            (ts.isConditionalExpression(parent) &&
-                unwrapExpression(parent.condition) !==
-                    unwrapExpression(current)) ||
-            (ts.isBinaryExpression(parent) &&
-                unwrapExpression(parent.right) === unwrapExpression(current) &&
-                [
-                    ts.SyntaxKind.AmpersandAmpersandToken,
-                    ts.SyntaxKind.BarBarToken,
-                    ts.SyntaxKind.QuestionQuestionToken,
-                ].includes(parent.operatorToken.kind))
-        ) {
-            current = parent;
-            continue;
-        }
-        const owner = ts.isReturnStatement(parent)
-            ? ts.findAncestor(parent, ts.isFunctionLike)
-            : ts.isArrowFunction(parent) &&
-                ts.isExpression(parent.body) &&
-                unwrapExpression(parent.body) === unwrapExpression(current)
-              ? parent
-              : undefined;
-        return (
-            owner !== undefined &&
-            ts.canHaveModifiers(owner) &&
-            ts
-                .getModifiers(owner)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) === true
-        );
-    }
+    const current = outermostWrapper(expression, { branches: "objects" });
+    const parent = current.parent;
+    if (ts.isAwaitExpression(parent)) return true;
+    const owner = ts.isReturnStatement(parent)
+        ? ts.findAncestor(parent, ts.isFunctionLike)
+        : ts.isArrowFunction(parent) && parent.body === current
+          ? parent
+          : undefined;
+    return owner !== undefined && isAsyncFunction(owner);
 }
 
 /** Reached object observations need promises, even when their settlements are immediate. */
@@ -63,8 +45,7 @@ export function requireObservedPromise(
         type = concrete(type);
         return type.isUnionOrIntersection()
             ? type.types.some(promise)
-            : type.symbol?.name === "Promise" &&
-                  declaredInDefaultLibrary(type.symbol);
+            : libraryName(type) === "Promise";
     };
     const node = unwrapExpression(expression);
     const consumers = programObservations(context.program).identityConsumers;
@@ -84,11 +65,9 @@ export function requireObservedPromise(
     // An actual Promise crossing an erased slot must become owned before
     // its source type disappears. Broad slots elsewhere in the program do
     // not establish that this value reaches them.
-    const expected =
-        ts.isAsExpression(expression) ||
-        ts.isTypeAssertionExpression(expression)
-            ? context.checker.getTypeAtLocation(expression)
-            : declaredContextualType(context.checker, expression);
+    const expected = isTypeAssertion(expression)
+        ? context.checker.getTypeAtLocation(expression)
+        : declaredContextualType(context.checker, expression);
     if (!expected) return;
     const seen = new Map<ts.Type, Set<ts.Type | undefined>>();
     const erases = (source: ts.Type, target: ts.Type | undefined): boolean => {
@@ -126,7 +105,7 @@ export function requireObservedPromise(
         )
             return false;
         if (
-            source.getCallSignatures().length ||
+            callSignatures(context.checker, source, "exact").length ||
             source.getConstructSignatures().length
         )
             return false;

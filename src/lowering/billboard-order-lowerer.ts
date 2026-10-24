@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Billboard centers and system order come from the renderable and system source; their transparent order is `transparent_order.hpp`. */
 export function billboardOrderHelpers(context: LoweringContext): string {
@@ -49,8 +50,7 @@ export function billboardOrderHelpers(context: LoweringContext): string {
             if (
                 ts.isVariableStatement(node) &&
                 node.declarationList.declarations.length === 1 &&
-                node.declarationList.declarations[0]!.name.getText(file) ===
-                    "system"
+                sameSource(node.declarationList.declarations[0]!.name, "system")
             )
                 return [];
             return undefined;

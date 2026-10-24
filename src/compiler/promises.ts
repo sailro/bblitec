@@ -1,9 +1,12 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import { caughtErrorValue } from "./error-values.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
+import { libraryName } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import { yieldsNewArray } from "./fresh-records.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
@@ -24,6 +27,9 @@ export interface PromiseLoweringContext extends Pick<
     | "reachJson"
     | "thrownValueKinds"
     | "options"
+    | "dataValue"
+    | "dataTypes"
+    | "checker"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -60,15 +66,54 @@ function rejectionClause(
     };
 }
 
+/** A static of the library's Promise a call names. */
+export type PromiseStatic =
+    "all" | "allSettled" | "any" | "race" | "reject" | "resolve";
+
+const PROMISE_STATICS: ReadonlyMap<string, PromiseStatic> = new Map(
+    (["all", "allSettled", "any", "race", "reject", "resolve"] as const).map(
+        (name) => [name, name],
+    ),
+);
+
+/** `Promise.all(...)` and its siblings, the callee resolved as the library global. */
+export function promiseStatic(
+    call: ts.CallExpression,
+    libraryGlobal: (expression: ts.Expression) => string | undefined,
+): PromiseStatic | undefined {
+    const callee = unwrapExpression(call.expression);
+    return ts.isPropertyAccessExpression(callee) &&
+        libraryGlobal(callee.expression) === "Promise"
+        ? PROMISE_STATICS.get(callee.name.text)
+        : undefined;
+}
+
+/** A reaction method of the library's Promise. */
+export type PromiseReaction = "then" | "catch" | "finally";
+
+/**
+ * The reaction a callee names on a library Promise (`p.then`), or
+ * undefined: a user class's own `then` is an ordinary method.
+ */
+export function promiseReactionOf(
+    access: ts.PropertyAccessExpression,
+    checker: ts.TypeChecker,
+): PromiseReaction | undefined {
+    const name = access.name.text;
+    return (name === "then" || name === "catch" || name === "finally") &&
+        libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
+        ? name
+        : undefined;
+}
+
 export function compileImmediatePromise(
     context: PromiseLoweringContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "resolve"
-    ) {
+    const statics = promiseStatic(call, (expression) =>
+        context.libraryGlobal(expression),
+    );
+    if (statics === "resolve") {
         // A void settlement needs an owned promise: there is no immediate
         // payload to retain, and its reactions still run in a later microtask.
         if (call.arguments.length === 0) throw new ApplicationRealmRequired();
@@ -76,25 +121,14 @@ export function compileImmediatePromise(
             context.fail(call, "Immediate Promise.resolve requires one value.");
         }
         const value = context.compileValue(argumentAt(call, 0));
-        if (
-            value.kind === "void" ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt")
-        )
+        if (value.kind === "void" || absenceOf(value) === "undefined")
             throw new ApplicationRealmRequired();
         return value;
     }
     // The other combinators settle in later microtasks: the realm's queue.
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        ["race", "allSettled", "any"].includes(call.expression.name.text)
-    )
+    if (statics === "race" || statics === "allSettled" || statics === "any")
         throw new ApplicationRealmRequired();
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "all"
-    ) {
+    if (statics === "all") {
         if (call.arguments.length !== 1) {
             context.fail(call, "Promise.all requires one static iterable.");
         }
@@ -115,9 +149,22 @@ export function compileImmediatePromise(
                 // Native array callbacks execute eagerly. By the time the
                 // vector reaches Promise.all every immediate promise in it
                 // has settled and all callback side effects have run.
-                return isPromiseResultUsed(call)
-                    ? iterable
-                    : { kind: "void", cpp: "" };
+                if (!isPromiseResultUsed(call))
+                    return { kind: "void", cpp: "" };
+                // The settled values arrive in a new array, never the input:
+                // an argument no other reference holds is that array already.
+                if (yieldsNewArray(context.checker, argument)) return iterable;
+                const source = context.allocateTemporaryCppName("all_values");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: source,
+                    initializer: iterable.cpp,
+                });
+                return context.dataValue(
+                    `${context.dataTypes.cppType(iterable.dataType)}(${source}.begin(), ${source}.end())`,
+                    iterable.dataType,
+                );
             }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
                 if (
@@ -177,17 +224,15 @@ export function compileImmediatePromise(
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
-    if (!ts.isPropertyAccessExpression(call.expression)) {
-        return undefined;
-    }
-    const method = call.expression.name.text;
+    if (!ts.isPropertyAccessExpression(call.expression)) return undefined;
+    const method = promiseReactionOf(call.expression, context.checker);
+    if (!method) return undefined;
     if (method === "catch") {
         return compileImmediateCatch(context, call);
     }
     // Cleanup that waits for a settlement needs an owned promise.
     if (method === "finally" && !context.options.workers)
         throw new ApplicationRealmRequired();
-    if (method !== "then") return undefined;
     // Retaining the chain observes its settlement and identity. The immediate
     // callback path only emits effects; the application realm owns the result.
     if (
@@ -353,17 +398,7 @@ function compileImmediateCatch(
 }
 
 function unwrappedResultUse(expression: ts.Expression): ts.Node {
-    let node: ts.Node = expression;
-    while (
-        ts.isAwaitExpression(node.parent) ||
-        ts.isParenthesizedExpression(node.parent) ||
-        ts.isAsExpression(node.parent) ||
-        ts.isNonNullExpression(node.parent) ||
-        ts.isSatisfiesExpression(node.parent)
-    ) {
-        node = node.parent;
-    }
-    return node;
+    return outermostWrapper(expression, { await: true });
 }
 
 function isImmediateReactionResultUsed(
@@ -377,9 +412,9 @@ function isImmediateReactionResultUsed(
         if (
             ts.isCallExpression(aggregate) &&
             aggregate.arguments[0] === array &&
-            ts.isPropertyAccessExpression(aggregate.expression) &&
-            aggregate.expression.name.text === "all" &&
-            context.libraryGlobal(aggregate.expression.expression) === "Promise"
+            promiseStatic(aggregate, (expression) =>
+                context.libraryGlobal(expression),
+            ) === "all"
         )
             return isImmediateReactionResultUsed(context, aggregate);
     }

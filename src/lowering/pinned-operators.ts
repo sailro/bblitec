@@ -151,6 +151,25 @@ export const PINNED_BITWISE_ASSIGNMENT_OPERATORS: ReadonlyMap<
     ],
 ]);
 
+/**
+ * JavaScript's ToUint32 / ToInt32 of a double: truncate toward zero and wrap
+ * modulo 2^32, NaN and the infinities to 0. A bare `static_cast` agrees only
+ * inside the target range (a mask's bit 31 arrives as a negative int32).
+ */
+export function jsToUint32Call(value: string): string {
+    return `bbl::js::to_uint32(${value})`;
+}
+
+/** ToInt32, as {@link jsToUint32Call}. */
+export function jsToInt32Call(value: string): string {
+    return `bbl::js::to_int32(${value})`;
+}
+
+/** `~operand`: JavaScript's ToInt32 complement, the `bbl::js` helper. */
+export function jsBitwiseNotCall(operand: string): string {
+    return `bbl::js::bitwise_not(${operand})`;
+}
+
 /** A bitwise operator as its `bbl::js` call, or undefined for another kind. */
 export function jsBitwiseCall(
     kind: ts.SyntaxKind,
@@ -162,26 +181,110 @@ export function jsBitwiseCall(
 }
 
 /**
- * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
- * NaN operand poisons the result and `-0` orders below `+0`, neither of
- * which `std::max`/`std::min` does. `source` is a range of doubles, or a
- * braced argument list (`mathExtremeCall`).
+ * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
+ * except that a NaN exponent, or an infinite one over a base of magnitude
+ * 1, is NaN (`power_js`). A statically finite exponent meets neither case
+ * and spells `std::pow` without the runtime.
  */
-export function mathExtremeCpp(method: string, source: string): string {
-    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+export function exponentiationCall(
+    base: string,
+    exponent: string,
+    staticExponent: number | undefined,
+): { readonly cpp: string; readonly jsData: boolean } {
+    return staticExponent !== undefined && Number.isFinite(staticExponent)
+        ? {
+              cpp: `std::pow(${base}, ${exponent})`,
+              jsData: false,
+          }
+        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
+}
+
+/** `=` and the compound assignments, by syntax kind, with their spelling. */
+export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map<
+    ts.SyntaxKind,
+    string
+>([
+    [ts.SyntaxKind.EqualsToken, "="],
+    [ts.SyntaxKind.PlusEqualsToken, "+="],
+    [ts.SyntaxKind.MinusEqualsToken, "-="],
+    [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+    [ts.SyntaxKind.SlashEqualsToken, "/="],
+    [ts.SyntaxKind.PercentEqualsToken, "%="],
+    [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
+    [ts.SyntaxKind.AmpersandEqualsToken, "&="],
+    [ts.SyntaxKind.BarEqualsToken, "|="],
+    [ts.SyntaxKind.CaretEqualsToken, "^="],
+    [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
+    [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
+    [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
+]);
+
+/**
+ * The number `previous op= right` stores: the one compound-assignment rule
+ * scene code and pinned bodies share. `native` when C++'s own `op=` means
+ * JavaScript's; `jsData` when the spelling reaches the runtime helpers. A
+ * bitwise form applies its operator's helper, `%=` is the floating
+ * remainder, and `staticRight` lets `**=` spell `std::pow` as `**` does.
+ */
+export function compoundAssignmentValue(
+    operator: string,
+    previous: string,
+    right: string,
+    staticRight: number | undefined,
+): {
+    readonly cpp: string;
+    readonly native: boolean;
+    readonly jsData: boolean;
+} {
+    if (operator === "**=")
+        return {
+            ...exponentiationCall(previous, right, staticRight),
+            native: false,
+        };
+    if (operator === "%=")
+        return {
+            cpp: pinnedRemainderCall(previous, right),
+            native: false,
+            jsData: false,
+        };
+    const kind = [...ASSIGNMENT_OPERATORS].find(
+        ([, spelling]) => spelling === operator,
+    )?.[0];
+    const bitwise =
+        kind === undefined
+            ? undefined
+            : PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(kind);
+    return bitwise !== undefined
+        ? {
+              cpp: jsBitwiseCall(bitwise, previous, right)!,
+              native: false,
+              jsData: true,
+          }
+        : {
+              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
+              native: true,
+              jsData: false,
+          };
 }
 
 /**
- * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
- * spelling scene code and pinned bodies share. The braced list evaluates
- * left to right, as JavaScript's argument list does, and every operand,
- * whatever its native type, converts to JavaScript's own width first.
+ * `place op= right` as a C++ statement expression: C++'s own `op=` where it
+ * means JavaScript's, else a store of {@link compoundAssignmentValue}.
+ * Undefined for a kind that is no assignment.
  */
-export function mathExtremeCall(
-    method: "max" | "min",
-    args: readonly string[],
-): string {
-    return mathExtremeCpp(method, `{${args.join(", ")}}`);
+export function compoundAssignmentStore(
+    kind: ts.SyntaxKind,
+    place: string,
+    right: string,
+    staticRight?: number,
+): string | undefined {
+    const operator = ASSIGNMENT_OPERATORS.get(kind);
+    if (operator === undefined) return undefined;
+    if (operator === "=") return `${place} = ${right}`;
+    const value = compoundAssignmentValue(operator, place, right, staticRight);
+    return value.native
+        ? `${place} ${operator} ${right}`
+        : `${place} = ${value.cpp}`;
 }
 
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
@@ -250,77 +353,4 @@ export const PINNED_BOOLEAN_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
  */
 export function pinnedRemainderCall(left: string, right: string): string {
     return `std::fmod(${left}, ${right})`;
-}
-
-/**
- * The `Math` members that are a `<cmath>` call of the same arity. Every one of
- * these takes and returns a double, which is what a pinned writer computes in
- * before it stores. `Math.max`/`Math.min` are not among them: they are
- * variadic, and JavaScript's NaN and signed-zero rules are not `std::max`'s,
- * so they lower through `mathExtremeCall`.
- */
-const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
-    pow: "std::pow",
-    log: "std::log",
-    cos: "std::cos",
-    acos: "std::acos",
-    asin: "std::asin",
-    atan2: "std::atan2",
-    sin: "std::sin",
-    tan: "std::tan",
-    sqrt: "std::sqrt",
-    abs: "std::abs",
-    log2: "std::log2",
-    ceil: "std::ceil",
-    floor: "std::floor",
-};
-
-/**
- * The spelling the shared table gives one member, for a consumer outside
- * the pinned-body layer that must agree with it — the scene-code compiler's
- * `Math` dispatch reads the members both layers accept through this, so the
- * two layers cannot drift on what a shared `<cmath>` member lowers to. A
- * member the table does not carry throws, which is what keeps the shared
- * list the single authority instead of a fallback.
- */
-export function pinnedMathSpelling(name: string): string {
-    const spelling = PINNED_MATH_FUNCTIONS[name];
-    if (!spelling) {
-        throw new Error(
-            `Math.${name} is not in the shared pinned cmath table.`,
-        );
-    }
-    return spelling;
-}
-
-/** `Math.hypot` at any arity, shared by scene and pinned lowering. */
-export function pinnedHypotCall(args: readonly string[]): string {
-    return `bbl::js::hypot_js({${args.join(", ")}})`;
-}
-
-/**
- * `Math.round` as the pin's own half-up rounding rather than `<cmath>`'s
- * half-away-from-zero, spelled once for every lowering that reaches it.
- */
-export function pinnedRoundCall(args: readonly string[]): string {
-    return `bbl::js::round_js(${args.join(", ")})`;
-}
-
-/**
- * A supported `Math.x(...)` call -- a `<cmath>`
- * member or `Math.max`/`Math.min` -- or undefined when the node is not one.
- */
-export function pinnedMathCall(node: ts.Node): ts.CallExpression | undefined {
-    if (
-        !ts.isCallExpression(node) ||
-        !ts.isPropertyAccessExpression(node.expression) ||
-        !ts.isIdentifier(node.expression.expression) ||
-        node.expression.expression.text !== "Math"
-    ) {
-        return undefined;
-    }
-    const name = node.expression.name.text;
-    return name === "max" || name === "min" || PINNED_MATH_FUNCTIONS[name]
-        ? node
-        : undefined;
 }

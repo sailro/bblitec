@@ -695,7 +695,12 @@ test("keeps collected runtime handles live rather than snapshotting one loop ite
     `),
     );
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
-    assert.equal(result.cpp.match(/\.rotation\.y \+=/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
     assert.match(result.cpp, /const auto& \w+ = v_meshes;/);
     assert.match(result.cpp, /for \(std::size_t/);
     assert.doesNotMatch(result.cpp, /handle_table/);
@@ -1586,6 +1591,29 @@ test("bound-alias analysis type-checks only initializers rooted in tracked alias
     } finally {
         checker.getTypeAtLocation = original;
     }
+});
+
+test("a binding's declared name bounds the loop by that binding", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        const items = [1, 2];
+        for (let i = 0; i < 2; i++) { items.push(i); }
+    `,
+        "input.ts",
+    );
+    const declaration = sourceFile.statements[0];
+    const loop = sourceFile.statements.find(ts.isForStatement);
+    assert.ok(declaration && ts.isVariableStatement(declaration) && loop);
+    const name = declaration.declarationList.declarations[0]?.name;
+    assert.ok(name && ts.isIdentifier(name));
+    assert.equal(
+        loopBoundMayChange(
+            { checker, symbols: new CompilerSymbols(checker) },
+            loop.statement,
+            name,
+        ),
+        true,
+    );
 });
 
 test("resource-loop generation is deterministic", () => {

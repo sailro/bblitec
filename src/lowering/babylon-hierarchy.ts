@@ -5,6 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Parent assignment, child traversal entries and root ordering follow loadBabylon. */
 export function lowerBabylonHierarchy(context: LoweringContext): string {
@@ -112,12 +113,11 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
 
         expression,
         forOf(iterated, element) {
-            const range =
-                iterated === "data.meshes"
-                    ? "mesh_sources"
-                    : iterated === "childMeshes"
-                      ? "child_meshes"
-                      : undefined;
+            const range = sameSource(iterated, "data.meshes")
+                ? "mesh_sources"
+                : sameSource(iterated, "childMeshes")
+                  ? "child_meshes"
+                  : undefined;
             return range
                 ? {
                       range,

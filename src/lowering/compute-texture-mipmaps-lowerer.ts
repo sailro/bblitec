@@ -7,6 +7,7 @@ import {
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { computeTextureSamplingCpp } from "./compute-texture-descriptor.js";
+import { sameSource, declaredKey } from "../compiler/syntax.js";
 
 /** Source validation, level iteration and task closures over PAL-owned mip bindings. */
 export function lowerComputeTextureMipmaps(
@@ -188,14 +189,14 @@ export function lowerComputeTextureMipmaps(
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
-            const iterated = context.matchingExpressionShape(
-                syntax.expression,
-                ["textures", "prepared"],
-            );
-            if (iterated === undefined) return undefined;
+        forOf(iterated, element) {
+            const range = context.matchingExpressionShape(iterated, [
+                "textures",
+                "prepared",
+            ]);
+            if (range === undefined) return undefined;
             return {
-                range: iterated,
+                range,
                 bindings: new Map([
                     ...[...bindings].filter(([name]) =>
                         name.startsWith(`${element}.`),
@@ -354,7 +355,7 @@ export function lowerComputeTextureMipmaps(
     const methods = new Map<string, ts.MethodDeclaration>();
     for (const member of returned.properties) {
         if (ts.isMethodDeclaration(member))
-            methods.set(member.name.getText(factory.file), member);
+            methods.set(declaredKey(member.name), member);
         else if (
             ts.isShorthandPropertyAssignment(member) &&
             ["name", "engine"].includes(member.name.text)
@@ -362,7 +363,7 @@ export function lowerComputeTextureMipmaps(
             continue;
         else if (
             ts.isPropertyAssignment(member) &&
-            member.name.getText(factory.file) === "_passes"
+            sameSource(member.name, "_passes")
         )
             context.assertExpressionShape(
                 member.initializer,

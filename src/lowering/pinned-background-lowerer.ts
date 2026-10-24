@@ -29,6 +29,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** The native enumerator for each arm. */
 const armKinds: Readonly<Record<PinnedBackgroundArmName, string>> = {
@@ -311,7 +312,16 @@ function loweredParameter(
     }
     const pinned = parameter.name.text;
     const cpp = snakeCase(pinned);
-    const annotation = parameter.type.getText(file);
+    // The annotation as the known shape it is (its own spelling only names
+    // an unknown one in the refusal).
+    const annotation =
+        [
+            "EngineContext",
+            "number",
+            "[number, number, number]",
+            "GPUColorDict",
+        ].find((shape) => sameSource(parameter.type, shape)) ??
+        parameter.type.getText(file);
     switch (annotation) {
         case "EngineContext":
             return {

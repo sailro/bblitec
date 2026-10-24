@@ -1,7 +1,10 @@
-import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
+import {
+    someAnalysisNode,
+    forEachAnalysisNode,
+    findAnalysisNode,
+} from "./analysis-walk.js";
 import {
     emissionArray,
-    EmissionMap,
     EmissionSet,
     EmissionWeakSet,
     journaled,
@@ -9,6 +12,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { nextIterationCellCpp } from "./shared-cells.js";
 import { traceSourceNode } from "./source-trace.js";
 import { activeSurvey } from "./survey.js";
 import { activeStorageDemandPlanner } from "./storage-demand-planner.js";
@@ -36,9 +40,7 @@ import {
     staticIndexLoopShape,
     staticIndexLoopIterations,
     loopBoundMayChange,
-    walkReachedLoopNodes,
 } from "./resource-loops.js";
-import { writesThroughTrackedRoot } from "./user-functions.js";
 import {
     integerCounterRead,
     integerLoopConditionCpp,
@@ -52,6 +54,16 @@ import {
     isUpdateExpression,
     iteratorMethodCall,
     unwrappedIdentifier,
+    writeSites,
+    bindingNameIdentifiers,
+    equalityOperator,
+    containsSuspension,
+    isSuspensionPoint,
+    jumpBinding,
+    jumpsTo,
+    isDeclaredInside,
+    labeledBody,
+    variableKind,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -60,7 +72,6 @@ import {
     errorConstructor,
     thrownMessage,
 } from "./error-values.js";
-import { emitStringAppend } from "./expressions.js";
 import {
     commonResourceValue,
     isStringValue,
@@ -75,7 +86,7 @@ import {
     compileBigIntUpdate,
     emitBigIntCompoundAssignment,
 } from "./bigint-values.js";
-import { isNullishLiteral } from "./symbols.js";
+import { isNullishLiteral, computedEnumMember } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
 import {
     emitReachableStatements,
@@ -94,12 +105,13 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { ownEntries, ownKeysKnown } from "./object-statics.js";
-import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
-import { exponentiationCall } from "./math-intrinsics.js";
+import { ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
+import { counterWrite } from "./counted-loops.js";
 
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
+import { knownCondition } from "./values/model.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -297,74 +309,6 @@ function bodyStatements(
 }
 
 /**
- * The compound assignments whose C++ operator would not mean the JavaScript
- * one, by spelling, with the `bbl::js` helper each lowers through: a bitwise
- * form applies its operator's `JS_BITWISE_FUNCTIONS` helper, and `%=` is
- * JavaScript's floating remainder. `**=` lowers as `**` does.
- */
-const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
-    new EmissionMap([
-        ["%=", "remainder_js"],
-        ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
-            `${ts.tokenToString(kind)}=`,
-            helper,
-        ]),
-    ]);
-
-/**
- * The number `previous op= right` stores. `native` when C++'s own `op=`
- * means JavaScript's; `jsData` when the spelling reaches the runtime
- * helpers. `staticRight` is the right side generation knows, which lets
- * `**=` spell `std::pow` as `**` does (`exponentiationCall`).
- */
-export function compoundAssignmentValue(
-    operator: string,
-    previous: string,
-    right: string,
-    staticRight: number | undefined,
-): {
-    readonly cpp: string;
-    readonly native: boolean;
-    readonly jsData: boolean;
-} {
-    if (operator === "**=")
-        return {
-            ...exponentiationCall(previous, right, staticRight),
-            native: false,
-        };
-    const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
-    return helper
-        ? {
-              cpp: `bbl::js::${helper}(${previous}, ${right})`,
-              native: false,
-              jsData: true,
-          }
-        : {
-              cpp: `(${previous} ${operator.slice(0, -1)} ${right})`,
-              native: true,
-              jsData: false,
-          };
-}
-
-/** `=` and the compound assignments the lowerings accept, by spelling. */
-export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
-    new EmissionMap([
-        [ts.SyntaxKind.EqualsToken, "="],
-        [ts.SyntaxKind.PlusEqualsToken, "+="],
-        [ts.SyntaxKind.MinusEqualsToken, "-="],
-        [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-        [ts.SyntaxKind.SlashEqualsToken, "/="],
-        [ts.SyntaxKind.PercentEqualsToken, "%="],
-        [ts.SyntaxKind.AsteriskAsteriskEqualsToken, "**="],
-        [ts.SyntaxKind.AmpersandEqualsToken, "&="],
-        [ts.SyntaxKind.BarEqualsToken, "|="],
-        [ts.SyntaxKind.CaretEqualsToken, "^="],
-        [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
-        [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
-        [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
-    ]);
-
-/**
  * How an unrolled iteration ended at generation: on, by a break or continue
  * it settles, or by a jump only the running program takes.
  */
@@ -478,41 +422,11 @@ function jumpTarget(
     };
 }
 
-/**
- * The construct a jump binds by the language's rule: a bare return its
- * function, a labeled jump its labeled statement, a continue the nearest
- * loop and a break the nearest loop or switch.
- */
-function jumpBinding(
-    statement: ts.BreakStatement | ts.ContinueStatement | ts.ReturnStatement,
-): ts.Node | undefined {
-    if (ts.isReturnStatement(statement))
-        return ts.findAncestor(statement.parent, ts.isFunctionLike);
-    for (
-        let parent: ts.Node | undefined = statement.parent;
-        parent && !ts.isFunctionLike(parent);
-        parent = parent.parent
-    ) {
-        if (statement.label) {
-            if (
-                ts.isLabeledStatement(parent) &&
-                parent.label.text === statement.label.text
-            )
-                return parent;
-        } else if (
-            ts.isIterationStatement(parent, false) ||
-            (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent))
-        )
-            return parent;
-    }
-    return undefined;
-}
-
 /** The statement a label names, through any further labels on it. */
-function labeledBody(statement: ts.LabeledStatement): ts.Statement {
-    let body = statement.statement;
-    while (ts.isLabeledStatement(body)) body = body.statement;
-    return body;
+/** A case label's code (an inlined call's statements) and its test. */
+interface SwitchLabel {
+    readonly prelude: readonly string[];
+    readonly test: string | undefined;
 }
 
 export class StatementLowerer {
@@ -540,6 +454,13 @@ export class StatementLowerer {
         return undefined;
     }
     private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
+    /**
+     * Statements lowering showed leave only through a `break` (a folded `if`
+     * whose taken branch breaks): they leave a switch clause's statements,
+     * not the switch.
+     */
+    private readonly loweredBreakTerminators =
+        new EmissionWeakSet<ts.Statement>();
     /** Expression statements of a never-typed expression: they throw. */
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     /** The constructs jumps can bind, innermost last. */
@@ -977,20 +898,31 @@ export class StatementLowerer {
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
-        return terminatesFlow(statement, (node) =>
-            this.loweredTerminators.has(node),
+        return terminatesFlow(
+            statement,
+            (node, breakLeaves) =>
+                this.loweredTerminators.has(node) ||
+                (breakLeaves && this.loweredBreakTerminators.has(node)),
         );
     }
 
-    private emitReachableBody(
+    /** Emit `statements` while reachable; `stopAtIteration` also stops at a completed static iteration. */
+    private emitReachable(
         context: StatementLoweringContext,
         statements: readonly ts.Statement[],
+        stopAtIteration = true,
     ): boolean {
         return emitReachableStatements(
             {
                 emitStatement: (nested) => this.emit(context, nested),
                 statementTerminatesAfterLowering: (nested) =>
                     this.terminatesAfterLowering(nested),
+                ...(stopAtIteration
+                    ? {
+                          staticIterationCompleted: () =>
+                              this.staticIterationCompleted(),
+                      }
+                    : {}),
             },
             statements,
         );
@@ -1224,10 +1156,7 @@ export class StatementLowerer {
             // Member reads fold to their constants and computed-key reads
             // look the members up; a member the checker cannot fold would
             // need the enum object built here.
-            const computed = statement.members.find(
-                (member) =>
-                    context.checker.getConstantValue(member) === undefined,
-            );
+            const computed = computedEnumMember(context.checker, statement);
             if (computed)
                 context.fail(
                     computed,
@@ -1503,8 +1432,27 @@ export class StatementLowerer {
             if (!optional) return `${discriminant} == ${label}`;
             return `(${optionalPresentCpp(storage)} && ${optionalValueCpp(storage)} == ${label})`;
         };
+        // Labels evaluate in order until one matches: each one's code (an
+        // inlined call) runs only when no earlier label matched.
+        const labels = new Map<ts.CaseClause, SwitchLabel>();
+        clauses.filter(ts.isCaseClause).forEach((clause, index) => {
+            let test: string | undefined;
+            const compile = (): void => {
+                test = labelTest(clause);
+            };
+            const prelude = context.captureEmittedLines(() =>
+                index === 0
+                    ? compile()
+                    : this.inRuntimeControlFlow(context, compile),
+            );
+            labels.set(clause, { prelude, test });
+        });
+        const lazyLabels = [...labels.values()].some(
+            (label) => label.prelude.length > 0,
+        );
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
         if (
+            lazyLabels ||
             (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) ||
             clauses.some(
                 (clause, index) =>
@@ -1517,7 +1465,7 @@ export class StatementLowerer {
                 context,
                 statement,
                 discriminant,
-                labelTest,
+                labels,
             );
             context.decreaseIndent();
             context.emit({ kind: "close", code: "}" });
@@ -1538,7 +1486,7 @@ export class StatementLowerer {
                 emittedBranch = true;
                 continue;
             }
-            const test = labelTest(clause);
+            const test = labels.get(clause)?.test;
             // An inlined function may receive a narrower string-literal
             // union than its declared parameter. Labels outside that union
             // are unreachable for this invocation.
@@ -1586,6 +1534,7 @@ export class StatementLowerer {
     ): void {
         // The callers hand one clause that completes (or is the last, which
         // completes the switch by finishing); fallthrough is lowered apart.
+        const owner = clause.parent.parent;
         const statements = [...clause.statements];
         let last = statements.at(-1);
         // A braced case body (`case x: { ... break; }`) gives its locals a
@@ -1594,19 +1543,45 @@ export class StatementLowerer {
         // before applying the same terminal-break rule.
         if (last && ts.isBlock(last)) {
             const blockLast = last.statements.at(-1);
-            if (blockLast && ts.isBreakStatement(blockLast)) {
+            if (
+                blockLast &&
+                ts.isBreakStatement(blockLast) &&
+                jumpsTo(blockLast, owner)
+            ) {
                 statements.pop();
                 statements.push(...last.statements.slice(0, -1));
                 last = statements.at(-1);
             }
         }
-        if (last && ts.isBreakStatement(last)) statements.pop();
+        // Only a break to this switch ends the case: `break outer` leaves the
+        // loop around it.
+        if (last && ts.isBreakStatement(last) && jumpsTo(last, owner))
+            statements.pop();
         const nestedBreak = statements
-            .map((statement) => this.findSwitchBoundBreak(statement))
+            .map((statement) =>
+                findAnalysisNode(
+                    statement,
+                    (node) => ts.isBreakStatement(node) && jumpsTo(node, owner),
+                    { functions: "skip" },
+                ),
+            )
             .find((candidate) => candidate !== undefined);
         if (nestedBreak) {
+            // A continue binds a loop; one the case does not contain crosses
+            // the switch.
             const nestedContinue = statements
-                .map((statement) => this.findSwitchBoundContinue(statement))
+                .map((statement) =>
+                    findAnalysisNode(
+                        statement,
+                        (node) =>
+                            ts.isContinueStatement(node) &&
+                            !isDeclaredInside(
+                                jumpBinding(node) ?? owner,
+                                owner,
+                            ),
+                        { functions: "skip" },
+                    ),
+                )
                 .find((candidate) => candidate !== undefined);
             if (nestedContinue) {
                 context.fail(
@@ -1620,7 +1595,7 @@ export class StatementLowerer {
         // so an early case `break` still skips the rest of that case
         // without escaping an enclosing loop.
         const wrapper = nestedBreak
-            ? writable(this.targetOf(clause.parent.parent))
+            ? writable(this.targetOf(owner))
             : undefined;
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
@@ -1654,33 +1629,75 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.SwitchStatement,
         discriminant: string,
-        labelTest: (clause: ts.CaseClause) => string | undefined,
+        labels: ReadonlyMap<ts.CaseClause, SwitchLabel>,
     ): void {
         const clauses = statement.caseBlock.clauses;
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
-        const tests: Array<{ condition: string; index: number }> = [];
-        clauses.forEach((clause, index) => {
-            if (!ts.isCaseClause(clause)) return;
-            const condition = labelTest(clause);
-            if (condition !== undefined) tests.push({ condition, index });
-        });
+        const fallback = String(
+            defaultIndex === -1 ? clauses.length : defaultIndex,
+        );
         const selected = `${discriminant}_selected`;
-        context.emit({
-            kind: "declaration",
-            type: "const int",
-            name: selected,
-            initializer: tests.reduceRight(
-                (rest, { condition, index }) =>
-                    `(${condition}) ? ${index} : ${rest}`,
-                String(defaultIndex === -1 ? clauses.length : defaultIndex),
-            ),
+        const cases = clauses.flatMap((clause, index) => {
+            const label = ts.isCaseClause(clause)
+                ? labels.get(clause)
+                : undefined;
+            return label ? [{ ...label, index }] : [];
         });
+        if (cases.every((label) => label.prelude.length === 0)) {
+            context.emit({
+                kind: "declaration",
+                type: "const int",
+                name: selected,
+                initializer: cases.reduceRight(
+                    (rest, { test, index }) =>
+                        test === undefined
+                            ? rest
+                            : `(${test}) ? ${index} : ${rest}`,
+                    fallback,
+                ),
+            });
+        } else {
+            // Each label's code runs only when no earlier label matched: the
+            // next one nests in the previous one's `else`. A label this
+            // invocation cannot hold still evaluates.
+            context.emit({
+                kind: "declaration",
+                type: "int",
+                name: selected,
+                initializer: fallback,
+            });
+            let nested = 0;
+            cases.forEach(({ prelude, test, index }, position) => {
+                for (const line of prelude) context.emit(line);
+                if (test === undefined) return;
+                context.emit({ kind: "open", code: `if (${test}) {` });
+                context.increaseIndent();
+                context.emit(`${selected} = ${index};`);
+                context.decreaseIndent();
+                if (position === cases.length - 1) {
+                    context.emit({ kind: "close", code: "}" });
+                    return;
+                }
+                context.emit("} else {");
+                context.increaseIndent();
+                nested += 1;
+            });
+            for (; nested > 0; nested -= 1) {
+                context.decreaseIndent();
+                context.emit({ kind: "close", code: "}" });
+            }
+        }
         this.withSwitchBreakTarget(context, statement, () => {
             clauses.forEach((clause, index) => {
                 if (clause.statements.length === 0) return;
+                // With a `default`, every selection reaches the last clause:
+                // an unguarded block says so to the C++ compiler too.
                 context.emit({
                     kind: "open",
-                    code: `if (${selected} <= ${index}) {`,
+                    code:
+                        defaultIndex !== -1 && index === clauses.length - 1
+                            ? "{"
+                            : `if (${selected} <= ${index}) {`,
                 });
                 this.inRuntimeControlFlow(context, () =>
                     this.emitScopedStatements(context, clause.statements),
@@ -1710,7 +1727,7 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            this.emitReachableBody(context, statements);
+            this.emitReachable(context, statements, false);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
@@ -1721,25 +1738,6 @@ export class StatementLowerer {
      * Finds a break that would bind to this switch (not to a nested loop or
      * nested switch). The if/else lowering cannot express those.
      */
-    private findSwitchBoundBreak(statement: ts.Statement): ts.Node | undefined {
-        // An unqualified break under a nested switch binds to that switch,
-        // which the shared walk expresses by not counting it there.
-        return enclosingLoopControl(statement, {
-            continues: false,
-            labeled: false,
-        });
-    }
-
-    /** A continue that crosses the switch and binds to an enclosing loop. */
-    private findSwitchBoundContinue(
-        statement: ts.Statement,
-    ): ts.Node | undefined {
-        return enclosingLoopControl(statement, {
-            breaks: false,
-            labeled: false,
-        });
-    }
-
     private emitIf(
         context: StatementLoweringContext,
         statement: ts.IfStatement,
@@ -1749,6 +1747,7 @@ export class StatementLowerer {
         // iteration-local result: a `continue` taken by one element must
         // not make a later element skip the statement following the `if`.
         this.loweredTerminators.delete(statement);
+        this.loweredBreakTerminators.delete(statement);
         const guard = context.unwrap(statement.expression);
         const identityRead = (expression: ts.Expression): boolean => {
             const value = context.unwrap(expression);
@@ -1760,10 +1759,7 @@ export class StatementLowerer {
         };
         const pureIdentity =
             ts.isBinaryExpression(guard) &&
-            (guard.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            equalityOperator(guard.operatorToken.kind)?.loose === false &&
             identityRead(guard.left) &&
             identityRead(guard.right);
         if (
@@ -1780,14 +1776,9 @@ export class StatementLowerer {
             // leaving mixed browser/native conditions to the established
             // condition lowerer and its pinned static deductions.
             const noteWrites = (node: ts.Node): void => {
-                if (
-                    ts.isBinaryExpression(node) &&
-                    ASSIGNMENT_OPERATORS.has(node.operatorToken.kind)
-                ) {
-                    const left = context.unwrap(node.left);
-                    if (ts.isPropertyAccessExpression(left))
-                        context.noteErasedElementWrite(left.expression, node);
-                }
+                for (const { target } of writeSites(node))
+                    if (ts.isPropertyAccessExpression(target))
+                        context.noteErasedElementWrite(target.expression, node);
                 ts.forEachChild(node, noteWrites);
             };
             noteWrites(statement.thenStatement);
@@ -1802,24 +1793,22 @@ export class StatementLowerer {
         // a particle system the bake resolved — and emitting
         // `if ((!(true) || !(true)))` would compile a body generation has
         // proved unreachable, dragging its own machinery in with it.
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             const selected =
-                condition === "true"
+                knownCondition(condition) === true
                     ? statement.thenStatement
                     : statement.elseStatement;
-            if (condition === "true") {
+            if (knownCondition(condition) === true) {
                 this.emitScopedBody(context, statement.thenStatement, true);
             } else if (statement.elseStatement) {
                 this.emitScopedBody(context, statement.elseStatement, true);
             }
-            if (
-                selected &&
-                terminatesFlow(selected, (node) =>
-                    this.neverTerminators.has(node),
-                )
-            ) {
+            const never = (node: ts.Statement) =>
+                this.neverTerminators.has(node);
+            if (selected && terminatesFlow(selected, never, false))
                 this.loweredTerminators.add(statement);
-            }
+            else if (selected && terminatesFlow(selected, never))
+                this.loweredBreakTerminators.add(statement);
             return;
         }
         if (this.jumpTargets.some(({ iteration }) => iteration)) {
@@ -1840,7 +1829,13 @@ export class StatementLowerer {
                 this.inRuntimeControlFlow(context, () => {
                     this.emitScopedBody(context, branch);
                 });
-            if (terminatesFlow(branch))
+            if (
+                terminatesFlow(
+                    branch,
+                    undefined,
+                    breakLeavesIteration(statement),
+                )
+            )
                 context.dataLowerer.withPreservedAliasState(emit);
             else emit();
         };
@@ -1917,6 +1912,8 @@ export class StatementLowerer {
         };
         const pure = (candidate: ts.Expression): boolean => {
             const value = context.unwrap(candidate);
+            // `++n`, `x ??= y`, `delete o.k`: a write is the effect itself.
+            if (writeSites(value).length > 0) return false;
             if (
                 ts.isIdentifier(value) ||
                 ts.isLiteralExpression(value) ||
@@ -1931,11 +1928,7 @@ export class StatementLowerer {
                 return pure(value.operand);
             }
             if (ts.isBinaryExpression(value)) {
-                return (
-                    !ASSIGNMENT_OPERATORS.has(value.operatorToken.kind) &&
-                    pure(value.left) &&
-                    pure(value.right)
-                );
+                return pure(value.left) && pure(value.right);
             }
             if (ts.isConditionalExpression(value)) {
                 return (
@@ -2041,7 +2034,7 @@ export class StatementLowerer {
                 finallyBlock,
                 (node) =>
                     (coroutine &&
-                        (ts.isAwaitExpression(node) ||
+                        (isSuspensionPoint(node) ||
                             ts.isThrowStatement(node) ||
                             (ts.isExpressionStatement(node) &&
                                 callsNever(
@@ -2278,24 +2271,13 @@ export class StatementLowerer {
             }
             const suspendedCatch =
                 context.asyncActivations.workerCheckpointCpp() &&
-                someAnalysisNode(
-                    statement.catchClause.block,
-                    ts.isAwaitExpression,
-                    { functions: "skip" },
-                )
+                containsSuspension(statement.catchClause.block)
                     ? context.allocateTemporaryCppName("pending_exception")
                     : undefined;
             const protectedBody = context.captureEmittedStatements(() => {
                 context.bindings.pushScope(context.allocateBlockPrefix());
                 try {
-                    for (const child of statement.tryBlock.statements) {
-                        this.emit(context, child);
-                        if (
-                            this.terminatesAfterLowering(child) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(context, statement.tryBlock.statements);
                 } finally {
                     context.bindings.popScope();
                 }
@@ -2354,15 +2336,10 @@ export class StatementLowerer {
                     );
                 }
                 const handlerBody = context.captureEmittedStatements(() => {
-                    for (const child of statement.catchClause!.block
-                        .statements) {
-                        this.emit(context, child);
-                        if (
-                            this.terminatesAfterLowering(child) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(
+                        context,
+                        statement.catchClause!.block.statements,
+                    );
                 });
                 context.emitCapturedStatements(handlerBody);
                 // A source handler that ignores its exception says so.
@@ -2387,14 +2364,7 @@ export class StatementLowerer {
         }
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            for (const child of statement.tryBlock.statements) {
-                this.emit(context, child);
-                if (
-                    this.terminatesAfterLowering(child) ||
-                    this.staticIterationCompleted()
-                )
-                    break;
-            }
+            this.emitReachable(context, statement.tryBlock.statements);
         } finally {
             context.bindings.popScope();
         }
@@ -2466,14 +2436,7 @@ export class StatementLowerer {
         try {
             return context.captureHoistedLines(
                 () => {
-                    for (const statement of block.statements) {
-                        this.emit(context, statement);
-                        if (
-                            this.terminatesAfterLowering(statement) ||
-                            this.staticIterationCompleted()
-                        )
-                            break;
-                    }
+                    this.emitReachable(context, block.statements);
                 },
                 beforeBody,
                 block,
@@ -2651,6 +2614,7 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
+            const iterationCells: string[] = [];
             const counter = integerLoopCounter(context, statement);
             const counterCpp =
                 counter && context.bindings.cppIdentifier(counter.binding.text);
@@ -2676,6 +2640,23 @@ export class StatementLowerer {
                             declaration,
                         );
                     }
+                    // Each iteration of `for (let ...)` has bindings of its
+                    // own: a closure keeps the cell it captured, and the
+                    // next iteration counts on a copy (CreatePerIterationEnvironment).
+                    if (variableKind(statement.initializer) === "let")
+                        for (const declaration of statement.initializer
+                            .declarations)
+                            if (
+                                ts.isIdentifier(declaration.name) &&
+                                context.sharedClosures.needsSharedClosureStorage(
+                                    declaration,
+                                )
+                            )
+                                iterationCells.push(
+                                    context.bindings.cppIdentifier(
+                                        declaration.name.text,
+                                    ),
+                                );
                 } else {
                     this.emitExpression(context, statement.initializer);
                 }
@@ -2727,13 +2708,9 @@ export class StatementLowerer {
                                 .map((line) => line.slice(0, -1))
                                 .join(", ");
                         } else if (
-                            someAnalysisNode(
-                                statement.incrementor,
-                                (node) =>
-                                    ts.isAwaitExpression(node) ||
-                                    ts.isYieldExpression(node),
-                                { functions: "skip" },
-                            ) ||
+                            containsSuspension(statement.incrementor, {
+                                yield: true,
+                            }) ||
                             emitted.some(
                                 (item) =>
                                     item.statement.kind === "control" &&
@@ -2755,9 +2732,10 @@ export class StatementLowerer {
                         );
                         try {
                             this.inRuntimeControlFlow(context, () => {
-                                terminates = this.emitReachableBody(
+                                terminates = this.emitReachable(
                                     context,
                                     bodyStatements(statement),
+                                    false,
                                 );
                             });
                         } finally {
@@ -2771,19 +2749,20 @@ export class StatementLowerer {
                         !someAnalysisNode(
                             statement.statement,
                             (node) => {
-                                if (!ts.isContinueStatement(node)) return false;
-                                const target = jumpBinding(node);
                                 return (
-                                    target === statement ||
-                                    (target !== undefined &&
-                                        ts.isLabeledStatement(target) &&
-                                        labeledBody(target) === statement)
+                                    ts.isContinueStatement(node) &&
+                                    jumpsTo(node, statement)
                                 );
                             },
                             { functions: "skip" },
                         )
                     )
                         header = "";
+                    else if (iterationCells.length > 0)
+                        header = [
+                            ...iterationCells.map(nextIterationCellCpp),
+                            ...(header ? [header] : []),
+                        ].join(", ");
                     context.emit({
                         kind: "open",
                         code: `for (; ${condition}; ${header}) {`,
@@ -2923,14 +2902,7 @@ export class StatementLowerer {
         const emitStatements = (): void => {
             bind();
             const statements = ts.isBlock(body) ? body.statements : [body];
-            for (const nested of statements) {
-                this.emit(context, nested);
-                if (
-                    this.terminatesAfterLowering(nested) ||
-                    this.staticIterationCompleted()
-                )
-                    break;
-            }
+            this.emitReachable(context, statements);
         };
         try {
             if (mode === "scoped") {
@@ -2971,19 +2943,10 @@ export class StatementLowerer {
                 : undefined;
         if (initializer && ts.isVariableDeclarationList(initializer))
             for (const declaration of initializer.declarations)
-                forEachAnalysisNode(declaration.name, (node) => {
-                    if (
-                        !ts.isIdentifier(node) ||
-                        (node !== declaration.name &&
-                            !(
-                                ts.isBindingElement(node.parent) &&
-                                node.parent.name === node
-                            ))
-                    )
-                        return;
-                    const symbol = context.symbols.valueSymbol(node);
+                for (const name of bindingNameIdentifiers(declaration.name)) {
+                    const symbol = context.symbols.valueSymbol(name);
                     if (symbol) bindings.add(symbol);
-                });
+                }
         return !this.hasStaticLoopExits(context, iteration.statement, bindings);
     }
 
@@ -3043,29 +3006,12 @@ export class StatementLowerer {
                     "the body or a called helper can change this bound.",
             );
         }
-        let indexMutation: ts.Node | undefined;
-        walkReachedLoopNodes(context, statement.statement, (node) => {
-            if (indexMutation) return false;
-            // A recursive call has its own loop binding, including its
-            // incrementor. Only this body's lexical region can close over ours.
-            if (
-                node.getSourceFile() !== statement.getSourceFile() ||
-                node.pos < statement.statement.pos ||
-                node.end > statement.statement.end
-            )
-                return;
-            if (
-                writesThroughTrackedRoot(
-                    node,
-                    (target) =>
-                        ts.isIdentifier(target) &&
-                        context.symbols.valueSymbol(target) === indexSymbol,
-                )
-            ) {
-                indexMutation = node;
-                return false;
-            }
-        });
+        // Only this body's lexical region can write the index: a recursive
+        // call has its own loop binding.
+        const indexMutation =
+            indexSymbol &&
+            counterWrite(context.checker, indexSymbol, statement.statement)
+                ?.node;
         if (indexMutation) {
             context.fail(
                 indexMutation,
@@ -3399,10 +3345,11 @@ export class StatementLowerer {
                 context,
                 () =>
                     this.inRuntimeControlFlow(context, () => {
-                        for (const nested of bodyStatements(statement)) {
-                            this.emit(context, nested);
-                            if (this.terminatesAfterLowering(nested)) break;
-                        }
+                        this.emitReachable(
+                            context,
+                            bodyStatements(statement),
+                            false,
+                        );
                     }),
                 statement,
             );
@@ -3488,7 +3435,7 @@ export class StatementLowerer {
             );
         }
         const declaration = statement.initializer.declarations[0]!;
-        if (statement.awaitModifier)
+        if (isSuspensionPoint(statement))
             return this.emitForAwait(context, statement, declaration);
         if (declaration.initializer) {
             context.fail(
@@ -4131,59 +4078,6 @@ export class StatementLowerer {
         });
     }
 
-    /**
-     * `{ a, b: alias }` over one unrolled element: each name takes the
-     * element's property, a compile-time record's value or a struct's field.
-     */
-    private bindStaticObjectPattern(
-        context: StatementLoweringContext,
-        pattern: ts.ObjectBindingPattern,
-        value: Value,
-    ): void {
-        const struct =
-            value.kind === "data" && value.dataType?.kind === "struct"
-                ? value.dataType
-                : undefined;
-        if (value.kind !== "record" && !struct)
-            context.fail(
-                pattern,
-                "Object destructuring in static for...of requires record or struct elements.",
-            );
-        for (const element of pattern.elements) {
-            const property = element.propertyName
-                ? context.propertyName(element.propertyName)
-                : ts.isIdentifier(element.name)
-                  ? element.name.text
-                  : undefined;
-            if (
-                element.dotDotDotToken ||
-                element.initializer ||
-                !ts.isIdentifier(element.name) ||
-                property === undefined
-            )
-                context.fail(
-                    element,
-                    "Object destructuring in static for...of binds plain or renamed identifiers.",
-                );
-            const field = struct
-                ? context.dataTypes.structField(struct.name, property, element)
-                : undefined;
-            const member =
-                struct && field
-                    ? context.dataLowerer.leafValue(
-                          `${value.cpp}${context.dataTypes.isReferenceStruct(struct.name) ? "->" : "."}${field.name}`,
-                          field.type,
-                      )
-                    : value.recordProperties?.[property];
-            if (!member)
-                context.fail(
-                    element,
-                    `The unrolled element has no property '${property}'.`,
-                );
-            context.bindings.bindLocalValue(element.name, member);
-        }
-    }
-
     /** Binds one statically unrolled element, including tuple and object patterns. */
     private bindStaticIterationValue(
         context: StatementLoweringContext,
@@ -4203,40 +4097,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (ts.isObjectBindingPattern(name)) {
-            this.bindStaticObjectPattern(context, name, value);
-            return;
-        }
-        if (value.kind !== "tuple" || !value.tupleElements) {
-            context.fail(
-                name,
-                "Array destructuring in static for...of requires tuple elements.",
-            );
-        }
-        name.elements.forEach((binding, index) => {
-            if (ts.isOmittedExpression(binding)) return;
-            if (
-                !ts.isIdentifier(binding.name) ||
-                binding.initializer ||
-                binding.dotDotDotToken
-            ) {
-                context.fail(
-                    binding,
-                    "Tuple destructuring supports plain identifiers.",
-                );
-            }
-            const element = value.tupleElements![index];
-            if (element) {
-                context.bindings.bindLocalValue(binding.name, element);
-            } else {
-                // JavaScript binds an omitted tuple lane to `undefined`;
-                // optional trailing tuple members use that path routinely.
-                context.bindings.bindCompileTimeValue(binding.name, {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                });
-            }
-        });
+        context.declarations.bindPattern(name, value);
     }
 
     /**
@@ -4277,9 +4138,10 @@ export class StatementLowerer {
                         loopContext,
                         () => {
                             this.inRuntimeControlFlow(loopContext, () => {
-                                this.emitReachableBody(
+                                this.emitReachable(
                                     loopContext,
                                     bodyStatements(statement),
+                                    false,
                                 );
                             });
                         },
@@ -4483,7 +4345,7 @@ export class StatementLowerer {
                     context,
                     () => {
                         this.inRuntimeControlFlow(context, () => {
-                            this.emitReachableBody(context, statements);
+                            this.emitReachable(context, statements, false);
                         });
                     },
                     statement,
@@ -4625,12 +4487,7 @@ export class StatementLowerer {
             const statements = ts.isBlock(statement)
                 ? statement.statements
                 : [statement];
-            for (const nested of statements) {
-                this.emit(context, nested);
-                if (this.terminatesAfterLowering(nested)) return true;
-                if (this.staticIterationCompleted()) break;
-            }
-            return false;
+            return this.emitReachable(context, statements);
         } finally {
             context.bindings.popScope();
             context.decreaseIndent();
@@ -4656,9 +4513,9 @@ export class StatementLowerer {
                     "A conditional expression statement cannot suspend in one arm.",
                 );
         };
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             emitArm(
-                condition === "true"
+                knownCondition(condition) === true
                     ? expression.whenTrue
                     : expression.whenFalse,
             );
@@ -4816,22 +4673,22 @@ export class StatementLowerer {
                     return;
                 }
                 if (target.kind === "number") {
-                    context.emit({
-                        kind: "expression",
-                        code: this.numericAssignmentCpp(
-                            context,
-                            target.cpp,
-                            operator,
-                            unwrapped.right,
-                        ),
-                    });
+                    this.emitNumericAssignment(
+                        context,
+                        unwrapped,
+                        target.cpp,
+                        operator,
+                    );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit({
                         kind: "expression",
                         code: `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     });
                 } else if (operator === "+=" && isStringValue(target)) {
-                    emitStringAppend(context, target.cpp, unwrapped.right);
+                    context.dataLowerer.emitStringCompound(
+                        unwrapped,
+                        target.cpp,
+                    );
                 } else if (target.kind === "string" && operator === "=") {
                     // A literal union or parsed value spells its string.
                     const value = context.compileValue(unwrapped.right);
@@ -5147,21 +5004,16 @@ export class StatementLowerer {
             context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
-        // `await <barrier property>` -- a read whose only meaning is the
-        // wait, which this runtime satisfies by construction. Compiled
-        // rather than skipped so the property still has to exist and the
-        // owner still has to be the right kind; a value that names no
-        // native expression (a barrier, a container's own list) discards
-        // to nothing, as `emitDiscardedValue` discards it anywhere else.
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const value = context.compileValue(unwrapped);
-            if (value.cpp.length === 0) {
-                return;
-            }
-        }
-        // Any supported value expression can be evaluated for effects alone,
-        // including the value of a return in a contextually void function.
-        context.emitDiscardedValue(context.compileValue(unwrapped));
+        // Any supported value expression is evaluated for its effects alone
+        // (the value of a return in a contextually void function too),
+        // compiled once so a getter it reads runs once. A property read
+        // naming no native expression -- `await <barrier property>`, whose
+        // only meaning is a wait this runtime satisfies, or a container's
+        // own list -- still has to exist, and discards to nothing.
+        const value = context.compileValue(unwrapped);
+        if (ts.isPropertyAccessExpression(unwrapped) && value.cpp.length === 0)
+            return;
+        context.emitDiscardedValue(value);
     }
 
     /** Assigns a tuple result to definite-assignment resource bindings. */
@@ -5228,23 +5080,33 @@ export class StatementLowerer {
         });
     }
 
-    private numericAssignmentCpp(
+    /** `local op= right` into the number local `target`. */
+    private emitNumericAssignment(
         context: StatementLoweringContext,
+        expression: ts.BinaryExpression,
         target: string,
         operator: string,
-        right: ts.Expression,
-    ): string {
-        const cpp = context.compileNumber(right, "double");
-        if (operator === "=") return `${target} = ${cpp};`;
-        const value = compoundAssignmentValue(
+    ): void {
+        if (operator === "=") {
+            context.emit({
+                kind: "expression",
+                code: `${target} = ${context.compileNumber(expression.right, "double")};`,
+            });
+            return;
+        }
+        const { previous } = context.dataLowerer.compoundPlace(
+            expression.left,
+            expression.right,
+            target,
+        );
+        context.dataLowerer.emitNumericCompound(
+            expression.left,
+            expression.right,
             operator,
             target,
-            cpp,
-            staticNumberValue(context, right),
+            previous,
+            (stored) => `${target} = ${stored};`,
         );
-        if (value.native) return `${target} ${operator} ${cpp};`;
-        if (value.jsData) context.reachJsData();
-        return `${target} = ${value.cpp};`;
     }
 
     private emitCameraVectorSet(
@@ -5466,6 +5328,7 @@ export class StatementLowerer {
             call,
             3,
             `${property}.set`,
+            "float",
         );
         context.emit({
             kind: "expression",
@@ -5493,7 +5356,7 @@ export class StatementLowerer {
         // A translation is a JavaScript number upstream and reaches a
         // matrix column, so its lane is double where a rotation's and a
         // scale's are float.
-        precision?: "float" | "double",
+        precision: "float" | "double",
     ): string[] {
         if (
             call.arguments.length === 1 &&
@@ -5520,15 +5383,11 @@ export class StatementLowerer {
                     `${label} spreads a value that is not a ${arity}-element numeric tuple.`,
                 );
             }
-            const components = tupleComponents(
+            return tupleComponents(
                 context.bindings.bindDataTuple(value, arity, "spread"),
                 arity,
+                precision,
             );
-            return precision === "float"
-                ? components.map(
-                      (component) => `static_cast<float>(${component})`,
-                  )
-                : components;
         }
         if (call.arguments.length !== arity) {
             context.fail(
@@ -5773,16 +5632,47 @@ function switchFallthroughRun(
 }
 
 /**
+ * Whether an unlabelled `break` at `node` leaves an iteration: false when
+ * the innermost construct it would leave is a switch, whose following code
+ * still runs in the same iteration and observes the branch's effects.
+ */
+function breakLeavesIteration(node: ts.Node): boolean {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isCaseBlock(current)) return false;
+        if (
+            ts.isIterationStatement(current, false) ||
+            ts.isFunctionLike(current)
+        )
+            return true;
+    }
+    return true;
+}
+
+/**
+ * Whether a `break` anywhere in these statements (not only the last, and
+ * not one an inner loop or switch owns) leaves the enclosing switch: the
+ * switch then completes normally, whatever the last statement does.
+ */
+function leavesSwitch(statements: readonly ts.Statement[]): boolean {
+    return statements.some(
+        (statement) =>
+            ts.isBreakStatement(statement) ||
+            enclosingLoopControl(statement, { continues: false }) !== undefined,
+    );
+}
+
+/**
  * True when a branch always leaves the surrounding iteration or
  * function, so code after the branch never observes its effects.
  */
 function terminatesFlow(
     statement: ts.Statement,
-    lowered: (node: ts.Statement) => boolean = () => false,
+    lowered: (node: ts.Statement, breakLeaves: boolean) => boolean = () =>
+        false,
     breakLeaves = true,
 ): boolean {
     if (
-        lowered(statement) ||
+        lowered(statement, breakLeaves) ||
         ts.isContinueStatement(statement) ||
         ts.isReturnStatement(statement) ||
         ts.isThrowStatement(statement)
@@ -5792,7 +5682,11 @@ function terminatesFlow(
     if (ts.isBreakStatement(statement)) return breakLeaves;
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
-        return last ? terminatesFlow(last, lowered, breakLeaves) : false;
+        return (
+            !!last &&
+            (breakLeaves || !leavesSwitch(statement.statements)) &&
+            terminatesFlow(last, lowered, breakLeaves)
+        );
     }
     if (ts.isIfStatement(statement)) {
         return (
@@ -5832,18 +5726,16 @@ function terminatesFlow(
         });
     }
     if (ts.isSwitchStatement(statement)) {
-        // Every path leaves when a `default` exists and each clause ends
-        // in control that leaves: an empty clause falls into the next one,
-        // and a `break` there leaves only the switch itself.
+        // A clause that does not leave falls into the next one, so with a
+        // `default` and no `break` out of the switch, control leaves exactly
+        // when the last clause does.
         const clauses = statement.caseBlock.clauses;
+        const last = clauses.at(-1)?.statements.at(-1);
         return (
             clauses.some(ts.isDefaultClause) &&
-            clauses.every((clause, index) => {
-                const last = clause.statements.at(-1);
-                return last
-                    ? terminatesFlow(last, lowered, false)
-                    : index < clauses.length - 1;
-            })
+            !clauses.some((clause) => leavesSwitch(clause.statements)) &&
+            last !== undefined &&
+            terminatesFlow(last, lowered, false)
         );
     }
     return false;

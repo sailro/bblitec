@@ -6,6 +6,7 @@ import type {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/texture/rtt-surface.ts";
 
@@ -158,8 +159,8 @@ export function lowerRenderTargetLifecycle(context: LoweringContext): string {
                 expression: ts.Expression | undefined,
                 numeric: PinnedNumericLowerer,
             ) => (expression ? numeric.expression(expression) : ""),
-            forOf: (source: string, element: string) =>
-                source === "callbacks"
+            forOf: (source: ts.Expression, element: string) =>
+                sameSource(source, "callbacks")
                     ? {
                           range: "state->callbacks",
                           bindings: new Map<string, PinnedBinding>([

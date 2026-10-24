@@ -1,7 +1,8 @@
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
-import { expressionMayRunCode } from "./syntax.js";
+import { expressionMayRunCode, objectLiteralMembers } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 import type { DataStructField } from "./data-types.js";
 
@@ -165,7 +166,7 @@ export function errorValue(
                           staticString: name,
                       },
             // Native exceptions do not carry a JavaScript engine's optional stack string.
-            stack: { kind: "json-null", cpp: "std::nullopt" },
+            stack: undefinedValue(),
         },
     };
 }
@@ -287,7 +288,9 @@ function compileAggregateError(
               args[0]!,
           );
     const list = context.allocateTemporaryCppName("aggregate_errors");
-    const snapshotsErrors = args.slice(1).some(expressionMayRunCode);
+    const snapshotsErrors = args
+        .slice(1)
+        .some((argument) => expressionMayRunCode(argument));
     context.emit(
         snapshotsErrors
             ? `const auto ${list} = bbl::js::snapshot_value(${errors});`
@@ -360,25 +363,16 @@ function compileErrorCause(
                 options,
                 "Error options require a cause record.",
             );
-        for (const property of options.properties) {
-            const name =
-                (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)) &&
-                ts.isIdentifier(property.name)
-                    ? property.name.text
-                    : undefined;
+        for (const member of objectLiteralMembers(options)) {
             if (
-                name !== "cause" ||
-                (!ts.isPropertyAssignment(property) &&
-                    !ts.isShorthandPropertyAssignment(property))
+                (member.kind !== "property" && member.kind !== "shorthand") ||
+                member.key !== "cause"
             )
                 return context.fail(
-                    property,
+                    member.node,
                     "Error options only represent an error cause.",
                 );
-            const value = ts.isPropertyAssignment(property)
-                ? property.initializer
-                : property.name;
+            const value = member.value;
             const compiled = context.dataLowerer.compileForSink(value, {
                 kind: "error",
             });

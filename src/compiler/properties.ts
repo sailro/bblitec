@@ -14,8 +14,14 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { presentMembers } from "./type-facts.js";
+import {
+    presentMembers,
+    holdsOnly,
+    arrayShape,
+    unionMembers,
+} from "./type-facts.js";
 import ts from "typescript";
+import { knownCondition, undefinedValue } from "./values/model.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -28,7 +34,7 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { declaredInDomLibrary, libraryName } from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -86,7 +92,12 @@ import { readFrozenParticleProperty } from "./particle-buffer.js";
 import { recordAt } from "./record-access.js";
 import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { staticFetchProperty } from "./static-fetch.js";
-import { isAssignmentOperator } from "./syntax.js";
+import {
+    isAssignmentOperator,
+    isTypeAssertion,
+    outermostWrapper,
+    wrappersAround,
+} from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
@@ -1769,8 +1780,7 @@ function readsWithoutMutableAlias(
     checker: ts.TypeChecker,
     read: ts.Node,
 ): boolean {
-    let use = read;
-    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const use = outermostWrapper(read);
     const parent = use.parent;
     if (
         ts.isElementAccessExpression(parent) &&
@@ -1783,15 +1793,15 @@ function readsWithoutMutableAlias(
         const parts = presentMembers(type);
         return (
             parts.length > 0 &&
-            parts.every((part) =>
-                checker.isTupleType(part)
-                    ? (part as ts.TupleTypeReference).target.readonly
-                    : part.getSymbol()?.getName() === "ReadonlyArray",
-            )
+            parts.every((part) => {
+                const shape = arrayShape(checker, part);
+                return shape !== undefined && !shape.mutable;
+            })
         );
     };
-    if (ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent))
-        return readonly(checker.getTypeFromTypeNode(parent.type));
+    // The outermost assertion types the value; `satisfies` keeps its type.
+    const assertion = wrappersAround(read).filter(isTypeAssertion).at(-1);
+    if (assertion) return readonly(checker.getTypeFromTypeNode(assertion.type));
     return ts.isExpression(use) && readonly(checker.getContextualType(use));
 }
 
@@ -2278,10 +2288,10 @@ export class PropertyAccessLowerer {
     /** Whether the checker types an owner as a canvas. */
     private declaresCanvas(ownerExpression: ts.Expression): boolean {
         const type = this.context.checker.getTypeAtLocation(ownerExpression);
-        return (type.isUnion() ? type.types : [type]).some(
+        return unionMembers(type).some(
             (member) =>
-                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
-                member.getSymbol()?.getName() === "OffscreenCanvas",
+                libraryName(member) === "HTMLCanvasElement" ||
+                libraryName(member) === "OffscreenCanvas",
         );
     }
 
@@ -2674,8 +2684,7 @@ export class PropertyAccessLowerer {
         );
         if (environment) return environment;
         const deployed = browserDeploymentValue(this.context, expression);
-        if (deployed === null)
-            return { kind: "json-null", cpp: "std::nullopt" };
+        if (deployed === null) return undefinedValue();
         if (typeof deployed === "boolean")
             return {
                 kind: "boolean",
@@ -2735,7 +2744,7 @@ export class PropertyAccessLowerer {
                     // `pickAsync` is only lowered in its pinned BASIC mode.
                     // Upstream sets `info.ray = null` in that mode, so the
                     // optional access is exactly the nullish left operand.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
             }
         }
@@ -2761,7 +2770,11 @@ export class PropertyAccessLowerer {
         const staticField =
             this.context.classLowerer.resolveStaticField(expression);
         if (staticField?.initializer) {
-            return this.context.compileValue(staticField.initializer);
+            const initializer = staticField.initializer;
+            return this.context.classLowerer.withDeclaringClass(
+                staticField,
+                () => this.context.compileValue(initializer),
+            );
         }
         const staticStorage =
             this.context.classLowerer.readStaticField(expression);
@@ -2915,7 +2928,7 @@ export class PropertyAccessLowerer {
         );
         if (platformProperty) return platformProperty;
         if (owner.kind === "json-null" && expression.questionDotToken)
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")
@@ -3145,7 +3158,7 @@ export class PropertyAccessLowerer {
             // Basic GPU picks publish a null ray; only the detailed pipeline
             // carries one. Keeping that null in the value model lets the
             // source's optional chain and fallback lower unchanged.
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         if (owner.platformEventBase) {
             const eventInterface = this.declaredEventInterface(ownerExpression);
@@ -3457,9 +3470,7 @@ export class PropertyAccessLowerer {
                     this.context.dataLowerer.dataTypeAt(expression);
                 const declaredTsType =
                     this.context.checker.getTypeAtLocation(expression);
-                const declaredMembers = declaredTsType.isUnion()
-                    ? declaredTsType.types
-                    : [declaredTsType];
+                const declaredMembers = unionMembers(declaredTsType);
                 const optionalProperty = this.context.checker
                     .getNonNullableType(
                         this.context.checker.getTypeAtLocation(
@@ -3473,19 +3484,15 @@ export class PropertyAccessLowerer {
                         (optionalProperty.flags & ts.SymbolFlags.Optional) !==
                             0) ||
                     (declared?.kind === "function" &&
-                        declaredMembers.some(
-                            (member) =>
-                                (member.flags &
-                                    (ts.TypeFlags.Null |
-                                        ts.TypeFlags.Undefined)) !==
-                                0,
+                        declaredMembers.some((member) =>
+                            holdsOnly(member, ["null", "undefined"]),
                         ))
                 ) {
                     // Object literals omit optional fields entirely. A
                     // compile-time record preserves that absence as
                     // JavaScript's `undefined`, which `??`, equality
                     // guards, `typeof` and concatenation read.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
                 this.context.fail(
                     expression,
@@ -3734,7 +3741,7 @@ export class PropertyAccessLowerer {
         // present one, already tested, and carries none.
         if (
             ownerFlag === undefined ||
-            ownerFlag === "true" ||
+            knownCondition(ownerFlag) === true ||
             !ts.isOptionalChain(expression) ||
             !isStoredPrimitiveRead(value)
         )

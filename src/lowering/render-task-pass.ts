@@ -4,6 +4,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const renderTaskModule = "src/frame-graph/render-task-base.ts";
 const sceneModule = "src/scene/scene-core.ts";
@@ -17,13 +18,12 @@ function assignedValue(
     declaration: ts.Node,
     target: string,
 ): ts.Expression {
-    const file = declaration.getSourceFile();
     const stores = context.findNodes(
         declaration,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            node.left.getText(file) === target,
+            sameSource(node.left, target),
     );
     const store = stores[0];
     if (stores.length !== 1 || !store) {
@@ -161,8 +161,7 @@ export function renderTaskPassCpp(context: LoweringContext): string {
             defaults.declaration,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
-                node.expression.getText(defaults.file) ===
-                    "_createAutomaticRenderTask",
+                sameSource(node.expression, "_createAutomaticRenderTask"),
         )
         .map((call) => call.arguments[0])
         .filter(

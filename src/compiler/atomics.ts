@@ -75,7 +75,9 @@ export function compileAtomicsCall(
     const viewNode = argumentAt(call, 0);
     const viewType = integerViewType(context, viewNode, method);
     const rest = call.arguments.slice(1);
-    const laterRunsCode = rest.some(expressionMayRunCode);
+    const laterRunsCode = rest.some((argument) =>
+        expressionMayRunCode(argument),
+    );
     const view = context.dataLowerer.compileKnownValueForSink(
         laterRunsCode
             ? pinOperand(
@@ -92,7 +94,12 @@ export function compileAtomicsCall(
     // argument may run code.
     const numbers = rest.map((argument, index) => {
         const cpp = context.compileNumber(argument, "double");
-        if (!rest.slice(index + 1).some(expressionMayRunCode)) return cpp;
+        if (
+            !rest
+                .slice(index + 1)
+                .some((argument) => expressionMayRunCode(argument))
+        )
+            return cpp;
         const temporary = context.allocateTemporaryCppName("atomics_operand");
         context.emit({
             kind: "declaration",

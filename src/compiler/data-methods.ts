@@ -20,6 +20,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
+import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -27,6 +28,9 @@ import {
     expressionMayRunCode,
     regularExpressionParts,
     rootIdentifier,
+    isTypeAssertion,
+    wrappersAround,
+    variableKind,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -83,7 +87,11 @@ import {
     declaredContextualType,
     isTypeReference,
     slotHoldsOnlyNull,
+    valueKindOf,
+    callSignatures,
+    unionMembers,
 } from "./type-facts.js";
+import { jsToUint32Call } from "../lowering/pinned-operators.js";
 
 /**
  * Array and binary-view predicates share the same finite data discrimination.
@@ -160,8 +168,11 @@ export function compileArrayPredicateOverData(
               : matchesType(dataType)
                 ? "true"
                 : "false";
-    if (predicate === "false" || (predicate === "true" && !optional))
-        return decided(predicate === "true");
+    if (
+        knownCondition(predicate) === false ||
+        (knownCondition(predicate) === true && !optional)
+    )
+        return decided(knownCondition(predicate) === true);
     return {
         kind: "boolean",
         cpp: `([](const auto& candidate) { return ${optional ? "candidate.has_value() && " : ""}${predicate}; }(${value.cpp}))`,
@@ -360,8 +371,7 @@ export function mayCompileDataMethodCall(
         !staticMemberReceiver(checker, callee.expression) &&
         !pinnedHandleKind(owner) &&
         !platformHandleKind(owner) &&
-        (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
-            0
+        !["number", "boolean"].includes(valueKindOf(owner))
     );
 }
 
@@ -858,8 +868,7 @@ export function compileDataMethodCall(
                           cpp: "",
                           tupleElements: selected,
                       };
-                  if (method === "find")
-                      return { kind: "json-null", cpp: "std::nullopt" };
+                  if (method === "find") return undefinedValue();
                   if (method === "findIndex")
                       return {
                           kind: "number",
@@ -940,9 +949,9 @@ export function compileDataMethodCall(
                         ),
                     () => false,
                 );
-                return condition === "true" || condition === "false"
+                return knownCondition(condition) !== undefined
                     ? arrayLiteral(
-                          condition === "true"
+                          knownCondition(condition) === true
                               ? resolved.whenTrue
                               : resolved.whenFalse,
                           depth + 1,
@@ -958,8 +967,7 @@ export function compileDataMethodCall(
                 !declaration ||
                 !ts.isVariableDeclaration(declaration) ||
                 !declaration.initializer ||
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) ===
-                    0 ||
+                variableKind(declaration) !== "const" ||
                 !arrayOnlyRead(lowerer.context, resolved)
             )
                 return undefined;
@@ -1449,11 +1457,14 @@ function compileKnownDataMethod(
             });
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
-            if (referenceReceiver)
+            if (referenceReceiver) {
+                // JavaScript's TypeError, which a scene's catch can tell apart.
+                lowerer.context.reachJsData();
                 lowerer.context.emit({
                     kind: "expression",
-                    code: `if (!(${receiver})) throw std::runtime_error("Cannot call a method on a nullish receiver.");`,
+                    code: `if (!(${receiver})) bbl::js::throw_nullish_access("Cannot call a method on a nullish receiver.");`,
                 });
+            }
             return lowerer.compileCallableRecordCall(
                 call,
                 lowerer.leafValue(
@@ -2550,9 +2561,11 @@ function narrowedFilterResult(
         const predicate = call.arguments[0];
         const signature =
             predicate &&
-            lowerer.context.checker
-                .getTypeAtLocation(predicate)
-                .getCallSignatures()[0];
+            callSignatures(
+                lowerer.context.checker,
+                lowerer.context.checker.getTypeAtLocation(predicate),
+                "exact",
+            )[0];
         if (
             signature &&
             lowerer.context.checker.getTypePredicateOfSignature(signature)
@@ -3519,12 +3532,11 @@ function compileArrayRemoval(
         lowerer.context.fail(call, `Array.${method} expects no arguments.`);
     }
     lowerer.invalidateAliases(narrowed.cpp);
-    let parent = call.parent;
-    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
     if (
-        ts.isNonNullExpression(parent) ||
-        ts.isAsExpression(parent) ||
-        ts.isTypeAssertionExpression(parent)
+        wrappersAround(call).some(
+            (wrapper) =>
+                ts.isNonNullExpression(wrapper) || isTypeAssertion(wrapper),
+        )
     ) {
         return lowerer.leafValue(
             `bbl::js::array_${method}(${narrowed.cpp})`,
@@ -3742,11 +3754,7 @@ function compileMapDataMethod(
             }
             slotFoundCpp = `${narrowed.cpp}.has(${key})`;
         }
-        const staticKey =
-            keyValue.staticString ??
-            (keyValue.staticNumber !== undefined
-                ? String(keyValue.staticNumber)
-                : undefined);
+        const staticKey = staticKeyOf(keyValue);
         if (method === "has") {
             return {
                 kind: "boolean",
@@ -3866,11 +3874,7 @@ function compileMapDataMethod(
             dataType.value,
             argumentAt(call, 1),
         );
-        const staticKey =
-            keyValue.staticString ??
-            (keyValue.staticNumber !== undefined
-                ? String(keyValue.staticNumber)
-                : undefined);
+        const staticKey = staticKeyOf(keyValue);
         if (lowerer.context.isInRuntimeControlFlow()) {
             lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (staticKey !== undefined && narrowed.recordProperties) {
@@ -4248,7 +4252,7 @@ function compileStringDataMethod(
         }
         return {
             kind: "data",
-            cpp: `bbl::js::string_upper(${narrowed.cpp})`,
+            cpp: `bbl::js::string_to_upper_case(${narrowed.cpp})`,
             dataType: { kind: "string" },
         };
     }
@@ -4261,7 +4265,7 @@ function compileStringDataMethod(
         }
         return {
             kind: "data",
-            cpp: `bbl::js::string_lower(${narrowed.cpp})`,
+            cpp: `bbl::js::string_to_lower_case(${narrowed.cpp})`,
             dataType: { kind: "string" },
         };
     }
@@ -4318,9 +4322,27 @@ function compileStringDataMethod(
         };
     }
     if (method === "split") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(call, "String.split expects one separator.");
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
+            lowerer.context.fail(
+                call,
+                "String.split expects a separator and an optional limit.",
+            );
         }
+        // A limit keeps the first ToUint32(limit) pieces.
+        // The limit is evaluated after the separator, before the split runs.
+        const limited = (pieces: string): string => {
+            if (call.arguments.length !== 2) return pieces;
+            const limit = lowerer.context.compileValue(argumentAt(call, 1));
+            const count =
+                limit.staticNumber !== undefined
+                    ? limit
+                    : lowerer.context.bindings.pinValueToTemporary(
+                          limit,
+                          "split_limit",
+                          argumentAt(call, 1),
+                      );
+            return `bbl::js::array_slice(${pieces}, 0.0, static_cast<double>(${jsToUint32Call(lowerer.context.castNumber(count, "double"))}))`;
+        };
         const separatorValue = regexpCaptureFacts(
             lowerer.context,
             lowerer.context.compileValue(argumentAt(call, 0)),
@@ -4343,16 +4365,38 @@ function compileStringDataMethod(
             );
             return {
                 kind: "data",
-                cpp: `${separatorValue.cpp}.split${groups.template}(${narrowed.cpp})`,
+                cpp: limited(
+                    `${separatorValue.cpp}.split${groups.template}(${narrowed.cpp})`,
+                ),
                 dataType: { kind: "vector", element: groups.element },
             };
         }
-        const separator = lowerer.compileForSink(argumentAt(call, 0), {
-            kind: "string",
-        });
+        // The separator was compiled once, above; its value sinks here.
+        let separator = lowerer.compileKnownValueForSink(
+            separatorValue,
+            { kind: "string" },
+            argumentAt(call, 0),
+        );
+        // A run-time limit is pinned; the separator before it keeps their order.
+        if (
+            call.arguments.length === 2 &&
+            lowerer.context.evaluator.staticNumberValue(argumentAt(call, 1)) ===
+                undefined
+        )
+            separator = lowerer.context.bindings.pinValueToTemporary(
+                {
+                    kind: "data",
+                    cpp: separator,
+                    dataType: { kind: "string" },
+                },
+                "split_separator",
+                argumentAt(call, 0),
+            ).cpp;
         return {
             kind: "data",
-            cpp: `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
+            cpp: limited(
+                `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
+            ),
             dataType: {
                 kind: "vector",
                 element: { kind: "string" },
@@ -4369,11 +4413,11 @@ function compileStringDataMethod(
         const replacementType = lowerer.context.checker.getTypeAtLocation(
             argumentAt(call, 1),
         );
-        const callbackReplacement = (
-            replacementType.isUnion()
-                ? replacementType.types
-                : [replacementType]
-        ).some((type) => type.getCallSignatures().length !== 0);
+        const callbackReplacement = unionMembers(replacementType).some(
+            (type) =>
+                callSignatures(lowerer.context.checker, type, "exact")
+                    .length !== 0,
+        );
         const replacementMayChange =
             callbackReplacement || expressionMayRunCode(argumentAt(call, 1));
         const argumentsMayChange =

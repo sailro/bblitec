@@ -10,6 +10,7 @@ import {
 import { stringConcatPart } from "./expressions.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { UiProjection } from "./ui-projection.js";
+import { unionMembers } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -119,7 +120,7 @@ export function classifyUiQuerySelector(
         return { kind: "template", holes: template.holes, ...parsed };
     }
     const type = context.checker.getTypeAtLocation(argument);
-    const members = type.isUnion() ? type.types : [type];
+    const members = unionMembers(type);
     const literals = members.filter((member) => member.isStringLiteral());
     if (
         literals.length === members.length &&

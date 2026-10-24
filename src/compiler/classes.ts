@@ -11,7 +11,13 @@ import {
     writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import {
+    declaredSymbol,
+    resolvedSymbol,
+    staticPropertyKey,
+    calledDeclaration,
+    memberAccessors,
+} from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -30,15 +36,26 @@ import {
     type UserFunctionContext,
 } from "./user-functions.js";
 import { parameterIsReadOnly, parameterOnlyRead } from "./parameter-effects.js";
-import { firstReturn } from "./loop-control.js";
+import { finalReturn, firstReturn } from "./loop-control.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     isAssignmentOperator,
     sourceFunctionName,
     unwrapExpression,
+    writeSites,
+    isAsyncFunction,
+    isGeneratorFunction,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
-import { nullability } from "./type-facts.js";
+import {
+    nullability,
+    isVoid,
+    holdsOnly,
+    PRIMITIVE_KINDS,
+    callSignatures,
+    classInstanceDeclaration,
+    unionMembers,
+} from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -53,6 +70,7 @@ import {
     classAccessors,
     classChain,
     classChainInstanceProperties,
+    constructorFieldParameters,
     classExtends,
     classErrorBase,
     classHasStaticState,
@@ -126,14 +144,7 @@ function isInertExpression(
     const inert = (expression: ts.Expression): boolean =>
         isInertExpression(checker, expression, classSymbols);
     const primitive = (expression: ts.Expression): boolean =>
-        (checker.getTypeAtLocation(expression).flags &
-            (ts.TypeFlags.NumberLike |
-                ts.TypeFlags.StringLike |
-                ts.TypeFlags.BooleanLike |
-                ts.TypeFlags.BigIntLike |
-                ts.TypeFlags.Undefined |
-                ts.TypeFlags.Null)) !==
-        0;
+        holdsOnly(checker.getTypeAtLocation(expression), PRIMITIVE_KINDS);
     const expression = unwrapExpression(node);
     if (
         ts.isLiteralExpression(expression) ||
@@ -151,8 +162,7 @@ function isInertExpression(
         );
     if (ts.isPrefixUnaryExpression(expression))
         return (
-            expression.operator !== ts.SyntaxKind.PlusPlusToken &&
-            expression.operator !== ts.SyntaxKind.MinusMinusToken &&
+            writeSites(expression).length === 0 &&
             inert(expression.operand) &&
             primitive(expression.operand)
         );
@@ -332,6 +342,7 @@ interface ClassLoweringContext
             | "assignOptionalResourceValue"
             | "defineThis"
             | "activeThis"
+            | "withThis"
             | "registerClassInstance"
             | "classOf"
             | "compileRecordGetter"
@@ -501,13 +512,20 @@ export class ClassLowerer {
             owner.kind === ts.SyntaxKind.ThisKeyword
                 ? this.context.activeThis()
                 : this.staticRecord(owner);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(receiver);
-        try {
-            return work();
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        return this.context.withThis(receiver, work);
+    }
+
+    /**
+     * Runs a static member's initializer lowering with `this` bound to the
+     * class that declares it, as a static initializer's `this` is.
+     */
+    public withDeclaringClass<T>(member: ts.ClassElement, work: () => T): T {
+        const owner = member.parent;
+        const receiver =
+            ts.isClassLike(owner) && owner.name
+                ? this.staticRecord(owner.name)
+                : undefined;
+        return this.context.withThis(receiver, work);
     }
 
     /**
@@ -603,9 +621,7 @@ export class ClassLowerer {
         };
         for (const bound of names)
             this.context.bindings.bindCompileTimeValue(bound, record);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(record);
-        try {
+        this.context.withThis(record, () => {
             for (const element of table.staticElements) {
                 if (ts.isClassStaticBlockDeclaration(element)) {
                     this.context.bindings.pushScope(
@@ -626,9 +642,7 @@ export class ClassLowerer {
                 }
                 statics[element.name.text] = this.bindStaticField(element);
             }
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        });
     }
 
     /**
@@ -813,30 +827,22 @@ export class ClassLowerer {
         ) {
             return undefined;
         }
-        const fieldByParameter = new EmissionMap<string, string>();
         const parameterNames = constructorDeclaration.parameters.map(
             (parameter) => parameter.name,
         );
         if (!parameterNames.every(ts.isIdentifier)) return undefined;
-        const constructorFieldWrites = new EmissionSet<ts.Statement>();
-        for (const statement of constructorDeclaration.body?.statements ?? []) {
-            if (!ts.isExpressionStatement(statement)) continue;
-            const expression = this.context.unwrap(statement.expression);
-            if (
-                !ts.isBinaryExpression(expression) ||
-                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-                !ts.isPropertyAccessExpression(expression.left) ||
-                expression.left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-                !ts.isIdentifier(expression.right)
-            ) {
-                continue;
-            }
-            fieldByParameter.set(
-                expression.right.text,
-                expression.left.name.text,
-            );
-            constructorFieldWrites.add(statement);
-        }
+        // Only a parameter's own field write is the wiring done below; any
+        // other constructor write reruns against the live fields.
+        const writes = constructorFieldParameters(constructorDeclaration);
+        const fieldByParameter = new EmissionMap(
+            writes.map((write) => [
+                parameterNames[write.parameter]!.text,
+                write.field,
+            ]),
+        );
+        const constructorFieldWrites = new EmissionSet<ts.Statement>(
+            writes.map((write) => write.statement),
+        );
         if (parameterNames.some((name) => !fieldByParameter.has(name.text))) {
             return undefined;
         }
@@ -845,7 +851,7 @@ export class ClassLowerer {
             this.context.allocateUserFunctionPrefix(),
         );
         try {
-            this.bindParameters(method, call.arguments, undefined, true);
+            this.bindParameters(method, call.arguments, true);
             const instance = this.construct(fallback!, owner);
             const fields = instance.recordProperties!;
             const targets = parameterNames.map((parameter) => {
@@ -901,34 +907,35 @@ export class ClassLowerer {
                 this.context.bindings.pushScope(
                     this.context.allocateUserFunctionPrefix(),
                 );
-                const previousThis = this.context.activeThis();
-                this.context.defineThis(instance);
                 try {
-                    parameterNames.forEach((parameter, index) => {
-                        const value = values[index]!;
-                        const target = targets[index]!;
-                        const resourceValue =
-                            successfulConstructorResourceKinds.has(value.kind);
-                        this.context.bindings.bindParameterValue(
-                            parameter,
-                            resourceValue
-                                ? {
-                                      ...value,
-                                      truthinessCpp: optionalPresentCpp(
-                                          target.optionalStorageCpp!,
-                                      ),
-                                  }
-                                : value,
-                        );
-                    });
-                    for (const statement of constructorDeclaration.body
-                        ?.statements ?? []) {
-                        if (!constructorFieldWrites.has(statement)) {
-                            this.context.emitStatement(statement);
+                    this.context.withThis(instance, () => {
+                        parameterNames.forEach((parameter, index) => {
+                            const value = values[index]!;
+                            const target = targets[index]!;
+                            const resourceValue =
+                                successfulConstructorResourceKinds.has(
+                                    value.kind,
+                                );
+                            this.context.bindings.bindParameterValue(
+                                parameter,
+                                resourceValue
+                                    ? {
+                                          ...value,
+                                          truthinessCpp: optionalPresentCpp(
+                                              target.optionalStorageCpp!,
+                                          ),
+                                      }
+                                    : value,
+                            );
+                        });
+                        for (const statement of constructorDeclaration.body
+                            ?.statements ?? []) {
+                            if (!constructorFieldWrites.has(statement)) {
+                                this.context.emitStatement(statement);
+                            }
                         }
-                    }
+                    });
                 } finally {
-                    this.context.defineThis(previousThis);
                     this.context.bindings.popScope();
                 }
             } finally {
@@ -1076,9 +1083,7 @@ export class ClassLowerer {
         // rather than only after construction has already returned.
         this.context.registerClassInstance(instance, declaration);
 
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
-        try {
+        this.context.withThis(instance, () => {
             this.initialize(
                 members,
                 expression.arguments ?? [],
@@ -1095,17 +1100,16 @@ export class ClassLowerer {
                     expression,
                 );
             }
-        } finally {
-            this.context.defineThis(previousThis);
-        }
+        });
         return instance;
     }
 
     /**
      * Runs one class's part of a construction with `this` already bound:
      * its field initializers, its parameter properties and its constructor
-     * body, in JavaScript's order. A base class initializes first, then its
-     * fields, then the body. A subclass binds its parameters, runs its body
+     * body, in JavaScript's order. A base class binds its parameters (the
+     * arguments are evaluated first), initializes its own members, then runs
+     * the body. A subclass binds its parameters, runs its body
      * up to `super(...)`, constructs the base with the arguments that call
      * evaluated, initializes its own fields and parameter properties, and
      * finishes the body. A subclass without a constructor passes its
@@ -1119,7 +1123,6 @@ export class ClassLowerer {
         instanceType: ts.Type,
         construction: ts.NewExpression | ts.CallExpression,
     ): void {
-        const fields = writable(instance.recordProperties!);
         const constructorDeclaration = table.constructorDeclaration;
         if (table.base && !constructorDeclaration) {
             this.initialize(
@@ -1142,28 +1145,29 @@ export class ClassLowerer {
                         construction,
                         instance,
                     );
-                // Field declarations with initializers bind first, so the
-                // constructor body can already read them.
-                this.initializeFields(table, instance, instanceType);
-                if (constructorDeclaration) {
+                // The arguments are evaluated before the instance's own
+                // members initialize, which the body can then read.
+                if (constructorDeclaration)
                     this.bindParameters(
                         constructorDeclaration,
                         argumentList,
-                        fields,
                         false,
                         evaluatedArguments,
                     );
-                    for (const statement of constructorDeclaration.body
-                        ?.statements ?? []) {
-                        this.context.emitStatement(statement);
-                    }
-                }
+                this.initializeOwnMembers(
+                    table,
+                    instance,
+                    instanceType,
+                    constructorDeclaration,
+                );
+                for (const statement of constructorDeclaration?.body
+                    ?.statements ?? [])
+                    this.context.emitStatement(statement);
                 return;
             }
             this.bindParameters(
                 constructorDeclaration,
                 argumentList,
-                undefined,
                 false,
                 evaluatedArguments,
             );
@@ -1212,21 +1216,12 @@ export class ClassLowerer {
                         superCall,
                     );
                 }
-                this.initializeFields(table, instance, instanceType);
-                for (const parameter of constructorDeclaration.parameters) {
-                    if (
-                        ts.isParameterPropertyDeclaration(
-                            parameter,
-                            constructorDeclaration,
-                        ) &&
-                        ts.isIdentifier(parameter.name)
-                    ) {
-                        this.initializeParameterProperty(
-                            parameter.name,
-                            fields,
-                        );
-                    }
-                }
+                this.initializeOwnMembers(
+                    table,
+                    instance,
+                    instanceType,
+                    constructorDeclaration,
+                );
             }
             if (!constructed) {
                 this.context.fail(
@@ -1333,7 +1328,11 @@ export class ClassLowerer {
                     if (
                         members.some(
                             (candidate) =>
-                                candidate.getCallSignatures().length > 0,
+                                callSignatures(
+                                    this.context.checker,
+                                    candidate,
+                                    "exact",
+                                ).length > 0,
                         )
                     ) {
                         // An optional callback is compile-time wiring. Keep
@@ -1443,42 +1442,19 @@ export class ClassLowerer {
             string,
             { index: number; assignment: ts.BinaryExpression }
         >();
-        const parameterIndex = new EmissionMap<string, number>();
-        constructorDeclaration.parameters.forEach((parameter, index) => {
-            if (ts.isIdentifier(parameter.name)) {
-                parameterIndex.set(parameter.name.text, index);
-            }
-        });
         const stored = new EmissionSet(layout.map((field) => field.source));
         const declared = new EmissionSet(
             classChainInstanceProperties(this.table(declaration)).map(
                 (member) => member.name.text,
             ),
         );
-        for (const statement of constructorDeclaration.body?.statements ?? []) {
-            if (
-                !ts.isExpressionStatement(statement) ||
-                !ts.isBinaryExpression(statement.expression) ||
-                statement.expression.operatorToken.kind !==
-                    ts.SyntaxKind.EqualsToken
-            ) {
-                continue;
-            }
-            const { left, right } = statement.expression;
-            if (
-                !ts.isPropertyAccessExpression(left) ||
-                left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-                !ts.isIdentifier(right) ||
-                stored.has(left.name.text) ||
-                !declared.has(left.name.text)
-            ) {
-                continue;
-            }
-            const index = parameterIndex.get(right.text);
-            if (index !== undefined) {
-                hoisted.set(left.name.text, {
-                    index,
-                    assignment: statement.expression,
+        for (const write of constructorFieldParameters(
+            constructorDeclaration,
+        )) {
+            if (!stored.has(write.field) && declared.has(write.field)) {
+                hoisted.set(write.field, {
+                    index: write.parameter,
+                    assignment: write.assignment,
                 });
             }
         }
@@ -1678,7 +1654,7 @@ export class ClassLowerer {
             this.context.checker.getTypeAtLocation(node),
         );
         const classes: ts.ClassLikeDeclaration[] = [];
-        for (const member of type.isUnion() ? type.types : [type]) {
+        for (const member of unionMembers(type)) {
             const constraint =
                 (member.flags & ts.TypeFlags.TypeParameter) !== 0
                     ? this.context.checker.getBaseConstraintOfType(member)
@@ -2033,19 +2009,18 @@ export class ClassLowerer {
                 node,
                 `Recursive generator method '${methodLabel(method)}' is not supported.`,
             );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         this.activeGeneratorMethods.add(method);
         try {
-            return this.context.userFunctions.compileCallbackWithValues(
-                this.context,
-                method,
-                arguments_,
-                node,
+            return this.context.withThis(instance, () =>
+                this.context.userFunctions.compileCallbackWithValues(
+                    this.context,
+                    method,
+                    arguments_,
+                    node,
+                ),
             );
         } finally {
             this.activeGeneratorMethods.delete(method);
-            this.context.defineThis(previousThis);
         }
     }
 
@@ -2057,10 +2032,9 @@ export class ClassLowerer {
     public compileIterableIterator(
         expression: ts.Expression,
     ): Value | undefined {
-        const declaration = this.context.checker
-            .getTypeAtLocation(expression)
-            .getSymbol()
-            ?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(
+            this.context.checker.getTypeAtLocation(expression),
+        );
         if (!declaration) return undefined;
         const declared = classIteratorMethod(
             this.context.checker,
@@ -2077,7 +2051,7 @@ export class ClassLowerer {
         const method =
             classIteratorMethod(this.context.checker, this.table(owner)) ??
             declared;
-        if (!method.asteriskToken || !method.body)
+        if (!isGeneratorFunction(method) || !method.body)
             this.context.fail(
                 method,
                 "A [Symbol.iterator] method is lowered as a generator method.",
@@ -2149,12 +2123,23 @@ export class ClassLowerer {
      * overriding it: once per override, on the stored tag. Undefined when
      * the getter is the one every candidate reads.
      */
+    /** A dispatched member's key, as the class member table records it. */
+    private memberKey(name: ts.PropertyName): string {
+        return (
+            staticPropertyKey(this.context.checker, name) ??
+            this.context.fail(
+                name,
+                "A dispatched class member's key must be known at generation.",
+            )
+        );
+    }
+
     public dispatchGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
         read: (receiver: Value, accessor: ts.GetAccessorDeclaration) => Value,
     ): Value | undefined {
-        const name = accessor.name.getText();
+        const name = this.memberKey(accessor.name);
         const node = accessor.name;
         const signature =
             this.context.checker.getSignatureFromDeclaration(accessor);
@@ -2206,7 +2191,7 @@ export class ClassLowerer {
         if (groups.size < 2) return undefined;
         const type = yielded;
         const resultType =
-            !type || (type.flags & ts.TypeFlags.Void) !== 0
+            !type || isVoid(type)
                 ? undefined
                 : (this.context.dataTypes.fromTsType(type, node) ??
                   this.context.fail(
@@ -2228,6 +2213,8 @@ export class ClassLowerer {
             });
         }
         const hierarchy = this.context.dataTypes.classHierarchy;
+        // The tag test reads the receiver, which a closure then captures.
+        this.context.useNativeValue(instance);
         const tag = `${instance.cpp}->${classTagMember}`;
         const arms = [...groups.values()];
         arms.forEach((group, index) => {
@@ -2326,35 +2313,26 @@ export class ClassLowerer {
                 `Reached method '${methodLabel(method)}' requires a body.`,
             );
         }
-        if (method.asteriskToken)
+        if (isGeneratorFunction(method))
             return this.compileGeneratorMethod(
                 instance,
                 method,
                 this.compileClassArguments(method, call.arguments, "method"),
                 call,
             );
-        if (
-            this.context.options.workers &&
-            method.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
-        ) {
+        if (this.context.options.workers && isAsyncFunction(method)) {
             const arguments_ = this.compileClassArguments(
                 method,
                 call.arguments,
                 "method",
             );
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
-            try {
+            return this.context.withThis(instance, () => {
                 return this.context.asyncActivations.compileAsyncCall(
                     method,
                     arguments_,
                     call,
                 )!;
-            } finally {
-                this.context.defineThis(previousThis);
-            }
+            });
         }
         const activeRecursive = this.activeRecursiveMethods.get(method);
         if (activeRecursive) {
@@ -2394,16 +2372,11 @@ export class ClassLowerer {
             ? this.context.checker.getReturnTypeOfSignature(signature)
             : undefined;
         const effectiveReturn =
-            checkerReturn &&
-            method.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
+            checkerReturn && isAsyncFunction(method)
                 ? (this.context.checker.getAwaitedType(checkerReturn) ??
                   checkerReturn)
                 : checkerReturn;
-        const returnsVoid =
-            !effectiveReturn ||
-            (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        const returnsVoid = !effectiveReturn || isVoid(effectiveReturn);
         // A function argument is bound at generation, so the shared body is
         // specialized per callback like any other captured argument.
         const sharedBody =
@@ -2435,14 +2408,12 @@ export class ClassLowerer {
                 : mappedReturnType
                   ? this.context.dataTypes.ownReturnedArray(mappedReturnType)
                   : undefined;
-        const lastStatement = method.body.statements.at(-1);
+        const lastReturn = finalReturn(method.body);
         const inlineOwnerReturn =
             returnType?.kind === "handle" &&
             !returnType.ownedEngine &&
             isEngineScopedHandleKind(returnType.handle) &&
-            lastStatement !== undefined &&
-            ts.isReturnStatement(lastStatement) &&
-            lastStatement.expression !== undefined &&
+            lastReturn?.expression !== undefined &&
             !firstReturn(method.body.statements.slice(0, -1), {
                 valued: true,
             }) &&
@@ -2458,12 +2429,8 @@ export class ClassLowerer {
         // A final resource return keeps the actual field owner alongside its
         // handle instead of reducing it to the declared raw return type.
         if (!returnsVoid && (!returnType || inlineOwnerReturn)) {
-            const finalStatement = lastStatement;
-            if (
-                !finalStatement ||
-                !ts.isReturnStatement(finalStatement) ||
-                !finalStatement.expression
-            ) {
+            const finalStatement = lastReturn;
+            if (!finalStatement?.expression) {
                 this.context.fail(
                     method,
                     `Method '${methodLabel(method)}' returns a value outside the native data model and requires a final value return.`,
@@ -2494,36 +2461,34 @@ export class ClassLowerer {
             this.context.bindings.pushScope(
                 this.context.allocateUserFunctionPrefix(),
             );
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
             try {
-                this.bindParameters(
-                    method,
-                    argumentValues.expressions,
-                    undefined,
-                    false,
-                    argumentValues.values,
-                    argumentValues.missing,
-                );
-                const result = this.inlineOnReceiver(
-                    method,
-                    instance,
-                    call,
-                    () => {
-                        for (const statement of leading) {
-                            this.context.emitStatement(statement);
-                        }
-                        return this.context.compileValue(
-                            finalStatement.expression!,
-                        );
-                    },
-                );
-                return {
-                    ...result,
-                    requiresExplicitDiscard: true,
-                };
+                return this.context.withThis(instance, () => {
+                    this.bindParameters(
+                        method,
+                        argumentValues.expressions,
+                        false,
+                        argumentValues.values,
+                        argumentValues.missing,
+                    );
+                    const result = this.inlineOnReceiver(
+                        method,
+                        instance,
+                        call,
+                        () => {
+                            for (const statement of leading) {
+                                this.context.emitStatement(statement);
+                            }
+                            return this.context.compileValue(
+                                finalStatement.expression!,
+                            );
+                        },
+                    );
+                    return {
+                        ...result,
+                        requiresExplicitDiscard: true,
+                    };
+                });
             } finally {
-                this.context.defineThis(previousThis);
                 this.context.bindings.popScope();
             }
         }
@@ -2558,75 +2523,65 @@ export class ClassLowerer {
             (!returnType ||
                 !this.context.dataTypes.carriesFunction(returnType));
         if (shared) {
-            const previousThis = this.context.activeThis();
-            this.context.defineThis(instance);
-            try {
-                const result = this.inlineOnReceiver(
-                    method,
-                    instance,
-                    call,
-                    () =>
-                        this.context.compileSharedMethod(
-                            method,
-                            call,
-                            argumentValues.values,
-                        ),
-                );
-                if (result) return result;
-            } finally {
-                this.context.defineThis(previousThis);
-            }
+            const result = this.context.withThis(instance, () =>
+                this.inlineOnReceiver(method, instance, call, () =>
+                    this.context.compileSharedMethod(
+                        method,
+                        call,
+                        argumentValues.values,
+                    ),
+                ),
+            );
+            if (result) return result;
         }
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(
-                method,
-                argumentValues.expressions,
-                undefined,
-                false,
-                argumentValues.values,
-                argumentValues.missing,
-            );
-            const result = returnsVoid
-                ? undefined
-                : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
-            const needsFunctionScope =
-                !returnsVoid ||
-                firstReturn(method.body.statements) !== undefined;
-            this.context.emit(
-                returnsVoid
-                    ? needsFunctionScope
-                        ? "[&]() -> void {"
-                        : "{"
-                    : `[[maybe_unused]] auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
-            );
-            this.context.increaseIndent();
-            this.context.beginNativeFunctionBody(returnType);
-            try {
-                this.inlineOnReceiver(method, instance, call, () => {
-                    for (const statement of method.body!.statements) {
-                        this.context.emitStatement(statement);
-                    }
-                });
-            } finally {
-                this.context.endNativeFunctionBody();
-                this.context.decreaseIndent();
-            }
-            this.context.emit(needsFunctionScope ? "}();" : "}");
-            if (result)
-                this.context.registerNativeTemporary(result, returnType);
-            return result
-                ? {
-                      ...this.context.dataValue(result, returnType!),
-                      requiresExplicitDiscard: true,
-                  }
-                : { kind: "void", cpp: "" };
+            return this.context.withThis(instance, () => {
+                this.bindParameters(
+                    method,
+                    argumentValues.expressions,
+                    false,
+                    argumentValues.values,
+                    argumentValues.missing,
+                );
+                const result = returnsVoid
+                    ? undefined
+                    : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
+                const needsFunctionScope =
+                    !returnsVoid ||
+                    firstReturn(method.body!.statements) !== undefined;
+                this.context.emit(
+                    returnsVoid
+                        ? needsFunctionScope
+                            ? "[&]() -> void {"
+                            : "{"
+                        : `[[maybe_unused]] auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
+                );
+                this.context.increaseIndent();
+                this.context.beginNativeFunctionBody(returnType);
+                try {
+                    this.inlineOnReceiver(method, instance, call, () => {
+                        for (const statement of method.body!.statements) {
+                            this.context.emitStatement(statement);
+                        }
+                    });
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.context.decreaseIndent();
+                }
+                this.context.emit(needsFunctionScope ? "}();" : "}");
+                if (result)
+                    this.context.registerNativeTemporary(result, returnType);
+                return result
+                    ? {
+                          ...this.context.dataValue(result, returnType!),
+                          requiresExplicitDiscard: true,
+                      }
+                    : { kind: "void", cpp: "" };
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }
@@ -2644,10 +2599,11 @@ export class ClassLowerer {
                 "A reached class setter requires one parameter and a body.",
             );
         }
+        const body = setter.body;
         const argumentValue =
             evaluatedArgument ??
             this.compileClassArguments(setter, [value], "setter")[0]!;
-        const name = setter.name.getText();
+        const name = this.memberKey(setter.name);
         const dispatched = this.dispatch(
             instance,
             (table) => classAccessors(table).setters[name],
@@ -2669,28 +2625,25 @@ export class ClassLowerer {
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(setter, [value], undefined, false, [
-                argumentValue,
-            ]);
-            const needsFunctionScope =
-                firstReturn(setter.body.statements) !== undefined;
-            this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
-            this.context.increaseIndent();
-            this.context.beginNativeFunctionBody(undefined);
-            try {
-                for (const statement of setter.body.statements) {
-                    this.context.emitStatement(statement);
+            this.context.withThis(instance, () => {
+                this.bindParameters(setter, [value], false, [argumentValue]);
+                const needsFunctionScope =
+                    firstReturn(body.statements) !== undefined;
+                this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
+                this.context.increaseIndent();
+                this.context.beginNativeFunctionBody(undefined);
+                try {
+                    for (const statement of body.statements) {
+                        this.context.emitStatement(statement);
+                    }
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.context.decreaseIndent();
                 }
-            } finally {
-                this.context.endNativeFunctionBody();
-                this.context.decreaseIndent();
-            }
-            this.context.emit(needsFunctionScope ? "}();" : "}");
+                this.context.emit(needsFunctionScope ? "}();" : "}");
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }
@@ -2849,36 +2802,50 @@ export class ClassLowerer {
         );
         this.context.increaseIndent();
         this.context.bindings.pushScope(prefix);
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(body);
-        this.activeRecursiveMethods.set(method, {
-            instance: body,
-            cppName: `${self}.template call<0>`,
-            parameters,
-            returnType,
-            overReceiver,
-            binding: this.context.registerNativeBinding(self, true, true),
-        });
-        this.context.beginNativeFunctionBody(returnType);
         try {
-            for (const parameter of cppParameters) {
-                if (parameter.borrowedWrapper)
-                    this.context.registerNativeConstBinding(
-                        parameter.name,
+            this.context.withThis(body, () => {
+                this.activeRecursiveMethods.set(method, {
+                    instance: body,
+                    cppName: `${self}.template call<0>`,
+                    parameters,
+                    returnType,
+                    overReceiver,
+                    binding: this.context.registerNativeBinding(
+                        self,
                         true,
-                    );
-                this.context.bindings.bindParameterValue(parameter.identifier, {
-                    ...this.context.dataValue(parameter.name, parameter.type),
-                    ...(parameter.readOnly ? { readOnly: true as const } : {}),
+                        true,
+                    ),
                 });
-            }
-            for (const statement of method.body!.statements) {
-                this.context.emitStatement(statement);
-            }
+                this.context.beginNativeFunctionBody(returnType);
+                try {
+                    for (const parameter of cppParameters) {
+                        if (parameter.borrowedWrapper)
+                            this.context.registerNativeConstBinding(
+                                parameter.name,
+                                true,
+                            );
+                        this.context.bindings.bindParameterValue(
+                            parameter.identifier,
+                            {
+                                ...this.context.dataValue(
+                                    parameter.name,
+                                    parameter.type,
+                                ),
+                                ...(parameter.readOnly
+                                    ? { readOnly: true as const }
+                                    : {}),
+                            },
+                        );
+                    }
+                    for (const statement of method.body!.statements) {
+                        this.context.emitStatement(statement);
+                    }
+                } finally {
+                    this.context.endNativeFunctionBody();
+                    this.activeRecursiveMethods.delete(method);
+                }
+            });
         } finally {
-            this.context.endNativeFunctionBody();
-            this.activeRecursiveMethods.delete(method);
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
@@ -2909,7 +2876,7 @@ export class ClassLowerer {
     ): ts.ClassLikeDeclaration[] {
         const stored = this.context.dataTypes.classStruct(structName);
         const hierarchy = this.context.dataTypes.classHierarchy;
-        const name = method.name.getText();
+        const name = this.memberKey(method.name);
         return stored
             ? hierarchy
                   .concreteClasses(stored.declaration)
@@ -2960,10 +2927,7 @@ export class ClassLowerer {
                     );
                     return called !== undefined && reaches(called);
                 }
-                const called =
-                    this.context.checker.getResolvedSignature(
-                        node,
-                    )?.declaration;
+                const called = calledDeclaration(this.context.checker, node);
                 if (
                     node.expression.expression.kind ===
                     ts.SyntaxKind.SuperKeyword
@@ -3202,86 +3166,85 @@ export class ClassLowerer {
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
-        const previousThis = this.context.activeThis();
-        this.context.defineThis(instance);
         try {
-            this.bindParameters(
-                method,
-                call.arguments,
-                undefined,
-                false,
-                argumentValues,
-            );
-            const properties: Record<string, Value> = {};
-            for (const descriptor of descriptors) {
-                const output = this.context.bindOptionalResourceValue(
-                    descriptor.identifier,
+            return this.context.withThis(instance, () => {
+                this.bindParameters(
+                    method,
+                    call.arguments,
+                    false,
+                    argumentValues,
                 );
-                if (!output) {
-                    this.context.fail(
-                        descriptor.identifier,
-                        "A guarded record return currently requires nullable resource properties.",
-                    );
-                }
-                properties[descriptor.name] = output;
-            }
-            const condition = this.context.compileValue(guard.expression);
-            if (condition.kind !== "boolean") {
-                this.context.fail(
-                    guard.expression,
-                    "A guarded record return requires a boolean null guard.",
-                );
-            }
-            this.context.emit({
-                kind: "open",
-                code: `if (!(${condition.cpp})) {`,
-            });
-            this.context.increaseIndent();
-            this.context.bindings.pushScope(
-                this.context.allocateUserFunctionPrefix(),
-            );
-            try {
-                for (const statement of leading.slice(1)) {
-                    this.context.emitStatement(statement);
-                }
-                const success = this.context.compileValue(returned);
-                if (success.kind !== "record") {
-                    this.context.fail(
-                        returned,
-                        "A guarded record success must remain a compile-time record.",
-                    );
-                }
+                const properties: Record<string, Value> = {};
                 for (const descriptor of descriptors) {
-                    const value = success.recordProperties?.[descriptor.name];
-                    const output = properties[descriptor.name]!;
-                    if (!value || value.kind !== output.kind) {
+                    const output = this.context.bindOptionalResourceValue(
+                        descriptor.identifier,
+                    );
+                    if (!output) {
                         this.context.fail(
                             descriptor.identifier,
-                            `Guarded record property '${descriptor.name}' has an incompatible resource kind.`,
+                            "A guarded record return currently requires nullable resource properties.",
                         );
                     }
-                    this.context.assignOptionalResourceValue(
-                        output,
-                        value,
-                        descriptor.identifier,
-                    );
-                    if (value.engineCpp !== undefined) {
-                        writable(output).engineCpp = value.engineCpp;
-                    }
+                    properties[descriptor.name] = output;
                 }
-            } finally {
-                this.context.bindings.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit({ kind: "close", code: "}" });
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                requiresExplicitDiscard: true,
-            };
+                const condition = this.context.compileValue(guard.expression);
+                if (condition.kind !== "boolean") {
+                    this.context.fail(
+                        guard.expression,
+                        "A guarded record return requires a boolean null guard.",
+                    );
+                }
+                this.context.emit({
+                    kind: "open",
+                    code: `if (!(${condition.cpp})) {`,
+                });
+                this.context.increaseIndent();
+                this.context.bindings.pushScope(
+                    this.context.allocateUserFunctionPrefix(),
+                );
+                try {
+                    for (const statement of leading.slice(1)) {
+                        this.context.emitStatement(statement);
+                    }
+                    const success = this.context.compileValue(returned);
+                    if (success.kind !== "record") {
+                        this.context.fail(
+                            returned,
+                            "A guarded record success must remain a compile-time record.",
+                        );
+                    }
+                    for (const descriptor of descriptors) {
+                        const value =
+                            success.recordProperties?.[descriptor.name];
+                        const output = properties[descriptor.name]!;
+                        if (!value || value.kind !== output.kind) {
+                            this.context.fail(
+                                descriptor.identifier,
+                                `Guarded record property '${descriptor.name}' has an incompatible resource kind.`,
+                            );
+                        }
+                        this.context.assignOptionalResourceValue(
+                            output,
+                            value,
+                            descriptor.identifier,
+                        );
+                        if (value.engineCpp !== undefined) {
+                            writable(output).engineCpp = value.engineCpp;
+                        }
+                    }
+                } finally {
+                    this.context.bindings.popScope();
+                    this.context.decreaseIndent();
+                }
+                this.context.emit({ kind: "close", code: "}" });
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: properties,
+                    requiresExplicitDiscard: true,
+                };
+            });
         } finally {
-            this.context.defineThis(previousThis);
             this.context.bindings.popScope();
         }
     }
@@ -3329,7 +3292,6 @@ export class ClassLowerer {
             | ts.MethodDeclaration
             | ts.SetAccessorDeclaration,
         argumentList: readonly ts.Expression[],
-        parameterProperties?: Record<string, Value>,
         preserveStaticRecords = false,
         evaluatedArguments?: readonly Value[],
         missingLanes: ReadonlySet<number> = new Set(),
@@ -3381,18 +3343,6 @@ export class ClassLowerer {
                                 kind: "json-null",
                                 cpp: "",
                             },
-                        );
-                    }
-                    if (
-                        parameterProperties &&
-                        ts.isParameterPropertyDeclaration(
-                            parameter,
-                            declaration,
-                        )
-                    ) {
-                        this.initializeParameterProperty(
-                            parameter.name,
-                            parameterProperties,
                         );
                     }
                     return;
@@ -3452,16 +3402,32 @@ export class ClassLowerer {
             } else {
                 this.context.bindClassParameterValue(parameter.name, argument);
             }
+        });
+    }
+
+    /**
+     * A class's own part once its base part exists: field initializers, then
+     * parameter properties, in ES2022 class-field order.
+     */
+    private initializeOwnMembers(
+        table: ClassMemberTable,
+        instance: Value,
+        instanceType: ts.Type,
+        constructorDeclaration: ts.ConstructorDeclaration | undefined,
+    ): void {
+        this.initializeFields(table, instance, instanceType);
+        for (const parameter of constructorDeclaration?.parameters ?? [])
             if (
-                parameterProperties &&
-                ts.isParameterPropertyDeclaration(parameter, declaration)
-            ) {
+                ts.isParameterPropertyDeclaration(
+                    parameter,
+                    parameter.parent,
+                ) &&
+                ts.isIdentifier(parameter.name)
+            )
                 this.initializeParameterProperty(
                     parameter.name,
-                    parameterProperties,
+                    writable(instance.recordProperties!),
                 );
-            }
-        });
     }
 
     private initializeParameterProperty(
@@ -3485,12 +3451,12 @@ export class ClassLowerer {
     public storedSetterOwner(
         target: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const setter = resolvedSymbol(
+        const setter = memberAccessors(
             this.context.checker,
             target,
-        )?.declarations?.some(
+            "set",
+        ).some(
             (declaration) =>
-                ts.isSetAccessorDeclaration(declaration) &&
                 ts.isClassLike(declaration.parent) &&
                 !declaration.getSourceFile().isDeclarationFile,
         );
@@ -3627,7 +3593,7 @@ export class ClassLowerer {
         if (value.dataType?.kind !== "error" && !isJsonValue(value))
             return undefined;
         const type = this.context.checker.getTypeAtLocation(node);
-        const declaration = type.symbol?.declarations?.find(ts.isClassLike);
+        const declaration = classInstanceDeclaration(type);
         if (isJsonValue(value))
             value = this.context.dataValue(
                 `bbl::js::json_error(${value.cpp})`,

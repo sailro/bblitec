@@ -16,11 +16,10 @@ import {
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
-import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
     completeLiteralSelf,
@@ -31,6 +30,9 @@ import {
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import { ANY_KEY } from "../syntax.js";
+import { unionMembers } from "../type-facts.js";
+import { knownCondition } from "../values/model.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -42,10 +44,7 @@ function expressionEnum(
     if (resolved !== unwrapped) {
         return lowerer.compileForSink(resolved, dataType);
     }
-    if (
-        ts.isStringLiteral(unwrapped) ||
-        ts.isNoSubstitutionTemplateLiteral(unwrapped)
-    ) {
+    if (ts.isStringLiteralLike(unwrapped)) {
         return lowerer.context.dataTypes.enumMemberCpp(
             dataType,
             unwrapped.text,
@@ -274,7 +273,7 @@ function requireCopiedOwnUndefinedFields(
     );
     if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
         return;
-    const members = source.isUnion() ? source.types : [source];
+    const members = unionMembers(source);
     const storedFields = storedSource
         ? new Map(
               lowerer.context.dataTypes
@@ -338,7 +337,7 @@ function valueStruct(
         sourceType?.kind === "struct" &&
         sourceType.name !== dataType.name &&
         lowerer.context.dataTypes.isReferenceStruct(sourceType.name) &&
-        presenceCpp(value) !== "true";
+        knownCondition(presenceCpp(value)) !== true;
     if (
         sourceType &&
         (wrapped || flattened) &&
@@ -445,26 +444,9 @@ function valueStruct(
                 accessorGetter(lowerer, dataType, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
-            !lowerer.context.bindings.containsPlatformEvent(value) &&
-            ts.isExpression(node)
-        ) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                node,
-            );
-            // A binding already given its own storage is still a record
-            // only when lowering its initializer into that storage refused.
-            if (
-                declaration &&
-                lowerer.context.dynamicBindings.get(declaration) !== undefined
-            )
-                lowerer.context.fail(
-                    node,
-                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
-                );
-            if (declaration)
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+            !lowerer.context.bindings.containsPlatformEvent(value)
+        )
+            requireHeldRecordStorage(lowerer.context, value, node);
         lowerer.context.dataTypes.cppType(dataType);
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
@@ -758,9 +740,7 @@ function valueStruct(
             node,
             "accessors",
         );
-        lowerer.context.dataTypes.noteRecordConversion(dataType, [
-            UNKNOWN_PROPERTIES,
-        ]);
+        lowerer.context.dataTypes.noteRecordConversion(dataType, [ANY_KEY]);
         for (const field of fields)
             lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
         // A parsed entry converts, checked, to a scalar field type.

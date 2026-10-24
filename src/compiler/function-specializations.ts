@@ -6,7 +6,14 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, resolvedSymbol, libraryGlobal } from "./symbols.js";
+import {
+    declaredSymbol,
+    libraryGlobal,
+    calledDeclaration,
+    calledFunction,
+    memberAccessors,
+} from "./symbols.js";
+import { isSupportedFunction } from "./syntax.js";
 
 /** AST nodes, checker types and symbols are immutable compiler inputs. */
 function isCompilerInput(value: object): boolean {
@@ -258,30 +265,27 @@ function dependencyIdentifiers(
                         identifiers.set(symbol, node);
                 }
                 if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                    const called =
-                        checker.getResolvedSignature(node)?.declaration;
+                    const called = ts.isNewExpression(node)
+                        ? calledDeclaration(checker, node)
+                        : calledFunction(checker, node);
                     if (
-                        called &&
-                        (ts.isFunctionDeclaration(called) ||
-                            ts.isFunctionExpression(called) ||
-                            ts.isArrowFunction(called) ||
-                            ts.isMethodDeclaration(called) ||
-                            ts.isConstructorDeclaration(called))
+                        isSupportedFunction(called) ||
+                        (called && ts.isConstructorDeclaration(called))
                     )
                         visitFunction(called);
                 }
-                if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of resolvedSymbol(checker, node)
-                        ?.declarations ?? []) {
-                        if (
-                            ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)
-                        )
-                            visitFunction(declaration);
-                    }
-                }
+                if (
+                    ts.isPropertyAccessExpression(node) ||
+                    ts.isElementAccessExpression(node)
+                )
+                    for (const accessor of memberAccessors(
+                        checker,
+                        node,
+                        "either",
+                    ))
+                        visitFunction(accessor);
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
     };
     visitFunction(root);

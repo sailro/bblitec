@@ -8,6 +8,11 @@ import {
     meshCompositionRowsCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
+import {
+    isAsyncFunction,
+    sameSource,
+    soleBindingName,
+} from "../compiler/syntax.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -31,11 +36,7 @@ export class EngineLowerer {
             modulePath,
             "startEngine",
         ).declaration;
-        if (
-            !create.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            )
-        ) {
+        if (!isAsyncFunction(create)) {
             throw new Error("Upstream createEngine is no longer async.");
         }
         if (!this.context.hasCall(start, "requestAnimationFrame")) {
@@ -53,13 +54,16 @@ export class EngineLowerer {
             modulePath,
             "stopEngine",
         ).declaration;
-        const stopText = stop.getText(this.context.sourceFile(modulePath));
         for (const fragment of [
             "cancelAnimationFrame(engine._animFrameId)",
             "engine._animFrameId = 0",
             "engine._renderFn = null",
         ]) {
-            if (!stopText.includes(fragment)) {
+            if (
+                !this.context.hasNode(stop, (node) =>
+                    sameSource(node, fragment),
+                )
+            ) {
                 this.context.contractError(
                     stop,
                     `Expected stopEngine to carry '${fragment}'. The ` +
@@ -151,8 +155,10 @@ ${canvasDatasetSource}
             (statement) =>
                 ts.isExpressionStatement(statement) &&
                 ts.isCallExpression(statement.expression) &&
-                statement.expression.expression.getText(file) ===
+                sameSource(
+                    statement.expression.expression,
                     "engine._device.queue.submit",
+                ),
         );
         const flush = statements[submit + 1];
         if (submit < 0 || !flush)
@@ -190,13 +196,15 @@ ${body}
         const first = statements[0];
         if (
             declaration.parameters
-                .map((parameter) => parameter.name.getText(file))
+                .map((parameter) => soleBindingName(parameter.name))
                 .join(",") !== "surface,widthPx,heightPx" ||
             !first ||
             !ts.isVariableStatement(first) ||
             first.declarationList.declarations.length !== 1 ||
-            first.declarationList.declarations[0]!.name.getText(file) !==
-                "canvas" ||
+            !sameSource(
+                first.declarationList.declarations[0]!.name,
+                "canvas",
+            ) ||
             !first.declarationList.declarations[0]!.initializer ||
             !this.context.expressionMatchesShape(
                 first.declarationList.declarations[0]!.initializer,
@@ -247,7 +255,7 @@ ${body}
             !ts.isForOfStatement(notify) ||
             !ts.isVariableDeclarationList(notify.initializer) ||
             notify.initializer.declarations.length !== 1 ||
-            notify.initializer.declarations[0]!.name.getText(file) !== "c" ||
+            !sameSource(notify.initializer.declarations[0]!.name, "c") ||
             !this.context.expressionMatchesShape(
                 notify.expression,
                 "surface._renderingContexts",

@@ -8,7 +8,7 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
  * Standard retains its existing fragment texture contract.
  */
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, isSuspensionPoint } from "./syntax.js";
 import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
@@ -29,6 +29,7 @@ type MaterialPluginFamily = "standard" | "pbr";
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
 interface MaterialPluginContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "checker"
     | "program"
     | "evaluationOrder"
@@ -657,17 +658,13 @@ function foldPluginObject(
                         returned,
                         "Plugin uniforms require exactly the ubo declaration array.",
                     );
-                const property = object.properties.find(
-                    (property) =>
-                        property.name &&
-                        context.propertyName(property.name) === "ubo",
-                );
-                if (!property || !ts.isPropertyAssignment(property))
+                const ubo = context.objectProperty(object, "ubo");
+                if (!ubo)
                     context.fail(
                         returned,
                         "Plugin uniforms require a ubo declaration array.",
                     );
-                returned = property.initializer;
+                returned = ubo;
             }
             const fields = foldPluginFieldDeclarations(
                 context,
@@ -1209,7 +1206,7 @@ function foldTexturePushes(
         for (const statement of statements) {
             if (ts.isForOfStatement(statement)) {
                 if (
-                    statement.awaitModifier ||
+                    isSuspensionPoint(statement) ||
                     !ts.isVariableDeclarationList(statement.initializer) ||
                     statement.initializer.declarations.length !== 1
                 )

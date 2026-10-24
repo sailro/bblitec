@@ -1468,7 +1468,7 @@ void schedule_animation_weight_fade(
         throw std::runtime_error(
             "Animation weight fade duration must be a finite "
             "positive number, got " +
-            std::to_string(duration_ms));
+            bbl::js::number_to_string(duration_ms));
     }
     PropertyAnimationManagerRecord& owner =
         bind_manager_engine(manager, engine);
@@ -1553,7 +1553,7 @@ void cross_fade_animation_groups(
         throw std::runtime_error(
             "Animation weight must be a finite number between 0 "
             "and 1, got " +
-            std::to_string(weight));
+            bbl::js::number_to_string(weight));
     }
     return weight;
 }

@@ -112,14 +112,11 @@ export function lowerComputeTaskExecution(
             bindings,
             calls,
 
-            forOf(_iterated, element, _binding, syntax) {
-                const range = context.expressionMatchesShape(
-                    syntax.expression,
-                    "tasks",
-                )
+            forOf(iterated, element) {
+                const range = context.expressionMatchesShape(iterated, "tasks")
                     ? "tasks"
                     : context.expressionMatchesShape(
-                            syntax.expression,
+                            iterated,
                             "task._dispatches",
                         )
                       ? "task->dispatches"

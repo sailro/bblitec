@@ -5,30 +5,36 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
+import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
     hasUndefinedCallbackCompletion,
     provenUndefinedValue,
+    undefinedFromVoid,
 } from "./undefined-values.js";
 import {
     renderClosure,
     type CapturedClosure,
     type NativeCaptureBinding,
 } from "./closure-captures.js";
-import {
-    tryResolveFunctionDeclaration,
-    type SupportedFunction,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     unwrapExpression,
     argumentAt,
     expressionHasEffects,
+    valueOperands,
+    outermostWrapper,
+    positionalParameter,
+    functionKind,
+    isAsyncFunction,
+    type SupportedFunction,
 } from "./syntax.js";
 import {
     declarationInDefaultLibrary,
-    declaredInDefaultLibrary,
     declaredSymbol,
+    libraryName,
 } from "./symbols.js";
 import {
     optionalPresentCpp,
@@ -47,14 +53,24 @@ import {
 import { caughtErrorValue } from "./error-values.js";
 import {
     isPromiseResultUsed,
+    promiseReactionOf,
+    promiseStatic,
     rejectionOnlyPromiseCpp,
     settlesNever,
 } from "./promises.js";
 import { convertsToSceneNode, isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { hasNoValueCompletion } from "./native-return-type.js";
 import { representedResultType } from "./represented-result.js";
-import { isNullable, isTypeReference } from "./type-facts.js";
+import {
+    isNullable,
+    isTypeReference,
+    undefinedOnly,
+    presentMembers,
+    isVoid,
+    arrayElementType,
+    callSignatures,
+    unionMembers,
+} from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { propertyNeverObserved } from "./unread-properties.js";
 import { CompileError } from "./compile-error.js";
@@ -101,19 +117,12 @@ interface AsyncContext extends Pick<
  * on, including ones lowered before the promise was reached, so the program
  * replays with `pendingActivations`.
  */
+
 export class PendingActivationsRequired extends Error {
     constructor() {
         super("A constructed promise requires pending-activation unwinding.");
     }
 }
-
-/** Library schedulers whose callbacks never run before the call returns. */
-const DEFERRED_SCHEDULERS: ReadonlySet<string> = new Set([
-    "queueMicrotask",
-    "requestAnimationFrame",
-    "setInterval",
-    "setTimeout",
-]);
 
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
@@ -222,15 +231,15 @@ export class AsyncLowerer {
                     node,
                     "This await needs an asynchronous realm activation.",
                 );
+            const awaitedType = context.checker.getAwaitedType(
+                context.checker.getTypeAtLocation(node.expression),
+            );
             const erasedVoid =
                 context.browserErasure.isBrowserOnlyExpression(
                     node.expression,
                 ) &&
-                ((context.checker.getAwaitedType(
-                    context.checker.getTypeAtLocation(node.expression),
-                )?.flags ?? 0) &
-                    ts.TypeFlags.Void) !==
-                    0;
+                awaitedType !== undefined &&
+                isVoid(awaitedType);
             const awaited = this.asPromise(
                 erasedVoid
                     ? { kind: "void", cpp: "" }
@@ -263,13 +272,7 @@ export class AsyncLowerer {
                           awaited.promiseType,
                       );
             if (settled.kind === "void")
-                return {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                    ...(!provenUndefinedValue(context, node)
-                        ? { erasedVoidCompletion: true as const }
-                        : {}),
-                };
+                return undefinedFromVoid(context, node);
             // The settled data belongs to the expression awaiting it, so a
             // declaration it initializes takes it rather than copying it.
             if (settled.dataType !== undefined || settled.kind === "string")
@@ -286,11 +289,10 @@ export class AsyncLowerer {
             return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "resolve"
-        ) {
+        const statics = promiseStatic(node, (expression) =>
+            context.libraryGlobal(expression),
+        );
+        if (statics === "resolve") {
             if (node.arguments.length > 1)
                 return context.fail(
                     node,
@@ -298,11 +300,7 @@ export class AsyncLowerer {
                 );
             return this.asPromise(this.resolvedValue(node), node);
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            callee.name.text === "reject"
-        ) {
+        if (statics === "reject") {
             if (node.arguments.length !== 1)
                 return context.fail(
                     node,
@@ -330,19 +328,10 @@ export class AsyncLowerer {
                     : {}),
             };
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            ["all", "allSettled"].includes(callee.name.text)
-        ) {
-            return this.compileAll(node, callee.name.text === "allSettled");
-        }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            context.libraryGlobal(callee.expression) === "Promise" &&
-            (callee.name.text === "race" || callee.name.text === "any")
-        )
-            return this.compileRace(node, callee.name.text);
+        if (statics === "all" || statics === "allSettled")
+            return this.compileAll(node, statics === "allSettled");
+        if (statics === "race" || statics === "any")
+            return this.compileRace(node, statics);
         if (this.isPromiseMethod(callee)) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes
@@ -352,14 +341,9 @@ export class AsyncLowerer {
             const absent = (index: number): boolean => {
                 const argument = node.arguments[index];
                 if (!argument || expressionHasEffects(argument)) return false;
-                const type = context.checker.getTypeAtLocation(argument);
                 return (
-                    !type.isUnion() &&
-                    (type.flags &
-                        (ts.TypeFlags.Undefined |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Void)) !==
-                        0
+                    presentMembers(context.checker.getTypeAtLocation(argument))
+                        .length === 0
                 );
             };
             const absentFulfillment =
@@ -410,11 +394,11 @@ export class AsyncLowerer {
                 }
                 let evaluated: Value | undefined;
                 if (
-                    context.checker
-                        .getNonNullableType(
-                            context.checker.getTypeAtLocation(callback),
-                        )
-                        .getCallSignatures().length === 0
+                    callSignatures(
+                        context.checker,
+                        context.checker.getTypeAtLocation(callback),
+                        "present",
+                    ).length === 0
                 ) {
                     evaluated = context.compileValue(callback);
                     if (
@@ -533,15 +517,7 @@ export class AsyncLowerer {
             : ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)
               ? callee
               : undefined;
-        if (
-            !declaration ||
-            ("asteriskToken" in declaration && declaration.asteriskToken) ||
-            !ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
+        if (!declaration || functionKind(declaration) !== "async")
             return undefined;
         if (context.browserErasure.isBrowserOnlyLocalCall(node))
             return undefined;
@@ -557,7 +533,7 @@ export class AsyncLowerer {
                 context.compileValue(argument),
                 "async_argument",
                 argument,
-                declaration.parameters[index],
+                positionalParameter(node, declaration, index),
             ),
         );
         return this.activate(
@@ -573,21 +549,15 @@ export class AsyncLowerer {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined {
-        if (
-            ("asteriskToken" in declaration && declaration.asteriskToken) ||
-            !ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                )
-        )
-            return undefined;
+        if (functionKind(declaration) !== "async") return undefined;
         const values = arguments_.map((value, index) =>
             this.pinArgument(
                 value,
                 "async_argument",
                 node,
-                declaration.parameters[index],
+                ts.isCallExpression(node) || ts.isNewExpression(node)
+                    ? positionalParameter(node, declaration, index)
+                    : declaration.parameters[index],
             ),
         );
         return this.activate(declaration, declaration, values, node);
@@ -806,14 +776,7 @@ export class AsyncLowerer {
      * the application realm, whose promises keep it.
      */
     compileSynchronousConstructor(node: ts.NewExpression): Value {
-        let consumer: ts.Node = node.parent;
-        while (
-            ts.isParenthesizedExpression(consumer) ||
-            ts.isAsExpression(consumer) ||
-            ts.isSatisfiesExpression(consumer) ||
-            ts.isNonNullExpression(consumer)
-        )
-            consumer = consumer.parent;
+        const consumer = outermostWrapper(node).parent;
         if (
             (!ts.isAwaitExpression(consumer) &&
                 !ts.isReturnStatement(consumer) &&
@@ -881,9 +844,8 @@ export class AsyncLowerer {
             executor.body,
             (candidate): candidate is ts.CallExpression =>
                 ts.isCallExpression(candidate) &&
-                DEFERRED_SCHEDULERS.has(
-                    context.libraryGlobal(candidate.expression) ?? "",
-                ) &&
+                schedulerOf(context.checker, candidate.expression) !==
+                    undefined &&
                 candidate.arguments.some(namesResolving),
         );
     }
@@ -894,11 +856,7 @@ export class AsyncLowerer {
         const checker = this.context.checker;
         const awaited = checker.getAwaitedType(checker.getTypeAtLocation(node));
         if (!awaited) return undefined;
-        if (
-            (awaited.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-            0
-        )
-            return { kind: "promise" };
+        if (undefinedOnly(awaited)) return { kind: "promise" };
         const result = this.context.dataTypes.fromTsType(awaited, node);
         return result ? { kind: "promise", result } : undefined;
     }
@@ -923,13 +881,7 @@ export class AsyncLowerer {
         const declaration = ts.isIdentifier(callback)
             ? tryResolveFunctionDeclaration(context.checker, callback)
             : callback;
-        const asynchronous =
-            declaration &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                );
+        const asynchronous = declaration && isAsyncFunction(declaration);
         // An async executor suspends inside construction.
         if (synchronous && asynchronous) throw new ApplicationRealmRequired();
         // Outside a realm a Promise<T> is represented by T itself.
@@ -1082,10 +1034,7 @@ export class AsyncLowerer {
                 promise.promiseType !== first?.promiseType,
         )
             ? this.iterableSettlement(
-                  context.checker.getIndexTypeOfType(
-                      argumentType,
-                      ts.IndexKind.Number,
-                  ),
+                  arrayElementType(context.checker, argumentType),
                   argument,
                   operation,
               )
@@ -1143,9 +1092,9 @@ export class AsyncLowerer {
             return undefined;
         const context = this.context;
         const lowerer = context.dataLowerer;
-        const source = context.checker.getIndexTypeOfType(
+        const source = arrayElementType(
+            context.checker,
             context.checker.getTypeAtLocation(argument),
-            ts.IndexKind.Number,
         );
         let type = this.mappedIterableSettlement(source, argument);
         let array: DataType<"vector"> | undefined;
@@ -1256,7 +1205,7 @@ export class AsyncLowerer {
     private iterableSourceType(node: ts.Node): ts.Type | undefined {
         const checker = this.context.checker;
         const source = checker.getTypeAtLocation(node);
-        const indexed = checker.getIndexTypeOfType(source, ts.IndexKind.Number);
+        const indexed = arrayElementType(checker, source);
         if (indexed) return indexed;
         if (isTypeReference(source)) return checker.getTypeArguments(source)[0];
         return undefined;
@@ -1284,11 +1233,8 @@ export class AsyncLowerer {
         const awaited = source && context.checker.getAwaitedType(source);
         if (
             awaited &&
-            (awaited.flags &
-                (ts.TypeFlags.Void |
-                    ts.TypeFlags.Undefined |
-                    ts.TypeFlags.Never)) !==
-                0
+            (undefinedOnly(awaited) ||
+                (awaited.flags & ts.TypeFlags.Never) !== 0)
         )
             return { kind: "promise" };
         const result =
@@ -1590,16 +1536,12 @@ export class AsyncLowerer {
             );
         const nonThenableCompletion =
             cleanup && hasNonThenableCompletion(context.checker, declaration);
-        const asynchronous =
-            declaration &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                );
-        const signature = context.checker
-            .getTypeAtLocation(callback)
-            .getCallSignatures()[0];
+        const asynchronous = declaration && isAsyncFunction(declaration);
+        const signature = callSignatures(
+            context.checker,
+            context.checker.getTypeAtLocation(callback),
+            "exact",
+        )[0];
         const returnType =
             signature && context.checker.getReturnTypeOfSignature(signature);
         // A single fulfillment callback determines its own settlement. The
@@ -1616,9 +1558,7 @@ export class AsyncLowerer {
             !evaluated &&
             !inline &&
             returnType !== undefined &&
-            (returnType.flags &
-                (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                0 &&
+            undefinedOnly(returnType) &&
             context.browserErasure.isBrowserOnlyHandler(callback, rejection);
         const neverReturns =
             (rejection || settlement !== undefined) &&
@@ -1765,7 +1705,7 @@ export class AsyncLowerer {
                     settlement.result.inner.kind === "handle"
                 ) {
                     context.emitDiscardedValue(result.value);
-                    result.value = { kind: "json-null", cpp: "std::nullopt" };
+                    result.value = undefinedValue();
                 }
                 if (!cleanup)
                     result.value = this.ownResult(
@@ -1843,7 +1783,7 @@ export class AsyncLowerer {
         const context = this.context;
         const awaited = context.checker.getAwaitedType(source);
         if (!awaited) return undefined;
-        if (hasNoValueCompletion(awaited)) return { kind: "promise" };
+        if (undefinedOnly(awaited)) return { kind: "promise" };
         const result = context.dataTypes.fromPromiseResultType(awaited, node);
         return result
             ? {
@@ -1922,7 +1862,7 @@ export class AsyncLowerer {
         }
         if (value.kind === "void") {
             context.emitDiscardedValue(value);
-            value = { kind: "json-null", cpp: "std::nullopt" };
+            value = undefinedValue();
         }
         return context.dataLowerer.leafValue(
             context.dataLowerer.compileKnownValueForSink(
@@ -1970,19 +1910,12 @@ export class AsyncLowerer {
         );
     }
 
-    private isPromiseType(expression: ts.Expression): boolean {
-        return (
-            this.context.checker.getTypeAtLocation(expression).getSymbol()
-                ?.name === "Promise"
-        );
-    }
     private isPromiseMethod(
         expression: ts.Expression,
     ): expression is ts.PropertyAccessExpression {
         return (
             ts.isPropertyAccessExpression(expression) &&
-            ["then", "catch", "finally"].includes(expression.name.text) &&
-            this.isPromiseType(expression.expression)
+            promiseReactionOf(expression, this.context.checker) !== undefined
         );
     }
     private cppType(value: Value, node: ts.Node): string {
@@ -2118,17 +2051,14 @@ export class AsyncLowerer {
     }
     private normalizeUndefined(value: Value, type: ts.Type): Value {
         const result = this.context.checker.getAwaitedType(type) ?? type;
-        if (
-            value.kind === "browser" &&
-            (result.flags & ts.TypeFlags.Void) !== 0
-        )
+        if (value.kind === "browser" && isVoid(result))
             return { kind: "void", cpp: "" };
         return value.kind === "json-null" &&
-            (value.cpp === "std::nullopt" ||
+            (absenceOf(value) === "undefined" ||
                 (result.flags & ts.TypeFlags.Undefined) !== 0)
             ? {
                   kind: "void",
-                  cpp: value.cpp === "std::nullopt" ? "" : value.cpp,
+                  cpp: absenceOf(value) === "undefined" ? "" : value.cpp,
                   ...(value.erasedVoidCompletion
                       ? { erasedVoidCompletion: true as const }
                       : {}),
@@ -2174,11 +2104,8 @@ export class AsyncLowerer {
                     context.checker.getNonNullableType(type),
                 );
             return awaited &&
-                (awaited.flags &
-                    (ts.TypeFlags.Any |
-                        ts.TypeFlags.Unknown |
-                        ts.TypeFlags.Void |
-                        ts.TypeFlags.Undefined)) ===
+                !undefinedOnly(awaited) &&
+                (awaited.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
                     0
                 ? context.dataTypes.fromPromiseResultType(awaited, node)
                 : undefined;
@@ -2344,7 +2271,7 @@ export class AsyncLowerer {
         const checker = this.context.checker;
         return checker.isTupleType(type)
             ? checker.getTypeArguments(type as ts.TypeReference)[index]
-            : checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+            : arrayElementType(checker, type);
     }
 
     private withoutProducerStorage(value: Value): Value {
@@ -2475,7 +2402,7 @@ export class AsyncLowerer {
                 : undefined;
             if (
                 presenceFlagCpp(value) !== undefined &&
-                presenceFlagCpp(value) !== "true" &&
+                knownCondition(presenceFlagCpp(value)) !== true &&
                 !(result?.kind === "handle" && result.handle === value.kind) &&
                 !(
                     result?.kind === "struct" &&
@@ -2740,11 +2667,7 @@ export class AsyncLowerer {
                 ? resolved.types
                 : [resolved];
             if (
-                parts.some(
-                    (part) =>
-                        part.symbol?.name === "Promise" &&
-                        declaredInDefaultLibrary(part.symbol),
-                ) &&
+                parts.some((part) => libraryName(part) === "Promise") &&
                 then.declarations?.every(declarationInDefaultLibrary)
             )
                 return false;
@@ -2755,40 +2678,18 @@ export class AsyncLowerer {
                 then.declarations?.some((declaration) =>
                     ts.isGetAccessorDeclaration(declaration),
                 ) === true ||
-                (propertyType.isUnion()
-                    ? propertyType.types
-                    : [propertyType]
-                ).some((member) => member.getCallSignatures().length > 0)
+                unionMembers(propertyType).some(
+                    (member) =>
+                        callSignatures(this.context.checker, member, "exact")
+                            .length > 0,
+                )
             );
         };
-        const customResult = (source: ts.Node): boolean => {
-            if (!ts.isExpression(source))
-                return customThen(
-                    this.context.checker.getTypeAtLocation(source),
-                );
-            const expression = unwrapExpression(source);
-            if (ts.isConditionalExpression(expression))
-                return (
-                    customResult(expression.whenTrue) ||
-                    customResult(expression.whenFalse)
-                );
-            if (ts.isBinaryExpression(expression)) {
-                switch (expression.operatorToken.kind) {
-                    case ts.SyntaxKind.CommaToken:
-                    case ts.SyntaxKind.AmpersandAmpersandToken:
-                        return customResult(expression.right);
-                    case ts.SyntaxKind.BarBarToken:
-                    case ts.SyntaxKind.QuestionQuestionToken:
-                        return (
-                            customResult(expression.left) ||
-                            customResult(expression.right)
-                        );
-                }
-            }
-            return customThen(
-                this.context.checker.getTypeAtLocation(expression),
+        const customResult = (source: ts.Node): boolean =>
+            (ts.isExpression(source) ? valueOperands(source) : [source]).some(
+                (operand) =>
+                    customThen(this.context.checker.getTypeAtLocation(operand)),
             );
-        };
         if (
             value?.recordMethods?.then ||
             value?.recordGetters?.then ||

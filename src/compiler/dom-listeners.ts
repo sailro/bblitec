@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity, elementInterfaceTag } from "./dom-targets.js";
@@ -10,6 +11,7 @@ import {
     optionalOptionValue,
 } from "./option-helpers.js";
 import { pinCpp } from "./evaluation-order.js";
+import { valueKindOf, unionMembers } from "./type-facts.js";
 
 type Context = Pick<
     LoweringServices,
@@ -263,9 +265,9 @@ export function declaresListenerSignal(
     expression: ts.Expression | undefined,
 ): boolean {
     const declares = (type: ts.Type): boolean =>
-        type.isUnion()
-            ? type.types.some(declares)
-            : type.getProperty("signal") !== undefined;
+        unionMembers(type).some(
+            (member) => member.getProperty("signal") !== undefined,
+        );
     return (
         expression !== undefined &&
         declares(
@@ -286,9 +288,7 @@ export function listenerOptions(
     const result = { capture: "false", once: "false", passive: "false" };
     if (!expression) return result;
     if (
-        (context.checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.BooleanLike) !==
-        0
+        valueKindOf(context.checker.getTypeAtLocation(expression)) === "boolean"
     ) {
         result.capture = context.conditions.compileCondition(expression);
         return result;
@@ -348,7 +348,7 @@ function listenerSignal(
     const optional = stored?.kind === "optional";
     const type = optional ? stored.inner : stored;
     if (value.kind === "json-null" || type?.kind === "undefined") {
-        if (value.kind === "json-null" && value.cpp !== "std::nullopt")
+        if (absenceOf(value) === "null")
             return context.fail(
                 site,
                 "Event listener signal accepts undefined or a DOM AbortSignal, not null.",

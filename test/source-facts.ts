@@ -11,11 +11,95 @@ interface SourceFacts {
     members: Set<string>;
     calls: Set<string>;
     constructs: Set<string>;
+    /** `parent.name === node`-style tests of the role a name plays in its parent. */
+    nameRoleTests: number;
+    /** `ts.isIdentifier(x) || ts.isStringLiteral(x)`-style rules for the key a name spells. */
+    keyRuleTests: number;
+    /** `x.propertyName ? ... : x.name` / `x.propertyName ?? x.name`: a destructuring or specifier name rule. */
+    propertyNameRules: number;
+    /** `x.properties.find(...)`: a literal's member looked up by hand. */
+    memberScans: number;
+    /** `type.symbol?.name === "Promise"`: a library type identified by its name. */
+    symbolNameTests: number;
+    /** `.declaration` / `.getDeclaration()` of a call's resolved signature, chained or through a binding. */
+    resolvedDeclarationReads: number;
+    /** `t.isUnion() ? ... : ...`: a union's members taken by hand. */
+    unionMemberRules: number;
     lockSetter: boolean;
     barrel: boolean;
 }
 
 const cache = new Map<string, SourceFacts>();
+
+const literalTests = new Set([
+    "isStringLiteral",
+    "isStringLiteralLike",
+    "isNumericLiteral",
+    "isNoSubstitutionTemplateLiteral",
+]);
+
+/** `x.symbol.name`, `x.getSymbol()?.getName()`: the name of a symbol read off a type or symbol. */
+function symbolNameRead(side: ts.Expression, file: ts.SourceFile): boolean {
+    let read: ts.Expression = side;
+    if (
+        ts.isCallExpression(read) &&
+        ts.isPropertyAccessExpression(read.expression) &&
+        read.expression.name.text === "getName"
+    )
+        read = read.expression;
+    else if (
+        !ts.isPropertyAccessExpression(read) ||
+        !["name", "escapedName"].includes(read.name.text)
+    )
+        return false;
+    const owner = (read as ts.PropertyAccessExpression).expression
+        .getText(file)
+        .replaceAll("?", "")
+        .replaceAll("!", "");
+    return /symbol(\(\))?$/i.test(owner);
+}
+
+/** The `||` operands of a chain, through parentheses. */
+function disjuncts(node: ts.Expression): ts.Expression[] {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ? [...disjuncts(node.left), ...disjuncts(node.right)]
+        : [node];
+}
+
+/** Whether a `||` is no operand of an enclosing `||`. */
+function outermostDisjunction(node: ts.BinaryExpression): boolean {
+    let parent = node.parent;
+    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    return !(
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken
+    );
+}
+
+/** Whether a chain tests one operand for an identifier and for a literal. */
+function keyRule(chain: ts.BinaryExpression): boolean {
+    const tests = new Map<string, Set<string>>();
+    for (const part of disjuncts(chain)) {
+        if (
+            !ts.isCallExpression(part) ||
+            part.arguments.length !== 1 ||
+            !ts.isPropertyAccessExpression(part.expression) ||
+            expressionName(part.expression.expression) !== "ts"
+        )
+            continue;
+        const operand = part.arguments[0]!.getText();
+        const names = tests.get(operand) ?? new Set<string>();
+        names.add(part.expression.name.text);
+        tests.set(operand, names);
+    }
+    return [...tests.values()].some(
+        (names) =>
+            names.has("isIdentifier") &&
+            [...names].some((name) => literalTests.has(name)),
+    );
+}
 
 function expressionName(node: ts.Node): string | undefined {
     if (ts.isIdentifier(node)) return node.text;
@@ -27,15 +111,25 @@ function expressionName(node: ts.Node): string | undefined {
     return undefined;
 }
 
+const texts = new Map<string, string>();
+
+/** A source file's text, read once per test process. */
+export function sourceText(path: string): string {
+    let text = texts.get(path);
+    if (text === undefined)
+        texts.set(path, (text = readFileSync(path, "utf8")));
+    return text;
+}
+
 /** Structural dependency facts, independent of whitespace and comments. */
 export function sourceFacts(path: string): SourceFacts {
     const previous = cache.get(path);
     if (previous) return previous;
     const file = ts.createSourceFile(
         path,
-        readFileSync(path, "utf8"),
+        sourceText(path),
         ts.ScriptTarget.Latest,
-        false,
+        true,
     );
     const facts: SourceFacts = {
         imports: new Map(),
@@ -43,12 +137,61 @@ export function sourceFacts(path: string): SourceFacts {
         members: new Set(),
         calls: new Set(),
         constructs: new Set(),
+        nameRoleTests: 0,
+        keyRuleTests: 0,
+        propertyNameRules: 0,
+        memberScans: 0,
+        symbolNameTests: 0,
+        resolvedDeclarationReads: 0,
+        unionMemberRules: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
             file.statements.every(ts.isExportDeclaration),
     };
+    // Bindings initialized from a resolved signature: name and function.
+    const signatures = new Set<string>();
+    const scoped = (name: string, node: ts.Node): string =>
+        `${ts.findAncestor(node.parent, ts.isFunctionLike)?.pos ?? -1}:${name}`;
+    const resolvesSignature = (node: ts.Node): boolean =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "getResolvedSignature";
     const visit = (node: ts.Node): void => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer &&
+            (function contains(child: ts.Node): boolean {
+                return (
+                    resolvesSignature(child) ||
+                    ts.forEachChild(child, contains) === true
+                );
+            })(node.initializer)
+        )
+            signatures.add(scoped(node.name.text, node));
+        if (
+            ts.isConditionalExpression(node) &&
+            ts.isCallExpression(node.condition) &&
+            ts.isPropertyAccessExpression(node.condition.expression) &&
+            node.condition.expression.name.text === "isUnion"
+        )
+            facts.unionMemberRules++;
+        if (ts.isPropertyAccessExpression(node)) {
+            let owner: ts.Expression = node.expression;
+            while (
+                ts.isNonNullExpression(owner) ||
+                ts.isParenthesizedExpression(owner)
+            )
+                owner = owner.expression;
+            if (
+                ["declaration", "getDeclaration"].includes(node.name.text) &&
+                (resolvesSignature(owner) ||
+                    (ts.isIdentifier(owner) &&
+                        signatures.has(scoped(owner.text, owner))))
+            )
+                facts.resolvedDeclarationReads++;
+        }
         if (
             ts.isImportDeclaration(node) &&
             ts.isStringLiteral(node.moduleSpecifier)
@@ -84,6 +227,66 @@ export function sourceFacts(path: string): SourceFacts {
                     : facts.constructs
                 ).add(name);
         }
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            [node.left, node.right].some(
+                (side, index, sides) =>
+                    ts.isPropertyAccessExpression(side) &&
+                    ["name", "propertyName", "label"].includes(
+                        side.name.text,
+                    ) &&
+                    /(^|\.)parent$/.test(
+                        expressionName(side.expression) ?? "",
+                    ) &&
+                    ts.isIdentifier(sides[1 - index]!),
+            )
+        )
+            facts.nameRoleTests++;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+            outermostDisjunction(node) &&
+            keyRule(node)
+        )
+            facts.keyRuleTests++;
+        const chosen = ts.isConditionalExpression(node)
+            ? node.condition
+            : ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+              ? node.left
+              : undefined;
+        if (
+            chosen &&
+            ts.isPropertyAccessExpression(chosen) &&
+            chosen.name.text === "propertyName"
+        )
+            facts.propertyNameRules++;
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
+            [node.left, node.right].some(
+                (side, index, sides) =>
+                    symbolNameRead(side, file) &&
+                    ts.isStringLiteral(sides[1 - index]!) &&
+                    /^[A-Z]/.test((sides[1 - index] as ts.StringLiteral).text),
+            )
+        )
+            facts.symbolNameTests++;
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            ["find", "findLast"].includes(node.expression.name.text) &&
+            ts.isPropertyAccessExpression(node.expression.expression) &&
+            node.expression.expression.name.text === "properties"
+        )
+            facts.memberScans++;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

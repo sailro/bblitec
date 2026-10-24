@@ -27,8 +27,8 @@ export function compileComputeUniformArenaIntrinsic(
         context.reachFeature("compute:uniform-arena", call);
         const task = context.compileValue(argumentAt(call, 0));
         context.expectKind(task, "compute-task", call);
-        const length = context.compileNumber(argumentAt(call, 1)),
-            count = context.compileNumber(argumentAt(call, 2));
+        const length = context.compileNumber(argumentAt(call, 1), "double"),
+            count = context.compileNumber(argumentAt(call, 2), "double");
         const label = compileUniformBufferLabel(context, call.arguments[3]);
         return {
             kind: "compute-uniform-arena",
@@ -40,7 +40,7 @@ export function compileComputeUniformArenaIntrinsic(
     context.expectArgumentCount(call, update ? 3 : 2, update ? 4 : 2);
     const arena = context.compileValue(argumentAt(call, 0));
     context.expectKind(arena, "compute-uniform-arena", call);
-    const slot = context.compileNumber(argumentAt(call, 1));
+    const slot = context.compileNumber(argumentAt(call, 1), "double");
     if (!update)
         return {
             kind: "number",
@@ -64,7 +64,7 @@ export function compileComputeUniformArenaIntrinsic(
         sourceExpression,
     );
     const offset = call.arguments[3]
-        ? context.compileNumber(call.arguments[3])
+        ? context.compileNumber(call.arguments[3], "double")
         : "0.0";
     return {
         kind: "void",

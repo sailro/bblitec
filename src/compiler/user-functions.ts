@@ -1,4 +1,5 @@
 import {
+    booleanValue,
     commonResourceValue,
     isStringValue,
     optionalPresentCpp,
@@ -15,14 +16,14 @@ import {
     findAnalysisNodeWithState,
     findAnalysisNode,
 } from "./analysis-walk.js";
-import {
-    EmissionSet,
-    EmissionMap,
-    EmissionWeakMap,
-    writable,
-} from "./emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import {
+    bindingIsOnlyCalledDirectly,
+    bindingRebinds,
+} from "./binding-rebinds.js";
+import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
@@ -30,6 +31,11 @@ import {
     nullability,
     presentLiteralKeys,
     typeCanCarryReference,
+    holdsOnly,
+    isNullable,
+    holdsNoPayload,
+    valueKindOf,
+    unionMembers,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -69,6 +75,7 @@ import { isReadOnlyRegExpCall } from "./regexp-call-effects.js";
 import {
     callArgumentIsReadOnly,
     isEffectFunction,
+    libraryWrittenArgument,
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
@@ -79,6 +86,7 @@ import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
+    readsErasedVoid,
 } from "./undefined-values.js";
 import {
     staticNumberValue,
@@ -88,16 +96,17 @@ import {
     aliasTarget,
     CompilerSymbols,
     declaredSymbol,
-    declaredInDefaultLibrary,
     isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
+    libraryName,
+    calledDeclaration,
+    calledFunction,
+    memberAccessors,
 } from "./symbols.js";
 import {
-    assignmentTargets,
-    isAssignmentExpression,
     isDeclaredInside,
-    isUpdateExpression,
+    isOperandSelection,
     mutatingCallTarget,
     outermostWrapper,
     requiredParameterCount,
@@ -105,19 +114,36 @@ import {
     rootIdentifier,
     sourceFunctionName,
     unwrapExpression,
+    yieldedOperands,
     argumentAt,
+    writeSites,
+    referenceSite,
+    accessKey,
+    bindingNameIdentifiers,
+    plainDataMembers,
+    positionalParameter,
+    isAsyncFunction,
+    isGeneratorFunction,
+    isSuspensionPoint,
+    isSupportedFunction,
+    functionOfDeclaration,
+    type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import {
+    emitReachableStatements,
+    finalReturn,
     firstReturn,
     forEachReturn,
     returnsNever,
-    emitReachableStatements,
 } from "./loop-control.js";
 import {
     FunctionSpecializations,
     functionDependencies,
 } from "./function-specializations.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
+import { isStaticMember } from "./class-members.js";
 
 export interface CallbackInvocationOptions {
     coroutine?: true;
@@ -125,47 +151,6 @@ export interface CallbackInvocationOptions {
     generator?: DataType<"iterator">;
     /** A concrete collection sink can retain its mapper's declared result model. */
     resultType?: DataType;
-}
-
-const directCallBindingCache = new EmissionWeakMap<
-    ts.TypeChecker,
-    WeakMap<ts.Node, WeakMap<ts.Identifier, boolean>>
->();
-
-export function bindingIsOnlyCalledDirectly(
-    checker: ts.TypeChecker,
-    name: ts.Identifier,
-    scope: ts.Node,
-): boolean {
-    let scopes = directCallBindingCache.get(checker);
-    if (!scopes)
-        directCallBindingCache.set(checker, (scopes = new EmissionWeakMap()));
-    let bindings = scopes.get(scope);
-    if (!bindings) scopes.set(scope, (bindings = new EmissionWeakMap()));
-    const cached = bindings.get(name);
-    if (cached !== undefined) return cached;
-    const symbol = declaredSymbol(checker, name);
-    const onlyCalled =
-        !!symbol &&
-        !someAnalysisNode(
-            scope,
-            (node) => {
-                if (
-                    !ts.isIdentifier(node) ||
-                    node === name ||
-                    declaredSymbol(checker, node) !== symbol
-                )
-                    return false;
-                const parent = node.parent;
-                return (
-                    !ts.isCallExpression(parent) ||
-                    unwrapExpression(parent.expression) !== node
-                );
-            },
-            { types: "skip" },
-        );
-    bindings.set(name, onlyCalled);
-    return onlyCalled;
 }
 
 function generationKnownPrimitive(value: Value): boolean {
@@ -194,13 +179,7 @@ export function snapshotArrayLiteral(
             return (
                 ts.isIdentifier(record) ||
                 (ts.isObjectLiteralExpression(record) &&
-                    record.properties.every(
-                        (property) =>
-                            (ts.isPropertyAssignment(property) ||
-                                ts.isShorthandPropertyAssignment(property)) &&
-                            !ts.isComputedPropertyName(property.name) &&
-                            property.name.text !== "__proto__",
-                    ))
+                    plainDataMembers(record) !== undefined)
             );
         })
     )
@@ -380,18 +359,14 @@ function dataArgumentMayRunCode(
                 ts.isCallExpression(node) ||
                 ts.isNewExpression(node) ||
                 ts.isElementAccessExpression(node) ||
-                isUpdateExpression(node) ||
-                isAssignmentExpression(node)
+                writeSites(node).length > 0
             ) {
                 return true;
             }
             if (!ts.isPropertyAccessExpression(node)) return false;
-            const symbol = resolvedSymbol(checker, node);
             return (
-                !symbol ||
-                (symbol.declarations ?? []).some((declaration) =>
-                    ts.isGetAccessorDeclaration(declaration),
-                )
+                !resolvedSymbol(checker, node) ||
+                memberAccessors(checker, node, "get").length > 0
             );
         },
         { functions: "skip", types: "skip" },
@@ -443,7 +418,7 @@ export function requiresDefaultParameterBinding(
                 binding &&
                 ts.isVariableDeclaration(binding) &&
                 ts.isVariableDeclarationList(binding.parent) &&
-                (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                variableKind(binding.parent) === "const" &&
                 (type.flags &
                     (ts.TypeFlags.StringLiteral |
                         ts.TypeFlags.NumberLiteral |
@@ -498,25 +473,6 @@ export function functionUsesDynamicThis(
     return uses;
 }
 
-export type SupportedFunction =
-    | ts.FunctionDeclaration
-    | ts.FunctionExpression
-    | ts.ArrowFunction
-    | ts.MethodDeclaration;
-
-/** The four declaration shapes this compiler inlines, as one narrowing. */
-export function isSupportedFunction(
-    node: ts.Node | undefined,
-): node is SupportedFunction {
-    return (
-        node !== undefined &&
-        (ts.isFunctionDeclaration(node) ||
-            ts.isFunctionExpression(node) ||
-            ts.isArrowFunction(node) ||
-            ts.isMethodDeclaration(node))
-    );
-}
-
 /**
  * The three shapes that write through a target this walk is tracking: an
  * assignment, an increment, and a method call that mutates.
@@ -533,35 +489,43 @@ export function isSupportedFunction(
  * `mutatingArrayMethods`. Both are legitimate and neither is the other's
  * default, so the predicate is a parameter rather than a second copy of the
  * three clauses.
+ *
+ * `isTarget` learns whether the target is assigned or is a mutated
+ * receiver: assigning a bare name rebinds it, which a caller tracking the
+ * object rather than the name does not count.
  */
 function writesThroughRoot(
     node: ts.Node,
-    isTarget: (expression: ts.Expression) => boolean,
+    isTarget: (
+        expression: ts.Expression,
+        via: "assignment" | "receiver",
+    ) => boolean,
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
     checker?: ts.TypeChecker,
     sourceFiles?: readonly ts.SourceFile[],
 ): boolean {
-    if (isAssignmentExpression(node)) {
-        return assignmentTargets(node.left).some(isTarget);
-    }
-    if (isUpdateExpression(node)) {
-        return isTarget(node.operand);
-    }
+    const writes = writeSites(node);
+    if (writes.length > 0)
+        return writes.some(({ target }) => isTarget(target, "assignment"));
     if (
         checker &&
         sourceFiles &&
         isReadOnlyRegExpCall(checker, node, sourceFiles)
     )
         return false;
-    const target = mutatingCallTarget(node, mutatesVia);
+    const target = mutatingCallTarget(
+        node,
+        mutatesVia,
+        checker && ((call) => libraryWrittenArgument(checker, call)),
+    );
     // Calling a method on a primitive field cannot write through its owner.
     // Argument and callback effects remain the enclosing analysis's concern.
     return (
         target !== undefined &&
         (!checker ||
             typeCanCarryReference(checker.getTypeAtLocation(target))) &&
-        isTarget(target)
+        isTarget(target, "receiver")
     );
 }
 
@@ -601,6 +565,9 @@ export function retainedNativeMutationTarget(
  * per-kind half the callers keep — arrays and plain objects recognize
  * writes differently — and `mutates` may itself extend the set through
  * `addAlias` (the object walk follows call arguments into parameters).
+ * A walk that tracks members too says through `aliasingMember` which name
+ * a destructuring binds out of `source` (`const { b } = record`,
+ * `[, s] = values`) holds one.
  */
 export function aliasedMutationScan(
     identifier: ts.Identifier,
@@ -611,6 +578,21 @@ export function aliasedMutationScan(
             scan: AliasedMutationScan,
         ) => boolean;
         readonly mutates: (node: ts.Node, scan: AliasedMutationScan) => boolean;
+        readonly aliasingMember?: (
+            source: ts.Expression,
+            leaf: ts.Identifier,
+            scan: AliasedMutationScan,
+        ) => boolean;
+        /**
+         * `for (const leaf of source)`: whether the loop name holds a tracked
+         * member. A walk whose aliases stand for the container itself (the
+         * array walk) leaves it out: a loop over an array reads its elements.
+         */
+        readonly aliasingIteration?: (
+            source: ts.Expression,
+            leaf: ts.Identifier,
+            scan: AliasedMutationScan,
+        ) => boolean;
     },
 ): boolean {
     const initial = valueSymbol(identifier);
@@ -633,21 +615,41 @@ export function aliasedMutationScan(
         changed = false;
         const mutated = someAnalysisNode(source, (node) => {
             if (walk.mutates(node, scan)) return true;
-            if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.initializer &&
-                walk.aliasingInitializer(node.initializer, scan)
-            ) {
-                scan.addAlias(valueSymbol(node.name));
+            if (ts.isVariableDeclaration(node) && node.initializer) {
+                if (ts.isIdentifier(node.name)) {
+                    if (walk.aliasingInitializer(node.initializer, scan))
+                        scan.addAlias(valueSymbol(node.name));
+                } else
+                    for (const leaf of bindingNameIdentifiers(node.name))
+                        if (walk.aliasingMember?.(node.initializer, leaf, scan))
+                            scan.addAlias(valueSymbol(leaf));
             }
+            // `for (const v of source)` binds a member of the source.
             if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(node.left) &&
-                walk.aliasingInitializer(node.right, scan)
-            ) {
-                scan.addAlias(valueSymbol(node.left));
+                ts.isForOfStatement(node) &&
+                ts.isVariableDeclarationList(node.initializer)
+            )
+                for (const declaration of node.initializer.declarations)
+                    for (const leaf of bindingNameIdentifiers(declaration.name))
+                        if (
+                            walk.aliasingIteration?.(
+                                node.expression,
+                                leaf,
+                                scan,
+                            )
+                        )
+                            scan.addAlias(valueSymbol(leaf));
+            for (const { target, stored, from } of writeSites(node)) {
+                if (!ts.isIdentifier(target)) continue;
+                if (stored ? walk.aliasingInitializer(stored, scan) : false)
+                    scan.addAlias(valueSymbol(target));
+                // A pattern leaf takes a member of what the assignment reads.
+                else if (
+                    !stored &&
+                    from &&
+                    walk.aliasingMember?.(from, target, scan)
+                )
+                    scan.addAlias(valueSymbol(target));
             }
             return false;
         });
@@ -668,9 +670,7 @@ function finalReturnExpression(
 ): ts.Expression | undefined {
     const body = declaration.body;
     if (!body) return undefined;
-    if (!ts.isBlock(body)) return body;
-    const final = body.statements.at(-1);
-    return final && ts.isReturnStatement(final) ? final.expression : undefined;
+    return ts.isBlock(body) ? finalReturn(body)?.expression : body;
 }
 
 /**
@@ -752,7 +752,7 @@ function readsSharedBinding(
     return someAnalysisNode(
         expression,
         (node) => ts.isIdentifier(node) && namesShared(node),
-        { memberNames: "skip" },
+        { names: "references" },
     );
 }
 
@@ -768,11 +768,8 @@ function writesSharedBinding(
             return true;
         }
         if (ts.isCallExpression(node)) {
-            const called = checker.getResolvedSignature(node)?.declaration;
-            if (
-                isSupportedFunction(called) &&
-                returnedValueCanMove(checker, called, active)
-            ) {
+            const called = calledFunction(checker, node);
+            if (called && returnedValueCanMove(checker, called, active)) {
                 return true;
             }
         }
@@ -780,33 +777,6 @@ function writesSharedBinding(
     });
 
     return writes;
-}
-
-/**
- * The function a declaration binds: a function declaration with a body, a
- * named function expression (its own name), or a variable initialized with a
- * function literal.
- */
-export function functionOfDeclaration(
-    declaration: ts.Declaration,
-):
-    | ts.FunctionDeclaration
-    | ts.ArrowFunction
-    | ts.FunctionExpression
-    | undefined {
-    if (ts.isFunctionDeclaration(declaration) && declaration.body)
-        return declaration;
-    // A named function expression is its own name's declaration.
-    if (ts.isFunctionExpression(declaration) && declaration.name)
-        return declaration;
-    if (
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer))
-    )
-        return declaration.initializer;
-    return undefined;
 }
 
 /**
@@ -856,25 +826,6 @@ export function resolveFunctionDeclaration(
                 parameter,
                 "A rest parameter is the last parameter and an identifier or array pattern.",
             );
-        }
-        if (ts.isArrayBindingPattern(parameter.name)) {
-            for (const element of parameter.name.elements) {
-                if (ts.isOmittedExpression(element)) continue;
-                if (
-                    !ts.isIdentifier(element.name) ||
-                    (element.dotDotDotToken &&
-                        element !==
-                            parameter.name.elements[
-                                parameter.name.elements.length - 1
-                            ]) ||
-                    element.initializer
-                ) {
-                    fail(
-                        element,
-                        "Array-bound parameters support plain identifier elements.",
-                    );
-                }
-            }
         }
     }
     return declaration;
@@ -982,18 +933,11 @@ export function recursiveStorageEscapes(
             (node, nested) => {
                 if (ts.isIdentifier(node)) {
                     const parent = node.parent;
-                    const namesOwnDeclaration =
-                        (ts.isVariableDeclaration(parent) ||
-                            ts.isFunctionDeclaration(parent) ||
-                            ts.isFunctionExpression(parent) ||
-                            ts.isMethodDeclaration(parent) ||
-                            ts.isParameter(parent)) &&
-                        parent.name === node;
                     const directCallee =
                         !nested &&
                         ts.isCallExpression(parent) &&
                         parent.expression === node;
-                    if (namesOwnDeclaration || directCallee) return false;
+                    if (!referenceSite(node) || directCallee) return false;
                     const resolved = tryResolveFunctionDeclaration(
                         checker,
                         node,
@@ -1001,10 +945,11 @@ export function recursiveStorageEscapes(
                     return resolved !== undefined && members.has(resolved);
                 }
                 if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                    const called =
-                        checker.getResolvedSignature(node)?.declaration;
+                    const called = ts.isNewExpression(node)
+                        ? calledDeclaration(checker, node)
+                        : calledFunction(checker, node);
                     if (
-                        called !== undefined &&
+                        called &&
                         (ts.isConstructorDeclaration(called) ||
                             (isSupportedFunction(called) &&
                                 !members.has(called))) &&
@@ -1090,14 +1035,14 @@ function reassignedRecordFields(
     let opaque = false;
     const reassigns = (target: ts.Expression): void => {
         const node = unwrapExpression(target);
-        if (ts.isPropertyAccessExpression(node)) {
-            fields.add(node.name.text);
+        if (
+            !ts.isPropertyAccessExpression(node) &&
+            !ts.isElementAccessExpression(node)
+        )
             return;
-        }
-        if (!ts.isElementAccessExpression(node)) return;
-        const key = unwrapExpression(node.argumentExpression);
-        if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
-            fields.add(key.text);
+        const key = accessKey(node);
+        if (key !== undefined) {
+            fields.add(key);
             return;
         }
         // An indexed collection write changes contents, not a field.
@@ -1126,27 +1071,23 @@ function reassignedRecordFields(
         forEachAnalysisNode(
             declaration.body,
             (node) => {
-                if (isAssignmentExpression(node)) {
-                    for (const target of assignmentTargets(node.left))
-                        reassigns(target);
-                } else if (isUpdateExpression(node)) {
-                    reassigns(node.operand);
-                } else if (ts.isDeleteExpression(node)) {
-                    reassigns(node.expression);
-                } else if (ts.isPropertyAccessExpression(node)) {
-                    for (const accessor of declaredSymbol(checker, node.name)
-                        ?.declarations ?? []) {
-                        if (
-                            ts.isGetAccessorDeclaration(accessor) ||
-                            ts.isSetAccessorDeclaration(accessor)
-                        )
-                            follow(accessor);
-                    }
+                const writes = writeSites(node);
+                for (const { target } of writes) reassigns(target);
+                if (
+                    writes.length === 0 &&
+                    ts.isPropertyAccessExpression(node)
+                ) {
+                    for (const accessor of memberAccessors(
+                        checker,
+                        node,
+                        "either",
+                    ))
+                        follow(accessor);
                 }
                 if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
                     return;
                 const callee = unwrapExpression(node.expression);
-                const called = checker.getResolvedSignature(node)?.declaration;
+                const called = calledDeclaration(checker, node);
                 if (called && called.getSourceFile().isDeclarationFile) {
                     if (
                         ts.isPropertyAccessExpression(callee) &&
@@ -1222,6 +1163,7 @@ export interface UserFunctionContext
             | "dataValue"
             | "emitStatement"
             | "statementTerminatesAfterLowering"
+            | "emitFallOffEnd"
             | "bindings"
             | "platformDocumentHidden"
             | "declarations"
@@ -1367,8 +1309,7 @@ export class UserFunctionLowerer {
             !invocation ||
             !argument ||
             scopeOf(identifier) !== invocation.scope ||
-            this.checker.getResolvedSignature(invocation.call)?.declaration !==
-                declaration ||
+            calledDeclaration(this.checker, invocation.call) !== declaration ||
             invocation.call.arguments
                 .slice(0, index + 1)
                 .some(ts.isSpreadElement) ||
@@ -1397,7 +1338,7 @@ export class UserFunctionLowerer {
                       ) !== undefined
                     : node.text === "arguments";
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
         return foreign ? undefined : argument;
     }
@@ -1506,33 +1447,22 @@ export class UserFunctionLowerer {
             signature && this.checker.getReturnTypeOfSignature(signature);
         const flags = returned?.flags;
         const stringResult =
-            returned !== undefined &&
-            (returned.isUnion() ? returned.types : [returned]).every(
-                (member) => (member.flags & ts.TypeFlags.StringLike) !== 0,
-            );
+            returned !== undefined && holdsOnly(returned, ["string"]);
         const nullableScalarResult =
             returned?.isUnion() === true &&
-            returned.types.some(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                    0,
-            ) &&
-            returned.types.every(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.StringLike |
-                            ts.TypeFlags.NumberLike |
-                            ts.TypeFlags.BooleanLike |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined)) !==
-                    0,
-            );
+            isNullable(returned) &&
+            holdsOnly(returned, [
+                "string",
+                "number",
+                "boolean",
+                "null",
+                "undefined",
+            ]);
         if (
             flags === undefined ||
             (!stringResult &&
                 !nullableScalarResult &&
-                (flags & ts.TypeFlags.BooleanLike) === 0)
+                valueKindOf(returned!) !== "boolean")
         )
             return undefined;
         const knownArgument = (value: Value): boolean =>
@@ -1690,71 +1620,13 @@ export class UserFunctionLowerer {
             );
             return;
         }
-        if (ts.isObjectBindingPattern(parameter.name)) {
-            // `({ a, b = 1 }: Options)`: the pattern binds from the
-            // argument exactly as a destructuring declaration would.
-            context.declarations.bindObjectPattern(parameter.name, value);
-            return;
-        }
-        const elements =
-            value.kind === "tuple" ? value.tupleElements : undefined;
-        if (
-            !elements &&
-            (value.kind !== "data" ||
-                (value.dataType?.kind !== "tuple" &&
-                    value.dataType?.kind !== "product" &&
-                    value.dataType?.kind !== "vector"))
-        ) {
-            context.fail(
-                parameter.name,
-                "Array-bound callback parameters require a native tuple value.",
-            );
-        }
-        // The lane expressions read this owner inside the callee. In an
+        // `({ a, b = 1 }: Options)`, `([x, y = 0]: Pair)`: the pattern
+        // binds from the argument exactly as a destructuring declaration
+        // would. A tuple's lanes read this owner inside the callee; in an
         // async activation it must survive with the callee's other captures.
-        context.useNativeValue(value);
-        parameter.name.elements.forEach((element, index) => {
-            if (ts.isOmittedExpression(element)) return;
-            if (!ts.isIdentifier(element.name))
-                context.fail(
-                    element.name,
-                    "Callback tuple bindings require identifiers.",
-                );
-            if (element.dotDotDotToken) {
-                context.bindings.bindParameterValue(
-                    element.name,
-                    context.dataLowerer.arrayRestValue(
-                        value,
-                        index,
-                        element.name,
-                    ),
-                );
-                return;
-            }
-            const lane = elements
-                ? elements[index]
-                : value.dataType?.kind === "vector"
-                  ? context.dataLowerer.readVectorBindingElement(
-                        value,
-                        index,
-                        element,
-                    )
-                  : context.dataLowerer.fixedTupleElement(
-                        value,
-                        index,
-                        element,
-                    )!;
-            if (elements && !lane) {
-                context.fail(
-                    element,
-                    "Array-bound callback parameter reads beyond the supplied tuple.",
-                );
-            }
-            context.bindings.bindParameterValue(
-                element.name,
-                context.dataLowerer.narrowBindingLane(lane!, element.name),
-            );
-        });
+        if (ts.isArrayBindingPattern(parameter.name))
+            context.useNativeValue(value);
+        context.declarations.bindPattern(parameter.name, value);
     }
 
     /**
@@ -1809,10 +1681,7 @@ export class UserFunctionLowerer {
             argumentValues,
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
-            if (
-                "asteriskToken" in ir.declaration &&
-                ir.declaration.asteriskToken
-            )
+            if (isGeneratorFunction(ir.declaration))
                 return inBodyScope(() =>
                     this.lowerGenerator(context, ir, argumentValues, call),
                 );
@@ -1913,8 +1782,7 @@ export class UserFunctionLowerer {
         pinArguments = true,
         closedEffectsOnly = false,
     ): Value | undefined {
-        if ("asteriskToken" in ir.declaration && ir.declaration.asteriskToken)
-            return undefined;
+        if (isGeneratorFunction(ir.declaration)) return undefined;
         if (
             closedEffectsOnly &&
             ir.declaration.body &&
@@ -2056,13 +1924,7 @@ export class UserFunctionLowerer {
                 returnType?.kind === "struct" &&
                 recordReturn &&
                 ts.isObjectLiteralExpression(recordReturn) &&
-                recordReturn.properties.every(
-                    (property) =>
-                        (ts.isPropertyAssignment(property) ||
-                            ts.isShorthandPropertyAssignment(property)) &&
-                        !ts.isComputedPropertyName(property.name) &&
-                        property.name.text !== "__proto__",
-                ) &&
+                plainDataMembers(recordReturn) !== undefined &&
                 ir.statements.length === 0 &&
                 !context.evaluationOrder.writesStorage(recordReturn) &&
                 argumentValues.every(generationKnownStringArgument)
@@ -2171,13 +2033,7 @@ export class UserFunctionLowerer {
                 recordReturn &&
                 ts.isObjectLiteralExpression(recordReturn) &&
                 !firstReturn(ir.statements) &&
-                recordReturn.properties.every(
-                    (property) =>
-                        (ts.isPropertyAssignment(property) ||
-                            ts.isShorthandPropertyAssignment(property)) &&
-                        !ts.isComputedPropertyName(property.name) &&
-                        property.name.text !== "__proto__",
-                )
+                plainDataMembers(recordReturn) !== undefined
             ) {
                 const fields = context.dataTypes.structFields(
                     returnType.name,
@@ -2707,10 +2563,7 @@ export class UserFunctionLowerer {
             const evaluated =
                 evaluatedArguments?.[index] ??
                 (!argument && parameter.questionToken
-                    ? ({
-                          kind: "json-null",
-                          cpp: "std::nullopt",
-                      } satisfies Value)
+                    ? undefinedValue()
                     : undefined);
             if (!argument && !evaluated) {
                 context.fail(
@@ -2847,8 +2700,8 @@ export class UserFunctionLowerer {
             if (
                 existing &&
                 !evaluatedArguments &&
-                !this.passesOwnParameter(declaration, parameter, argument) &&
-                !this.sameCapturedValue(existing, value)
+                !this.sameCapturedValue(existing, value) &&
+                !this.passesOwnParameter(declaration, parameter, argument)
             ) {
                 context.fail(
                     argument ?? parameter,
@@ -3075,7 +2928,7 @@ export class UserFunctionLowerer {
             !isDeclaredInside(constant, declaration) &&
             ts.isVariableDeclaration(constant) &&
             ts.isVariableDeclarationList(constant.parent) &&
-            (constant.parent.flags & ts.NodeFlags.Const) !== 0
+            variableKind(constant.parent) === "const"
         );
     }
 
@@ -3099,20 +2952,12 @@ export class UserFunctionLowerer {
         const symbol = declaredSymbol(this.checker, parameter.name);
         if (!symbol || declaredSymbol(this.checker, passed) !== symbol)
             return false;
-        const names = (node: ts.Expression): boolean => {
-            const target = unwrapExpression(node);
-            return (
-                ts.isIdentifier(target) &&
-                declaredSymbol(this.checker, target) === symbol
-            );
-        };
-        return !someAnalysisNode(
-            declaration.body,
-            (node) =>
-                (isAssignmentExpression(node) &&
-                    assignmentTargets(node.left).some(names)) ||
-                (isUpdateExpression(node) && names(node.operand)),
-        );
+        const body = declaration.body;
+        return !bindingRebinds(
+            this.checker,
+            [declaration.getSourceFile()],
+            symbol,
+        ).some(({ target }) => isDeclaredInside(target, body));
     }
 
     private sameCapturedValue(left: Value, right: Value): boolean {
@@ -3301,8 +3146,10 @@ export class UserFunctionLowerer {
     ): boolean {
         const dynamic = (expression: ts.Expression): boolean => {
             const value = unwrapExpression(expression);
-            if (ts.isConditionalExpression(value))
-                return dynamic(value.whenTrue) || dynamic(value.whenFalse);
+            if (isOperandSelection(value))
+                return yieldedOperands(value).some(({ operand }) =>
+                    dynamic(operand),
+                );
             if (
                 ts.isObjectLiteralExpression(value) &&
                 value.properties.some(
@@ -3366,14 +3213,7 @@ export class UserFunctionLowerer {
         if (
             recursive &&
             context.options.workers &&
-            declarations.some((declaration) =>
-                ts
-                    .getModifiers(declaration)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                    ),
-            )
+            declarations.some(isAsyncFunction)
         ) {
             // Every sibling must survive suspension. Materialize the group with
             // the stored-function body/ownership protocol, including sync peers.
@@ -3390,17 +3230,14 @@ export class UserFunctionLowerer {
                             declaration,
                             "Async recursive groups require owned function signatures.",
                         );
-                    const name =
-                        context.allocateTemporaryCppName("recursive_callback");
-                    context.emit({
-                        kind: "declaration",
-                        type: "auto",
-                        name,
-                        initializer: `bbl::js::make_gc_shared<${context.dataTypes.cppType(type)}>()`,
-                    });
+                    const cell = emitSharedCell(
+                        context,
+                        context.allocateTemporaryCppName("recursive_callback"),
+                        { type: context.dataTypes.cppType(type) },
+                    );
                     const value = {
-                        ...context.dataValue(`(*${name})`, type),
-                        sharedStorageCpp: name,
+                        ...context.dataValue(cell.cpp, type),
+                        sharedStorageCpp: cell.sharedStorageCpp,
                     };
                     context.bindings.bindCompileTimeValue(
                         this.declarationIdentifier(declaration),
@@ -3499,9 +3336,7 @@ export class UserFunctionLowerer {
                 );
             }
             const asyncWithoutValueReturn =
-                declaration.modifiers?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) === true &&
+                isAsyncFunction(declaration) &&
                 (!declaration.body ||
                     !this.containsValueReturn(
                         ts.isBlock(declaration.body)
@@ -3567,12 +3402,7 @@ export class UserFunctionLowerer {
                     // Iterable is a protocol; the reached collection supplies
                     // its storage. Retaining the expression as a static argument
                     // would leave separately emitted bodies naming caller locals.
-                    if (
-                        !mapped &&
-                        supplied &&
-                        type.symbol?.name === "Iterable" &&
-                        declaredInDefaultLibrary(type.symbol)
-                    )
+                    if (!mapped && supplied && libraryName(type) === "Iterable")
                         mapped = supplied;
                     // A concrete typed view remains a live object when passed
                     // through ArrayLike<number>; widening into a double span
@@ -3704,9 +3534,7 @@ export class UserFunctionLowerer {
             const argument = rootArguments[index];
             if (
                 parameter.declaration.initializer &&
-                (!argument ||
-                    (argument.kind === "json-null" &&
-                        argument.cpp === "std::nullopt"))
+                (!argument || absenceOf(argument) === "undefined")
             ) {
                 // A default the recursion overrides (`walk(child, world)` under
                 // `walk(root)`) or hands on as itself (`walk(child, into)`)
@@ -3714,10 +3542,7 @@ export class UserFunctionLowerer {
                 // evaluated once, as the recursive calls pass theirs, when it
                 // reads nothing of the callee. A captured parameter that the
                 // recursion only hands on captures that one evaluation.
-                const absent = argument ?? {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                };
+                const absent = argument ?? undefinedValue();
                 const independent =
                     recursive &&
                     this.callerIndependentDefault(
@@ -3922,10 +3747,7 @@ export class UserFunctionLowerer {
             const value =
                 argument ??
                 (parameter.declaration.questionToken
-                    ? ({
-                          kind: "json-null",
-                          cpp: "std::nullopt",
-                      } satisfies Value)
+                    ? undefinedValue()
                     : context.fail(
                           parameter.declaration,
                           `Recursive function requires argument '${parameter.name.getText()}'.`,
@@ -4222,7 +4044,7 @@ export class UserFunctionLowerer {
                 true,
             );
         const projected = { ...result };
-        if (statedTruthinessCpp(metadata) === "true")
+        if (knownCondition(statedTruthinessCpp(metadata)) === true)
             Object.assign(projected, {
                 truthinessCpp: "true",
                 optionalFoundCpp: "true",
@@ -4352,47 +4174,14 @@ export class UserFunctionLowerer {
                         isHandleKind(value.kind) &&
                         symbol &&
                         entry.declaration.body &&
-                        !someAnalysisNode(entry.declaration.body, (node) => {
-                            const target = isAssignmentExpression(node)
-                                ? unwrapExpression(node.left)
-                                : isUpdateExpression(node)
-                                  ? unwrapExpression(node.operand)
-                                  : undefined;
-                            const rebinds = (
-                                target: ts.Expression,
-                            ): boolean => {
-                                target = unwrapExpression(target);
-                                if (ts.isIdentifier(target))
-                                    return (
-                                        declaredSymbol(this.checker, target) ===
-                                        symbol
-                                    );
-                                if (ts.isArrayLiteralExpression(target))
-                                    return target.elements.some(rebinds);
-                                if (ts.isObjectLiteralExpression(target))
-                                    return target.properties.some((property) =>
-                                        ts.isShorthandPropertyAssignment(
-                                            property,
-                                        )
-                                            ? rebinds(property.name)
-                                            : ts.isPropertyAssignment(property)
-                                              ? rebinds(property.initializer)
-                                              : ts.isSpreadAssignment(
-                                                    property,
-                                                ) &&
-                                                rebinds(property.expression),
-                                    );
-                                if (ts.isSpreadElement(target))
-                                    return rebinds(target.expression);
-                                return (
-                                    ts.isBinaryExpression(target) &&
-                                    target.operatorToken.kind ===
-                                        ts.SyntaxKind.EqualsToken &&
-                                    rebinds(target.left)
-                                );
-                            };
-                            return target !== undefined && rebinds(target);
-                        });
+                        !someAnalysisNode(entry.declaration.body, (node) =>
+                            writeSites(node).some(
+                                ({ target }) =>
+                                    ts.isIdentifier(target) &&
+                                    declaredSymbol(this.checker, target) ===
+                                        symbol,
+                            ),
+                        );
                     parameterBindings.push({
                         parameter,
                         value,
@@ -4588,36 +4377,36 @@ export class UserFunctionLowerer {
                                     );
                                 }
                                 if (ts.isBlock(body)) {
-                                    let terminated = false;
-                                    for (const statement of body.statements) {
-                                        if (
-                                            ts.isReturnStatement(statement) &&
-                                            statement.expression &&
-                                            ts.isIdentifier(
-                                                statement.expression,
-                                            )
-                                        ) {
-                                            returnMetadata =
-                                                context.bindings.lookupOptional(
-                                                    statement.expression,
+                                    const terminated = emitReachableStatements(
+                                        {
+                                            emitStatement: (statement) => {
+                                                if (
+                                                    ts.isReturnStatement(
+                                                        statement,
+                                                    ) &&
+                                                    statement.expression &&
+                                                    ts.isIdentifier(
+                                                        statement.expression,
+                                                    )
+                                                )
+                                                    returnMetadata =
+                                                        context.bindings.lookupOptional(
+                                                            statement.expression,
+                                                        );
+                                                context.emitStatement(
+                                                    statement,
                                                 );
-                                        }
-                                        context.emitStatement(statement);
-                                        terminated =
-                                            context.statementTerminatesAfterLowering(
+                                            },
+                                            statementTerminatesAfterLowering: (
                                                 statement,
-                                            );
-                                        if (terminated) break;
-                                    }
-                                    // An exhaustive source switch may lower to a
-                                    // native if/else chain; keep its impossible
-                                    // fallthrough defined.
-                                    if (!terminated && entry.returnType)
-                                        context.emit({
-                                            kind: "control",
-                                            code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                                            transfer: "throw",
-                                        });
+                                            ) =>
+                                                context.statementTerminatesAfterLowering(
+                                                    statement,
+                                                ),
+                                        },
+                                        body.statements,
+                                    );
+                                    if (!terminated) context.emitFallOffEnd();
                                 } else {
                                     if (!entry.returnType) {
                                         context.asyncActivations.emitDiscardedReturn(
@@ -4708,7 +4497,7 @@ export class UserFunctionLowerer {
                     returnedValues.every(
                         (value) =>
                             value.kind === "record" ||
-                            statedTruthinessCpp(value) === "true",
+                            knownCondition(statedTruthinessCpp(value)) === true,
                     )
                 ) {
                     const properties = returnedValues[0]!.recordProperties;
@@ -4909,14 +4698,7 @@ export class UserFunctionLowerer {
                 callNode,
                 "Boolean as a callback requires an argument with native truthiness.",
             );
-        return {
-            kind: "boolean",
-            cpp: condition,
-            dataType: { kind: "boolean" },
-            ...(condition === "true" || condition === "false"
-                ? { staticBoolean: condition === "true" }
-                : {}),
-        };
+        return booleanValue(condition);
     }
 
     /**
@@ -5078,11 +4860,7 @@ export class UserFunctionLowerer {
             );
         }
         const values = arguments_.slice(0, ir.parameters.length);
-        if (
-            !body?.generator &&
-            "asteriskToken" in ir.declaration &&
-            ir.declaration.asteriskToken
-        )
+        if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, values, callNode);
         if (!body?.coroutine && !body?.generator) {
             const asynchronous = context.asyncActivations.compileAsyncCall(
@@ -5254,10 +5032,7 @@ export class UserFunctionLowerer {
             context.fail(node, message),
         );
         const runtimeParameters = ir.parameters.filter(
-            (parameter) =>
-                (parameter.type.flags &
-                    (ts.TypeFlags.Never | ts.TypeFlags.Void)) ===
-                0,
+            (parameter) => !holdsNoPayload(parameter.type),
         );
         if (
             runtimeParameters
@@ -5305,12 +5080,7 @@ export class UserFunctionLowerer {
             cppName: `${prefix}arg_${index}`,
         }));
         const asynchronous =
-            !!context.options.workers &&
-            ts
-                .getModifiers(declaration)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) === true;
+            !!context.options.workers && isAsyncFunction(declaration);
         const resultType =
             dataType.result?.kind === "optional"
                 ? dataType.result.inner
@@ -5328,15 +5098,14 @@ export class UserFunctionLowerer {
                 : undefined;
         const promiseType =
             resultType?.kind === "promise" ? resultType : settledPromise;
-        const generator =
-            "asteriskToken" in declaration && declaration.asteriskToken
-                ? resultType?.kind === "iterator"
-                    ? resultType
-                    : context.fail(
-                          declaration,
-                          "Stored generators require a typed iterator result.",
-                      )
-                : undefined;
+        const generator = isGeneratorFunction(declaration)
+            ? resultType?.kind === "iterator"
+                ? resultType
+                : context.fail(
+                      declaration,
+                      "Stored generators require a typed iterator result.",
+                  )
+            : undefined;
         if (generator?.traced)
             context.fail(
                 declaration,
@@ -5372,12 +5141,7 @@ export class UserFunctionLowerer {
         const selfOwnerCpp = selfIdentifier ? `${cppName}_owner` : undefined;
         const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
         if (selfIdentifier) {
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: selfOwnerCpp!,
-                initializer: `bbl::js::make_gc_shared<${cppType}>()`,
-            });
+            emitSharedCell(context, selfOwnerCpp!, { type: cppType });
             if (!asynchronous)
                 context.emit({
                     kind: "declaration",
@@ -5388,7 +5152,7 @@ export class UserFunctionLowerer {
             const selfValue: Value = {
                 kind: "data",
                 cpp: asynchronous
-                    ? `(*${selfOwnerCpp})`
+                    ? sharedCellCpp(selfOwnerCpp!)
                     : `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
                 dataType,
                 nativeCaptures: [
@@ -5448,11 +5212,7 @@ export class UserFunctionLowerer {
                     );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
-                        if (
-                            (parameter.type.flags &
-                                (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
-                            0
-                        ) {
+                        if (holdsNoPayload(parameter.type)) {
                             const initializer =
                                 parameter.declaration.initializer;
                             if (initializer) {
@@ -5580,59 +5340,30 @@ export class UserFunctionLowerer {
                             ? declaration.body.statements
                             : ir.statements,
                     );
-                    if (generator) {
-                        if (!terminated)
-                            context.emit({
-                                kind: "control",
-                                code: "co_return;",
-                                transfer: "suspend",
-                            });
+                    if (terminated) return;
+                    if (generator || !ir.returnExpression) {
+                        context.emitFallOffEnd();
                         return;
                     }
-                    if (!terminated && ir.returnExpression) {
-                        if (asynchronous) {
-                            context.emit({
-                                kind: "control",
-                                code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
-                                transfer: "suspend",
-                            });
-                        } else if (!bodyResult) {
-                            context.asyncActivations.emitDiscardedReturn(
-                                ir.returnExpression,
-                            );
-                        } else {
-                            context.asyncActivations.refuseThenableReturn(
-                                ir.returnExpression,
-                            );
-                            context.emit({
-                                kind: "control",
-                                code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
-                                transfer: "return",
-                            });
-                        }
-                    }
-                    if (
-                        asynchronous &&
-                        !terminated &&
-                        !ir.returnExpression &&
-                        !bodyResult
-                    )
+                    if (asynchronous) {
                         context.emit({
                             kind: "control",
-                            code: "co_return bbl::js::PromiseVoid{};",
+                            code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
                             transfer: "suspend",
                         });
-                    if (!terminated && !ir.returnExpression && bodyResult) {
-                        if (bodyResult.kind === "optional")
-                            context.emit(
-                                `${asynchronous ? "co_return" : "return"} std::nullopt;`,
-                            );
-                        else
-                            context.emit({
-                                kind: "control",
-                                code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                                transfer: "throw",
-                            });
+                    } else if (!bodyResult) {
+                        context.asyncActivations.emitDiscardedReturn(
+                            ir.returnExpression,
+                        );
+                    } else {
+                        context.asyncActivations.refuseThenableReturn(
+                            ir.returnExpression,
+                        );
+                        context.emit({
+                            kind: "control",
+                            code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
+                            transfer: "return",
+                        });
                     }
                 });
             closure =
@@ -5699,8 +5430,8 @@ export class UserFunctionLowerer {
         context.emit(
             selfIdentifier
                 ? dataType.identity
-                    ? `(*${selfOwnerCpp}) = ${cppType}${identity}${lambda}};`
-                    : `(*${selfOwnerCpp}) = ${lambda};`
+                    ? `${sharedCellCpp(selfOwnerCpp!)} = ${cppType}${identity}${lambda}};`
+                    : `${sharedCellCpp(selfOwnerCpp!)} = ${lambda};`
                 : `${cppType} ${cppName}${identity}${lambda}${dataType.identity ? "}" : ""};`,
         );
         if (selfIdentifier) {
@@ -5782,14 +5513,7 @@ export class UserFunctionLowerer {
                     declaration,
                     "Array predicate return has no native truthiness.",
                 );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                dataType: { kind: "boolean" },
-                ...(condition === "true" || condition === "false"
-                    ? { staticBoolean: condition === "true" }
-                    : {}),
-            };
+            return booleanValue(condition);
         }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>
@@ -5806,14 +5530,7 @@ export class UserFunctionLowerer {
                     declaration,
                     "Array predicate return has no native truthiness.",
                 );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                dataType: { kind: "boolean" },
-                ...(condition === "true" || condition === "false"
-                    ? { staticBoolean: condition === "true" }
-                    : {}),
-            };
+            return booleanValue(condition);
         }
         if (!ir?.returnExpression) {
             context.fail(
@@ -5855,16 +5572,7 @@ export class UserFunctionLowerer {
             const condition = context.conditions.compileCondition(
                 ir.returnExpression,
             );
-            return {
-                kind: "boolean",
-                cpp: condition,
-                ...(condition === "true"
-                    ? { staticBoolean: true }
-                    : condition === "false"
-                      ? { staticBoolean: false }
-                      : {}),
-                dataType: { kind: "boolean" },
-            };
+            return booleanValue(condition);
         } finally {
             context.bindings.popScope();
             this.active.delete(ir.declaration);
@@ -6038,7 +5746,7 @@ export class UserFunctionLowerer {
                             ?.length,
                     {
                         types: "skip",
-                        memberNames: "skip",
+                        names: "references",
                         skip: (node) =>
                             ts.isFunctionLike(node) &&
                             !ts.isArrowFunction(node),
@@ -6211,11 +5919,7 @@ export class UserFunctionLowerer {
         body?: CallbackInvocationOptions,
         captureReturn?: (value: Value) => void,
     ): Value {
-        if (
-            !body?.generator &&
-            "asteriskToken" in ir.declaration &&
-            ir.declaration.asteriskToken
-        )
+        if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, arguments_, callNode);
         // A function re-entered through a callback its caller passed lowers
         // again at another call site; re-entering a call site that is still
@@ -6253,16 +5957,8 @@ export class UserFunctionLowerer {
                             ir.declaration,
                             "A generator requires a statement body.",
                         );
-                    const terminated = emitReachableStatements(
-                        context,
-                        block.statements,
-                    );
-                    if (!terminated)
-                        context.emit({
-                            kind: "control",
-                            code: "co_return;",
-                            transfer: "suspend",
-                        });
+                    if (!emitReachableStatements(context, block.statements))
+                        context.emitFallOffEnd();
                     return { kind: "void", cpp: "" };
                 } finally {
                     context.endNativeFunctionBody();
@@ -6467,13 +6163,7 @@ export class UserFunctionLowerer {
         let terminated: boolean;
         try {
             terminated = emitReachableStatements(context, statements);
-            if (!terminated && returnType) {
-                context.emit({
-                    kind: "control",
-                    code: 'throw std::runtime_error("Native value function fell through without returning.");',
-                    transfer: "throw",
-                });
-            }
+            if (!terminated) context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();
             context.decreaseIndent();
@@ -6555,26 +6245,8 @@ export class UserFunctionLowerer {
                 : {}),
         });
         try {
-            const terminated = emitReachableStatements(context, ir.statements);
-            if (!terminated) {
-                if (!type.result)
-                    context.emit({
-                        kind: "control",
-                        code: "co_return bbl::js::PromiseVoid{};",
-                        transfer: "suspend",
-                    });
-                else if (type.result.kind === "optional")
-                    context.emit({
-                        kind: "control",
-                        code: "co_return std::nullopt;",
-                        transfer: "suspend",
-                    });
-                else
-                    context.fail(
-                        callNode,
-                        "Async value function can fall through without returning.",
-                    );
-            }
+            if (!emitReachableStatements(context, ir.statements))
+                context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();
         }
@@ -6640,10 +6312,10 @@ export class UserFunctionLowerer {
                     const condition = context.conditions.compileCondition(
                         statement.expression,
                     );
-                    if (condition !== "true" && condition !== "false")
+                    if (knownCondition(condition) === undefined)
                         return { kind: "dynamic" };
                     const branch =
-                        condition === "true"
+                        knownCondition(condition) === true
                             ? statement.thenStatement
                             : statement.elseStatement;
                     const outcome = branch
@@ -6726,10 +6398,7 @@ export class UserFunctionLowerer {
                 sinkResult,
             ) ?? context.compileValue(expression);
         captureReturn?.(returned);
-        const asynchronous =
-            (ts.getCombinedModifierFlags(ir.declaration) &
-                ts.ModifierFlags.Async) !==
-            0;
+        const asynchronous = isAsyncFunction(ir.declaration);
         // Resolution reads a custom thenable's `then` before the settled
         // value converts.
         if (asynchronous)
@@ -6863,14 +6532,9 @@ export class UserFunctionLowerer {
         const consumer = argument.parent;
         if (!ts.isCallExpression(consumer)) return undefined;
         const index = consumer.arguments.indexOf(argument);
-        const declaration =
-            context.checker.getResolvedSignature(consumer)?.declaration;
-        if (
-            index < 0 ||
-            !isSupportedFunction(declaration) ||
-            consumer.arguments.slice(0, index + 1).some(ts.isSpreadElement) ||
-            declaration.parameters[index]?.dotDotDotToken
-        )
+        const declaration = calledDeclaration(context.checker, consumer);
+        if (index < 0 || !isSupportedFunction(declaration)) return undefined;
+        if (positionalParameter(consumer, declaration, index) === undefined)
             return undefined;
         const fields = new Set(
             Object.entries(value.recordProperties ?? {})
@@ -6989,12 +6653,8 @@ export class UserFunctionLowerer {
         // needs actual function control flow, so the call lowers through an
         // immediately-invoked native lambda. Earlier bare returns in a void
         // helper retain the lighter breakable-wrapper path.
-        const finalStatement = body.statements.at(-1);
-        const finalReturn =
-            finalStatement && ts.isReturnStatement(finalStatement)
-                ? finalStatement
-                : undefined;
-        const leadingStatements = finalReturn
+        const trailingReturn = finalReturn(body);
+        const leadingStatements = trailingReturn
             ? body.statements.slice(0, -1)
             : body.statements;
         const needsValueLambda =
@@ -7002,13 +6662,13 @@ export class UserFunctionLowerer {
             someAnalysisNode(
                 body,
                 (node) =>
-                    (ts.isForOfStatement(node) && !!node.awaitModifier) ||
+                    (ts.isForOfStatement(node) && isSuspensionPoint(node)) ||
                     (ts.isTryStatement(node) &&
                         !!node.finallyBlock &&
                         someAnalysisNode(
                             node.finallyBlock,
                             (child) =>
-                                ts.isAwaitExpression(child) ||
+                                isSuspensionPoint(child) ||
                                 ts.isReturnStatement(child),
                             { functions: "skip" },
                         )),
@@ -7022,9 +6682,9 @@ export class UserFunctionLowerer {
             : this.classifyEarlyReturns(statements, fail);
         const needsWrapper = earlyReturns === "wrapper";
         const needsLocalNative = earlyReturns === "native";
-        if (needsWrapper && finalReturn?.expression) {
+        if (needsWrapper && trailingReturn?.expression) {
             fail(
-                finalReturn,
+                trailingReturn,
                 "Inlined functions cannot combine a bare early return with a final return value.",
             );
         }
@@ -7044,9 +6704,9 @@ export class UserFunctionLowerer {
                 this.checker,
                 declaration,
             ),
-            ...(!needsValueLambda && finalReturn?.expression
+            ...(!needsValueLambda && trailingReturn?.expression
                 ? {
-                      returnExpression: finalReturn.expression,
+                      returnExpression: trailingReturn.expression,
                   }
                 : {}),
         };
@@ -7062,9 +6722,7 @@ export class UserFunctionLowerer {
         | undefined {
         if (
             !ts.isMethodDeclaration(declaration) ||
-            (ts.getCombinedModifierFlags(declaration) &
-                ts.ModifierFlags.Static) ===
-                0 ||
+            !isStaticMember(declaration) ||
             !ts.isClassLike(declaration.parent) ||
             !declaration.body ||
             declaration.body.statements.length !== 1
@@ -7237,14 +6895,11 @@ export class UserFunctionLowerer {
         // A direct generic call carries its instantiated result. Callback
         // lowering may instead name the enclosing collection call, whose
         // signature belongs to the collection method, not this function.
-        const resolved =
-            ir.declaration.typeParameters?.length &&
-            ts.isCallExpression(callNode)
-                ? this.checker.getResolvedSignature(callNode)
-                : undefined;
         const signature =
-            resolved?.declaration === ir.declaration
-                ? resolved
+            ir.declaration.typeParameters?.length &&
+            ts.isCallExpression(callNode) &&
+            calledDeclaration(this.checker, callNode) === ir.declaration
+                ? this.checker.getResolvedSignature(callNode)
                 : this.checker.getSignatureFromDeclaration(ir.declaration);
         let type = signature
             ? context.dataTypes.fromTsType(
@@ -7357,7 +7012,7 @@ export class UserFunctionLowerer {
         const rest = restParameterIndex(ir.declaration);
         const resolved = this.checker.getResolvedSignature(call);
         const parameters =
-            resolved?.getDeclaration()?.parameters ??
+            calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
         const minimum = requiredParameterCount(parameters);
         if (
@@ -7390,10 +7045,7 @@ export class UserFunctionLowerer {
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&
                 !(
                     parameter.declaration.initializer &&
-                    (argumentType.isUnion()
-                        ? argumentType.types
-                        : [argumentType]
-                    ).every(
+                    unionMembers(argumentType).every(
                         (member) =>
                             (member.flags & ts.TypeFlags.Undefined) !== 0 ||
                             this.checker.isTypeAssignableTo(
@@ -7461,13 +7113,7 @@ export class UserFunctionLowerer {
                 ir.declaration,
                 call,
             ) ||
-            (context.options.workers &&
-                ts
-                    .getModifiers(ir.declaration)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                    ));
+            (context.options.workers && isAsyncFunction(ir.declaration));
         const values: Value[] = [];
         const expanded: Value[] = [];
         // An argument a later one touches the storage of, either one
@@ -7607,14 +7253,12 @@ export class UserFunctionLowerer {
         // Contextual methods can implement an optional signature without a
         // question token in their own syntax. Omission is decided by the call's
         // signature; the implementation still owns default evaluation.
-        const parameters = this.checker
-            .getResolvedSignature(call)
-            ?.getDeclaration()?.parameters;
+        const parameters = calledDeclaration(this.checker, call)?.parameters;
         while (values.length < ir.parameters.length) {
             const parameter = parameters?.[values.length];
             if (!parameter || !this.checker.isOptionalParameter(parameter))
                 break;
-            values.push({ kind: "json-null", cpp: "std::nullopt" });
+            values.push(undefinedValue());
         }
         return values;
     }
@@ -7666,7 +7310,7 @@ export class UserFunctionLowerer {
                     this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
                 (parameter.declaration.questionToken
-                    ? { kind: "json-null", cpp: "std::nullopt" }
+                    ? undefinedValue()
                     : context.fail(
                           parameter.declaration,
                           `Parameter '${parameter.name.getText()}' requires an argument.`,
@@ -7675,8 +7319,14 @@ export class UserFunctionLowerer {
         if (
             !argument ||
             argument.kind === "void" ||
-            (argument.kind === "json-null" && argument.cpp === "std::nullopt")
+            absenceOf(argument) === "undefined"
         ) {
+            // A void result takes the default only when it is undefined.
+            if (argument && readsErasedVoid(context, argument, source))
+                context.fail(
+                    source ?? parameter.declaration,
+                    "A void result bound to a defaulted parameter requires a proven undefined completion.",
+                );
             if (argument?.kind === "void") context.emitDiscardedValue(argument);
             return this.defaultParameterValue(
                 context,

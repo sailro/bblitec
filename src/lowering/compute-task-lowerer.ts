@@ -2,13 +2,14 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { computeTaskLifecycleCpp } from "./compute-task-lifecycle.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { declaredKey } from "../compiler/syntax.js";
 
 export function lowerComputeTask(
     context: LoweringContext,
     execution = false,
 ): LoweredSource {
     const path = "src/compute/compute-task.ts";
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         path,
         "createComputeTask",
     );
@@ -26,7 +27,9 @@ export function lowerComputeTask(
         );
     const members = new Map(
         initializer.properties.map((property) => [
-            property.name?.getText(file),
+            property.name === undefined
+                ? undefined
+                : declaredKey(property.name),
             property,
         ]),
     );
