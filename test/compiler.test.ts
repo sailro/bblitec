@@ -9725,23 +9725,32 @@ test("shares one cell between the closures that capture and write a by-value bin
         );
 });
 
-test("refuses a captured var declared in a loop body", () => {
-    // JavaScript has one binding per function; a cell made where the
-    // declaration sits would be one per iteration.
+test("refuses a hoisted var read while it can be undefined its type cannot hold", () => {
+    // The scope's own read TypeScript reports used before assigned (TS2454),
+    // and one `!` asserts.
+    for (const read of ["y", "y!"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `function f(c: boolean): number { if (c) { var y = 3; } return ${read}; } console.log(f(true));`,
+                ),
+            /The `var` 'y' can be read here before it is assigned/,
+        );
+    // A function lowered before the walk reached an assignment.
     assert.throws(
         () =>
             compileSource(
-                "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
+                "function f(): number { const get = (): number => w; const before = get(); var w = 7; return before; } console.log(f());",
             ),
-        /A `var` declared in a loop body and captured by a stored closure/,
+        /A function reads the `var` 'w' where it can still be undefined/,
     );
-    // `var x;` re-run each iteration keeps the earlier iteration's value.
+    // One binding with a parameter is not a storage of its own.
     assert.throws(
         () =>
             compileSource(
-                "const seen: string[] = []; for (let i = 0; i < 2; i++) { var x: number | undefined; if (i === 0) x = 5; seen.push(String(x)); } console.log(seen.join());",
+                "function f(a: number): number { var a = 2; return a; } console.log(f(1));",
             ),
-        /A `var` declared without an initializer in a loop body keeps its value/,
+        /The `var` 'a' shares its binding with a parameter/,
     );
 });
 

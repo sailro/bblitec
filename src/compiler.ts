@@ -376,6 +376,7 @@ import {
     DeclarationLowerer,
     initializerNamesBinding,
 } from "./compiler/declarations.js";
+import { VarBindings } from "./compiler/var-bindings.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { emitSharedCell } from "./compiler/shared-cells.js";
 import { UiProjection } from "./compiler/ui-projection.js";
@@ -831,6 +832,8 @@ class Compiler implements LoweringServices {
     public readonly declarations: DeclarationLowerer = new DeclarationLowerer(
         this,
     );
+    /** Hoisted `var` storage and its declaration-site assignments. */
+    public readonly varBindings: VarBindings = new VarBindings(this);
     /** Property access on every represented owner. */
     public readonly propertyAccess: PropertyAccessLowerer =
         new PropertyAccessLowerer(this);
@@ -1511,8 +1514,11 @@ class Compiler implements LoweringServices {
                 continue;
             }
             for (const statement of file.statements) {
+                // A `var` holds undefined until its declaration runs, and
+                // each declaration of it assigns: no initializer is its value.
                 if (
                     !ts.isVariableStatement(statement) ||
+                    variableKind(statement.declarationList) === "var" ||
                     (file !== this.sourceFile &&
                         variableKind(statement.declarationList) !== "const")
                 ) {
@@ -8993,8 +8999,8 @@ class Compiler implements LoweringServices {
      * A module-level `const`'s own initializer, for a reader that may only
      * answer from an immutable binding.
      *
-     * `staticConstants` deliberately admits the ENTRY file's `let` and `var`
-     * too -- the emitter deletes each one as it reaches its declaration, so
+     * `staticConstants` deliberately admits the ENTRY file's `let` too --
+     * the emitter deletes each one as it reaches its declaration, so
      * a later read resolves through the value path instead. That ordering is
      * right for the emitter and wrong for anything asking speculatively, so
      * this asks the DECLARATION whether it is const rather than trusting the

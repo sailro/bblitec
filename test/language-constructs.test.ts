@@ -51,6 +51,102 @@ check(
 );
 
 check(
+    "a-var-is-one-binding-per-function-undefined-until-assigned",
+    `
+    function blocks(c: boolean): string {
+        if (c) { var s = "yes"; } else { s = "no"; }
+        return s;
+    }
+    if (blocks(true) + blocks(false) !== "yesno") throw new Error("block " + blocks(true));
+    function redeclared(): number {
+        var z = 1;
+        var z = z + 1;
+        { var z = z * 10; }
+        return z;
+    }
+    if (redeclared() !== 20) throw new Error("redeclared " + redeclared());
+    function loops(): string {
+        const seen: string[] = [];
+        const fns: (() => number)[] = [];
+        for (let i = 0; i < 3; i++) {
+            var x: number | undefined;
+            if (i === 0) x = 5;
+            seen.push(String(x));
+            var captured = i;
+            fns.push(() => captured);
+        }
+        for (var k = 0; k < 2; k++) fns.push(() => k * 100);
+        return seen.join() + "|" + fns.map((f) => f()).join() + "|" + k;
+    }
+    if (loops() !== "5,5,5|2,2,2,200,200|2") throw new Error("loops " + loops());
+    function early(): string {
+        const read = (): number | undefined => late;
+        const before = typeof late + String(read());
+        var late: number | undefined = 7;
+        return before + read();
+    }
+    if (early() !== "undefinedundefined7") throw new Error("early " + early());
+    function patterns(c: boolean): string {
+        if (c) { var [a, b] = [1, 2]; var { t } = { t: "x" }; } else { a = 3; b = 4; t = "y"; }
+        let out = t + (a + b);
+        for (var item of ["p", "q"]) out += item;
+        var item = "r";
+        return out + item;
+    }
+    if (patterns(true) + patterns(false) !== "x3pqry7pqr") throw new Error("patterns " + patterns(true) + patterns(false));
+    function cases(k: number): string {
+        switch (k) {
+            case 1:
+                var tag: string | undefined = "one";
+            // falls through
+            case 2:
+                return String(tag);
+        }
+        return "none";
+    }
+    if (cases(1) + cases(2) !== "oneundefined") throw new Error("cases " + cases(1) + cases(2));
+    var counter = 1;
+    var counter = counter + 1;
+    function bump(): number { return ++counter; }
+    if (bump() !== 3 || counter !== 3) throw new Error("module " + counter);
+`,
+);
+
+check(
+    "a-for-in-of-head-assigns-an-existing-target-as-an-assignment-would",
+    `
+    let x = 0;
+    let sum = 0;
+    for (x of [1, 2, 3]) sum += x;
+    let a = 0, b = 0, product = 0;
+    const pairs: [number, number][] = [[1, 2], [3, 4]];
+    for ([a, b] of pairs) product += a * b;
+    let k = "";
+    const seen: string[] = [];
+    for ({ k } of [{ k: "u" }, { k: "v" }]) seen.push(k);
+    const o = { v: 0 };
+    for (o.v of [2, 5]) sum += o.v;
+    let key = "";
+    const keyed: Record<string, number> = { m: 1, n: 2 };
+    for (key in keyed) seen.push(key);
+    let found = 0;
+    for (found of [3, 8, 11, 20]) if (found > 10) break;
+    const m = new Map<string, number>([["a", 1], ["b", 2]]);
+    let mk = "", mv = 0, entries = "";
+    for ([mk, mv] of m) entries += mk + mv;
+    let cur = 0;
+    const get = (): number => cur;
+    for (cur of [5, 6]) {}
+    const items: { n: number }[] = [];
+    for (let i = 0; i < 3; i++) items.push({ n: i });
+    let item: { n: number } = { n: -1 };
+    for (item of items) item.n += 10;
+    const result = x + "|" + sum + "|" + a + "|" + b + "|" + product + "|" + seen.join("") + "|" + o.v + "|" + key + "|" + found + "|" + entries + "|" + get() + "|" + items.map((i) => i.n).join() + "|" + item.n;
+    if (result !== "3|13|3|4|14|uvmn|5|n|11|a1b2|6|10,11,12|12") throw new Error(result);
+`,
+);
+
+check(
     "a-compound-assignment-reads-its-old-value-first-and-is-a-value",
     `
     let x = 1;

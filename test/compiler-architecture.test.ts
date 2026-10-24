@@ -1493,6 +1493,76 @@ test("a fact spelled over a value's C++ is rebased by rebaseSpelling", () => {
     );
 });
 
+test("a `var` binds through var-bindings.ts", () => {
+    // Which `var`s are hoisted, their storage and the writes their
+    // declarations make are var-bindings.ts's: the statement walk declares
+    // the storage, the binding funnel turns a declared name into an
+    // assignment, the rebind index reads the writes. compiler.ts keeps a
+    // `var` out of its static constants; no other file decides on `var`.
+    for (const name of ["VarBindings", "hoistedVarWrites"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/var-bindings.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                /variableKind\([^)]*\)\s*[!=]==\s*"var"/.test(sourceText(path)),
+            )
+            .sort(),
+        ["src/compiler.ts", "src/compiler/var-bindings.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).calls.has("hoistedVarWrites"),
+        ),
+        ["src/compiler/binding-rebinds.ts"],
+    );
+    for (const [member, path] of [
+        ["declareFor", "src/compiler/statements.ts"],
+        ["assignsDeclared", "src/compiler/binding-scopes.ts"],
+        ["refuseUnassignedRead", "src/compiler/binding-scopes.ts"],
+    ] as const)
+        assert.deepEqual(
+            sourcePaths.filter(
+                (source) =>
+                    source !== "src/compiler/var-bindings.ts" &&
+                    sourceFacts(source).members.has(member),
+            ),
+            [path],
+            member,
+        );
+});
+
+test("a value is written to an assignment target through one owner", () => {
+    // emitAssignmentTargetWrite writes a computed value as `target = value`
+    // would (a variable, a member, an array or object pattern): the
+    // destructuring assignments' walkers, a for-in/of head assigning an
+    // existing target and a hoisted `var`'s declaration share it. A loop
+    // head binds or assigns its element in statements.ts's bindLoopElement
+    // and bindStaticIterationValue alone.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("emitAssignmentTargetWrite"),
+            )
+            .sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/statements.ts",
+            "src/compiler/var-bindings.ts",
+        ],
+    );
+    const statements = sourceText("src/compiler/statements.ts");
+    for (const call of [
+        "bindDataIterationVariable(",
+        "assignIterationTarget(",
+        "emitAssignmentTargetWrite(",
+    ])
+        assert.equal(statements.split(call).length - 1, 1, call);
+});
+
 test("a binding pattern binds through declarations.ts bindPattern", () => {
     // Destructuring declarations, parameters, callbacks and for-of (runtime
     // and unrolled) bind a pattern's names in the declaration owner; no

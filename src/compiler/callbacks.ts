@@ -27,7 +27,7 @@ import type {
     LoweringStatement,
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
-import { functionOfDeclaration } from "./syntax.js";
+import { functionOfDeclaration, isBlockScopedVariable } from "./syntax.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -647,10 +647,12 @@ export class CallbackLowerer {
         | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
         | undefined {
         const declaration = symbol.valueDeclaration;
+        // A `var` read before its declaration is undefined, not its initializer.
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
+            !isBlockScopedVariable(declaration) ||
             !ts.isVariableStatement(declaration.parent.parent) ||
             this.context.bindings.peekBinding(symbol)
         )

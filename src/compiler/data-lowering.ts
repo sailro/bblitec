@@ -16628,49 +16628,79 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     };
                 }),
             };
-        } else {
-            value = this.context.compileValue(expression.right);
-            const type = value.dataType ?? this.dataTypeAt(right);
-            if (!type || !["vector", "tuple", "product"].includes(type.kind))
-                this.context.fail(
-                    right,
-                    "Array destructuring assignment requires represented array storage.",
-                );
-            if (value.kind === "tuple") {
-                const source =
-                    this.context.allocateTemporaryCppName("destructure_source");
-                const initializer = this.compileKnownValueForSink(
-                    value,
-                    type,
-                    right,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: source,
-                    initializer: initializer,
-                });
-                value = {
-                    ...this.leafValue(source, type),
-                    nativeCaptures: [
-                        this.context.registerNativeBinding(source),
-                    ],
-                };
-            } else {
-                // Keep the RHS identity across writes to the assignment
-                // targets, reusing an already stable result when possible.
-                value = this.context.bindings.pinValueToTemporary(
-                    value,
-                    "destructure_source",
-                );
-            }
-        }
+        } else
+            value = this.heldArraySource(
+                this.context.compileValue(expression.right),
+                right,
+            );
         this.emitArrayAssignmentPattern(
             left,
             value,
             this.context.checker.getTypeAtLocation(right),
         );
         return true;
+    }
+
+    /**
+     * An array pattern's source, held across the writes to its targets: a
+     * compile-time tuple in native storage, any other value pinned (an
+     * already stable one reused).
+     */
+    private heldArraySource(value: Value, node: ts.Expression): Value {
+        const type = value.dataType ?? this.dataTypeAt(node);
+        if (!type || !["vector", "tuple", "product"].includes(type.kind))
+            this.context.fail(
+                node,
+                "Array destructuring assignment requires represented array storage.",
+            );
+        if (value.kind !== "tuple")
+            return this.context.bindings.pinValueToTemporary(
+                value,
+                "destructure_source",
+            );
+        const source =
+            this.context.allocateTemporaryCppName("destructure_source");
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: source,
+            initializer: this.compileKnownValueForSink(value, type, node),
+        });
+        return {
+            ...this.leafValue(source, type),
+            nativeCaptures: [this.context.registerNativeBinding(source)],
+        };
+    }
+
+    /**
+     * Writes a value to an assignment target as `target = value` would: a
+     * variable, a member, or an array or object pattern whose leaves take
+     * their parts of it (a for-in/of head, a hoisted `var`'s declaration).
+     */
+    public emitAssignmentTargetWrite(
+        target: ts.Expression,
+        value: Value,
+    ): void {
+        const pattern = this.context.unwrap(target);
+        if (ts.isArrayLiteralExpression(pattern)) {
+            this.emitArrayAssignmentPattern(
+                pattern,
+                this.heldArraySource(value, pattern),
+                this.context.checker.getTypeAtLocation(pattern),
+            );
+            return;
+        }
+        if (ts.isObjectLiteralExpression(pattern)) {
+            const targets = this.objectPatternTargets(pattern);
+            if (!targets)
+                this.context.fail(
+                    pattern,
+                    "An object assignment pattern here writes plain keys to plain targets: no default, nested pattern or rest.",
+                );
+            this.emitObjectPatternWrites(targets, value, pattern);
+            return;
+        }
+        this.emitDestructuringTargetWrite(pattern, () => value);
     }
 
     private emitArrayAssignmentPattern(
@@ -16789,8 +16819,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): boolean {
         const left = this.context.unwrap(expression.left);
         if (!ts.isObjectLiteralExpression(left)) return false;
+        const targets = this.objectPatternTargets(left);
+        if (!targets) return false;
+        this.emitObjectPatternWrites(
+            targets,
+            this.context.compileValue(expression.right),
+            expression.right,
+        );
+        return true;
+    }
+
+    /** An object pattern's `{ key: target }` slots, when each is plain. */
+    private objectPatternTargets(
+        pattern: ts.ObjectLiteralExpression,
+    ): { key: string; name: ts.Expression }[] | undefined {
         const targets: { key: string; name: ts.Expression }[] = [];
-        for (const { read, target, fallback } of patternSlots(left)) {
+        for (const { read, target, fallback } of patternSlots(pattern)) {
             const name = this.context.unwrap(target);
             if (
                 read.kind !== "member" ||
@@ -16802,27 +16846,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ts.isElementAccessExpression(name)
                 )
             )
-                return false;
+                return undefined;
             targets.push({ key: read.key, name });
         }
-        const raw = this.context.compileValue(expression.right);
+        return targets;
+    }
+
+    /** Writes each object-pattern target from its property of the source, evaluated once. */
+    private emitObjectPatternWrites(
+        targets: readonly { key: string; name: ts.Expression }[],
+        raw: Value,
+        node: ts.Expression,
+    ): void {
         const narrowed =
-            raw.kind === "data"
-                ? this.narrowOptional(raw, expression.right)
-                : raw;
+            raw.kind === "data" ? this.narrowOptional(raw, node) : raw;
         const source =
             narrowed.kind === "record"
                 ? narrowed
                 : this.context.bindings.pinValueToTemporary(
                       narrowed,
                       "destructure_source",
-                      expression.right,
+                      node,
                   );
         for (const { key, name } of targets)
             this.emitDestructuringTargetWrite(name, () =>
                 this.destructuredMember(source, key, name),
             );
-        return true;
     }
 
     /** The value of property `key` an object destructuring reads from `source`. */
@@ -17035,6 +17084,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         this.invalidateStaticElements(target);
         this.context.bindings.invalidateRecordProperties(target);
+        if (ts.isIdentifier(name)) this.context.bindings.markVarAssigned(name);
         const root = rootIdentifier(name, (node) => this.context.unwrap(node));
         const owner = root && this.context.bindings.lookupOptional(root);
         if (owner) this.context.bindings.invalidateRecordProperties(owner);
@@ -19855,13 +19905,62 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         template: Value | undefined,
         define: (identifier: ts.Identifier, value: Value) => void,
     ): void {
+        const value = this.iterationValue(
+            name,
+            ts.isIdentifier(name),
+            itemCpp,
+            element,
+            template,
+        );
+        // A pattern destructures the item as a destructuring declaration
+        // destructures its initializer.
+        if (ts.isIdentifier(name)) define(name, value);
+        else this.context.declarations.bindPattern(name, value, name, true);
+    }
+
+    /**
+     * Assigns a runtime iteration's item to a for-in/of head's existing
+     * target, as `target = item` would.
+     */
+    public assignIterationTarget(
+        target: ts.Expression,
+        itemCpp: string,
+        element: DataIterationElement,
+        template: Value | undefined,
+    ): void {
+        const pattern = this.context.unwrap(target);
+        this.emitAssignmentTargetWrite(
+            target,
+            this.iterationValue(
+                target,
+                !ts.isArrayLiteralExpression(pattern) &&
+                    !ts.isObjectLiteralExpression(pattern),
+                itemCpp,
+                element,
+                template,
+            ),
+        );
+    }
+
+    /**
+     * The value one iteration gives its head: the element whole (an entry's
+     * pair, a `keys()` index), or the item a pattern destructures.
+     */
+    private iterationValue(
+        head: ts.Node,
+        whole: boolean,
+        itemCpp: string,
+        element: DataIterationElement,
+        template: Value | undefined,
+    ): Value {
         const owner = this.context.registerNativeBinding(itemCpp, false, true);
-        const defineItem = (identifier: ts.Identifier, value: Value): void =>
-            define(identifier, { ...value, nativeCaptures: [owner] });
-        const defineIndex = (
-            identifier: ts.Identifier,
-            indexCpp: string,
-        ): void => {
+        if (element.kind === "array-index") {
+            if (!whole) {
+                this.context.fail(
+                    head,
+                    "Array keys iteration binds one identifier.",
+                );
+            }
             // The yielded number is a writable binding, independent of the
             // iterator's counter and of numbers yielded on later iterations.
             const cpp = this.context.allocateTemporaryCppName("entry_index");
@@ -19869,59 +19968,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "declaration",
                 type: "double",
                 name: cpp,
-                initializer: `static_cast<double>(${indexCpp})`,
+                initializer: `static_cast<double>(${element.indexCpp})`,
                 attributes: "[[maybe_unused]] ",
             });
-            define(identifier, {
+            return {
                 kind: "number",
                 cpp,
                 dataType: { kind: "number" },
                 nativeCaptures: [
                     this.context.registerNativeBinding(cpp, false, true),
                 ],
-            });
-        };
-        if (element.kind === "array-index") {
-            if (!ts.isIdentifier(name)) {
-                this.context.fail(
-                    name,
-                    "Array keys iteration binds one identifier.",
-                );
-            }
-            defineIndex(name, element.indexCpp);
-            return;
+            };
         }
-        if (ts.isIdentifier(name)) {
-            if (element.kind === "array-entry")
-                this.context.fail(
-                    name,
-                    "Array entries iteration requires an [index, value] binding.",
-                );
-            if (element.kind === "map-entry" || element.kind === "set-entry") {
-                define(
-                    name,
-                    this.materializeIterationPair(itemCpp, element, name),
-                );
-                return;
-            }
-            const value: Value = {
+        if (!whole)
+            return this.iterationPatternValue(itemCpp, element, template);
+        if (element.kind === "array-entry")
+            this.context.fail(
+                head,
+                "Array entries iteration requires an [index, value] binding.",
+            );
+        if (element.kind === "map-entry" || element.kind === "set-entry")
+            return this.materializeIterationPair(itemCpp, element, head);
+        return {
+            ...runtimeMeshValue({
                 ...withNativeMetadata(
                     this.leafValue(itemCpp, element),
                     template,
                 ),
                 runtimeIteration: true,
-            };
-            defineItem(name, runtimeMeshValue(value));
-            return;
-        }
-        // A pattern destructures the item as a destructuring declaration
-        // destructures its initializer.
-        this.context.declarations.bindPattern(
-            name,
-            this.iterationPatternValue(itemCpp, element, template),
-            name,
-            true,
-        );
+            }),
+            nativeCaptures: [owner],
+        };
     }
 
     /**

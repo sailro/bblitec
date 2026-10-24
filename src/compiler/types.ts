@@ -1880,6 +1880,11 @@ export interface VariableBinding {
      * guessed.
      */
     reboundInNestedScope?: true;
+    /**
+     * A hoisted `var` whose storage cannot hold undefined, not yet assigned
+     * on the walk to here: a read that may run now refuses.
+     */
+    unassignedVar?: true;
 }
 
 /**

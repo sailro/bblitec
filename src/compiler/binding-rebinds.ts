@@ -3,6 +3,7 @@ import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { EmissionWeakMap } from "./emission-transaction.js";
 import { declaredSymbol, valueSymbolOf } from "./symbols.js";
 import { unwrapExpression, writeSites, type WriteSite } from "./syntax.js";
+import { hoistedVarWrites } from "./var-bindings.js";
 
 // Source facts outlive emission attempts: one index per checker and file.
 const indexes = new WeakMap<
@@ -12,8 +13,8 @@ const indexes = new WeakMap<
 
 /**
  * The writes that give a name a new value in one file -- `x = v`, `x += v`,
- * `x ??= v`, a pattern leaf, `x++`, a for-in/of target -- by the binding
- * they rebind.
+ * `x ??= v`, a pattern leaf, `x++`, a for-in/of target, a hoisted `var`'s
+ * declaration -- by the binding they rebind.
  */
 export function fileRebinds(
     checker: ts.TypeChecker,
@@ -27,7 +28,10 @@ export function fileRebinds(
     forEachAnalysisNode(
         file,
         (node) => {
-            for (const site of writeSites(node)) {
+            for (const site of [
+                ...writeSites(node),
+                ...hoistedVarWrites(checker, node),
+            ]) {
                 if (!ts.isIdentifier(site.target)) continue;
                 const symbol = valueSymbolOf(checker, site.target);
                 if (!symbol) continue;
