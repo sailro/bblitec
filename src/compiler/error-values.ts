@@ -2,7 +2,7 @@ import ts from "typescript";
 import { undefinedValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
-import { expressionMayRunCode, propertyKey } from "./syntax.js";
+import { expressionMayRunCode, objectLiteralMembers } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 import type { DataStructField } from "./data-types.js";
 
@@ -363,24 +363,16 @@ function compileErrorCause(
                 options,
                 "Error options require a cause record.",
             );
-        for (const property of options.properties) {
-            const name =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? propertyKey(property.name)
-                    : undefined;
+        for (const member of objectLiteralMembers(options)) {
             if (
-                name !== "cause" ||
-                (!ts.isPropertyAssignment(property) &&
-                    !ts.isShorthandPropertyAssignment(property))
+                (member.kind !== "property" && member.kind !== "shorthand") ||
+                member.key !== "cause"
             )
                 return context.fail(
-                    property,
+                    member.node,
                     "Error options only represent an error cause.",
                 );
-            const value = ts.isPropertyAssignment(property)
-                ? property.initializer
-                : property.name;
+            const value = member.value;
             const compiled = context.dataLowerer.compileForSink(value, {
                 kind: "error",
             });

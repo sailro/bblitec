@@ -1139,6 +1139,20 @@ function libraryCallName(
     return owner ? `${owner}.${callee.name.text}` : callee.name.text;
 }
 
+/**
+ * The argument a library call writes into ({@link libraryArgumentEffect}:
+ * `Object.assign(target, ...)`, `Atomics.store(cells, ...)`, a Web IDL
+ * call filling a buffer), if any.
+ */
+export function libraryWrittenArgument(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): ts.Expression | undefined {
+    return call.arguments.find(
+        (_, index) => libraryArgumentEffect(checker, call, index) === "writes",
+    );
+}
+
 /** Default-library calls that write their first argument and read the rest. */
 const WRITING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
     "Atomics.add",

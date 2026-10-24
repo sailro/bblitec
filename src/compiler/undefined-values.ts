@@ -14,7 +14,7 @@ import {
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
-import { undefinedOnly, holdsOnly } from "./type-facts.js";
+import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 import { undefinedValue } from "./values/model.js";
 
 /** Existing library operations with an actual undefined completion. */
@@ -284,14 +284,9 @@ export function hasNonThenableCompletion(
         )
             return true;
         // A void result may be any value, a thenable included.
-        return holdsOnly(checker.getTypeAtLocation(expression), [
-            "number",
-            "string",
-            "boolean",
-            "bigint",
-            "symbol",
-            "null",
-            "undefined",
-        ]);
+        return holdsOnly(
+            checker.getTypeAtLocation(expression),
+            PRIMITIVE_KINDS,
+        );
     });
 }

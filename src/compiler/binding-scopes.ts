@@ -1108,9 +1108,11 @@ export class BindingScopes {
     }
 
     /**
-     * A destructured or for-of binding a stored closure captures and another
-     * closure writes lives in one shared cell (one per for-of iteration) that
-     * every closure reads and writes, instead of the copy each would hold.
+     * A destructured or for-of binding a stored closure captures and any code
+     * writes lives in one shared cell (one per for-of iteration) that every
+     * closure reads and writes, instead of the copy each would hold: a write
+     * after the capture, in a closure or in the binding's own body, would
+     * leave the copy behind.
      */
     private closureSharedCell(identifier: ts.MemberName, value: Value): Value {
         if (
@@ -1125,9 +1127,7 @@ export class BindingScopes {
                 declaration,
                 identifier,
             ) ||
-            !this.context.sharedClosures.identifierIsReboundInClosure(
-                identifier,
-            )
+            !this.context.sharedClosures.identifierIsRebound(identifier)
         )
             return value;
         const type =

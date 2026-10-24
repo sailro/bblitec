@@ -105,7 +105,6 @@ import {
     DynamicBindingStorageRequired,
     initializedVariableDeclaration,
     requireDynamicBindingStorage,
-    type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
@@ -256,6 +255,7 @@ import {
     containsSuspension,
     isSuspensionPoint,
     variableKind,
+    objectLiteralMembers,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -645,12 +645,8 @@ interface DataLoweringContext extends Pick<
     | "selectResourceOwner"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
+    | "dynamicBindings"
 > {
-    /** Declarations a storage demand retyped, by declaration. */
-    readonly dynamicBindings: ReadonlyMap<
-        ts.VariableDeclaration,
-        DynamicBindingStorage | undefined
-    >;
     /** Source storages that keep `null` and `undefined` apart. */
     readonly absenceTags: ReadonlySet<ts.Declaration>;
     /** Record properties storing their numeric tuples as growable arrays. */
@@ -1034,6 +1030,39 @@ export class DataLowerer {
         ts.Expression,
         Value | "pending"
     >();
+
+    /**
+     * `left op= right` over the numeric `place` whose old value `previous`
+     * holds (`compoundPlace`): the number the one compound rule spells,
+     * stored through `store`, or C++'s own `op=` where it means JavaScript's
+     * and the place is read in place (`inPlace`: no conversion on store).
+     */
+    public emitNumericCompound(
+        left: ts.Expression,
+        right: ts.Expression,
+        operator: string,
+        place: string,
+        previous: string,
+        store: (value: string) => string,
+        inPlace = true,
+    ): void {
+        const rightCpp = this.context.compileNumber(right, "double");
+        const value = compoundAssignmentValue(
+            operator,
+            previous,
+            rightCpp,
+            staticNumberValue(this.context, right),
+        );
+        if (value.jsData) this.context.reachJsData();
+        this.emitCompoundStore(
+            left,
+            value.cpp,
+            store,
+            value.native && inPlace && previous === place
+                ? `${place} ${operator} ${rightCpp};`
+                : undefined,
+        );
+    }
 
     /**
      * Stores the `kind` value `compound` computes for the compound
@@ -12827,14 +12856,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public literalKeyOrder(literal: ts.ObjectLiteralExpression): string[] {
         return (
             this.evaluatedLiteralKeys.get(literal) ??
-            literal.properties.flatMap((property) => {
-                const key =
-                    ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)
-                        ? this.context.propertyName(property.name)
-                        : undefined;
-                return key === undefined ? [] : [key];
-            })
+            objectLiteralMembers(literal, (name) =>
+                this.context.propertyName(name),
+            ).flatMap((member) =>
+                (member.kind === "property" || member.kind === "shorthand") &&
+                member.key !== undefined
+                    ? [member.key]
+                    : [],
+            )
         );
     }
 
@@ -16021,6 +16050,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : filledLengthGrowth(
                                   this.context.program,
                                   this.context.checker,
+                                  this.context.evaluationOrder,
                                   expression,
                               );
                         this.context.emit(
@@ -16339,33 +16369,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     plainResourceProperty,
                 ));
             }
-            const right = this.context.compileNumber(
-                expression.right,
-                "double",
-            );
-            const compound =
-                operator === "="
-                    ? undefined
-                    : compoundAssignmentValue(
-                          operator,
-                          previous,
-                          right,
-                          staticRight(),
-                      );
-            if (compound?.jsData) this.context.reachJsData();
             const dataStore = target.dataStore;
             const store = (value: string): string =>
                 `${targetCpp} = ${dataStore ? typedArrayStoreExpression(dataStore, value) : value};`;
-            if (!compound)
-                this.context.emit({ kind: "expression", code: store(right) });
+            if (operator === "=")
+                this.context.emit({
+                    kind: "expression",
+                    code: store(
+                        this.context.compileNumber(expression.right, "double"),
+                    ),
+                });
             else
-                this.emitCompoundStore(
+                this.emitNumericCompound(
                     left,
-                    compound.cpp,
+                    expression.right,
+                    operator,
+                    targetCpp,
+                    previous,
                     store,
-                    compound.native && !dataStore && previous === targetCpp
-                        ? `${targetCpp} ${operator} ${right};`
-                        : undefined,
+                    !dataStore,
                 );
             invalidateRootRecordSnapshot();
             return true;

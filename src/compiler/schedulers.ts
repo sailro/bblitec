@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import { libraryGlobal } from "./symbols.js";
 
 /** How a library scheduler runs the callback it is handed: never before it returns. */
 export type SchedulerKind =
@@ -24,18 +25,18 @@ const CANCELS: ReadonlyMap<string, SchedulerKind> = new Map([
  * undefined: a user function or method that shares the name is not one.
  */
 export function schedulerOf(
+    checker: ts.TypeChecker,
     callee: ts.Expression,
-    libraryGlobal: (expression: ts.Expression) => string | undefined,
 ): SchedulerKind | undefined {
-    const name = libraryGlobal(callee);
+    const name = libraryGlobal(checker, callee);
     return name === undefined ? undefined : SCHEDULERS.get(name);
 }
 
 /** The scheduler whose registration a library cancel function (`clearTimeout`) undoes. */
 export function cancelledSchedulerOf(
+    checker: ts.TypeChecker,
     callee: ts.Expression,
-    libraryGlobal: (expression: ts.Expression) => string | undefined,
 ): SchedulerKind | undefined {
-    const name = libraryGlobal(callee);
+    const name = libraryGlobal(checker, callee);
     return name === undefined ? undefined : CANCELS.get(name);
 }

@@ -87,17 +87,16 @@ function setsPresentField(
     if (!returned) return true;
     const value = unwrapExpression(returned);
     if (nullishLiteral(context.checker, value) !== undefined) return true;
+    if (!ts.isObjectLiteralExpression(value)) return false;
+    const members = objectLiteralMembers(value);
     if (
-        !ts.isObjectLiteralExpression(value) ||
-        value.properties.some(
-            (property) =>
-                !ts.isPropertyAssignment(property) &&
-                !ts.isShorthandPropertyAssignment(property),
+        members.some(
+            (member) =>
+                member.kind !== "property" && member.kind !== "shorthand",
         )
-    ) {
+    )
         return false;
-    }
-    const writer = lastWriter(objectLiteralMembers(value), field);
+    const writer = lastWriter(members, field);
     if (writer === undefined || writer === "unknown" || !writer.value)
         return false;
     return !isNullable(context.checker.getTypeAtLocation(writer.value));

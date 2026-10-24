@@ -111,13 +111,23 @@ function expressionName(node: ts.Node): string | undefined {
     return undefined;
 }
 
+const texts = new Map<string, string>();
+
+/** A source file's text, read once per test process. */
+export function sourceText(path: string): string {
+    let text = texts.get(path);
+    if (text === undefined)
+        texts.set(path, (text = readFileSync(path, "utf8")));
+    return text;
+}
+
 /** Structural dependency facts, independent of whitespace and comments. */
 export function sourceFacts(path: string): SourceFacts {
     const previous = cache.get(path);
     if (previous) return previous;
     const file = ts.createSourceFile(
         path,
-        readFileSync(path, "utf8"),
+        sourceText(path),
         ts.ScriptTarget.Latest,
         true,
     );

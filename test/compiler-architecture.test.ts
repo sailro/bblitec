@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { declarationOwners, sourceFacts, sourcePaths } from "./source-facts.js";
+import {
+    declarationOwners,
+    sourceFacts,
+    sourcePaths,
+    sourceText,
+} from "./source-facts.js";
 
 test("resolves renamed imports through semantic symbols", () => {
     const body = (create: string, scene: string): string =>
@@ -975,9 +979,7 @@ test("a runtime index reads static storage through runtimeIndexedOwner", () => {
     // a constant array whole (for-of, spread). Ratchet: never more.
     const calls = sourcePaths.flatMap((path) =>
         [
-            ...readFileSync(path, "utf8").matchAll(
-                /this[.]materializeConstantArray[(]/g,
-            ),
+            ...sourceText(path).matchAll(/this[.]materializeConstantArray[(]/g),
         ].map(() => path),
     );
     assert.equal(calls.length, 3, calls.join());
@@ -990,7 +992,7 @@ test("a runtime index reads static storage through runtimeIndexedOwner", () => {
 test("a library call's effect on an argument is read from one table", () => {
     // libraryArgumentEffect owns the language library's writers and readers
     // and the Web IDL rule; every argument-effect question asks it.
-    const source = readFileSync("src/compiler/parameter-effects.ts", "utf8");
+    const source = sourceText("src/compiler/parameter-effects.ts");
     for (const table of ["WRITING_LIBRARY_CALLS", "READING_LIBRARY_CALLS"])
         assert.equal(
             [...source.matchAll(new RegExp(`${table}[.]has[(]`, "g"))].length,
@@ -1007,7 +1009,7 @@ test("library schedulers are named in schedulers.ts", () => {
     // (a user method named setTimeout is none). The worker realm's own list
     // names the functions it provides, schedulers among them.
     const lists = sourcePaths.filter((path) => {
-        const text = readFileSync(path, "utf8");
+        const text = sourceText(path);
         return text.includes('"setTimeout"') && text.includes('"setInterval"');
     });
     assert.deepEqual(lists, [
@@ -1027,8 +1029,7 @@ test("a body's final return is read through loop-control.ts", () => {
     const reads = sourcePaths.reduce(
         (count, path) =>
             count +
-            [...readFileSync(path, "utf8").matchAll(/statements[.]at[(]-1[)]/g)]
-                .length,
+            [...sourceText(path).matchAll(/statements[.]at[(]-1[)]/g)].length,
         0,
     );
     assert.ok(reads <= 28, `statements.at(-1) reads: ${reads}`);
@@ -1115,9 +1116,7 @@ test("exponentiation, remainder and complement are spelled once", () => {
     // else power_js), pinnedRemainderCall (fmod) and jsBitwiseNotCall are
     // the only places that spell these operators as C++.
     const spellers = (pattern: RegExp): string[] =>
-        sourcePaths
-            .filter((path) => pattern.test(readFileSync(path, "utf8")))
-            .sort();
+        sourcePaths.filter((path) => pattern.test(sourceText(path))).sort();
     assert.deepEqual(spellers(/std::pow[(]/), [
         "src/lowering/pinned-operators.ts",
     ]);
@@ -1155,9 +1154,7 @@ test("ToUint32 / ToInt32 of a JavaScript number are spelled once", () => {
     // raw uint32 casts (indices and counts) may only shrink.
     assert.deepEqual(
         sourcePaths
-            .filter((path) =>
-                /bbl::js::to_u?int32[(]/.test(readFileSync(path, "utf8")),
-            )
+            .filter((path) => /bbl::js::to_u?int32[(]/.test(sourceText(path)))
             .sort(),
         [
             "src/compiler/sprite-atlas-record.ts",
@@ -1167,11 +1164,8 @@ test("ToUint32 / ToInt32 of a JavaScript number are spelled once", () => {
     const casts = sourcePaths.reduce(
         (count, path) =>
             count +
-            [
-                ...readFileSync(path, "utf8").matchAll(
-                    /static_cast<std::uint32_t>[(]/g,
-                ),
-            ].length,
+            [...sourceText(path).matchAll(/static_cast<std::uint32_t>[(]/g)]
+                .length,
         0,
     );
     assert.ok(casts <= 163, `static_cast<std::uint32_t> casts: ${casts}`);
@@ -1221,7 +1215,7 @@ test("a number's C++ width is always the caller's choice", () => {
         text.includes('precision?: "float" | "double"') ||
         text.includes('precision: "float" | "double" = "float"');
     assert.deepEqual(
-        sourcePaths.filter((path) => defaulted(readFileSync(path, "utf8"))),
+        sourcePaths.filter((path) => defaulted(sourceText(path))),
         [],
     );
 });
@@ -1271,15 +1265,14 @@ test("undefined as a value is spelled and read by values/model.ts", () => {
     const checks = sourcePaths.reduce(
         (count, path) =>
             count +
-            [...readFileSync(path, "utf8").matchAll(/[=!]== "std::nullopt"/g)]
-                .length,
+            [...sourceText(path).matchAll(/[=!]== "std::nullopt"/g)].length,
         0,
     );
     assert.ok(checks <= 5, `"std::nullopt" text checks: ${checks}`);
     // A JsonValue absence is spelled by jsonAbsenceCpp.
     assert.deepEqual(
         sourcePaths.filter((path) =>
-            readFileSync(path, "utf8").includes("JsonValue::null_value()"),
+            sourceText(path).includes("JsonValue::null_value()"),
         ),
         ["src/compiler/values/model.ts"],
     );
@@ -1289,9 +1282,7 @@ test("undefined as a value is spelled and read by values/model.ts", () => {
             .filter(
                 (path) =>
                     path !== "src/compiler/values/model.ts" &&
-                    /\.cpp [=!]== "(?:true|false)"/.test(
-                        readFileSync(path, "utf8"),
-                    ),
+                    /\.cpp [=!]== "(?:true|false)"/.test(sourceText(path)),
             )
             .sort(),
         [],
@@ -1331,7 +1322,7 @@ test("a binding's shared cell is declared by shared-cells.ts", () => {
                 (path === "src/compiler.ts" ||
                     path.startsWith("src/compiler/")) &&
                 path !== "src/compiler/shared-cells.ts" &&
-                /make_gc_(?:shared<|cell\()/.test(readFileSync(path, "utf8")),
+                /make_gc_(?:shared<|cell\()/.test(sourceText(path)),
         ),
         [],
     );
@@ -1346,7 +1337,7 @@ test("a statement list's reachable prefix is emitted by loop-control.ts", () => 
     assert.deepEqual(
         sourcePaths.filter((path) =>
             /this\.emit\(\w+, (\w+)\);\s*if \(\s*this\.terminatesAfterLowering\(\1\)/.test(
-                readFileSync(path, "utf8"),
+                sourceText(path),
             ),
         ),
         [],
@@ -1355,15 +1346,11 @@ test("a statement list's reachable prefix is emitted by loop-control.ts", () => 
 
 test("a by-value binding closures share and write gets its cell where it is bound", () => {
     // binding-scopes.ts closureSharedCell gives a destructured, for-of or
-    // for-in binding a stored closure captures and another closure writes one
+    // for-in binding a stored closure captures and any code writes one
     // shared cell; no declaration form decides it on its own.
     assert.deepEqual(
-        sourcePaths.filter(
-            (path) =>
-                path !== "src/compiler/shared-closure-analysis.ts" &&
-                readFileSync(path, "utf8").includes(
-                    "identifierIsReboundInClosure(",
-                ),
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("closureSharedCell("),
         ),
         ["src/compiler/binding-scopes.ts"],
     );
@@ -1374,9 +1361,7 @@ test("a body running off its end completes through emitFallOffEnd", () => {
     // guard of a path TypeScript proves impossible: spelled in one place.
     assert.deepEqual(
         sourcePaths.filter((path) =>
-            readFileSync(path, "utf8").includes(
-                "fell through without returning",
-            ),
+            sourceText(path).includes("fell through without returning"),
         ),
         ["src/compiler.ts"],
     );
@@ -1384,10 +1369,7 @@ test("a body running off its end completes through emitFallOffEnd", () => {
         "src/compiler/native-functions.ts",
         "src/compiler/user-functions.ts",
     ])
-        assert.ok(
-            readFileSync(path, "utf8").includes(".emitFallOffEnd()"),
-            path,
-        );
+        assert.ok(sourceText(path).includes(".emitFallOffEnd()"), path);
 });
 
 test("a class's construction order and parameter field writes have one owner", () => {
@@ -1397,7 +1379,7 @@ test("a class's construction order and parameter field writes have one owner", (
     assert.deepEqual(declarationOwners("constructorFieldParameters"), [
         "src/compiler/class-members.ts",
     ]);
-    const classes = readFileSync("src/compiler/classes.ts", "utf8");
+    const classes = sourceText("src/compiler/classes.ts");
     assert.equal(
         [...classes.matchAll(/isParameterPropertyDeclaration\(/g)].length,
         1,
@@ -1411,7 +1393,7 @@ test("a class member's static modifier is read by isStaticMember", () => {
             (path) =>
                 (path === "src/compiler.ts" ||
                     path.startsWith("src/compiler/")) &&
-                readFileSync(path, "utf8").includes("ModifierFlags.Static"),
+                sourceText(path).includes("ModifierFlags.Static"),
         ),
         ["src/compiler/class-members.ts"],
     );
@@ -1425,7 +1407,7 @@ test("a lowering binds `this` for a scope through withThis", () => {
         (path) =>
             path !== "src/compiler.ts" &&
             path !== "src/compiler/lowering-services.ts" &&
-            readFileSync(path, "utf8").includes(".defineThis("),
+            sourceText(path).includes(".defineThis("),
     );
     assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
 });
@@ -1440,7 +1422,7 @@ test("the compiler never decides by comparing source text", () => {
                 (path === "src/compiler.ts" ||
                     path.startsWith("src/compiler/")) &&
                 /getText\([^)]*\)\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         [],
@@ -1449,27 +1431,29 @@ test("the compiler never decides by comparing source text", () => {
 
 test("a compound assignment's old value and store have one owner", () => {
     // The data lowerer's compoundPlace holds the old value a right side may
-    // write, binding a target that runs code once; its emitCompoundStore
-    // stores the number and binds it for an assignment used as a value.
-    const callers = sourcePaths
-        .filter(
-            (path) =>
-                (path === "src/compiler.ts" ||
-                    path.startsWith("src/compiler/")) &&
-                sourceFacts(path).calls.has("compoundAssignmentValue"),
-        )
-        .sort();
-    assert.deepEqual(callers, [
-        "src/compiler/data-lowering.ts",
-        "src/compiler/statements.ts",
-    ]);
-    for (const path of callers)
-        for (const name of ["compoundPlace", "emitCompoundStore"])
-            assert.ok(sourceFacts(path).members.has(name), `${path} ${name}`);
+    // write, binding a target that runs code once; emitNumericCompound
+    // spells the number and emitCompoundStore stores it, binding it for an
+    // assignment used as a value.
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    (path === "src/compiler.ts" ||
+                        path.startsWith("src/compiler/")) &&
+                    sourceFacts(path).calls.has("compoundAssignmentValue"),
+            )
+            .sort(),
+        ["src/compiler/data-lowering.ts"],
+    );
+    for (const name of ["compoundPlace", "emitNumericCompound"])
+        assert.ok(
+            sourceFacts("src/compiler/statements.ts").members.has(name),
+            name,
+        );
     // A string `+=` goes through the same owners (emitStringCompound).
     assert.deepEqual(
         sourcePaths.filter((path) =>
-            readFileSync(path, "utf8").includes("concat_append("),
+            sourceText(path).includes("concat_append("),
         ),
         ["src/compiler/data-lowering.ts"],
     );
@@ -1486,7 +1470,7 @@ test("a folded condition is read through knownCondition", () => {
                     path.startsWith("src/compiler/")) &&
                 path !== "src/compiler/values/model.ts" &&
                 /(?<!toLowerCase\(\) )[=!]== "(?:true|false)"/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         [],
@@ -1502,7 +1486,7 @@ test("a fact spelled over a value's C++ is rebased by rebaseSpelling", () => {
                 (path === "src/compiler.ts" ||
                     path.startsWith("src/compiler/")) &&
                 /\.replaceAll\(\s*[\w.]*(?:\.cpp|Cpp)\s*,/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         [],
@@ -1520,7 +1504,7 @@ test("a binding pattern binds through declarations.ts bindPattern", () => {
                 (path === "src/compiler.ts" ||
                     path.startsWith("src/compiler/")) &&
                 /(?:bindLocalValue|bindParameterValue|bindCompileTimeValue|defineVariable|defineItem|define)\(\s*(?:binding|element|element_)\.name/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         ["src/compiler/declarations.ts", "src/compiler/home-object-methods.ts"],
@@ -1570,7 +1554,7 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
             (path) =>
                 path.startsWith("src/lowering/") &&
                 /getText\((?:[^()]|\([^()]*\))*\)\s*(?:\.trim\(\))?\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()|(?:[=!]==)\s*[\w.!?[\]]*\.getText\(/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         [],
@@ -1583,7 +1567,7 @@ test("the pinned lowering recognizes source by its syntax, not its text", () => 
             (path) =>
                 path.startsWith("src/lowering/") &&
                 /\.name[?!]?\.getText\(|\.(?:get|has|delete|includes)\((?!\$\{)(?:[^()]|\([^()]*\))*\.getText\(/.test(
-                    readFileSync(path, "utf8"),
+                    sourceText(path),
                 ),
         ),
         [],
@@ -1624,11 +1608,21 @@ test("a projection's path algebra is read through projections.ts", () => {
 });
 
 test("a stored record keeps its binding's object through one owner", () => {
-    for (const path of sourcePaths.filter((path) =>
-        path.startsWith("src/compiler/data-sinks/"),
-    ))
-        assert.ok(!sourceFacts(path).members.has("recordDeclaration"), path);
+    // requireHeldRecordStorage asks recordDeclaration for every store; a
+    // `delete` asks for runtime storage and a JSON view for an observing
+    // owner, each its own question.
     assert.deepEqual(declarationOwners("requireHeldRecordStorage"), [
         "src/compiler/dynamic-binding-storage.ts",
     ]);
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes(".recordDeclaration("))
+            .sort(),
+        [
+            "src/compiler/binding-scopes.ts",
+            "src/compiler/data-lowering.ts",
+            "src/compiler/dynamic-binding-storage.ts",
+            "src/compiler/json-record-views.ts",
+        ],
+    );
 });

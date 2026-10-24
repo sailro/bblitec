@@ -19,7 +19,7 @@ import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
 import { isSymbolPropertyKey } from "./symbols.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { callableRecordValue } from "./callable-records.js";
@@ -56,6 +56,7 @@ type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
+    | "dynamicBindings"
     | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"
@@ -846,15 +847,7 @@ function compileObjectAssign(
         const values = sources.map((source) => {
             const value = context.compileValue(source);
             if (value.kind === "record") {
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             const cpp = context.dataLowerer.compileKnownValueForSink(
                 value,
@@ -888,15 +881,7 @@ function compileObjectAssign(
                 readPairs(source, value);
                 // A later argument can mutate an earlier source. Retain that
                 // source's identity rather than snapshotting its scalar fields.
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             return context.bindings.pinValueToTemporary(
                 value,
@@ -988,15 +973,7 @@ function compileObjectAssign(
             const value = context.compileValue(source);
             if (value.kind === "record") {
                 readPairs(source, value, true);
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             if (value.dataType?.kind === "struct")
                 context.dataTypes.markStoredObjectReferences(value.dataType);
@@ -1256,12 +1233,7 @@ function definitionTarget(
     const expression = argumentAt(call, 0);
     const target = context.compileValue(expression);
     if (target.kind === "record") {
-        const declaration = context.bindings.recordDeclaration(
-            target,
-            expression,
-        );
-        if (declaration)
-            throw new DynamicBindingStorageRequired(declaration, "source");
+        requireHeldRecordStorage(context, target, expression);
     }
     if (target.kind !== "data" || target.dataType?.kind !== "struct")
         return context.fail(

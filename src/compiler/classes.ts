@@ -51,6 +51,7 @@ import {
     nullability,
     isVoid,
     holdsOnly,
+    PRIMITIVE_KINDS,
     callSignatures,
     classInstanceDeclaration,
     unionMembers,
@@ -143,14 +144,7 @@ function isInertExpression(
     const inert = (expression: ts.Expression): boolean =>
         isInertExpression(checker, expression, classSymbols);
     const primitive = (expression: ts.Expression): boolean =>
-        holdsOnly(checker.getTypeAtLocation(expression), [
-            "number",
-            "string",
-            "boolean",
-            "bigint",
-            "undefined",
-            "null",
-        ]);
+        holdsOnly(checker.getTypeAtLocation(expression), PRIMITIVE_KINDS);
     const expression = unwrapExpression(node);
     if (
         ts.isLiteralExpression(expression) ||

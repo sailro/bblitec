@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachReturn } from "./loop-control.js";
 import {
     declaredInDefaultLibrary,
     libraryGlobal,
@@ -148,18 +149,11 @@ export function returnsOnly(
         if (!ts.isBlock(body)) return produces(body);
         let returns = 0;
         let only = true;
-        forEachAnalysisNode(
-            body,
-            (node) => {
-                if (!only) return "skip";
-                if (ts.isReturnStatement(node)) {
-                    returns++;
-                    if (!node.expression || !produces(node.expression))
-                        only = false;
-                }
-            },
-            { functions: "skip", types: "skip" },
-        );
+        forEachReturn([body], (node) => {
+            returns++;
+            if (only && (!node.expression || !produces(node.expression)))
+                only = false;
+        });
         return only && returns > 0;
     } finally {
         active.delete(declaration);

@@ -39,6 +39,7 @@ import {
     isSuspensionPoint,
     isSupportedFunction,
     isFunctionWithBody,
+    objectLiteralMembers,
 } from "./syntax.js";
 import {
     typeCanCarryReference,
@@ -471,58 +472,62 @@ function parameterProjection(
             );
         if (isOperandSelection(node)) return valueOperands(node).flatMap(flow);
         if (ts.isObjectLiteralExpression(node))
-            return node.properties.flatMap((property): Projection[] => {
-                if (ts.isSpreadAssignment(property)) {
-                    const source = flow(property.expression);
-                    const type = checker.getNonNullableType(
-                        checker.getTypeAtLocation(property.expression),
-                    );
-                    const properties = checker.getPropertiesOfType(type);
-                    if (
-                        (type.flags &
-                            (ts.TypeFlags.Any |
-                                ts.TypeFlags.Unknown |
-                                ts.TypeFlags.TypeParameter)) !==
-                            0 ||
-                        properties.some((member) =>
-                            member.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ),
-                        )
-                    )
-                        return [...source];
-                    // A shallow copy carries reference-valued children, not
-                    // its source object or copied scalar fields.
-                    const keys = properties
-                        .filter((member) =>
-                            typeCanCarryReference(
-                                checker.getTypeOfSymbolAtLocation(
-                                    member,
-                                    property.expression,
+            return objectLiteralMembers(node).flatMap(
+                (member): Projection[] => {
+                    const property = member.node;
+                    if (ts.isSpreadAssignment(property)) {
+                        const source = flow(property.expression);
+                        const type = checker.getNonNullableType(
+                            checker.getTypeAtLocation(property.expression),
+                        );
+                        const properties = checker.getPropertiesOfType(type);
+                        if (
+                            (type.flags &
+                                (ts.TypeFlags.Any |
+                                    ts.TypeFlags.Unknown |
+                                    ts.TypeFlags.TypeParameter)) !==
+                                0 ||
+                            properties.some((member) =>
+                                member.declarations?.some(
+                                    ts.isGetAccessorDeclaration,
                                 ),
-                            ),
+                            )
                         )
-                        .map((member) => member.name);
-                    if (
-                        checker
-                            .getIndexInfosOfType(type)
-                            .some((index) => typeCanCarryReference(index.type))
-                    )
-                        keys.push(ANY_KEY);
-                    return keys.flatMap((key) =>
-                        nest(projectMember(source, key), key),
+                            return [...source];
+                        // A shallow copy carries reference-valued children, not
+                        // its source object or copied scalar fields.
+                        const keys = properties
+                            .filter((member) =>
+                                typeCanCarryReference(
+                                    checker.getTypeOfSymbolAtLocation(
+                                        member,
+                                        property.expression,
+                                    ),
+                                ),
+                            )
+                            .map((member) => member.name);
+                        if (
+                            checker
+                                .getIndexInfosOfType(type)
+                                .some((index) =>
+                                    typeCanCarryReference(index.type),
+                                )
+                        )
+                            keys.push(ANY_KEY);
+                        return keys.flatMap((key) =>
+                            nest(projectMember(source, key), key),
+                        );
+                    }
+                    // A prototype the literal sets is held under its own key.
+                    if (member.value === undefined) return [];
+                    return nest(
+                        flow(member.value),
+                        aliasKey(
+                            member.kind === "proto" ? "__proto__" : member.key,
+                        ),
                     );
-                }
-                if (
-                    !ts.isPropertyAssignment(property) &&
-                    !ts.isShorthandPropertyAssignment(property)
-                )
-                    return [];
-                const value = ts.isPropertyAssignment(property)
-                    ? property.initializer
-                    : property.name;
-                return nest(flow(value), aliasKey(propertyKey(property.name)));
-            });
+                },
+            );
         if (ts.isArrayLiteralExpression(node))
             return arrayLiteralSlots(node).flatMap(
                 ({ element, index }): Projection[] => {

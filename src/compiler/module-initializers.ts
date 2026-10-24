@@ -8,6 +8,7 @@ import { receiverWritingMethods } from "./receiver-methods.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
 import {
     callArgumentIsReadOnly,
+    libraryWrittenArgument,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
@@ -17,7 +18,6 @@ import {
     declaredSymbol,
     type CompilerSymbols,
     calledDeclaration,
-    libraryGlobal,
 } from "./symbols.js";
 import {
     ClassHierarchy,
@@ -355,7 +355,7 @@ function collectMutatedContainerSymbols(
             const target = mutatingCallTarget(
                 node,
                 (method) => receiverWritingMethods.has(method),
-                (expression) => libraryGlobal(checker, expression),
+                (call) => libraryWrittenArgument(checker, call),
             );
             if (target) record(target);
         }

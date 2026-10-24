@@ -19,7 +19,10 @@ import {
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
+import {
+    bindingIsOnlyCalledDirectly,
+    bindingRebinds,
+} from "./binding-rebinds.js";
 import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -72,6 +75,7 @@ import { isReadOnlyRegExpCall } from "./regexp-call-effects.js";
 import {
     callArgumentIsReadOnly,
     isEffectFunction,
+    libraryWrittenArgument,
     parameterIsReadOnly,
     parameterOnlyRead,
 } from "./parameter-effects.js";
@@ -513,7 +517,7 @@ function writesThroughRoot(
     const target = mutatingCallTarget(
         node,
         mutatesVia,
-        checker && ((expression) => libraryGlobal(checker, expression)),
+        checker && ((call) => libraryWrittenArgument(checker, call)),
     );
     // Calling a method on a primitive field cannot write through its owner.
     // Argument and callback effects remain the enclosing analysis's concern.
@@ -2948,16 +2952,12 @@ export class UserFunctionLowerer {
         const symbol = declaredSymbol(this.checker, parameter.name);
         if (!symbol || declaredSymbol(this.checker, passed) !== symbol)
             return false;
-        const names = (node: ts.Expression): boolean => {
-            const target = unwrapExpression(node);
-            return (
-                ts.isIdentifier(target) &&
-                declaredSymbol(this.checker, target) === symbol
-            );
-        };
-        return !someAnalysisNode(declaration.body, (node) =>
-            writeSites(node).some(({ target }) => names(target)),
-        );
+        const body = declaration.body;
+        return !bindingRebinds(
+            this.checker,
+            [declaration.getSourceFile()],
+            symbol,
+        ).some(({ target }) => isDeclaredInside(target, body));
     }
 
     private sameCapturedValue(left: Value, right: Value): boolean {

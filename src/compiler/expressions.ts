@@ -56,7 +56,7 @@ import {
     isEngineScopedHandleKind,
 } from "./data-types/handles.js";
 import {
-    DynamicBindingStorageRequired,
+    requireHeldRecordStorage,
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
@@ -259,6 +259,7 @@ export interface ExpressionContext
         Pick<
             LoweringServices,
             | "noteImpureRead"
+            | "dynamicBindings"
             | "conditionOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
@@ -5341,15 +5342,11 @@ export class ExpressionLowerer {
                 ) {
                     // A lookup's local table would recreate scalarized entries on
                     // every call. Retain the dictionary at its source declaration.
-                    const declaration = this.context.bindings.recordDeclaration(
+                    requireHeldRecordStorage(
+                        this.context,
                         owner,
                         unwrapped.expression,
                     );
-                    if (declaration)
-                        throw new DynamicBindingStorageRequired(
-                            declaration,
-                            "source",
-                        );
                 }
                 const keyType = this.context.checker.getTypeAtLocation(
                     unwrapped.argumentExpression,
@@ -5404,15 +5401,11 @@ export class ExpressionLowerer {
                     // Factory results may already be native leaves. Their
                     // captured owners cannot be hoisted, nor reconstructed
                     // on every lookup of the original dictionary.
-                    const declaration = this.context.bindings.recordDeclaration(
+                    requireHeldRecordStorage(
+                        this.context,
                         owner,
                         unwrapped.expression,
                     );
-                    if (declaration)
-                        throw new DynamicBindingStorageRequired(
-                            declaration,
-                            "source",
-                        );
                 }
                 for (const line of entryLines) this.context.emit(line);
                 this.context.reachJsData();

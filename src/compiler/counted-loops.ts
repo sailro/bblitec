@@ -1,9 +1,12 @@
 import ts from "typescript";
+import { bindingRebinds } from "./binding-rebinds.js";
 import {
+    isDeclaredInside,
     isUpdateExpression,
     unwrapExpression,
     variableKind,
     type VariableKind,
+    type WriteSite,
 } from "./syntax.js";
 
 /** A comparison of a loop counter against its bound, the counter on the left. */
@@ -42,6 +45,21 @@ export function stepsUpByOne(
     return (
         step?.sign === 1 &&
         (step.amount === undefined || valueOf(step.amount) === 1)
+    );
+}
+
+/**
+ * The first write that rebinds the loop's counter inside `region` (`++`,
+ * `+=`, a destructuring target, in a nested function too), if any: a local
+ * `let` is written only where its scope reaches.
+ */
+export function counterWrite(
+    checker: ts.TypeChecker,
+    counter: ts.Symbol,
+    region: ts.Node,
+): WriteSite | undefined {
+    return bindingRebinds(checker, [region.getSourceFile()], counter).find(
+        ({ target }) => isDeclaredInside(target, region),
     );
 }
 

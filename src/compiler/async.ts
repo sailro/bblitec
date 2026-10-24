@@ -844,9 +844,8 @@ export class AsyncLowerer {
             executor.body,
             (candidate): candidate is ts.CallExpression =>
                 ts.isCallExpression(candidate) &&
-                schedulerOf(candidate.expression, (expression) =>
-                    context.libraryGlobal(expression),
-                ) !== undefined &&
+                schedulerOf(context.checker, candidate.expression) !==
+                    undefined &&
                 candidate.arguments.some(namesResolving),
         );
     }

@@ -55,8 +55,8 @@ export function compileWithRuntimeCaseSplit(
     call: ts.CallExpression,
     compile: () => Value | undefined,
 ): Value | undefined {
-    const candidates = runtimeSelectors(context, call);
-    if (candidates === undefined) return compile();
+    const tests = selectorTests(context, call);
+    if (tests === undefined) return compile();
     try {
         return context.probeEmission(compile, () => true);
     } catch (error) {
@@ -64,6 +64,9 @@ export function compileWithRuntimeCaseSplit(
         // the runtime test forced; per outcome it may not be needed, so it
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
+        // Which tests stay runtime ones is asked only of a call that refused.
+        const candidates = runtimeSelectors(context, tests);
+        if (candidates === undefined) throw error;
         const selectors = dependedSelectors(context, candidates, compile);
         if (selectors === undefined) throw error;
         const split = context.probeEmission(
@@ -171,7 +174,13 @@ function moduleLevelCallee(
     );
 }
 
-function runtimeSelectors(
+/**
+ * The distinct tests a call's arguments select with, each with every node
+ * spelling it, when the call can be split on them: no argument assigns,
+ * constructs or suspends, its calls go to module-level functions handed
+ * none of the bindings the tests read, and no test writes.
+ */
+function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
 ): Selector[] | undefined {
@@ -236,6 +245,14 @@ function runtimeSelectors(
         (ts.forEachChild(node, receivesRoot) ?? false);
     if (calls.some((inner) => inner.arguments.some(receivesRoot)))
         return undefined;
+    return groups;
+}
+
+/** The tests that stay runtime ones, when few enough to split on. */
+function runtimeSelectors(
+    context: CaseSplitContext,
+    groups: readonly Selector[],
+): readonly Selector[] | undefined {
     const runtime = groups.filter(({ test }) => {
         const folded = context.probeEmission(
             () => context.conditions.compileCondition(test),

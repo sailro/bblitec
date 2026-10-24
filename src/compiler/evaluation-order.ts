@@ -32,6 +32,7 @@ import {
 } from "./syntax.js";
 import {
     holdsOnly,
+    PRIMITIVE_KINDS,
     valueKinds,
     valueKindOf,
     callSignatures,
@@ -973,9 +974,7 @@ export class EvaluationOrder {
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
         )
-            for (const getter of memberAccessors(this.checker, node, "get"))
-                if (!getter.getSourceFile().isDeclarationFile)
-                    this.runs(access, getter);
+            this.runs(access, this.accessorUnits(node, "get"));
         if (!this.isFresh(node, unit)) access.reads.heap = true;
     }
 
@@ -996,11 +995,7 @@ export class EvaluationOrder {
             ts.isElementAccessExpression(node)
                 ? node
                 : undefined;
-        if (member) {
-            for (const setter of memberAccessors(this.checker, member, "set"))
-                if (!setter.getSourceFile().isDeclarationFile)
-                    this.runs(access, setter);
-        }
+        if (member) this.runs(access, this.accessorUnits(member, "set"));
         if (this.isFresh(node, unit)) return;
         access.writes.heap = true;
         if (
@@ -1071,17 +1066,36 @@ export class EvaluationOrder {
         )?.type;
     }
 
-    /** Record that `access` runs an accessor, or anything when an override may run instead. */
-    private runs(access: DirectAccess, accessor: ts.AccessorDeclaration): void {
-        if (
-            !accessor.body ||
-            (ts.isClassLike(accessor.parent) &&
-                this.hierarchy.subclasses(accessor.parent).length > 0)
-        ) {
-            cannotFollow(access);
-            return;
-        }
-        access.callees.add(accessor);
+    /**
+     * The program accessors a member read (`get`) or write (`set`) runs, or
+     * undefined when one has no body or an override may run instead.
+     */
+    public accessorUnits(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        half: "get" | "set",
+    ): readonly ts.AccessorDeclaration[] | undefined {
+        const accessors = memberAccessors(this.checker, access, half).filter(
+            (accessor) => !accessor.getSourceFile().isDeclarationFile,
+        );
+        return accessors.every(
+            (accessor) =>
+                accessor.body !== undefined &&
+                !(
+                    ts.isClassLike(accessor.parent) &&
+                    this.hierarchy.subclasses(accessor.parent).length > 0
+                ),
+        )
+            ? accessors
+            : undefined;
+    }
+
+    /** Record that `access` runs `accessors`, or anything when they cannot be followed. */
+    private runs(
+        access: DirectAccess,
+        accessors: readonly ts.AccessorDeclaration[] | undefined,
+    ): void {
+        if (!accessors) cannotFollow(access);
+        else for (const accessor of accessors) access.callees.add(accessor);
     }
 
     private call(
@@ -1330,14 +1344,10 @@ export class EvaluationOrder {
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
     private isPrimitive(expression: ts.Expression): boolean {
-        return holdsOnly(this.checker.getTypeAtLocation(expression), [
-            "number",
-            "string",
-            "boolean",
-            "bigint",
-            "undefined",
-            "null",
-        ]);
+        return holdsOnly(
+            this.checker.getTypeAtLocation(expression),
+            PRIMITIVE_KINDS,
+        );
     }
 
     /** The function a name always holds: a function declaration, or a never-reassigned `const`. */

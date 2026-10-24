@@ -2497,9 +2497,7 @@ export class NativeFunctionLowerer {
                     // binding to queue against, and a counted wait through one
                     // would lose the count -- its body is emitted once for
                     // every call and every iteration.
-                    const scheduler = schedulerOf(callee, (expression) =>
-                        libraryGlobal(this.context.checker, expression),
-                    );
+                    const scheduler = schedulerOf(this.context.checker, callee);
                     if (scheduler === "timeout" || scheduler === "frame") {
                         return true;
                     }

@@ -103,8 +103,8 @@ export function holdsOnly(type: ts.Type, kinds: readonly ValueKind[]): boolean {
     );
 }
 
-/** The kinds of value no callee shares: each copies into it. */
-const SCALAR_KINDS: readonly ValueKind[] = [
+/** The primitive kinds: no code changes such a value in place. */
+export const PRIMITIVE_KINDS: readonly ValueKind[] = [
     "number",
     "string",
     "boolean",
@@ -112,8 +112,10 @@ const SCALAR_KINDS: readonly ValueKind[] = [
     "symbol",
     "null",
     "undefined",
-    "void",
 ];
+
+/** The kinds of value no callee shares: each copies into it. */
+const SCALAR_KINDS: readonly ValueKind[] = [...PRIMITIVE_KINDS, "void"];
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
 export function typeCanCarryReference(type: ts.Type): boolean {

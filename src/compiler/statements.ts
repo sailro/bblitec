@@ -40,9 +40,7 @@ import {
     staticIndexLoopShape,
     staticIndexLoopIterations,
     loopBoundMayChange,
-    walkReachedLoopNodes,
 } from "./resource-loops.js";
-import { writesThroughTrackedRoot } from "./user-functions.js";
 import {
     integerCounterRead,
     integerLoopConditionCpp,
@@ -107,12 +105,10 @@ import {
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
 import { ownEntries, ownKeysKnown } from "./object-statics.js";
-import {
-    ASSIGNMENT_OPERATORS,
-    compoundAssignmentValue,
-} from "../lowering/pinned-operators.js";
+import { ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
+import { counterWrite } from "./counted-loops.js";
 
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 import { knownCondition } from "./values/model.js";
@@ -3010,29 +3006,12 @@ export class StatementLowerer {
                     "the body or a called helper can change this bound.",
             );
         }
-        let indexMutation: ts.Node | undefined;
-        walkReachedLoopNodes(context, statement.statement, (node) => {
-            if (indexMutation) return false;
-            // A recursive call has its own loop binding, including its
-            // incrementor. Only this body's lexical region can close over ours.
-            if (
-                node.getSourceFile() !== statement.getSourceFile() ||
-                node.pos < statement.statement.pos ||
-                node.end > statement.statement.end
-            )
-                return;
-            if (
-                writesThroughTrackedRoot(
-                    node,
-                    (target) =>
-                        ts.isIdentifier(target) &&
-                        context.symbols.valueSymbol(target) === indexSymbol,
-                )
-            ) {
-                indexMutation = node;
-                return false;
-            }
-        });
+        // Only this body's lexical region can write the index: a recursive
+        // call has its own loop binding.
+        const indexMutation =
+            indexSymbol &&
+            counterWrite(context.checker, indexSymbol, statement.statement)
+                ?.node;
         if (indexMutation) {
             context.fail(
                 indexMutation,
@@ -5120,21 +5099,13 @@ export class StatementLowerer {
             expression.right,
             target,
         );
-        const cpp = context.compileNumber(expression.right, "double");
-        const value = compoundAssignmentValue(
-            operator,
-            previous,
-            cpp,
-            staticNumberValue(context, expression.right),
-        );
-        if (value.jsData) context.reachJsData();
-        context.dataLowerer.emitCompoundStore(
+        context.dataLowerer.emitNumericCompound(
             expression.left,
-            value.cpp,
+            expression.right,
+            operator,
+            target,
+            previous,
             (stored) => `${target} = ${stored};`,
-            value.native && previous === target
-                ? `${target} ${operator} ${cpp};`
-                : undefined,
         );
     }
 

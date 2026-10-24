@@ -48,6 +48,7 @@ import type { AsyncActivations } from "./async-activations.js";
 import type { PageLoader } from "./page-loader.js";
 import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
+import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
@@ -108,6 +109,11 @@ export interface LoweringServices {
     readonly handleCollections: HandleCollections;
     readonly sceneManifest: SceneManifestRecorder;
     readonly bindings: BindingScopes;
+    /** Declarations a storage demand retyped, by declaration. */
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;

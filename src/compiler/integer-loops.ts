@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { countedLoopShape, type CountedLoopShape } from "./counted-loops.js";
+import {
+    countedLoopShape,
+    counterWrite,
+    type CountedLoopShape,
+} from "./counted-loops.js";
 import {
     findAnalysisNodeWithState,
     someAnalysisNode,
@@ -11,7 +15,6 @@ import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import { writesThroughTrackedRoot } from "./user-functions.js";
 
 interface IntegerLoopContext extends PositiveIntegerContext {
     readonly checker: ts.TypeChecker;
@@ -71,11 +74,10 @@ export function integerLoopCounter(
     );
     const disqualified = regions.some(
         (region) =>
+            counterWrite(context.checker, symbol, region) !== undefined ||
             someAnalysisNode(
                 region,
-                (node) =>
-                    isSuspensionPoint(node, { yield: true }) ||
-                    writesThroughTrackedRoot(node, names),
+                (node) => isSuspensionPoint(node, { yield: true }),
                 { functions: "skip" },
             ) ||
             findAnalysisNodeWithState(

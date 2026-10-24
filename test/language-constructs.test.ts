@@ -15580,3 +15580,20 @@ check(
     main();
     `,
 );
+check(
+    "a closure over a for-of binding sees a later write in the loop body",
+    `
+    const fns: (() => number)[] = [];
+    for (let v of [1, 2]) {
+        fns.push(() => v);
+        v *= 10;
+    }
+    function make(o: { n: number }): () => number {
+        let { n } = o;
+        const get = () => n;
+        n = 5;
+        return get;
+    }
+    if (fns.map((f) => f()).join() !== "10,20" || make({ n: 1 })() !== 5) throw new Error("late write " + fns.map((f) => f()).join());
+    `,
+);

@@ -1218,11 +1218,9 @@ export class BrowserErasure {
      * exactly as `clearTimeout(id)` does.
      */
     private isPlatformTimerCall(call: ts.CallExpression): boolean {
-        const global = (expression: ts.Expression) =>
-            this.context.libraryGlobal(expression);
         const kind =
-            schedulerOf(call.expression, global) ??
-            cancelledSchedulerOf(call.expression, global);
+            schedulerOf(this.context.checker, call.expression) ??
+            cancelledSchedulerOf(this.context.checker, call.expression);
         return kind === "timeout" || kind === "interval";
     }
 

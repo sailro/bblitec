@@ -523,16 +523,16 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
 
 /**
  * The expression a call writes through: the receiver of a method
- * `mutatesVia` admits, or the first argument of `Object.assign`, which
- * writes into it. Every mutation walk recognizes a writing call here, so
- * a family added once reaches them all.
+ * `mutatesVia` admits, or the argument a writing library call fills
+ * (`writtenArgument`: parameter-effects.ts libraryWrittenArgument, the one
+ * table of them; without a checker only a bare `Object.assign` reads as
+ * one). Every mutation walk recognizes a writing call here, so a family
+ * added once reaches them all.
  */
 export function mutatingCallTarget(
     node: ts.Node,
     mutatesVia: (method: string) => boolean,
-    // Resolves `globalThis.Object` and the like; without it only the bare
-    // name reads as the library's Object.
-    libraryGlobal?: LibraryGlobal,
+    writtenArgument?: (call: ts.CallExpression) => ts.Expression | undefined,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(node) ||
@@ -541,14 +541,14 @@ export function mutatingCallTarget(
         return undefined;
     }
     const callee = node.expression;
-    if (
-        callee.name.text === "assign" &&
-        ((ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object") ||
-            libraryGlobal?.(callee.expression) === "Object")
-    ) {
-        return node.arguments[0];
-    }
+    const written = writtenArgument
+        ? writtenArgument(node)
+        : callee.name.text === "assign" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Object"
+          ? node.arguments[0]
+          : undefined;
+    if (written) return written;
     return mutatesVia(callee.name.text) ? callee.expression : undefined;
 }
 
@@ -1339,10 +1339,9 @@ export type DataMember = Extract<
  */
 export function plainDataMembers(
     literal: ts.ObjectLiteralExpression,
-    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): readonly DataMember[] | undefined {
     const members: DataMember[] = [];
-    for (const member of objectLiteralMembers(literal, keyOf)) {
+    for (const member of objectLiteralMembers(literal)) {
         if (
             (member.kind !== "property" && member.kind !== "shorthand") ||
             member.key === undefined
@@ -1387,9 +1386,8 @@ export function lastWriter(
 export function objectProperty(
     object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
-    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): ts.Expression | undefined {
-    const writer = lastWriter(objectLiteralMembers(object, keyOf), name);
+    const writer = lastWriter(objectLiteralMembers(object), name);
     return writer === "unknown" ? undefined : writer?.value;
 }
 
@@ -1431,10 +1429,9 @@ export function specifierSourceName(
  */
 export function bindingElementKey(
     element: ts.BindingElement,
-    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): string | undefined {
     return element.propertyName
-        ? keyOf(element.propertyName)
+        ? propertyKey(element.propertyName)
         : ts.isIdentifier(element.name)
           ? element.name.text
           : undefined;
@@ -1449,7 +1446,6 @@ export type PatternRead =
     | {
           readonly kind: "member";
           readonly key: string | undefined;
-          readonly index?: number;
       }
     /** An object rest: a new object of the own keys the pattern did not name. */
     | {
@@ -1476,24 +1472,19 @@ export interface PatternSlot<
 /**
  * Each element of a destructuring pattern, declared (`const { a } = v`) or
  * assigned (`({ a } = v)`), with what it reads ({@link PatternRead}). Holes
- * read nothing but keep later indices. `keyOf` reads an object element's
- * key: the syntax's by default, a lowering's resolver where the checker or
- * generation fixes a computed key.
+ * read nothing but keep later indices.
  */
 export function patternSlots(
     pattern: ts.BindingPattern,
-    keyOf?: (name: ts.PropertyName) => string | undefined,
 ): PatternSlot<ts.BindingName>[];
 export function patternSlots(
     pattern: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
-    keyOf?: (name: ts.PropertyName) => string | undefined,
 ): PatternSlot<ts.Expression>[];
 export function patternSlots(
     pattern:
         | ts.BindingPattern
         | ts.ObjectLiteralExpression
         | ts.ArrayLiteralExpression,
-    keyOf: (name: ts.PropertyName) => string | undefined = propertyKey,
 ): PatternSlot[] {
     const slots: PatternSlot[] = [];
     // `x = fallback` in an assignment pattern.
@@ -1517,7 +1508,7 @@ export function patternSlots(
                 (ts.isBindingElement(element) && element.dotDotDotToken);
             const read: PatternRead = rest
                 ? { kind: "rest-from", index }
-                : { kind: "member", key: String(index), index };
+                : { kind: "member", key: String(index) };
             if (ts.isBindingElement(element))
                 slots.push({
                     element,
@@ -1557,7 +1548,7 @@ export function patternSlots(
         if (ts.isBindingElement(element)) {
             const read = element.dotDotDotToken
                 ? rest()
-                : named(bindingElementKey(element, keyOf));
+                : named(bindingElementKey(element));
             slots.push({
                 element,
                 target: element.name,
@@ -1580,7 +1571,7 @@ export function patternSlots(
                 assigned(
                     element,
                     element.initializer,
-                    named(keyOf(element.name)),
+                    named(propertyKey(element.name)),
                 ),
             );
         } else if (ts.isSpreadAssignment(element)) {

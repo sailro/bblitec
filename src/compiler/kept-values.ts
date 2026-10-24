@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
 import { libraryGlobal } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, objectLiteralMembers } from "./syntax.js";
 import { arrayShape, typeCanCarryReference } from "./type-facts.js";
 
 /**
@@ -14,12 +14,8 @@ export function literalHeldValues(
 ): readonly ts.Expression[] {
     const literal = unwrapExpression(expression);
     const values = ts.isObjectLiteralExpression(literal)
-        ? literal.properties.flatMap((property) =>
-              ts.isPropertyAssignment(property)
-                  ? [property.initializer]
-                  : ts.isShorthandPropertyAssignment(property)
-                    ? [property.name]
-                    : [],
+        ? objectLiteralMembers(literal).flatMap((member) =>
+              member.value === undefined ? [] : [member.value],
           )
         : ts.isArrayLiteralExpression(literal)
           ? literal.elements.filter(
