@@ -845,6 +845,19 @@ export function isDomTextType(symbol: ts.Symbol): boolean {
 }
 
 /**
+ * The DOM interfaces a retained UI element handle carries: an element, a
+ * text node, and a canvas's 2D context, which is its canvas's handle.
+ */
+export function isUiElementHandleType(symbol: ts.Symbol): boolean {
+    return (
+        isDomElementType(symbol) ||
+        isDomTextType(symbol) ||
+        (declaredInDomLibrary(symbol) &&
+            libraryName(symbol) === "CanvasRenderingContext2D")
+    );
+}
+
+/**
  * Whether a compiled value is a plain-data numeric tuple of `arity`.
  *
  * The data model gives an annotated `[number, number, number]` a
@@ -4262,10 +4275,7 @@ export class DataTypeRegistry {
             // storage: audio context/buses, geometry, font, animation or particle plans.
             return undefined;
         }
-        if (
-            type.symbol &&
-            (isDomElementType(type.symbol) || isDomTextType(type.symbol))
-        ) {
+        if (type.symbol && isUiElementHandleType(type.symbol)) {
             return { kind: "handle", handle: "ui-element" };
         }
         if (libraryName(type) === "OffscreenCanvas") {
@@ -7823,19 +7833,12 @@ export class DataTypeRegistry {
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
                 : this.checker.getTypeAtLocation(member.name);
-            // A shared object keeps a retained 2D context as its canvas's handle.
-            const canvasContext: DataType | undefined =
-                libraryName(propertyType) === "CanvasRenderingContext2D"
-                    ? { kind: "handle", handle: "ui-element" }
-                    : undefined;
             const declared =
                 this.fromFunctionType(
                     this.checker.getNonNullableType(propertyType),
                     member.name,
                     true,
-                ) ??
-                this.fromClassFieldType(propertyType, member.name) ??
-                canvasContext;
+                ) ?? this.fromClassFieldType(propertyType, member.name);
             const mapped =
                 declared &&
                 this.withDemandedNumericSlot(member, propertyType, declared);
