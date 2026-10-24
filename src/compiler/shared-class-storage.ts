@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import type ts from "typescript";
 
 /**
@@ -5,10 +7,14 @@ import type ts from "typescript";
  * as a compile-time record: the replay shares the class from its first
  * construction, so every instance is the one object a store keeps.
  */
-export class SharedClassStorageRequired extends Error {
+export class SharedClassStorageRequired extends StorageDemand {
     constructor(readonly declaration: ts.ClassLikeDeclaration) {
         super(
             "A class instance requires shared object storage from its construction.",
         );
+    }
+
+    get request(): StorageRequest {
+        return { kind: "shared-class", declaration: this.declaration };
     }
 }

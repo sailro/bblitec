@@ -94,12 +94,11 @@ import {
 } from "./compiler/dynamic-binding-storage.js";
 import {
     activeStorageDemandPlanner,
-    isStorageDemand,
     recordStorageCompileAttempt,
     storageDemandPlanningEnabled,
-    storageRequest,
     StorageDemandPlanner,
 } from "./compiler/storage-demand-planner.js";
+import { StorageDemand } from "./compiler/storage-demand.js";
 import { ReplayStorage } from "./compiler/replay-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
@@ -692,8 +691,8 @@ function compileSourceApplication(
                 lazyModules.add(error.file);
                 return true;
             }
-            if (isStorageDemand(error))
-                return storage.add(storageRequest(error));
+            if (error instanceof StorageDemand)
+                return storage.add(error.request);
             if (
                 error instanceof RuntimeSearchParamsRequired &&
                 (!resolved.runtimeSearchParams ||
@@ -725,7 +724,7 @@ function compileSourceApplication(
             } catch (error) {
                 if (!acceptReplay(error)) throw error;
                 if (
-                    !isStorageDemand(error) ||
+                    !(error instanceof StorageDemand) ||
                     !storageDemandPlanningEnabled() ||
                     ++unplanned < interval
                 )
@@ -1872,7 +1871,8 @@ class Compiler implements LoweringServices {
             expression = this.unwrap(expression.expression);
         if (
             ts.isCallExpression(expression) &&
-            promiseReactionOf(expression.expression, this.checker) === "catch"
+            promiseReactionOf(expression.expression, this.checker)?.reaction ===
+                "catch"
         ) {
             const promise = this.entryReporterPromise(expression, true);
             if (!promise) return false;
@@ -1956,15 +1956,11 @@ class Compiler implements LoweringServices {
     ): ts.CallExpression | undefined {
         if (this.options.workers) return undefined;
         const call = this.unwrap(expression);
-        if (
-            !ts.isCallExpression(call) ||
-            promiseReactionOf(call.expression, this.checker) !== "catch" ||
-            call.arguments.length !== 1
-        ) {
+        if (!ts.isCallExpression(call)) return undefined;
+        const catcher = promiseReactionOf(call.expression, this.checker);
+        if (catcher?.reaction !== "catch" || call.arguments.length !== 1) {
             return undefined;
         }
-        const catcher = namedMember(this.checker, call.expression);
-        if (!catcher) return undefined;
         const promise = this.unwrap(catcher.expression);
         if (
             !ts.isCallExpression(promise) ||
@@ -7074,12 +7070,16 @@ class Compiler implements LoweringServices {
     /** @journaled Engine fields an implicit resource constructor relied on. */
     private readonly reliedEngineSlots = new EmissionSet<string>();
 
-    /** Records the engine binding (none: unknown) one store puts in a struct's engine field. */
+    /**
+     * Records the engine binding (none: unknown) one store puts in a
+     * struct's engine field ({@link engineFieldSlot}; none: no engine field).
+     */
     public noteEngineSlot(
-        slot: string,
+        slot: string | undefined,
         identity: symbol | undefined,
         node: ts.Node,
     ): void {
+        if (slot === undefined) return;
         if (!this.engineSlots.has(slot)) {
             this.engineSlots.set(slot, identity);
             return;
@@ -9003,11 +9003,7 @@ class Compiler implements LoweringServices {
                 return false;
         }
         if (
-            isLibraryStatic(
-                libraryStaticMember(this.checker, call.expression),
-                "Object",
-                "assign",
-            )
+            isLibraryStatic(this.checker, call.expression, "Object", "assign")
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.

@@ -1,18 +1,31 @@
 import ts from "typescript";
 import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
+import { sourceFileNodes } from "./analysis-walk.js";
 import { engineBodies } from "./engine-bodies.js";
 import { returnsOnly, yieldsFreshObject } from "./fresh-records.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachReturn } from "./loop-control.js";
+import { mathMemberIsImpure } from "./math-intrinsics.js";
 import {
     callTarget,
     engineCallMutatesArgument,
     libraryWrittenArgument,
 } from "./parameter-effects.js";
 import { promiseReactionOf, promiseStatic } from "./promises.js";
-import { receiverWritingMethods } from "./receiver-methods.js";
-import { isRebound } from "./binding-rebinds.js";
 import {
+    callsArgumentInPlace,
+    isListenerRegistration,
+    receiverWritingMethods,
+} from "./receiver-methods.js";
+import { isRebound } from "./binding-rebinds.js";
+import { constInitializer, documentLookupCallId } from "./browser-erasure.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
+import {
+    accessedPropertySymbol,
     calledDeclaration,
     calledFunction,
     declarationOrigin,
@@ -25,18 +38,21 @@ import {
 } from "./symbols.js";
 import {
     containsSuspension,
+    equalityOperator,
     functionOfDeclaration,
     isAssignmentExpression,
     isAsyncFunction,
+    isDeclaredInside,
+    isMemberAccess,
     isOperandSelection,
     isSupportedFunction,
-    equalityOperator,
     isValueReference,
     mutatingCallTarget,
+    objectLiteralMembers,
     operandYield,
     outermostWrapper,
-    variableKind,
     unwrapExpression,
+    variableKind,
     writeSites,
     type SupportedFunction,
 } from "./syntax.js";
@@ -59,12 +75,19 @@ import { schedulerOf } from "./schedulers.js";
  *
  * Model: a library asynchronous operation is seen only through its result,
  * and the library's own state (an engine's caches, its input handling) is
- * the library's.
+ * the library's. What a call or an accessor runs is EvaluationOrder's
+ * answer (overrides and constructor chains included).
  */
 
-export type OrderContext = Pick<
+type OrderContext = Pick<
     LoweringServices,
-    "checker" | "libraryGlobal" | "sourceFile" | "sourceFiles"
+    | "checker"
+    | "evaluationOrder"
+    | "libraryGlobal"
+    | "sourceFile"
+    | "sourceFiles"
+    | "symbols"
+    | "unwrap"
 >;
 
 /** @unjournaled Pure functions of the checked source, kept across replays. */
@@ -108,6 +131,28 @@ export function activationMaySuspend(
     return suspends;
 }
 
+/** @unjournaled Pure functions of the checked source, by entry file and start. */
+const answers = new WeakMap<
+    ts.SourceFile,
+    WeakMap<ts.Node, WeakMap<ts.Node, boolean>>
+>();
+
+/** One answer per entry file, start and deferred code. */
+function remembered(
+    context: OrderContext,
+    start: ts.Node,
+    deferred: ts.Node,
+    answer: () => boolean,
+): boolean {
+    let byStart = answers.get(context.sourceFile);
+    if (!byStart) answers.set(context.sourceFile, (byStart = new WeakMap()));
+    let byDeferred = byStart.get(start);
+    if (!byDeferred) byStart.set(start, (byDeferred = new WeakMap()));
+    let known = byDeferred.get(deferred);
+    if (known === undefined) byDeferred.set(deferred, (known = answer()));
+    return known;
+}
+
 /**
  * Whether the activation of `declaration` that `start` begins may run to
  * its end where it starts: what it runs after first suspending and what
@@ -120,15 +165,22 @@ export function activationOrderIsUnobservable(
     start: ts.Node,
     declaration: SupportedFunction,
 ): boolean {
-    const first = new InterveningCode(context);
-    const direct =
-        start === declaration ||
-        (ts.isCallExpression(start) &&
-            calledFunction(context.checker, start) === declaration);
-    // Each element's run starts before an earlier one resumes.
-    if (!direct) first.code.push({ node: declaration });
-    first.after(start);
-    return deferralIsUnobservable(context, first, afterSuspension(declaration));
+    return remembered(context, start, declaration, () => {
+        const later = afterSuspension(context, declaration);
+        if (isEmpty(later)) return true;
+        const first = new InterveningCode(context);
+        const direct =
+            start === declaration ||
+            (ts.isCallExpression(start) &&
+                calledFunction(context.checker, start) === declaration);
+        // Each element's run starts before an earlier one resumes.
+        if (!direct) first.code.push({ node: declaration });
+        first.after(start);
+        return (
+            !first.open &&
+            !conflicts(later, footprint(context, first.code, later))
+        );
+    });
 }
 
 /**
@@ -139,80 +191,77 @@ export function reactionOrderIsUnobservable(
     context: OrderContext,
     call: ts.CallExpression,
 ): boolean {
-    const first = new InterveningCode(context);
-    first.after(call);
-    const callbacks = call.arguments.map((argument) =>
-        functionValue(context.checker, argument),
-    );
-    return deferralIsUnobservable(
-        context,
-        first,
-        callbacks.flatMap((node) => (node ? [{ node }] : [])),
-        callbacks.includes(undefined),
-    );
+    return remembered(context, call, call, () => {
+        const callbacks = call.arguments.map((argument) =>
+            functionValue(context.checker, argument),
+        );
+        if (callbacks.includes(undefined)) return false;
+        const later = footprint(
+            context,
+            callbacks.flatMap((node) => (node ? [{ node }] : [])),
+        );
+        if (isEmpty(later)) return true;
+        const first = new InterveningCode(context);
+        first.after(call);
+        return (
+            !first.open &&
+            !conflicts(later, footprint(context, first.code, later))
+        );
+    });
 }
 
-function deferralIsUnobservable(
-    context: OrderContext,
-    first: InterveningCode,
-    deferred: readonly CodePart[],
-    unseen = false,
-): boolean {
-    const runsFirst = footprint(context, first.code);
-    if (!first.open && isEmpty(runsFirst)) return true;
-    const later = footprint(context, deferred);
-    later.unseen ||= unseen;
-    if (isEmpty(later)) return true;
-    return !first.open && !conflicts(later, runsFirst);
-}
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const deferredFootprints = new WeakMap<ts.Node, Footprint>();
 
 /**
- * An activation's code from its first suspension on: the statement that
- * first suspends, less the operand it first awaits when no loop runs that
- * again, and every statement after it. What runs before is the start's.
+ * What an activation runs from its first suspension on: the statement
+ * that first suspends, less the operand it first awaits when no loop runs
+ * that again, and every statement after it. What runs before is the
+ * start's.
  */
-function afterSuspension(declaration: SupportedFunction): CodePart[] {
+function afterSuspension(
+    context: OrderContext,
+    declaration: SupportedFunction,
+): Footprint {
+    const known = deferredFootprints.get(declaration);
+    if (known) return known;
     const body = declaration.body;
-    if (!body) return [{ node: declaration }];
-    const statements = ts.isBlock(body) ? body.statements : [body];
+    const statements = body
+        ? ts.isBlock(body)
+            ? body.statements
+            : [body]
+        : [];
     const index = statements.findIndex((statement) =>
         containsSuspension(statement),
     );
     const first = statements[index];
-    if (!first) return [{ node: declaration }];
-    const awaited = findAnalysisNode(first, ts.isAwaitExpression, {
-        functions: "skip",
-        types: "skip",
-    });
-    const once =
-        awaited !== undefined &&
-        !someAncestorBelow(awaited, first, (node) =>
-            ts.isIterationStatement(node, false),
-        );
-    return [
-        {
-            node: first,
-            owner: declaration,
-            without: once ? awaited.expression : undefined,
-        },
-        ...statements
-            .slice(index + 1)
-            .map((node) => ({ node, owner: declaration })),
-    ];
-}
-
-function someAncestorBelow(
-    node: ts.Node,
-    top: ts.Node,
-    test: (ancestor: ts.Node) => boolean,
-): boolean {
-    for (
-        let current = node.parent;
-        current && current !== top;
-        current = current.parent
-    )
-        if (test(current)) return true;
-    return test(top);
+    let parts: CodePart[] = [{ node: declaration }];
+    if (first) {
+        const awaited = findAnalysisNode(first, ts.isAwaitExpression, {
+            functions: "skip",
+            types: "skip",
+        });
+        const repeated =
+            awaited !== undefined &&
+            ts.findAncestor(awaited, (node) =>
+                node === first.parent
+                    ? "quit"
+                    : ts.isIterationStatement(node, false),
+            ) !== undefined;
+        parts = [
+            {
+                node: first,
+                owner: declaration,
+                without: awaited && !repeated ? awaited.expression : undefined,
+            },
+            ...statements
+                .slice(index + 1)
+                .map((node) => ({ node, owner: declaration })),
+        ];
+    }
+    const result = footprint(context, parts);
+    deferredFootprints.set(declaration, result);
+    return result;
 }
 
 /**
@@ -288,10 +337,14 @@ function conflicts(a: Footprint, b: Footprint): boolean {
     );
 }
 
-/** Everything `parts` and the functions they may run read and write. */
+/**
+ * Everything `parts` and the functions they may run read and write; it
+ * stops early once it conflicts with `against`.
+ */
 function footprint(
     context: OrderContext,
     parts: readonly CodePart[],
+    against?: Footprint,
 ): Footprint {
     const total: Footprint = {
         reads: new Set(),
@@ -300,7 +353,7 @@ function footprint(
     };
     const reached = new Set<ts.Node>();
     const queue: ts.Node[] = [];
-    const add = (summary: Summary): void => {
+    const add = (summary: Summary): boolean => {
         for (const root of summary.reads) total.reads.add(root);
         for (const root of summary.writes) total.writes.add(root);
         total.unseen ||= summary.unseen;
@@ -309,14 +362,11 @@ function footprint(
                 reached.add(node);
                 queue.push(node);
             }
+        return against !== undefined && conflicts(total, against);
     };
-    for (const part of parts)
-        add(
-            !part.without && !part.owner && runsAsOwner(part.node)
-                ? ownerSummary(context, part.node)
-                : summarize(context, part.node, part.owner, part.without),
-        );
-    for (const node of queue) add(ownerSummary(context, node));
+    for (const part of parts) if (add(partSummary(context, part))) return total;
+    for (const node of queue)
+        if (add(ownerSummary(context, node))) return total;
     return total;
 }
 
@@ -327,12 +377,26 @@ function runsAsOwner(node: ts.Node): boolean {
 
 /** @unjournaled Pure functions of the checked source, kept across replays. */
 const summaries = new WeakMap<ts.Node, Summary>();
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const regionSummaries = new WeakMap<ts.Node, Summary>();
 
 function ownerSummary(context: OrderContext, owner: ts.Node): Summary {
     let summary = summaries.get(owner);
     if (!summary) {
         summary = summarize(context, owner, owner, undefined);
         summaries.set(owner, summary);
+    }
+    return summary;
+}
+
+function partSummary(context: OrderContext, part: CodePart): Summary {
+    if (part.without || part.owner)
+        return summarize(context, part.node, part.owner, part.without);
+    if (runsAsOwner(part.node)) return ownerSummary(context, part.node);
+    let summary = regionSummaries.get(part.node);
+    if (!summary) {
+        summary = summarize(context, part.node, undefined, undefined);
+        regionSummaries.set(part.node, summary);
     }
     return summary;
 }
@@ -349,7 +413,7 @@ function summarize(
     owner: ts.Node | undefined,
     without: ts.Node | undefined,
 ): Summary {
-    const { checker } = context;
+    const { checker, evaluationOrder } = context;
     const summary: Summary = {
         reads: new Set(),
         writes: new Set(),
@@ -359,8 +423,6 @@ function summarize(
     const ownObjects = owner
         ? privateObjects(checker, owner)
         : new Set<ts.Symbol>();
-    const isOwn = (declaration: ts.Node): boolean =>
-        owner !== undefined && encloses(owner, declaration);
     const binding = (symbol: ts.Symbol | undefined): StateRoot | undefined => {
         const declarations = symbol?.declarations ?? [];
         if (
@@ -369,7 +431,7 @@ function summarize(
             declarations.some(
                 (declaration) =>
                     declaration.getSourceFile().isDeclarationFile ||
-                    isOwn(declaration),
+                    isDeclaredInside(declaration, owner),
             ) ||
             declarations.every(isImmutableBinding) ||
             !isRebound(checker, context.sourceFiles(), symbol)
@@ -389,12 +451,21 @@ function summarize(
             const symbol = resolvedSymbol(checker, base);
             if (symbol && ownObjects.has(symbol)) return undefined;
         }
-        return objectFamily(checker, expression);
+        return objectFamily(context, expression);
     };
     /** A call changes the object `expression` evaluates to. */
     const change = (expression: ts.Expression): void => {
         const root = object(expression);
         if (root) summary.writes.add(root);
+    };
+    /** The program accessors a member access runs. */
+    const accessors = (
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        half: "get" | "set",
+    ): void => {
+        const units = evaluationOrder.accessorUnits(access, half);
+        if (!units) summary.unseen = true;
+        else for (const unit of units) summary.runs.add(unit);
     };
     /** An assignment, update or `delete` writes `target`. */
     const write = (target: ts.Expression): void => {
@@ -407,19 +478,23 @@ function summarize(
             )
                 ? "objects"
                 : binding(symbol);
-        } else if (
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-        )
+        } else if (isMemberAccess(node)) {
             root = object(node.expression);
+            accessors(node, "set");
+        }
         if (root) summary.writes.add(root);
     };
     const call = (node: ts.CallExpression | ts.NewExpression): void => {
-        const target = callTarget(checker, node);
-        if (target.kind === "bodies" && !target.engine) {
-            for (const body of target.bodies) summary.runs.add(body);
+        const units = evaluationOrder.callUnits(node);
+        if (units !== undefined && units !== "library") {
+            for (const unit of units) summary.runs.add(unit);
             return;
         }
+        if (units === undefined) {
+            summary.unseen = true;
+            return;
+        }
+        const target = callTarget(checker, node);
         if (target.kind === "bodies") {
             // The engine: the objects it is handed, never its own state,
             // and an operation it completes later only through its result.
@@ -429,7 +504,7 @@ function summarize(
             )
                 return;
             node.arguments.forEach((argument, index) => {
-                if (engineCallMutatesArgument(checker, node, index))
+                if (engineCallMutatesArgument(checker, node, index, target))
                     change(argument);
             });
             const method = namedMember(
@@ -443,28 +518,12 @@ function summarize(
             libraryCall(node);
             return;
         }
-        const declaration = calledDeclaration(checker, node);
-        if (declaration && declarationOrigin(declaration) === "babylon") {
+        if (callOrigin(checker, node) === "babylon") {
             // A function value the engine handed out: engine code too.
             for (const argument of node.arguments ?? []) change(argument);
             return;
         }
-        if (ts.isNewExpression(node) && constructsProgramClass(node)) return;
         summary.unseen = true;
-    };
-    const constructsProgramClass = (node: ts.NewExpression): boolean => {
-        const declarations =
-            resolvedSymbol(checker, node.expression)?.declarations ?? [];
-        const classes = declarations.filter(ts.isClassLike);
-        if (
-            classes.length === 0 ||
-            classes.some(
-                (declaration) => declaration.getSourceFile().isDeclarationFile,
-            )
-        )
-            return false;
-        for (const declaration of classes) summary.runs.add(declaration);
-        return true;
     };
     const libraryCall = (node: ts.CallExpression | ts.NewExpression): void => {
         // The clock and the random sequence are state the program shares.
@@ -486,14 +545,18 @@ function summarize(
             (candidate) => libraryWrittenArgument(checker, candidate),
         );
         if (written) change(written);
-        const declaration = calledDeclaration(checker, node);
-        if (!declaration || declarationOrigin(declaration) !== "dom") return;
+        if (callOrigin(checker, node) !== "dom") return;
         // The page: a global function (a timer, the console's) changes it;
         // a method changes its object and the objects it is handed, unless
-        // it only reads the page or creates a node.
+        // it only reads the page or creates a node, and one that dispatches
+        // an event runs its listeners.
         const method = namedMember(checker, unwrapExpression(node.expression));
         if (!method) {
             summary.writes.add("page");
+            return;
+        }
+        if (LISTENER_RUNNING_METHODS.has(method.name)) {
+            summary.unseen = true;
             return;
         }
         if (PAGE_ACCESSES.has(method.name)) return;
@@ -519,14 +582,10 @@ function summarize(
                 if (!isValueReference(node)) return;
                 const root = binding(resolvedSymbol(checker, node));
                 if (root) summary.reads.add(root);
-            } else if (
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
-            ) {
+            } else if (isMemberAccess(node)) {
                 const root = object(node.expression);
                 if (root) summary.reads.add(root);
-                for (const accessor of accessorsOf(checker, node))
-                    summary.runs.add(accessor);
+                accessors(node, "get");
             } else if (ts.isCallExpression(node) || ts.isNewExpression(node))
                 call(node);
             else if (ts.isTaggedTemplateExpression(node)) summary.unseen = true;
@@ -544,6 +603,14 @@ function summarize(
     return summary;
 }
 
+function callOrigin(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): string | undefined {
+    const declaration = calledDeclaration(checker, call);
+    return declaration && declarationOrigin(declaration);
+}
+
 /**
  * The family of the object an expression evaluates to, by its checked
  * type: an element an id finds, the page's other objects, the engine's, or
@@ -551,10 +618,11 @@ function summarize(
  * primitive is no object: reading its members reads no state.
  */
 function objectFamily(
-    checker: ts.TypeChecker,
+    context: OrderContext,
     expression: ts.Expression,
 ): StateRoot | undefined {
-    const id = elementId(checker, expression);
+    const { checker } = context;
+    const id = elementId(context, expression);
     if (id !== undefined) return `page:${id}`;
     const members = unionMembers(
         checker.getTypeAtLocation(expression).getNonNullableType(),
@@ -599,37 +667,11 @@ function isImmutableBinding(declaration: ts.Declaration): boolean {
     );
 }
 
-function encloses(outer: ts.Node, inner: ts.Node): boolean {
-    for (let node: ts.Node | undefined = inner; node; node = node.parent)
-        if (node === outer) return true;
-    return false;
-}
-
-/** The user accessors a member access may run. */
-function accessorsOf(
-    checker: ts.TypeChecker,
-    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-): ts.Node[] {
-    const symbol = ts.isPropertyAccessExpression(access)
-        ? resolvedSymbol(checker, access)
-        : undefined;
-    return (symbol?.declarations ?? []).filter(
-        (declaration) =>
-            (ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration)) &&
-            !declaration.getSourceFile().isDeclarationFile,
-    );
-}
-
-/** Library calls that read the clock or advance the random sequence. */
-const SHARED_STATE_LIBRARY_CALLS: ReadonlyMap<
-    string,
-    { readonly reads?: string; readonly writes?: string }
-> = new Map([
-    ["Date", { reads: "clock" }],
-    ["Date.now", { reads: "clock" }],
-    ["performance.now", { reads: "clock" }],
-    ["Math.random", { writes: "random" }],
+/** Library calls that read the clock (`Math.random` advances its sequence). */
+const CLOCK_LIBRARY_CALLS: ReadonlySet<string> = new Set([
+    "Date",
+    "Date.now",
+    "performance.now",
 ]);
 
 function sharedLibraryState(
@@ -638,12 +680,16 @@ function sharedLibraryState(
 ): { readonly reads?: string; readonly writes?: string } | undefined {
     const target = unwrapExpression(node.expression);
     const member = libraryStaticMember(checker, target);
+    if (member?.owner === "Math")
+        return mathMemberIsImpure(member.name)
+            ? { writes: "random" }
+            : undefined;
     const name = member
         ? `${member.owner}.${member.name}`
         : libraryGlobal(checker, target);
-    return name === undefined
-        ? undefined
-        : SHARED_STATE_LIBRARY_CALLS.get(name);
+    return name !== undefined && CLOCK_LIBRARY_CALLS.has(name)
+        ? { reads: "clock" }
+        : undefined;
 }
 
 /** DOM methods that only read the page, or create a node outside it. */
@@ -660,92 +706,78 @@ const PAGE_ACCESSES: ReadonlyMap<string, "reads" | "creates"> = new Map([
     ["createTextNode", "creates"],
 ]);
 
-/** Elements no other element sits inside: an event on another never reaches them. */
+/** DOM methods that dispatch an event, running its listeners before they return. */
+const LISTENER_RUNNING_METHODS: ReadonlySet<string> = new Set([
+    "abort",
+    "blur",
+    "click",
+    "dispatchEvent",
+    "focus",
+    "requestSubmit",
+    "reset",
+]);
+
+/** Elements that contain no other element: an event on another never reaches them. */
 const LEAF_ELEMENTS: ReadonlySet<string> = new Set([
-    "HTMLAudioElement",
-    "HTMLCanvasElement",
     "HTMLImageElement",
     "HTMLInputElement",
     "HTMLTextAreaElement",
-    "HTMLVideoElement",
 ]);
 
 /**
- * Whether no event dispatched to `target` reaches a listener of `other`:
- * `other` is an element no element sits inside, and the two are found by
- * different ids, so `other` is neither `target` nor one of its ancestors.
+ * Whether no event dispatched to the element `targetId` finds reaches a
+ * listener of `other`: `other` is an element no element sits inside, found
+ * by another id, so it is neither the target nor one of its ancestors.
  */
 function unreachedTarget(
-    checker: ts.TypeChecker,
-    target: ts.Expression,
+    context: OrderContext,
+    targetId: string | undefined,
     other: ts.Expression,
 ): boolean {
-    const targetId = elementId(checker, target);
-    const otherId = elementId(checker, other);
+    const otherId = elementId(context, other);
     return (
         targetId !== undefined &&
         otherId !== undefined &&
         targetId !== otherId &&
-        LEAF_ELEMENTS.has(libraryName(checker.getTypeAtLocation(other)) ?? "")
+        LEAF_ELEMENTS.has(
+            libraryName(context.checker.getTypeAtLocation(other)) ?? "",
+        )
     );
 }
 
-/** The id `document.getElementById` found an element by, through a `const`. */
+/** The id a document lookup found one element by, through a `const`. */
 function elementId(
-    checker: ts.TypeChecker,
+    context: OrderContext,
     expression: ts.Expression,
 ): string | undefined {
-    let node = unwrapExpression(expression);
-    if (ts.isIdentifier(node)) {
-        const declaration = resolvedSymbol(checker, node)?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !isImmutableBinding(declaration) ||
-            !declaration.initializer
-        )
-            return undefined;
-        node = unwrapExpression(declaration.initializer);
-    }
-    if (!ts.isCallExpression(node)) return undefined;
-    const lookup = libraryStaticMember(
-        checker,
-        unwrapExpression(node.expression),
+    const node = context.unwrap(expression);
+    const lookup = ts.isIdentifier(node)
+        ? constInitializer(context, node)
+        : node;
+    return (
+        lookup &&
+        documentLookupCallId(context, lookup, (argument) => {
+            const text = context.unwrap(argument);
+            return ts.isStringLiteralLike(text) ? text.text : undefined;
+        })
     );
-    const argument = node.arguments[0];
-    return lookup?.owner === "document" &&
-        lookup.name === "getElementById" &&
-        argument !== undefined &&
-        ts.isStringLiteralLike(argument)
-        ? argument.text
-        : undefined;
 }
 
 /** The language library's classes: an object of one is no page or engine object. */
 const LIBRARY_DATA: ReadonlySet<string> = new Set([
-    "ArrayBuffer",
-    "DataView",
     "Date",
     "Error",
+    "Map",
     "Promise",
+    "ReadonlyMap",
+    "ReadonlySet",
     "RegExp",
+    "Set",
     "WeakMap",
     "WeakSet",
-    "Map",
-    "ReadonlyMap",
-    "Set",
-    "ReadonlySet",
-    "Int8Array",
-    "Uint8Array",
-    "Uint8ClampedArray",
-    "Int16Array",
-    "Uint16Array",
-    "Int32Array",
-    "Uint32Array",
-    "Float32Array",
-    "Float64Array",
-    "BigInt64Array",
-    "BigUint64Array",
+    ...TYPED_ARRAY_KINDS.keys(),
+    ...BIGINT_ARRAY_KINDS.keys(),
+    ...BUFFER_VIEW_KINDS.keys(),
 ]);
 
 /** Iteration protocols a program's own generator or class may implement. */
@@ -754,10 +786,12 @@ const ITERATION_PROTOCOLS: ReadonlySet<string> = new Set([
     "AsyncIterable",
     "AsyncIterableIterator",
     "AsyncIterator",
+    "AsyncIteratorObject",
     "Generator",
     "Iterable",
     "IterableIterator",
     "Iterator",
+    "IteratorObject",
 ]);
 
 /**
@@ -781,6 +815,9 @@ function iteratesLibraryCollection(
     );
 }
 
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const ownedObjects = new WeakMap<ts.Node, ReadonlySet<ts.Symbol>>();
+
 /**
  * The bindings of `owner` that hold an object only it reaches: a binding
  * never reassigned, holding an object created here (a fresh object, a page
@@ -791,6 +828,8 @@ function privateObjects(
     checker: ts.TypeChecker,
     owner: ts.Node,
 ): ReadonlySet<ts.Symbol> {
+    const known = ownedObjects.get(owner);
+    if (known) return known;
     const candidates = new Set<ts.Symbol>();
     const ownedBy = new Map<ts.Symbol, ts.Symbol>();
     forEachAnalysisNode(
@@ -808,7 +847,7 @@ function privateObjects(
             const initializer = unwrapExpression(node.initializer);
             const method =
                 ts.isCallExpression(initializer) &&
-                calledDeclarationOrigin(checker, initializer) === "dom"
+                callOrigin(checker, initializer) === "dom"
                     ? namedMember(
                           checker,
                           unwrapExpression(initializer.expression),
@@ -833,39 +872,34 @@ function privateObjects(
         },
         { types: "skip" },
     );
-    if (candidates.size === 0) return candidates;
-    forEachAnalysisNode(
-        owner,
-        (node) => {
-            if (!ts.isIdentifier(node) || !isValueReference(node)) return;
-            const symbol = resolvedSymbol(checker, node);
-            if (
-                symbol &&
-                candidates.has(symbol) &&
-                (enclosingOwner(node) !== owner || handsOn(node))
-            )
-                candidates.delete(symbol);
-        },
-        { types: "skip" },
-    );
-    // What an escaped object owns escapes with it.
-    for (let changed = true; changed;) {
-        changed = false;
-        for (const [symbol, base] of ownedBy)
-            if (candidates.has(symbol) && !candidates.has(base)) {
-                candidates.delete(symbol);
-                changed = true;
-            }
+    if (candidates.size > 0) {
+        forEachAnalysisNode(
+            owner,
+            (node) => {
+                if (!ts.isIdentifier(node) || !isValueReference(node)) return;
+                const symbol = resolvedSymbol(checker, node);
+                if (
+                    symbol &&
+                    candidates.has(symbol) &&
+                    (ts.findAncestor(node.parent, runsAsOwner) !== owner ||
+                        handsOn(node))
+                )
+                    candidates.delete(symbol);
+            },
+            { types: "skip" },
+        );
+        // What an escaped object owns escapes with it.
+        for (let changed = true; changed;) {
+            changed = false;
+            for (const [symbol, base] of ownedBy)
+                if (candidates.has(symbol) && !candidates.has(base)) {
+                    candidates.delete(symbol);
+                    changed = true;
+                }
+        }
     }
+    ownedObjects.set(owner, candidates);
     return candidates;
-}
-
-function calledDeclarationOrigin(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-): string | undefined {
-    const declaration = calledDeclaration(checker, call);
-    return declaration && declarationOrigin(declaration);
 }
 
 /**
@@ -885,12 +919,7 @@ function handsOn(value: ts.Expression): boolean {
     )
         return handsOn(parent.parent);
     if (ts.isArrayLiteralExpression(parent)) return handsOn(parent);
-    if (
-        (ts.isPropertyAccessExpression(parent) ||
-            ts.isElementAccessExpression(parent)) &&
-        parent.expression === position
-    )
-        return false;
+    if (isMemberAccess(parent) && parent.expression === position) return false;
     if (writeSites(parent).length > 0) return true;
     if (
         ts.isReturnStatement(parent) ||
@@ -912,12 +941,6 @@ function handsOn(value: ts.Expression): boolean {
         (equalityOperator(parent.operatorToken.kind) !== undefined ||
             parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
     );
-}
-
-function enclosingOwner(node: ts.Node): ts.Node | undefined {
-    for (let current = node.parent; current; current = current.parent)
-        if (runsAsOwner(current)) return current;
-    return undefined;
 }
 
 /**
@@ -980,7 +1003,7 @@ class InterveningCode {
             ) {
                 const owner = ts.isArrowFunction(parent)
                     ? parent
-                    : enclosingFunction(parent);
+                    : ts.findAncestor(parent.parent, ts.isFunctionLike);
                 // An activation that returns it is a start of its own.
                 if (
                     owner &&
@@ -1120,10 +1143,14 @@ class InterveningCode {
                 (argument) => outermostWrapper(argument) === position,
             )
         ) {
-            this.afterCallback(fn, parent);
+            this.afterCallback(fn, parent, position);
             return;
         }
-        const handler = handlerProperty(parent, position);
+        const handler = handlerRegistration(
+            this.context.checker,
+            parent,
+            position,
+        );
         if (handler !== undefined) {
             this.dispatchRest(fn, handler.type, handler.target);
             return;
@@ -1137,8 +1164,9 @@ class InterveningCode {
     private afterCallback(
         fn: ts.SignatureDeclaration,
         call: ts.CallExpression | ts.NewExpression,
+        position: ts.Expression,
     ): void {
-        const invoker = invokerOf(this.context, call);
+        const invoker = invokerOf(this.context, call, position);
         switch (invoker.kind) {
             case "listener":
                 this.dispatchRest(fn, invoker.type, invoker.target);
@@ -1152,13 +1180,13 @@ class InterveningCode {
                 return;
             case "task":
                 return;
-            case "engine":
-                for (const callback of programIndex(this.context)
-                    .engineCallbacks)
+            case "engine": {
+                const index = programIndex(this.context);
+                for (const callback of index.engineCallbacks)
                     if (callback !== fn) this.code.push({ node: callback });
-                if (programIndex(this.context).engineCallbacksOpen)
-                    this.open = true;
+                if (index.engineCallbacksOpen) this.open = true;
                 return;
+            }
             case "unknown":
                 this.open = true;
         }
@@ -1173,20 +1201,15 @@ class InterveningCode {
         type: string | undefined,
         target: ts.Expression | undefined,
     ): void {
-        const index = programIndex(this.context);
+        const targetId = target && elementId(this.context, target);
         let own = 0;
-        for (const listener of index.listeners) {
+        for (const listener of programIndex(this.context).listeners) {
             if (
                 (type !== undefined &&
                     listener.type !== undefined &&
                     listener.type !== type) ||
-                (target !== undefined &&
-                    listener.target !== undefined &&
-                    unreachedTarget(
-                        this.context.checker,
-                        target,
-                        listener.target,
-                    ))
+                (listener.target !== undefined &&
+                    unreachedTarget(this.context, targetId, listener.target))
             )
                 continue;
             if (!listener.fn) {
@@ -1222,14 +1245,12 @@ function runsLastIn(parent: ts.Node, child: ts.Node): boolean {
     );
 }
 
-function enclosingFunction(node: ts.Node): ts.SignatureDeclaration | undefined {
-    for (let current = node.parent; current; current = current.parent)
-        if (ts.isFunctionLike(current)) return current;
-    return undefined;
-}
-
-/** The event type and target an `on<type>` handler assignment registers for. */
-function handlerProperty(
+/**
+ * The event type and target an `element.on<type> = handler` assignment
+ * registers `position` for: a property of a page object, nothing else.
+ */
+function handlerRegistration(
+    checker: ts.TypeChecker,
     parent: ts.Node,
     position: ts.Expression,
 ): { readonly type: string; readonly target: ts.Expression } | undefined {
@@ -1240,9 +1261,14 @@ function handlerProperty(
     )
         return undefined;
     const property = unwrapExpression(parent.left);
-    return ts.isPropertyAccessExpression(property) &&
-        property.name.text.startsWith("on")
-        ? { type: property.name.text.slice(2), target: property.expression }
+    const member = namedMember(checker, property);
+    const declaration =
+        isMemberAccess(property) &&
+        accessedPropertySymbol(checker, property)?.declarations?.[0];
+    return member?.name.startsWith("on") &&
+        declaration &&
+        declarationOrigin(declaration) === "dom"
+        ? { type: member.name.slice(2), target: member.expression }
         : undefined;
 }
 
@@ -1258,54 +1284,29 @@ type Invoker =
     | { readonly kind: "engine" }
     | { readonly kind: "unknown" };
 
-/** Array methods that run their callback once per element before returning. */
-const ITERATING_METHODS: ReadonlySet<string> = new Set([
-    "every",
-    "filter",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "flatMap",
-    "forEach",
-    "map",
-    "reduce",
-    "reduceRight",
-    "some",
-    "sort",
-    "toSorted",
-]);
-
-/** How a call runs the function it is handed. */
+/** How a call runs the function it is handed at `position`. */
 function invokerOf(
     context: OrderContext,
     call: ts.CallExpression | ts.NewExpression,
+    position: ts.Expression,
 ): Invoker {
     const { checker } = context;
-    const declaration = calledDeclaration(checker, call);
-    if (!declaration) return { kind: "unknown" };
-    const origin = declarationOrigin(declaration);
+    const origin = callOrigin(checker, call);
     if (origin === "babylon") return { kind: "engine" };
     if (origin !== "default-lib" && origin !== "dom")
         return { kind: "unknown" };
     const target = unwrapExpression(call.expression);
-    const method = namedMember(checker, target);
-    if (method?.name === "addEventListener" && ts.isCallExpression(call))
+    if (ts.isCallExpression(call) && isListenerRegistration(checker, call))
         return {
             kind: "listener",
             type: eventType(call.arguments[0]),
-            target: method.expression,
+            target: namedMember(checker, target)?.expression,
         };
-    if (ts.isNewExpression(call))
-        return context.libraryGlobal(call.expression) === "Promise"
+    // A promise executor runs once; an iteration once per element.
+    if (callsArgumentInPlace(checker, call, position))
+        return ts.isNewExpression(call)
             ? { kind: "construction" }
-            : { kind: "unknown" };
-    if (
-        method !== undefined &&
-        ITERATING_METHODS.has(method.name) &&
-        checker.isArrayLikeType(checker.getTypeAtLocation(method.expression))
-    )
-        return { kind: "iteration" };
+            : { kind: "iteration" };
     // A timer or frame callback runs as a task of its own; a microtask
     // runs among others the analysis does not follow.
     const scheduler = schedulerOf(checker, target);
@@ -1316,18 +1317,16 @@ function invokerOf(
 
 /**
  * Where a function's value is used: each reference to the binding naming
- * it, or the function literal itself where it sits. Undefined for a
- * function no binding names that sits nowhere a call reads it.
+ * it, or the function literal itself where it sits. Undefined for a method
+ * or accessor, which a base class or an interface may call under another
+ * symbol.
  */
 function functionUses(
     context: OrderContext,
     fn: ts.SignatureDeclaration,
 ): readonly ts.Expression[] | undefined {
     const index = programIndex(context);
-    if (
-        (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) &&
-        fn.name
-    ) {
+    if (ts.isFunctionDeclaration(fn) && fn.name) {
         const symbol = declaredSymbol(context.checker, fn.name);
         return symbol ? (index.references.get(symbol) ?? []) : undefined;
     }
@@ -1385,61 +1384,49 @@ function programIndex(context: OrderContext): ProgramIndex {
         if (list) list.push(node);
         else references.set(symbol, [node]);
     };
-    for (const file of context.sourceFiles())
-        forEachAnalysisNode(
-            file,
-            (node) => {
-                if (ts.isIdentifier(node) && isValueReference(node))
-                    reference(resolvedSymbol(checker, node), node);
-                else if (ts.isPropertyAccessExpression(node))
-                    reference(resolvedSymbol(checker, node), node);
-                if (ts.isCallExpression(node)) {
-                    const declaration = calledDeclaration(checker, node);
-                    const origin =
-                        declaration && declarationOrigin(declaration);
-                    const method = namedMember(
-                        checker,
-                        unwrapExpression(node.expression),
-                    );
-                    if (
-                        origin === "dom" &&
-                        method?.name === "addEventListener" &&
-                        node.arguments[1]
-                    ) {
-                        listeners.push({
-                            type: eventType(node.arguments[0]),
-                            target: method.expression,
-                            fn: functionValue(checker, node.arguments[1]),
-                        });
-                    }
-                    if (origin === "babylon")
-                        for (const argument of handedFunctions(
+    for (const file of context.sourceFiles()) {
+        if (file.isDeclarationFile) continue;
+        for (const node of sourceFileNodes(file)) {
+            if (ts.isIdentifier(node) && isValueReference(node))
+                reference(resolvedSymbol(checker, node), node);
+            else if (isMemberAccess(node))
+                reference(accessedPropertySymbol(checker, node), node);
+            if (ts.isCallExpression(node)) {
+                const origin = callOrigin(checker, node);
+                if (origin === "dom" && isListenerRegistration(checker, node))
+                    listeners.push({
+                        type: eventType(node.arguments[0]),
+                        target: namedMember(
                             checker,
-                            node.arguments,
-                        )) {
-                            const fn = functionValue(checker, argument);
-                            if (fn) engineCallbacks.push(fn);
-                            else engineCallbacksOpen = true;
-                        }
+                            unwrapExpression(node.expression),
+                        )?.expression,
+                        fn: functionValue(checker, node.arguments[1]!),
+                    });
+                if (origin === "babylon") {
+                    const handed = handedFunctions(checker, node.arguments);
+                    if (!handed) engineCallbacksOpen = true;
+                    for (const argument of handed ?? []) {
+                        const fn = functionValue(checker, argument);
+                        if (fn) engineCallbacks.push(fn);
+                        else engineCallbacksOpen = true;
+                    }
                 }
-                const handler = ts.isBinaryExpression(node)
-                    ? handlerProperty(node, outermostWrapper(node.right))
-                    : undefined;
-                if (handler && ts.isBinaryExpression(node)) {
-                    const declaration = resolvedSymbol(
-                        checker,
-                        unwrapExpression(node.left),
-                    )?.declarations?.[0];
-                    if (declaration && declarationOrigin(declaration) === "dom")
-                        listeners.push({
-                            type: handler.type,
-                            target: handler.target,
-                            fn: functionValue(checker, node.right),
-                        });
-                }
-            },
-            { types: "skip" },
-        );
+            }
+            if (ts.isBinaryExpression(node)) {
+                const handler = handlerRegistration(
+                    checker,
+                    node,
+                    outermostWrapper(node.right),
+                );
+                if (handler)
+                    listeners.push({
+                        type: handler.type,
+                        target: handler.target,
+                        fn: functionValue(checker, node.right),
+                    });
+            }
+        }
+    }
     const index: ProgramIndex = {
         references,
         listeners,
@@ -1456,20 +1443,34 @@ function eventType(argument: ts.Expression | undefined): string | undefined {
     return type && ts.isStringLiteralLike(type) ? type.text : undefined;
 }
 
-/** The function-valued arguments of a call, object literal members included. */
+/**
+ * The function-valued arguments of a call, the members of object literals
+ * and the elements of array literals included; undefined when a spread
+ * hands values the analysis does not list.
+ */
 function handedFunctions(
     checker: ts.TypeChecker,
     arguments_: readonly ts.Expression[],
-): ts.Node[] {
+): ts.Node[] | undefined {
     const handed: ts.Node[] = [];
+    let complete = true;
     const visit = (expression: ts.Expression): void => {
         const value = unwrapExpression(expression);
         if (ts.isObjectLiteralExpression(value)) {
-            for (const property of value.properties)
-                if (ts.isPropertyAssignment(property))
-                    visit(property.initializer);
-                else if (ts.isMethodDeclaration(property))
-                    handed.push(property);
+            for (const member of objectLiteralMembers(value))
+                if (member.kind === "spread") complete = false;
+                else if (
+                    member.kind === "property" ||
+                    member.kind === "shorthand"
+                )
+                    visit(member.value);
+                else handed.push(member.node);
+            return;
+        }
+        if (ts.isArrayLiteralExpression(value)) {
+            for (const element of value.elements)
+                if (ts.isSpreadElement(element)) complete = false;
+                else visit(element);
             return;
         }
         if (
@@ -1479,7 +1480,7 @@ function handedFunctions(
             handed.push(value);
     };
     for (const argument of arguments_) visit(argument);
-    return handed;
+    return complete ? handed : undefined;
 }
 
 /** The function a value names: a literal or method, or a binding of one. */

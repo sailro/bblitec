@@ -41,7 +41,6 @@ import {
     libraryGlobal,
     resolvedSymbol,
     namedMember,
-    libraryStaticMember,
     isLibraryStatic,
 } from "./symbols.js";
 import type { Value } from "./types.js";
@@ -134,7 +133,8 @@ export function createsElement(
         return (
             ts.isCallExpression(child) &&
             isLibraryStatic(
-                libraryStaticMember(checker, child.expression),
+                checker,
+                child.expression,
                 "document",
                 "createElement",
             ) &&

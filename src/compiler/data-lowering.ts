@@ -65,7 +65,6 @@ import {
     libraryName,
     memberAccessors,
     namedMember,
-    libraryStaticMember,
     isLibraryStatic,
     arrayMemberName,
 } from "./symbols.js";
@@ -164,6 +163,7 @@ import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
+    mathArityAccepts,
     foldMathCall,
     MATH_MEMBERS,
     mathMemberAccess,
@@ -197,6 +197,7 @@ import {
     type DataType,
     type TypedArrayKind,
     callMember,
+    engineFieldSlot,
 } from "./data-types.js";
 import {
     commonResourceValue,
@@ -375,6 +376,18 @@ function isWriteTarget(node: ts.Expression): boolean {
     return site !== undefined && site.kind !== "delete";
 }
 
+/** The array member a value is the receiver of (`xs.push`), by name. */
+function arrayMemberOf(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+): { readonly access: MemberAccess; readonly name: string } | undefined {
+    const parent = value.parent;
+    if (!isMemberAccess(parent) || parent.expression !== value)
+        return undefined;
+    const name = arrayMemberName(checker, parent);
+    return name === undefined ? undefined : { access: parent, name };
+}
+
 /**
  * How one reference to an array binding can change its length: not at all
  * (`0`), only up to an element count (an element write at a known index),
@@ -393,18 +406,16 @@ function referenceLengthExtent(
     let value: ts.Expression = reference;
     for (;;) {
         value = outermostWrapper(value, { branches: "objects" });
-        const parent: ts.Node = value.parent;
-        const method =
-            isMemberAccess(parent) && parent.expression === value
-                ? arrayMemberName(checker, parent)
-                : undefined;
+        const member = arrayMemberOf(checker, value);
+        const call = member?.access.parent;
         if (
-            method !== undefined &&
-            ts.isCallExpression(parent.parent) &&
-            parent.parent.expression === parent &&
-            lengthPreservingArrayMethods.has(method)
+            member &&
+            call &&
+            ts.isCallExpression(call) &&
+            call.expression === member.access &&
+            lengthPreservingArrayMethods.has(member.name)
         ) {
-            value = parent.parent;
+            value = call;
             continue;
         }
         break;
@@ -424,14 +435,12 @@ function referenceLengthExtent(
             ? 0
             : Infinity;
     }
-    const method =
-        isMemberAccess(parent) && parent.expression === value
-            ? arrayMemberName(checker, parent)
-            : undefined;
-    if (method !== undefined && isMemberAccess(parent)) {
-        if (method === "length") return isWriteTarget(parent) ? Infinity : 0;
-        const call = parent.parent;
-        if (!ts.isCallExpression(call) || call.expression !== parent) return 0;
+    const member = arrayMemberOf(checker, value);
+    if (member) {
+        const { access, name: method } = member;
+        if (method === "length") return isWriteTarget(access) ? Infinity : 0;
+        const call = access.parent;
+        if (!ts.isCallExpression(call) || call.expression !== access) return 0;
         return resizingArrayMethods.has(method) ||
             (readOnlyDataMethods.has(method) &&
                 callbackTakesReceiver(checker, method, call.arguments[0]))
@@ -8648,7 +8657,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Math.${method} is not supported.`,
             );
         const count = call.arguments.length;
-        if (member.variadic ? count < member.arity : count !== member.arity)
+        if (!mathArityAccepts(member, count))
             this.context.fail(
                 call,
                 `Math.${method} expects ${describeMathArity(member)}.`,
@@ -12970,9 +12979,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
-            if (field.type.kind === "handle" && field.type.handle === "engine")
+            const slot = engineFieldSlot(dataType.name, field);
+            if (slot)
                 this.context.noteEngineSlot(
-                    `${dataType.name}.${field.name}`,
+                    slot,
                     ts.isIdentifier(method)
                         ? this.context.bindings.lookupOptional(method)
                               ?.engineIdentity
@@ -13379,12 +13389,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "accessors",
             );
         const store = (field: DataStructField, cpp: string): string => {
-            if (field.type.kind === "handle" && field.type.handle === "engine")
-                this.context.noteEngineSlot(
-                    `${dataType.name}.${field.name}`,
-                    undefined,
-                    literal,
-                );
+            this.context.noteEngineSlot(
+                engineFieldSlot(dataType.name, field),
+                undefined,
+                literal,
+            );
             return `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
         };
         // The record keeps a field's generation-known scalar only while the
@@ -15872,23 +15881,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         target: Value,
         node: ts.Node,
     ): void {
+        const member = namedMember(this.context.checker, left);
         if (
             target.dataType?.kind !== "handle" ||
             target.dataType.handle !== "engine" ||
-            !ts.isPropertyAccessExpression(left)
+            !member
         )
             return;
-        const owner = this.dataTypeAt(left.expression);
+        const owner = this.dataTypeAt(member.expression);
         const struct = owner?.kind === "optional" ? owner.inner : owner;
         if (struct?.kind !== "struct") return;
         const field = this.context.dataTypes.findStructField(
             struct.name,
-            left.name.text,
-            left.name,
+            member.name,
+            member.key,
         );
         if (field)
             this.context.noteEngineSlot(
-                `${struct.name}.${field.name}`,
+                engineFieldSlot(struct.name, field),
                 undefined,
                 node,
             );
@@ -18398,7 +18408,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.isCallExpression(node) &&
             node.arguments.length === 1 &&
             isLibraryStatic(
-                libraryStaticMember(this.context.checker, node.expression),
+                this.context.checker,
+                node.expression,
                 "Object",
                 "getPrototypeOf",
             )

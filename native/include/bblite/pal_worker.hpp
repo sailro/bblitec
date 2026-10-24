@@ -260,14 +260,15 @@ public:
     /** `Object.defineProperty(globalThis, "devicePixelRatio", { get })`: later reads run it. */
     void define_device_pixel_ratio(js::Callback<double()> getter, bool configurable) {
         require_owner();
-        defined_device_pixel_ratio_.define(js::Accessor<double>(std::move(getter), {}),
-                                           configurable);
-        device_pixel_ratio_defined_ = true;
+        if (!defined_device_pixel_ratio_)
+            defined_device_pixel_ratio_.emplace();
+        defined_device_pixel_ratio_->define(js::Accessor<double>(std::move(getter), {}),
+                                            configurable);
     }
     [[nodiscard]] js::Nullable<double> device_pixel_ratio() const {
         require_owner();
-        if (device_pixel_ratio_defined_)
-            return defined_device_pixel_ratio_.get();
+        if (defined_device_pixel_ratio_)
+            return defined_device_pixel_ratio_->get();
         return device_pixel_ratio_ ? js::Nullable<double>(device_pixel_ratio_()) : std::nullopt;
     }
     /** The realm this thread runs, if any. */
@@ -352,8 +353,7 @@ private:
     std::thread::id owner_;
     std::shared_ptr<HostServices> host_services_;
     double (*device_pixel_ratio_)() = nullptr;
-    js::Accessor<double> defined_device_pixel_ratio_;
-    bool device_pixel_ratio_defined_ = false;
+    std::optional<js::Accessor<double>> defined_device_pixel_ratio_;
     bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;

@@ -34,7 +34,11 @@ import {
     pinnedMember,
 } from "../pinned-program.js";
 import { declaredSymbol } from "../compiler/symbols.js";
-import { MATH_MEMBERS, mathMemberAccess } from "../compiler/math-intrinsics.js";
+import {
+    MATH_MEMBERS,
+    mathArityAccepts,
+    mathMemberAccess,
+} from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -4696,19 +4700,13 @@ export class PinnedNumericLowerer {
             pinnedMember,
         );
         if (!spelling && math) {
-            const method = math.name;
-            const member = MATH_MEMBERS.get(method);
-            if (
-                member &&
-                (member.variadic
-                    ? args.length < member.arity
-                    : args.length !== member.arity)
-            )
+            const member = MATH_MEMBERS.get(math.name);
+            if (member && !mathArityAccepts(member, args.length))
                 this.fail(node, `'${name}' arity`);
             const arguments_ = this.scope.mathValue
                 ? args.map(this.scope.mathValue.argument)
                 : args;
-            const result = MATH_MEMBERS.get(method)?.cpp(
+            const result = member?.cpp(
                 arguments_,
                 node.arguments.map((argument) => this.staticNumberOf(argument)),
             );

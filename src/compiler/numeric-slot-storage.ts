@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import {
     isRetypableDeclaration,
@@ -47,12 +49,20 @@ export type NumericSlotDeclaration =
  * itself; several kinds share one numeric view (`NumericArrayView`). Either
  * keeps the stored array's identity.
  */
-export class NumericSlotStorageRequired extends Error {
+export class NumericSlotStorageRequired extends StorageDemand {
     constructor(
         readonly declaration: NumericSlotDeclaration,
         readonly kind: NumericSlotKind,
     ) {
         super("An ArrayLike slot must store the numeric arrays it holds.");
+    }
+
+    get request(): StorageRequest {
+        return {
+            kind: "numeric-slot",
+            declaration: this.declaration,
+            numeric: this.kind,
+        };
     }
 }
 

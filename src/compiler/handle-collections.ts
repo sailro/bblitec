@@ -31,7 +31,6 @@ import {
     namedMember,
     libraryGlobal,
     type NamedMember,
-    libraryStaticMember,
     isLibraryStatic,
 } from "./symbols.js";
 import {
@@ -3926,10 +3925,8 @@ function isChildrenArrayProbe(
     }
     if (
         !isLibraryStatic(
-            libraryStaticMember(
-                checker,
-                unwrapWalkExpression(current.expression),
-            ),
+            checker,
+            unwrapWalkExpression(current.expression),
             "Array",
             "isArray",
         )

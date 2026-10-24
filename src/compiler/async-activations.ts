@@ -33,6 +33,7 @@ interface AsyncActivationContext extends Pick<
     | "captureEmittedLines"
     | "captureEmittedStatements"
     | "checker"
+    | "evaluationOrder"
     | "callbacks"
     | "compileValue"
     | "decreaseIndent"
@@ -101,8 +102,11 @@ export class AsyncActivations {
     }
 
     /** See {@link AsyncLowerer.emitErasedSuspensions}. */
-    public emitErasedSuspensions(node: ts.Node): void {
-        this.context.asyncLowerer.emitErasedSuspensions(node);
+    public emitErasedSuspensions(
+        node: ts.Node,
+        runs?: "always" | "maybe",
+    ): void {
+        this.context.asyncLowerer.emitErasedSuspensions(node, runs);
     }
 
     public compileSynchronousPromise(node: ts.NewExpression): Value {

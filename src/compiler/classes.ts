@@ -30,6 +30,7 @@ import {
     classTagMember,
     dataTypesEqual,
     passesByReference,
+    structFieldKey,
     tupleComponents,
 } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -1510,7 +1511,7 @@ export class ClassLowerer {
         );
         writable(value).nativeLvalue = true;
         writable(value).borrowedData = true;
-        writable(value).classStoredField = `${structName}.${field.name}`;
+        writable(value).classStoredField = structFieldKey(structName, field);
         writable(value).nativeCaptures = [
             this.context.registerNativeBinding(instanceCpp, false, true),
         ];

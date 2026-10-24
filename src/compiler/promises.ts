@@ -36,9 +36,12 @@ export interface PromiseLoweringContext extends Pick<
     | "dataValue"
     | "dataTypes"
     | "checker"
+    | "evaluationOrder"
     | "sourceFile"
     | "sourceFiles"
     | "emitDiscardedValue"
+    | "symbols"
+    | "unwrap"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -100,19 +103,19 @@ export function promiseStatic(
 export type PromiseReaction = "then" | "catch" | "finally";
 
 /**
- * The reaction a callee names on a library Promise (`p.then`), or
+ * The reaction member a callee names on a library Promise (`p.then`), or
  * undefined: a user class's own `then` is an ordinary method.
  */
 export function promiseReactionOf(
     callee: ts.Node,
     checker: ts.TypeChecker,
-): PromiseReaction | undefined {
+): (NamedMember & { readonly reaction: PromiseReaction }) | undefined {
     const access = namedMember(checker, callee);
     if (!access) return undefined;
     const name = access.name;
     return (name === "then" || name === "catch" || name === "finally") &&
         libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
-        ? name
+        ? { ...access, reaction: name }
         : undefined;
 }
 
@@ -232,9 +235,9 @@ export function compileImmediatePromise(
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
-    const method = promiseReactionOf(call.expression, context.checker);
-    const reaction = namedMember(context.checker, call.expression);
-    if (!method || !reaction) return undefined;
+    const reaction = promiseReactionOf(call.expression, context.checker);
+    if (!reaction) return undefined;
+    const method = reaction.reaction;
     // A reaction runs after the code that registers it; here it runs at
     // once, ahead of that code.
     if (!context.options.workers && !reactionOrderIsUnobservable(context, call))

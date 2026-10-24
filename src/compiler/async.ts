@@ -35,8 +35,6 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
     libraryName,
-    namedMember,
-    type NamedMember,
 } from "./symbols.js";
 import {
     optionalPresentCpp,
@@ -208,15 +206,25 @@ export class AsyncLowerer {
 
     /**
      * Code erasure drops still suspends where JavaScript would: one turn per
-     * `await` it holds, as an erased void await takes. Outside a realm
-     * activation nothing suspends.
+     * `await` it holds, as an erased void await takes. Code that may not run
+     * (`maybe`: an erased guard's branch) cannot take a known number of
+     * turns, so an `await` in it refuses. Outside a realm activation
+     * nothing suspends.
      */
-    emitErasedSuspensions(node: ts.Node): void {
+    emitErasedSuspensions(
+        node: ts.Node,
+        runs: "always" | "maybe" = "always",
+    ): void {
         if (!this.depth) return;
         forEachAnalysisNode(
             node,
             (child) => {
                 if (!ts.isAwaitExpression(child)) return;
+                if (runs === "maybe")
+                    this.context.fail(
+                        child,
+                        "An await under a browser-only guard inside an asynchronous function is not supported: the browser decides whether its turn is taken.",
+                    );
                 this.context.emit({
                     kind: "declaration",
                     type: "auto",
@@ -236,8 +244,9 @@ export class AsyncLowerer {
         // this realm path must see the suspension before that happens.
         const node = unwrapExpression(expression);
         if (ts.isTypeOfExpression(node)) {
-            const property = this.promiseMethod(
+            const property = promiseReactionOf(
                 context.unwrap(node.expression),
+                context.checker,
             );
             if (property) {
                 const receiver = context.dataLowerer.narrowOptional(
@@ -368,7 +377,7 @@ export class AsyncLowerer {
             return this.compileAll(node, statics === "allSettled");
         if (statics === "race" || statics === "any")
             return this.compileRace(node, statics);
-        const reaction = this.promiseMethod(callee);
+        const reaction = promiseReactionOf(callee, context.checker);
         if (reaction) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes
@@ -1947,12 +1956,6 @@ export class AsyncLowerer {
         );
     }
 
-    /** The library Promise reaction a callee names ({@link promiseReactionOf}). */
-    private promiseMethod(expression: ts.Expression): NamedMember | undefined {
-        return promiseReactionOf(expression, this.context.checker) !== undefined
-            ? namedMember(this.context.checker, expression)
-            : undefined;
-    }
     private cppType(value: Value, node: ts.Node): string {
         if (
             value.kind === "void" ||

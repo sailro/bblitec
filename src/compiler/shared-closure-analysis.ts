@@ -223,7 +223,7 @@ export class SharedClosureAnalysis {
             return index === 1;
         const reaction = promiseReactionOf(callee, this.context.checker);
         if (reaction)
-            return index === 0 || (reaction === "then" && index === 1);
+            return index === 0 || (reaction.reaction === "then" && index === 1);
         const scheduler = schedulerOf(this.context.checker, call.expression);
         return (
             scheduler !== undefined &&

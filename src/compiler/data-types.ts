@@ -464,6 +464,27 @@ export interface DataStructField {
     declarations?: readonly ts.Declaration[];
 }
 
+/** A struct field's key across the program, `Struct.field`. */
+export function structFieldKey(
+    structName: string,
+    field: DataStructField,
+): string {
+    return `${structName}.${field.name}`;
+}
+
+/**
+ * The key ({@link structFieldKey}) of a struct field holding an engine,
+ * whose stores' engines are tracked; undefined for any other field.
+ */
+export function engineFieldSlot(
+    structName: string,
+    field: DataStructField,
+): string | undefined {
+    return field.type.kind === "handle" && field.type.handle === "engine"
+        ? structFieldKey(structName, field)
+        : undefined;
+}
+
 /** The accessors an accessor-backed record field holds. */
 export type StructFieldAccessor = "get" | "get-set";
 

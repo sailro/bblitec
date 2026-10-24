@@ -18,7 +18,11 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { isSymbolPropertyKey, namedMember } from "./symbols.js";
+import {
+    GLOBAL_OBJECT_NAMES,
+    isSymbolPropertyKey,
+    namedMember,
+} from "./symbols.js";
 import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
@@ -1455,7 +1459,7 @@ function isRealmGlobalObject(
     return (
         workers !== undefined &&
         !workers.namespace &&
-        ["globalThis", "window", "self"].includes(
+        GLOBAL_OBJECT_NAMES.has(
             context.libraryGlobal(context.unwrap(expression)) ?? "",
         )
     );

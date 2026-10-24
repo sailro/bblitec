@@ -3,7 +3,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isStringValue, type Value } from "./types.js";
 import { compileDateLocaleString } from "./locale.js";
-import { libraryStaticMember, isLibraryStatic } from "./symbols.js";
+import { isLibraryStatic } from "./symbols.js";
 
 /** The default Intl formatter captures its host time zone at construction. */
 export function compileDateTimeFormat(
@@ -12,10 +12,8 @@ export function compileDateTimeFormat(
 ): Value | undefined {
     if (
         !isLibraryStatic(
-            libraryStaticMember(
-                lowerer.context.checker,
-                lowerer.context.unwrap(expression.expression),
-            ),
+            lowerer.context.checker,
+            lowerer.context.unwrap(expression.expression),
             "Intl",
             "DateTimeFormat",
         )

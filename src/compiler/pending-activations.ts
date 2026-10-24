@@ -7,13 +7,13 @@
 // not have; reaching one compiles the program in the application realm.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { libraryGlobal, resolvedSymbol, calledDeclaration } from "./symbols.js";
 import {
-    libraryGlobal,
-    resolvedSymbol,
-    calledDeclaration,
-    namedMember,
-} from "./symbols.js";
-import { outermostWrapper, referenceSite, unwrapExpression } from "./syntax.js";
+    isMemberAccess,
+    outermostWrapper,
+    referenceSite,
+    unwrapExpression,
+} from "./syntax.js";
 import { promiseReactionOf } from "./promises.js";
 
 type Activation = ts.SignatureDeclaration;
@@ -32,8 +32,7 @@ function promiseUse(node: ts.Expression, checker: ts.TypeChecker): PromiseUse {
         current = outermostWrapper(current);
         const parent = current.parent;
         if (
-            (ts.isPropertyAccessExpression(parent) ||
-                ts.isElementAccessExpression(parent)) &&
+            isMemberAccess(parent) &&
             parent.expression === current &&
             promiseReactionOf(parent, checker) !== undefined &&
             ts.isCallExpression(parent.parent) &&
@@ -80,9 +79,11 @@ function chainedCall(
     let node = unwrapExpression(expression);
     if (ts.isVoidExpression(node)) node = unwrapExpression(node.expression);
     while (ts.isCallExpression(node)) {
-        const callee = namedMember(checker, unwrapExpression(node.expression));
-        if (!callee || promiseReactionOf(callee.access, checker) === undefined)
-            return node;
+        const callee = promiseReactionOf(
+            unwrapExpression(node.expression),
+            checker,
+        );
+        if (!callee) return node;
         const receiver = unwrapExpression(callee.expression);
         if (!ts.isCallExpression(receiver)) return undefined;
         node = receiver;

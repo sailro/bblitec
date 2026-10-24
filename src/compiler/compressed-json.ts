@@ -695,11 +695,10 @@ export function compileCompressedJsonPromiseThen(
     context: CompressedJsonContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const then = namedMember(context.checker, call.expression);
+    const then = promiseReactionOf(call.expression, context.checker);
     const callback = call.arguments[0];
     if (
-        !then ||
-        promiseReactionOf(call.expression, context.checker) !== "then" ||
+        then?.reaction !== "then" ||
         call.arguments.length !== 1 ||
         !callback ||
         !ts.isIdentifier(callback) ||

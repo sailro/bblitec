@@ -53,6 +53,7 @@ import {
     libraryStaticMember,
     isLibraryStatic,
     accessedPropertySymbol,
+    GLOBAL_OBJECT_NAMES,
 } from "./symbols.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -96,11 +97,7 @@ export function isNumberParserCallee(
 ): boolean {
     return (
         context.libraryGlobal(callee) === method ||
-        isLibraryStatic(
-            libraryStaticMember(context.checker, callee),
-            "Number",
-            method,
-        )
+        isLibraryStatic(context.checker, callee, "Number", method)
     );
 }
 
@@ -153,13 +150,6 @@ export function isPrimitiveBrowserValue(
         value.kind,
     );
 }
-
-/** The names the library binds the global object itself to. */
-const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
-    "globalThis",
-    "self",
-    "window",
-]);
 
 /**
  * Members of the browser's global object the native realm does not have. A
@@ -334,10 +324,8 @@ function engineCanvasLookups(context: PrimaryCanvasContext) {
             if (ts.isCallExpression(value)) {
                 if (
                     isLibraryStatic(
-                        libraryStaticMember(
-                            context.checker,
-                            context.unwrap(value.expression),
-                        ),
+                        context.checker,
+                        context.unwrap(value.expression),
                         "document",
                         "querySelector",
                     ) &&
@@ -415,8 +403,8 @@ export function canvasContextIds(
  * The id a library `document.getElementById`/`querySelector` call finds one
  * element by (`documentLookupId`), its argument's text read by `textOf`.
  */
-function documentLookupCallId(
-    context: BrowserGlobalContext,
+export function documentLookupCallId(
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     expression: ts.Expression,
     textOf: (argument: ts.Expression) => string | undefined,
 ): string | undefined {
@@ -1546,7 +1534,10 @@ export class BrowserErasure {
                 this.context.checker,
                 unwrapped.expression,
             );
-            if (isLibraryStatic(libraryCall, "Number", "isFinite")) {
+            if (
+                libraryCall?.owner === "Number" &&
+                libraryCall.name === "isFinite"
+            ) {
                 return browserArgument;
             }
             // Standard-library transforms cannot make a browser-only value
@@ -1724,10 +1715,8 @@ export class BrowserErasure {
             ts.isCallExpression(expression) &&
             expression.arguments.length === 0 &&
             isLibraryStatic(
-                libraryStaticMember(
-                    this.context.checker,
-                    expression.expression,
-                ),
+                this.context.checker,
+                expression.expression,
                 "performance",
                 "now",
             )
@@ -1988,10 +1977,8 @@ export class BrowserErasure {
             !this.context.options.workers &&
             ts.isCallExpression(unwrapped.expression) &&
             isLibraryStatic(
-                libraryStaticMember(
-                    this.context.checker,
-                    unwrapped.expression.expression,
-                ),
+                this.context.checker,
+                unwrapped.expression.expression,
                 "window",
                 "matchMedia",
             ) &&
@@ -2272,10 +2259,8 @@ export class BrowserErasure {
             }
             if (
                 isLibraryStatic(
-                    libraryStaticMember(
-                        this.context.checker,
-                        unwrapped.expression,
-                    ),
+                    this.context.checker,
+                    unwrapped.expression,
                     "Number",
                     "isFinite",
                 )

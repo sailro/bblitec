@@ -35,7 +35,7 @@ import {
 } from "./browser-texture-function.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { libraryStaticMember, isLibraryStatic } from "./symbols.js";
+import { isLibraryStatic } from "./symbols.js";
 
 interface ExecutedUrlCallContext extends Pick<
     LoweringServices,
@@ -48,7 +48,8 @@ function createsObjectUrl(node: ts.Node, checker: ts.TypeChecker): boolean {
         (child) =>
             ts.isCallExpression(child) &&
             isLibraryStatic(
-                libraryStaticMember(checker, child.expression),
+                checker,
+                child.expression,
                 "URL",
                 "createObjectURL",
             ),

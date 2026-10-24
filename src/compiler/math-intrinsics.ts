@@ -233,13 +233,14 @@ export function foldMathCall(
     const fold =
         member?.fold ??
         (formatted ? FORMATTED_MATH_FOLDS.get(name) : undefined);
-    return fold &&
-        member &&
-        (member.variadic
-            ? values.length >= member.arity
-            : values.length === member.arity)
+    return fold && member && mathArityAccepts(member, values.length)
         ? fold(...values)
         : undefined;
+}
+
+/** Whether a member takes `count` arguments ({@link describeMathArity}). */
+export function mathArityAccepts(member: MathMember, count: number): boolean {
+    return member.variadic ? count >= member.arity : count === member.arity;
 }
 
 /** How a member's arity reads in a refusal. */

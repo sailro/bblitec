@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import { isRetypableDeclaration } from "./symbols.js";
 
@@ -6,11 +8,15 @@ import { isRetypableDeclaration } from "./symbols.js";
  * array could grow them: the compile replays with growable array storage
  * for the property, which every record type sharing its layout keeps.
  */
-export class TupleArraySlotRequired extends Error {
+export class TupleArraySlotRequired extends StorageDemand {
     constructor(
         readonly declaration: ts.PropertySignature | ts.PropertyDeclaration,
     ) {
         super("A record property must store its tuples as arrays.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "tuple-array", declaration: this.declaration };
     }
 }
 

@@ -2,7 +2,7 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
-import { isStorageDemand } from "./storage-demand-planner.js";
+import { StorageDemand } from "./storage-demand.js";
 import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
@@ -91,7 +91,7 @@ export function compileWithRuntimeCaseSplit(
 function refusesPerOutcome(error: unknown): boolean {
     return (
         error instanceof CompileError ||
-        isStorageDemand(error) ||
+        error instanceof StorageDemand ||
         error instanceof ApplicationRealmRequired
     );
 }

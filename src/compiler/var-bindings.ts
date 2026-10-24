@@ -92,18 +92,13 @@ function scopePlacements(
         scope,
         (node) => {
             if (node !== scope && isVarScope(node)) return "skip";
-            const declaration = ts.isIdentifier(node)
-                ? varDeclarationNamed(node)
-                : undefined;
-            const symbol =
-                declaration &&
-                ts.isIdentifier(node) &&
-                valueSymbolOf(checker, node);
-            if (declaration && symbol)
-                declared.set(symbol, [
-                    ...(declared.get(symbol) ?? []),
-                    declaration,
-                ]);
+            if (!ts.isIdentifier(node)) return;
+            const declaration = varDeclarationNamed(node);
+            const symbol = declaration && valueSymbolOf(checker, node);
+            if (!declaration || !symbol) return;
+            const list = declared.get(symbol);
+            if (list) list.push(declaration);
+            else declared.set(symbol, [declaration]);
         },
         { types: "skip" },
     );
@@ -112,13 +107,12 @@ function scopePlacements(
         forEachAnalysisNode(
             scope,
             (node) => {
-                const symbol =
-                    ts.isIdentifier(node) && valueSymbolOf(checker, node);
-                if (symbol && ts.isIdentifier(node) && declared.has(symbol))
-                    references.set(symbol, [
-                        ...(references.get(symbol) ?? []),
-                        node,
-                    ]);
+                if (!ts.isIdentifier(node)) return;
+                const symbol = valueSymbolOf(checker, node);
+                if (!symbol || !declared.has(symbol)) return;
+                const list = references.get(symbol);
+                if (list) list.push(node);
+                else references.set(symbol, [node]);
             },
             { types: "skip", names: "references" },
         );

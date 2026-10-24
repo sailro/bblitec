@@ -131,40 +131,61 @@ const COMPUTING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Which of its arguments a default-library call's result may be, or hold:
+ * the one table every reader shares. A view holds the buffer it is over and
+ * copies values; a library object's method holds an argument only when it
+ * stores it (`set`, `concat`); a static or global holds one unless it only
+ * computes (`Object.keys`, `JSON.stringify`, `Math`), so one the table
+ * does not name may.
+ */
+function libraryHeldArguments(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): "any" | "none" | "buffers" {
+    const name = libraryCallName(checker, call);
+    if (name === undefined) return "any";
+    if (BINARY_VIEWS.has(name) || BINARY_VIEWS.has(name.split(".")[0]!))
+        return "buffers";
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    // A method of a library object: only the storing ones hand it back.
+    if (callee && libraryGlobal(checker, callee.expression) === undefined)
+        return ARGUMENT_HOLDING_METHODS.has(callee.name) ? "any" : "none";
+    return COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math.")
+        ? "none"
+        : "any";
+}
+
+/** Whether an argument a view is created over may be a buffer it shares. */
+function mayBeBuffer(
+    checker: ts.TypeChecker,
+    argument: ts.Expression | undefined,
+): boolean {
+    const type =
+        argument &&
+        checker.getNonNullableType(checker.getTypeAtLocation(argument));
+    return (
+        type === undefined ||
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+        unionMembers(type).some((member) => {
+            const name = libraryName(member);
+            return name === "ArrayBuffer" || name === "SharedArrayBuffer";
+        })
+    );
+}
+
+/**
  * Whether a default-library call's result may be, or hold, the object it is
- * handed at `index`: the one table every reader shares. A view holds the
- * buffer it is over and copies values; a library object's method holds an
- * argument only when it stores it (`set`, `concat`); a static or global
- * holds one unless it only computes (`Object.keys`, `JSON.stringify`,
- * `Math`), so one the table does not name may.
+ * handed at `index` ({@link libraryHeldArguments}).
  */
 export function libraryResultMayHold(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
     index: number,
 ): boolean {
-    const name = libraryCallName(checker, call);
-    if (name === undefined) return true;
-    if (BINARY_VIEWS.has(name) || BINARY_VIEWS.has(name.split(".")[0]!)) {
-        // A view over a buffer shares it; one over values copies them.
-        const argument = call.arguments?.[index];
-        const type =
-            argument &&
-            checker.getNonNullableType(checker.getTypeAtLocation(argument));
-        return (
-            type === undefined ||
-            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            unionMembers(type).some((member) => {
-                const name = libraryName(member);
-                return name === "ArrayBuffer" || name === "SharedArrayBuffer";
-            })
-        );
-    }
-    const callee = namedMember(checker, unwrapExpression(call.expression));
-    // A method of a library object: only the storing ones hand it back.
-    if (callee && libraryGlobal(checker, callee.expression) === undefined)
-        return ARGUMENT_HOLDING_METHODS.has(callee.name);
-    return !(COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math."));
+    const held = libraryHeldArguments(checker, call);
+    return held === "buffers"
+        ? mayBeBuffer(checker, call.arguments?.[index])
+        : held === "any";
 }
 
 /**
@@ -177,11 +198,9 @@ export function callResultHoldsArguments(
     call: ts.CallExpression,
 ): boolean {
     const declaration = calledDeclaration(checker, call);
-    return (
-        declaration !== undefined &&
-        declarationInDefaultLibrary(declaration) &&
-        call.arguments.some((_, index) =>
-            libraryResultMayHold(checker, call, index),
-        )
-    );
+    if (!declaration || !declarationInDefaultLibrary(declaration)) return false;
+    const held = libraryHeldArguments(checker, call);
+    return held === "buffers"
+        ? call.arguments.some((argument) => mayBeBuffer(checker, argument))
+        : held === "any" && call.arguments.length > 0;
 }

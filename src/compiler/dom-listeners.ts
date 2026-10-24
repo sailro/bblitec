@@ -183,12 +183,12 @@ export function resourceLoadEvent(
     return true;
 }
 
-/** Each family's borrowed event view. */
+/**
+ * Each family's borrowed event view: its own value kind, or the base Event
+ * view (`baseView`) its members are read through.
+ */
 const DOM_CALLBACK_EVENTS = {
-    storage: {
-        cppType: "const bbl::PlatformStorageEvent&",
-        kind: "platform-mouse-event",
-    },
+    storage: { cppType: "const bbl::PlatformStorageEvent&", baseView: true },
     custom: {
         cppType: "const bbl::PlatformCustomEvent&",
         kind: "custom-event",
@@ -201,20 +201,14 @@ const DOM_CALLBACK_EVENTS = {
         cppType: "const bbl::PlatformMouseEvent&",
         kind: "platform-mouse-event",
     },
-    drag: {
-        cppType: "const bbl::PlatformDragEvent&",
-        kind: "platform-mouse-event",
-    },
-    // Read through the base Event view; TransitionEvent adds propertyName.
+    drag: { cppType: "const bbl::PlatformDragEvent&", baseView: true },
+    // TransitionEvent adds propertyName.
     transition: {
         cppType: "const bbl::PlatformTransitionEvent&",
-        kind: "platform-mouse-event",
+        baseView: true,
     },
-    // Read through the base Event view; GamepadEvent adds gamepad.
-    gamepad: {
-        cppType: "const bbl::PlatformGamepadEvent&",
-        kind: "platform-mouse-event",
-    },
+    // GamepadEvent adds gamepad.
+    gamepad: { cppType: "const bbl::PlatformGamepadEvent&", baseView: true },
 } as const;
 
 /**
@@ -463,10 +457,7 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            family === "transition" ||
-            family === "drag" ||
-            family === "storage" ||
-            family === "gamepad"
+            "baseView" in event
                 ? valueForKind("platform-mouse-event", {
                       cpp: `bbl::js::BorrowedEvent(${name})`,
                       readOnly: true,

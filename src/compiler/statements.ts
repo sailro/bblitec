@@ -1805,6 +1805,15 @@ export class StatementLowerer {
             // native observable effect. This covers optional UI setup while
             // leaving mixed browser/native conditions to the established
             // condition lowerer and its pinned static deductions.
+            for (const branch of [
+                statement.thenStatement,
+                statement.elseStatement,
+            ])
+                if (branch)
+                    context.asyncActivations.emitErasedSuspensions(
+                        branch,
+                        "maybe",
+                    );
             const noteWrites = (node: ts.Node): void => {
                 for (const { target } of writeSites(node))
                     if (ts.isPropertyAccessExpression(target))
@@ -4343,14 +4352,11 @@ export class StatementLowerer {
         // An array element is read in place while the body can change no
         // array and never reassigns the loop variable; otherwise the loop
         // yields a snapshot the body's writes cannot change.
+        const name = headIdentifier(head);
         const borrowsElement =
             container?.kind === "vector" &&
             !context.evaluationOrder.mayWriteArray(statement.statement) &&
-            !(
-                "name" in head &&
-                ts.isIdentifier(head.name) &&
-                context.sharedClosures.identifierIsRebound(head.name)
-            );
+            !(name && context.sharedClosures.identifierIsRebound(name));
         // A span views a constant table: its items are constant, and a
         // closure capturing one borrows it as such; so does a borrowed
         // array element.

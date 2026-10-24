@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import {
     declaredSymbol,
@@ -24,9 +26,13 @@ export type AbsenceTagDeclaration =
  * one-state storage cannot answer: the compile replays with that storage
  * tagged.
  */
-export class AbsenceTagStorageRequired extends Error {
+export class AbsenceTagStorageRequired extends StorageDemand {
     constructor(readonly declaration: AbsenceTagDeclaration) {
         super("A storage must tell null from undefined.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "absence-tag", declaration: this.declaration };
     }
 }
 

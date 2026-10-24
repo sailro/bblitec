@@ -29,12 +29,13 @@ export function sourceFileNodes(file: ts.SourceFile): readonly ts.Node[] {
     let nodes = fileNodes.get(file);
     if (!nodes) {
         const list: ts.Node[] = [];
-        const visit = (node: ts.Node): void => {
-            if (ts.isTypeNode(node)) return;
-            list.push(node);
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(file, visit);
+        forEachAnalysisNode(
+            file,
+            (node) => {
+                list.push(node);
+            },
+            { includeRoot: false, types: "skip" },
+        );
         nodes = list;
         fileNodes.set(file, nodes);
     }

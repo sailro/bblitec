@@ -758,21 +758,35 @@ export function namedMember(
             name: node.name.text,
             key: node.name,
         };
-    if (
-        !ts.isElementAccessExpression(node) ||
-        keyMayRunCode(checker, node.argumentExpression)
-    )
-        return undefined;
-    const name = staticAccessKey(checker, node);
-    return name === undefined
+    if (!ts.isElementAccessExpression(node)) return undefined;
+    // A keyed access analyzes its key; a parsed one's answer is kept.
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    let known = parsed ? keyedMembers.get(checker) : undefined;
+    if (parsed && !known) keyedMembers.set(checker, (known = new WeakMap()));
+    const kept = known?.get(node);
+    if (kept !== undefined) return kept ?? undefined;
+    const name = keyMayRunCode(checker, node.argumentExpression)
         ? undefined
-        : {
-              access: node,
-              expression: node.expression,
-              name,
-              key: node.argumentExpression,
-          };
+        : staticAccessKey(checker, node);
+    const member: NamedMember | undefined =
+        name === undefined
+            ? undefined
+            : {
+                  access: node,
+                  expression: node.expression,
+                  name,
+                  key: node.argumentExpression,
+              };
+    known?.set(node, member ?? null);
+    return member;
 }
+
+/** @unjournaled Pure functions of the checked source: each keyed access's member. */
+const keyedMembers = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ElementAccessExpression, NamedMember | null>
+>();
 
 /** A static member of a library global: `Object.keys`, `Math["max"]`. */
 export interface LibraryStaticMember extends NamedMember {
@@ -807,12 +821,14 @@ export function libraryStaticMember(
     return owner === undefined ? undefined : { ...member, owner };
 }
 
-/** Whether a library static member is `owner.name`. */
+/** Whether a callee names the library static `owner.name` ({@link libraryStaticMember}). */
 export function isLibraryStatic(
-    member: LibraryStaticMember | undefined,
+    checker: ts.TypeChecker,
+    callee: ts.Node,
     owner: string,
     name: string,
 ): boolean {
+    const member = libraryStaticMember(checker, callee);
     return member?.owner === owner && member.name === name;
 }
 
@@ -878,7 +894,7 @@ export function symbolFieldName(key: string): string {
 }
 
 /** The names the library binds the global object itself to. */
-const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
+export const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
     "globalThis",
     "window",
     "self",

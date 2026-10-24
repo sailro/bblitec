@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import type { BindingScopes } from "./binding-scopes.js";
 import {
@@ -25,12 +27,20 @@ export type DynamicBindingStorage =
     | { nativeType: ts.Type; node: ts.Expression };
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
-export class DynamicBindingStorageRequired extends Error {
+export class DynamicBindingStorageRequired extends StorageDemand {
     constructor(
         readonly declaration: ts.VariableDeclaration,
         readonly storage?: DynamicBindingStorage,
     ) {
         super("A lexical record binding requires dynamic object storage.");
+    }
+
+    get request(): StorageRequest {
+        return {
+            kind: "dynamic",
+            declaration: this.declaration,
+            storage: this.storage,
+        };
     }
 }
 
@@ -39,9 +49,13 @@ export class DynamicBindingStorageRequired extends Error {
  * replays with the parameter holding its argument as a native object
  * rather than as separate field storage.
  */
-export class ParameterObjectStorageRequired extends Error {
+export class ParameterObjectStorageRequired extends StorageDemand {
     constructor(readonly declaration: ts.ParameterDeclaration) {
         super("A record parameter requires its own native object.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "parameter-object", declaration: this.declaration };
     }
 }
 

@@ -98,7 +98,7 @@ export function compileWindowServiceCall(
         context.checker,
         context.unwrap(call.expression),
     );
-    if (isLibraryStatic(callee, "location", "assign")) {
+    if (callee?.owner === "location" && callee.name === "assign") {
         if (!context.options.workers)
             context.fail(
                 call,
@@ -116,7 +116,7 @@ export function compileWindowServiceCall(
             cpp: `bbl::pal::window_location_assign(${target}, ${runtimeLocationHrefCpp(context)})`,
         };
     }
-    if (isLibraryStatic(callee, "location", "reload")) {
+    if (callee?.owner === "location" && callee.name === "reload") {
         if (!context.options.workers)
             context.fail(
                 call,
@@ -392,10 +392,6 @@ export function computedStyleElement(
     const callee = context.unwrap(call.expression);
     const global =
         context.libraryGlobal(callee) === "getComputedStyle" ||
-        isLibraryStatic(
-            libraryStaticMember(context.checker, callee),
-            "window",
-            "getComputedStyle",
-        );
+        isLibraryStatic(context.checker, callee, "window", "getComputedStyle");
     return global ? call.arguments[0] : undefined;
 }

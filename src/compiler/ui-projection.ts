@@ -123,7 +123,6 @@ import {
     calledDeclaration,
     namedMember,
     type NamedMember,
-    libraryStaticMember,
     isLibraryStatic,
     libraryName,
 } from "./symbols.js";
@@ -6533,10 +6532,8 @@ export class UiProjection {
                 }
                 if (
                     isLibraryStatic(
-                        libraryStaticMember(
-                            this.context.checker,
-                            this.context.unwrap(node.expression),
-                        ),
+                        this.context.checker,
+                        this.context.unwrap(node.expression),
                         "document",
                         "createElement",
                     )

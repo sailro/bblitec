@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
+    engineFieldSlot,
     isAbsentSpreadProperty,
     propertyIsReadOnly,
     type DataStructField,
@@ -523,15 +524,11 @@ function valueStruct(
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
-                if (
-                    field.type.kind === "handle" &&
-                    field.type.handle === "engine"
-                )
-                    lowerer.context.noteEngineSlot(
-                        `${dataType.name}.${field.name}`,
-                        property?.engineIdentity,
-                        node,
-                    );
+                lowerer.context.noteEngineSlot(
+                    engineFieldSlot(dataType.name, field),
+                    property?.engineIdentity,
+                    node,
+                );
                 if (property?.callbackDeclaration)
                     lowerer.context.recordProxies.requireIndependentFunction(
                         field,
@@ -596,14 +593,10 @@ function valueStruct(
             "accessors",
         );
         // A copied engine field holds whatever the source held.
-        for (const field of fields)
-            if (
-                sourceType.name !== dataType.name &&
-                field.type.kind === "handle" &&
-                field.type.handle === "engine"
-            )
+        if (sourceType.name !== dataType.name)
+            for (const field of fields)
                 lowerer.context.noteEngineSlot(
-                    `${dataType.name}.${field.name}`,
+                    engineFieldSlot(dataType.name, field),
                     undefined,
                     node,
                 );

@@ -160,7 +160,7 @@ import {
     compileMediaStreamMethodCall,
     mediaStreamTypeof,
 } from "./media-streams.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRuntimeValue } from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
 import { finalReturn, firstReturn } from "./loop-control.js";
 import {
@@ -1293,17 +1293,9 @@ export class ExpressionLowerer {
                 ts.isArrayLiteralExpression(joined) &&
                 !joined.elements.some(ts.isSpreadElement)
             ) {
-                let value: string | undefined;
-                try {
-                    value =
-                        this.context.evaluator.compileStringLiteral(unwrapped);
-                } catch (error) {
-                    if (
-                        !(error instanceof CompileError) ||
-                        error.reason !== "static-value-required"
-                    )
-                        throw error;
-                }
+                const value = unlessRuntimeValue(() =>
+                    this.context.evaluator.compileStringLiteral(unwrapped),
+                );
                 if (value !== undefined)
                     return {
                         kind: "string",
@@ -6586,8 +6578,8 @@ export class ExpressionLowerer {
                 ? {
                       recordPropertyOrder: [...ownKeys],
                       ...this.context.captureRecordScopes(),
-                      ...(this.context.isInRuntimeIteration() ||
-                      this.context.isInNativeFunctionBody()
+                      // Its methods take the record itself as `this`.
+                      ...(this.context.isFunctionEvaluationRepeated(undefined)
                           ? {
                                 repeatedCallbackEvaluation: true as const,
                             }

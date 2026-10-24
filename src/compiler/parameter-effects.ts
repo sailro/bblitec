@@ -1024,7 +1024,7 @@ export type CallTarget =
           readonly bodies: readonly EffectFunction[];
           readonly engine: boolean;
       }
-    | { readonly kind: "library"; readonly name: string | undefined }
+    | { readonly kind: "library" }
     | { readonly kind: "unknown" };
 
 export function callTarget(
@@ -1048,7 +1048,7 @@ export function callTarget(
     }
     if (declaration.getSourceFile().isDeclarationFile)
         return declarationInDefaultLibrary(declaration)
-            ? { kind: "library", name: libraryCallName(checker, call) }
+            ? { kind: "library" }
             : { kind: "unknown" };
     return isEffectFunction(declaration) && declaration.body
         ? { kind: "bodies", checker, bodies: [declaration], engine: false }
@@ -1672,8 +1672,8 @@ export function engineCallMutatesArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    target: CallTarget = callTarget(checker, call),
 ): boolean {
-    const target = callTarget(checker, call);
     return (
         target.kind === "bodies" &&
         target.engine &&

@@ -140,3 +140,31 @@ test("an erased browser value an awaited declaration binds still suspends once p
         );
     });
 });
+
+test("an await under an erased browser-only guard refuses in the application realm", () => {
+    // The browser decides whether the guarded branch runs, so how many
+    // turns the activation takes is unknown to the native program.
+    const source = `
+        const order: string[] = [];
+        async function query(): Promise<void> {
+            order.push("q0");
+            if (navigator.storage) {
+                await navigator.storage.estimate();
+            }
+            order.push("q1");
+        }
+        async function tick(): Promise<void> {
+            order.push("t0");
+            await null;
+            order.push("t1");
+        }
+        void (async () => {
+            await Promise.all([query(), tick()]);
+            globalThis.close();
+        })();
+    `;
+    assert.throws(
+        () => compileSource(source),
+        /An await under a browser-only guard inside an asynchronous function is not supported/,
+    );
+});

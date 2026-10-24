@@ -4,7 +4,7 @@ import {
     writable,
 } from "../emission-transaction.js";
 import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
-import { CompileError } from "../compile-error.js";
+import { unlessRuntimeValue } from "../compile-error.js";
 import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -672,23 +672,6 @@ function compileLoadBabylon(
     };
 }
 
-/** A generation-known text, or undefined for a run-time value. */
-function staticText(
-    context: AssetIntrinsicContext,
-    expression: ts.Expression,
-): string | undefined {
-    try {
-        return context.compileStringLiteral(expression);
-    } catch (error) {
-        if (
-            error instanceof CompileError &&
-            error.reason === "static-value-required"
-        )
-            return undefined;
-        throw error;
-    }
-}
-
 function compileLoadTexture2D(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
@@ -770,7 +753,9 @@ function compileLoadTexture2D(
             const unwrapped = context.unwrap(expression);
             if (ts.isConditionalExpression(unwrapped))
                 return context.dataLowerer.selectArms(unwrapped, addressMode);
-            const mode = staticText(context, expression);
+            const mode = unlessRuntimeValue(() =>
+                context.compileStringLiteral(expression),
+            );
             if (mode !== undefined) return mappedAddressMode(mode, expression);
             // A run-time member of a literal union selects among its modes.
             const value = context.compileValue(expression);

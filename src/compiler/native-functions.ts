@@ -33,7 +33,6 @@ import {
     calledDeclaration,
     calledFunction,
     namedMember,
-    libraryStaticMember,
     isLibraryStatic,
 } from "./symbols.js";
 import {
@@ -922,7 +921,8 @@ export class NativeFunctionLowerer {
             if (
                 ts.isCallExpression(node) &&
                 isLibraryStatic(
-                    libraryStaticMember(this.context.checker, node.expression),
+                    this.context.checker,
+                    node.expression,
                     "JSON",
                     "parse",
                 )

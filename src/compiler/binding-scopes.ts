@@ -271,35 +271,12 @@ export class BindingScopes {
     }
 
     public lookup(identifier: ts.Identifier): Value {
-        const symbol = this.context.symbols.valueSymbol(identifier);
-        if (!symbol) {
+        return (
+            this.lookupOptional(identifier) ??
             this.context.fail(
                 identifier,
                 `Unknown or unsupported variable '${identifier.text}'.`,
-            );
-        }
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            const binding = this.variableScopes[index]!.get(symbol);
-            if (binding) {
-                this.refuseEscapingPlatformEventCapture(
-                    identifier,
-                    index,
-                    binding.value,
-                );
-                this.refusePoisonedRebind(identifier, binding);
-                if (binding.unassignedVar)
-                    this.context.varBindings.refuseUnassignedRead(identifier);
-                this.context.useNativeValue(binding.value);
-                return binding.value;
-            }
-        }
-        this.context.fail(
-            identifier,
-            `Unknown or unsupported variable '${identifier.text}'.`,
+            )
         );
     }
 

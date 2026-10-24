@@ -382,7 +382,7 @@ export interface LoweringServices {
     isInNativeFunctionBody(): boolean;
     isFunctionEvaluationRepeated(lexicalThis: Value | undefined): boolean;
     noteEngineSlot(
-        slot: string,
+        slot: string | undefined,
         identity: symbol | undefined,
         node: ts.Node,
     ): void;
