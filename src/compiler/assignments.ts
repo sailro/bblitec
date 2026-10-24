@@ -555,7 +555,6 @@ export interface AssignmentContext
             | "compileValue"
             | "probeEmission"
             | "compileForDataSink"
-            | "noteEngineSlot"
             | "bindClassDataField"
             | "bindClassField"
             | "emitOptionalResourceAssignment"

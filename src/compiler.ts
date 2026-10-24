@@ -203,9 +203,11 @@ import {
     pinnedHandleKind,
     resourceValueCppType,
     type DataIterationElement,
+    type DataStructField,
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
+import { engineFieldIdentities } from "./compiler/engine-field-identities.js";
 import {
     ExpressionLowerer,
     staticStringCoercion,
@@ -7148,44 +7150,22 @@ class Compiler implements LoweringServices {
         return this.defaultEngineCpp;
     }
 
-    /**
-     * @journaled The engine binding every store so far put in a struct's engine
-     * field (`Struct.field`), or undefined once two stores disagree.
-     */
-    private readonly engineSlots = new EmissionMap<
-        string,
-        symbol | undefined
-    >();
-    /** @journaled Engine fields an implicit resource constructor relied on. */
-    private readonly reliedEngineSlots = new EmissionSet<string>();
+    /** @unjournaled One identity per engine binding where no live binding carries it. */
+    private readonly sourceEngineIdentities = new WeakMap<ts.Symbol, symbol>();
 
     /**
-     * Records the engine binding (none: unknown) one store puts in a
-     * struct's engine field ({@link engineFieldSlot}; none: no engine field).
+     * The engine a struct's engine field holds, as the analysis before
+     * emission found it ({@link engineFieldIdentities}): its binding's
+     * identity while that binding is live, else one per binding.
      */
-    public noteEngineSlot(
-        slot: string | undefined,
-        identity: symbol | undefined,
-        node: ts.Node,
-    ): void {
-        if (slot === undefined) return;
-        if (!this.engineSlots.has(slot)) {
-            this.engineSlots.set(slot, identity);
-            return;
-        }
-        if (this.engineSlots.get(slot) === identity) return;
-        if (this.reliedEngineSlots.has(slot))
-            this.fail(
-                node,
-                "An engine field stores another engine than the one an earlier implicit resource constructor took from it.",
-            );
-        this.engineSlots.set(slot, undefined);
-    }
-
-    /** The engine binding every store put in a struct's engine field. */
-    private engineSlotIdentity(slot: string): symbol | undefined {
-        const identity = this.engineSlots.get(slot);
-        if (identity) this.reliedEngineSlots.add(slot);
+    private engineFieldIdentity(field: DataStructField): symbol | undefined {
+        const root = engineFieldIdentities(this.program).root(field.sourceName);
+        if (!root) return undefined;
+        const live = this.bindings.peekBinding(root)?.value.engineIdentity;
+        if (live) return live;
+        let identity = this.sourceEngineIdentities.get(root);
+        if (!identity)
+            this.sourceEngineIdentities.set(root, (identity = Symbol()));
         return identity;
     }
 
@@ -7205,15 +7185,13 @@ class Compiler implements LoweringServices {
             cpp: string,
             owner: Value,
             known: Value | undefined,
-            slot?: string,
+            field?: DataStructField,
         ): void => {
             if (type.kind === "handle" && type.handle === "engine") {
                 const engine = `(*${cpp})`;
                 const identity =
                     known?.engineIdentity ??
-                    (slot === undefined
-                        ? undefined
-                        : this.engineSlotIdentity(slot));
+                    (field && this.engineFieldIdentity(field));
                 candidates.set(identity ?? engine, {
                     engine: this.dataLowerer.leafValue(cpp, type),
                     owner,
@@ -7239,7 +7217,7 @@ class Compiler implements LoweringServices {
                             field.readOnly
                                 ? known?.recordProperties?.[field.sourceName]
                                 : undefined,
-                            `${type.name}.${field.name}`,
+                            field,
                         );
                 }
             } finally {

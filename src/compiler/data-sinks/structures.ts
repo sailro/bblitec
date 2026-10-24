@@ -2,7 +2,6 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
-    engineFieldSlot,
     isAbsentSpreadProperty,
     propertyIsReadOnly,
     type DataStructField,
@@ -524,11 +523,6 @@ function valueStruct(
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
-                lowerer.context.noteEngineSlot(
-                    engineFieldSlot(dataType.name, field),
-                    property?.engineIdentity,
-                    node,
-                );
                 if (property?.callbackDeclaration)
                     lowerer.context.recordProxies.requireIndependentFunction(
                         field,
@@ -592,14 +586,6 @@ function valueStruct(
             node,
             "accessors",
         );
-        // A copied engine field holds whatever the source held.
-        if (sourceType.name !== dataType.name)
-            for (const field of fields)
-                lowerer.context.noteEngineSlot(
-                    engineFieldSlot(dataType.name, field),
-                    undefined,
-                    node,
-                );
         // Receiver-aware slots retain presence independently of their payload.
         // Fresh plain literals can move their data into new owner cells;
         // authored accessors and aliased records must share one layout.

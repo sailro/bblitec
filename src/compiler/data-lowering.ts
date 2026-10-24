@@ -197,7 +197,6 @@ import {
     type DataType,
     type TypedArrayKind,
     callMember,
-    engineFieldSlot,
 } from "./data-types.js";
 import {
     commonResourceValue,
@@ -571,7 +570,6 @@ export function isNeverResized(
 interface DataLoweringContext extends Pick<
     LoweringServices,
     | "declarations"
-    | "noteEngineSlot"
     | "speculating"
     | "objectProperty"
     | "symbols"
@@ -13068,16 +13066,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     initializer,
                 );
             const method = this.context.unwrap(initializer);
-            const slot = engineFieldSlot(dataType.name, field);
-            if (slot)
-                this.context.noteEngineSlot(
-                    slot,
-                    ts.isIdentifier(method)
-                        ? this.context.bindings.lookupOptional(method)
-                              ?.engineIdentity
-                        : undefined,
-                    initializer,
-                );
             const receiver = homeReceiver(self, method);
             if (
                 receiver &&
@@ -13477,14 +13465,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 node,
                 "accessors",
             );
-        const store = (field: DataStructField, cpp: string): string => {
-            this.context.noteEngineSlot(
-                engineFieldSlot(dataType.name, field),
-                undefined,
-                literal,
-            );
-            return `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
-        };
+        const store = (field: DataStructField, cpp: string): string =>
+            `${cppName}${member}${field.name} = ${this.context.dataTypes.structFieldInitializerCpp(field, cpp)};`;
         // The record keeps a field's generation-known scalar only while the
         // field's value is one; anything else forgets it.
         const trackKnownField = (
@@ -16005,35 +15987,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return fresh && returns > 0;
     }
 
-    /** A write into a struct's engine field leaves that field's engine unknown. */
-    private noteEngineFieldWrite(
-        left: ts.Expression,
-        target: Value,
-        node: ts.Node,
-    ): void {
-        const member = namedMember(this.context.checker, left);
-        if (
-            target.dataType?.kind !== "handle" ||
-            target.dataType.handle !== "engine" ||
-            !member
-        )
-            return;
-        const owner = this.dataTypeAt(member.expression);
-        const struct = owner?.kind === "optional" ? owner.inner : owner;
-        if (struct?.kind !== "struct") return;
-        const field = this.context.dataTypes.findStructField(
-            struct.name,
-            member.name,
-            member.key,
-        );
-        if (field)
-            this.context.noteEngineSlot(
-                engineFieldSlot(struct.name, field),
-                undefined,
-                node,
-            );
-    }
-
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
@@ -16473,7 +16426,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!target) {
             return false;
         }
-        this.noteEngineFieldWrite(left, target, expression);
         const targetRoot = rootExpression(left, (chain) =>
             this.context.unwrap(chain),
         );

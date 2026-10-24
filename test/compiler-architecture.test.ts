@@ -1680,6 +1680,20 @@ test("an enum-like intrinsic option reads its string through table-options.ts", 
     );
 });
 
+test("an engine field's engine is an analysis result before emission", () => {
+    // engine-field-identities.ts reads every store to a field's name before
+    // emission; no lowering notes an engine field's store as it emits it.
+    assert.deepEqual(declarationOwners("engineFieldIdentities"), [
+        "src/compiler/engine-field-identities.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("noteEngineSlot"),
+        ),
+        [],
+    );
+});
+
 test("a value is written to an assignment target through one owner", () => {
     // emitAssignmentTargetWrite writes a computed value as `target = value`
     // would (a variable, a member, an array or object pattern): the

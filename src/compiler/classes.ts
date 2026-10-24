@@ -106,12 +106,7 @@ interface StoredClassField extends DataStructField {
 export function storeClassField(
     context: Pick<
         LoweringServices,
-        | "emit"
-        | "fail"
-        | "compileForDataSink"
-        | "compileValue"
-        | "dataLowerer"
-        | "noteEngineSlot"
+        "emit" | "fail" | "compileForDataSink" | "compileValue" | "dataLowerer"
     >,
     field: Value,
     source: ts.Expression,
@@ -130,13 +125,7 @@ export function storeClassField(
         type.handle === "engine" &&
         field.classStoredField
     ) {
-        // An engine slot keeps which engine its constructions stored.
         const engine = context.compileValue(source);
-        context.noteEngineSlot(
-            field.classStoredField,
-            engine.engineIdentity,
-            node,
-        );
         stored = context.dataLowerer.compileKnownValueForSink(
             engine,
             type,
@@ -373,7 +362,6 @@ interface ClassLoweringContext
             | "endNativeFunctionBody"
             | "dataValue"
             | "compileForDataSink"
-            | "noteEngineSlot"
             | "assignOptionalResourceValue"
             | "defineThis"
             | "activeThis"
