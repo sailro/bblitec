@@ -1721,6 +1721,7 @@ test("the order deferred code runs in has one owner", () => {
             .sort(),
         ["src/compiler/async-activations.ts", "src/compiler/promises.ts"],
     );
+});
 
 test("a pinned for-of reads what it walks off the collection's binding", () => {
     // `for (const x of xs)` in a pinned body resolves `xs` through the
