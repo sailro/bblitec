@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -230,5 +232,62 @@ test("Window extension records refuse borrowed dispatch events", () => {
                 { fileName: resolve(directory, "entry.ts") },
             ),
         /borrowed.*event|event.*dispatch/i,
+    );
+});
+
+test("the realm's Window reads an absent File System Access picker as undefined, so its feature test takes the fallback", async (t) => {
+    const source = `
+        interface PickerWindow {
+            showSaveFilePicker?: (options: unknown) => Promise<{ name: string }>;
+            showOpenFilePicker?: (options: unknown) => Promise<{ name: string }[]>;
+        }
+        const order: string[] = [];
+        async function save(): Promise<string> {
+            const w = window as unknown as PickerWindow;
+            if (w.showSaveFilePicker) {
+                const handle = await w.showSaveFilePicker({ suggestedName: "world.json" });
+                return handle.name;
+            }
+            await null;
+            order.push("saved");
+            return w.showOpenFilePicker ? "picker" : "download";
+        }
+        void (async () => {
+            const pending = save();
+            order.push("caller");
+            const how = await pending;
+            if (how !== "download" || order.join(",") !== "caller,saved") throw new Error(how + " " + order.join(","));
+            globalThis.close();
+        })();
+    `;
+    // A browser without the File System Access API is the oracle.
+    let closed = false;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+        { window: {}, close: () => (closed = true) },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(closed, true);
+    const result = compileSource(source);
+    assert.ok(result.manifest.features.includes("platform:window"));
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "window-properties/absent-pickers",
+        result.cpp + windowRuntime,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
     );
 });

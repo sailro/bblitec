@@ -1925,7 +1925,11 @@ export class AsyncLowerer {
         );
     }
     private cppType(value: Value, node: ts.Node): string {
-        if (value.kind === "void" || value.kind === "physics-engine-module")
+        if (
+            value.kind === "void" ||
+            value.kind === "physics-engine-module" ||
+            value.kind === "browser"
+        )
             return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
             return `std::tuple<${(value.tupleElements ?? []).map((element) => this.cppType(element, node)).join(", ")}>`;
@@ -1950,6 +1954,8 @@ export class AsyncLowerer {
         cpp: string,
         binding: NativeCaptureBinding,
     ): Value {
+        // An erased browser value has no run-time state: it settles to itself.
+        if (source.kind === "browser") return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
             const owned = {
@@ -2711,7 +2717,7 @@ export class AsyncLowerer {
     }
     private resultCpp(value: Value, node: ts.Node): string {
         this.context.dataLowerer.markEscaped(value);
-        if (value.kind === "physics-engine-module")
+        if (value.kind === "physics-engine-module" || value.kind === "browser")
             return "bbl::js::PromiseVoid{}";
         if (
             value.kind === "string" &&
