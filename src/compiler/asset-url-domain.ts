@@ -947,11 +947,12 @@ class AssetUrlDomain {
                 [memberStep(node), ...projection],
                 environment,
             );
+        const key = projection[0];
         if (
             ts.isObjectLiteralExpression(node) &&
-            typeof projection[0] === "string"
+            key !== undefined &&
+            key !== ANY_KEY
         ) {
-            const key = projection[0];
             const writer = lastWriter(
                 objectLiteralMembers(node, (name) =>
                     this.context.propertyName(name),
@@ -972,7 +973,7 @@ class AssetUrlDomain {
                 : undefined;
         }
         // A record read by a runtime key selects one of its member values.
-        if (ts.isObjectLiteralExpression(node) && projection[0] === ANY_KEY)
+        if (ts.isObjectLiteralExpression(node) && key === ANY_KEY)
             return this.union(
                 node.properties.map((property) =>
                     ts.isPropertyAssignment(property)
@@ -990,7 +991,7 @@ class AssetUrlDomain {
                           : undefined,
                 ),
             );
-        if (ts.isArrayLiteralExpression(node) && projection[0] === ANY_KEY)
+        if (ts.isArrayLiteralExpression(node) && key === ANY_KEY)
             return node.elements.length === 0
                 ? nothing
                 : this.union(

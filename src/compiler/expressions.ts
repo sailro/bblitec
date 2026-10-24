@@ -7448,15 +7448,20 @@ export class ExpressionLowerer {
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
-            // A known-absent receiver can occur in a runtime branch even
-            // when its declared type names a class. Read the method with
-            // JavaScript's failure semantics before evaluating arguments;
-            // the declared call result only types that throwing branch.
-            if (instance?.kind === "json-null") {
+            // A known-absent receiver -- a void call's undefined included --
+            // can occur in a runtime branch even when its declared type
+            // names a class. Read the method with JavaScript's failure
+            // semantics before evaluating arguments; the declared call
+            // result only types that throwing branch.
+            if (instance?.kind === "json-null" || instance?.kind === "void") {
                 this.context.emitDiscardedValue(instance);
                 if (callee.questionDotToken) return undefinedValue();
+                const absence =
+                    instance.kind === "void"
+                        ? "undefined"
+                        : absenceOfNull(instance);
                 const message = this.context.cppString(
-                    `Cannot read properties of ${absenceOfNull(instance)} (reading '${memberName}')`,
+                    `Cannot read properties of ${absence} (reading '${memberName}')`,
                 );
                 const type = this.context.dataLowerer.dataTypeAt(call);
                 this.context.reachJsData();

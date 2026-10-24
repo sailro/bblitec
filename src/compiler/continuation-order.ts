@@ -975,8 +975,11 @@ function freshValue(
  * it is a start of its own.
  */
 class InterveningCode {
+    /** @unjournaled One query's walk over checked source, discarded with it. */
     public readonly code: CodePart[] = [];
+    /** @unjournaled One query's walk over checked source, discarded with it. */
     public open = false;
+    /** @unjournaled One query's walk over checked source, discarded with it. */
     private readonly returned = new Set<ts.Node>();
 
     public constructor(private readonly context: OrderContext) {}
