@@ -186,12 +186,28 @@ type UiMarkupPart =
     | string
     | { kind: "text"; expression: ts.Expression }
     | { kind: "stored"; expression: ts.Expression; shape: UiMarkupShape }
+    | UiMarkupBranching;
+
+/** A condition's two continuations, or a runtime text equal to one of closed authored texts. */
+type UiMarkupBranching =
     | {
           kind: "choice";
           condition: ts.Expression;
           yes: UiMarkupPart[];
           no: UiMarkupPart[];
+      }
+    | {
+          kind: "selected";
+          expression: ts.Expression;
+          alternatives: readonly string[];
       };
+
+/** The parts each branch of `part` continues with. */
+function uiMarkupBranches(part: UiMarkupBranching): UiMarkupPart[][] {
+    return part.kind === "choice"
+        ? [part.yes, part.no]
+        : part.alternatives.map((alternative) => [alternative]);
+}
 
 /** The placeholder a runtime value takes in a markup source, by its order. */
 function uiMarkupHole(index: number): string {
@@ -225,21 +241,17 @@ function uiMarkupSources(
                       part.shape.slice(hole + 1).join("");
         } else {
             const rest = parts.slice(index + 1);
-            const yes = uiMarkupSources(
-                [...part.yes, ...rest],
-                limit,
-                source,
-                next,
-            );
-            return [
-                ...yes,
-                ...uiMarkupSources(
-                    [...part.no, ...rest],
-                    limit - yes.length,
-                    source,
-                    next,
-                ),
-            ].slice(0, Math.max(limit, 0));
+            const sources: string[] = [];
+            for (const branch of uiMarkupBranches(part))
+                sources.push(
+                    ...uiMarkupSources(
+                        [...branch, ...rest],
+                        limit - sources.length,
+                        source,
+                        next,
+                    ),
+                );
+            return sources.slice(0, Math.max(limit, 0));
         }
     }
     return limit > 0 ? [source] : [];
@@ -324,6 +336,7 @@ interface UiProjectionContext extends Pick<
     | "hasPresentationHost"
     | "isCanvasElement"
     | "libraryGlobal"
+    | "moduleConstantTexts"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
     | "bindings"
@@ -4891,7 +4904,8 @@ export class UiProjection {
                 (part) =>
                     typeof part !== "string" &&
                     (ts.isConditionalExpression(this.context.unwrap(part)) ||
-                        this.uiStoredMarkupShape(part)),
+                        this.uiStoredMarkupShape(part) ||
+                        this.uiMarkupAlternatives(part)),
             )
         )
             return { kind: "structured" };
@@ -5056,7 +5070,15 @@ export class UiProjection {
             : undefined;
     }
 
-    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup and choices. */
+    /** The closed authored markups a runtime text holds one of (module constant data). */
+    private uiMarkupAlternatives(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const texts = this.context.moduleConstantTexts(expression);
+        return texts?.some((text) => /[<>]/.test(text)) ? texts : undefined;
+    }
+
+    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup, choices and selections. */
     private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
         const exact = this.tryUiStaticString(source);
         if (exact !== undefined) return [exact];
@@ -5097,6 +5119,9 @@ export class UiProjection {
                 );
             return [{ kind: "stored", expression: source, shape }];
         }
+        const alternatives = this.uiMarkupAlternatives(node);
+        if (alternatives)
+            return [{ kind: "selected", expression: source, alternatives }];
         return [{ kind: "text", expression: source }];
     }
 
@@ -5118,7 +5143,11 @@ export class UiProjection {
         let remaining = UiProjection.UI_MARKUP_ALTERNATIVES;
         const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
             parts.some(
-                (part) => typeof part !== "string" && part.kind === "choice",
+                (part) =>
+                    typeof part !== "string" &&
+                    (part.kind === "choice" ||
+                        (part.kind === "selected" &&
+                            part.alternatives.length > 1)),
             );
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
@@ -5163,36 +5192,71 @@ export class UiProjection {
                         source += after;
                     }
                 } else {
-                    const condition = this.context.conditions.compileCondition(
-                        part.condition,
-                    );
-                    if (knownCondition(condition) !== undefined)
-                        return emit(
-                            [
-                                ...(knownCondition(condition) === true
-                                    ? part.yes
-                                    : part.no),
-                                ...pending.slice(index + 1),
-                            ],
-                            source,
-                            values,
-                        );
-                    const branch = (parts: UiMarkupPart[]): string => {
+                    const continued = (
+                        parts: readonly UiMarkupPart[],
+                    ): UiMarkupPart[] => [
+                        ...parts,
+                        ...pending.slice(index + 1),
+                    ];
+                    const branch = (parts: readonly UiMarkupPart[]): string => {
                         let result = "";
                         const lines = this.context.captureEmittedLines(() => {
                             this.context.enterRuntimeControlFlow();
                             try {
-                                result = emit(
-                                    [...parts, ...pending.slice(index + 1)],
-                                    source,
-                                    values,
-                                );
+                                result = emit(continued(parts), source, values);
                             } finally {
                                 this.context.leaveRuntimeControlFlow();
                             }
                         });
                         return `${lines.join("\n")}\nreturn ${result};`;
                     };
+                    if (part.kind === "selected") {
+                        const value = this.context.bindings.pinValueToTemporary(
+                            this.context.compileValue(part.expression),
+                            "markup_text",
+                            part.expression,
+                        );
+                        const { alternatives } = part;
+                        if (value.staticString !== undefined)
+                            return emit(
+                                continued([value.staticString]),
+                                source,
+                                values,
+                            );
+                        if (alternatives.length === 1)
+                            return emit(
+                                continued(alternatives),
+                                source,
+                                values,
+                            );
+                        const text = this.uiTemplateValueCpp(
+                            value,
+                            part.expression,
+                            "Native UI innerHTML",
+                        );
+                        // The text is one of the alternatives: the last needs no test.
+                        const tests = alternatives
+                            .slice(0, -1)
+                            .map(
+                                (alternative) =>
+                                    `if (${text} == ${this.context.cppString(alternative)}) {\n${branch([alternative])}\n}\n`,
+                            )
+                            .join("");
+                        return `([&]() -> std::string { ${tests}{\n${branch([alternatives.at(-1)!])}\n} }())`;
+                    }
+                    const condition = this.context.conditions.compileCondition(
+                        part.condition,
+                    );
+                    if (knownCondition(condition) !== undefined)
+                        return emit(
+                            continued(
+                                knownCondition(condition) === true
+                                    ? part.yes
+                                    : part.no,
+                            ),
+                            source,
+                            values,
+                        );
                     return `([&]() -> std::string { if (${condition}) {\n${branch(part.yes)}\n} else {\n${branch(part.no)}\n} }())`;
                 }
             }

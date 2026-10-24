@@ -97,6 +97,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Static innerHTML is parsed at generation by Chromium (the browser's tree, entities and implied end tags).
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect and packaged PNG/JPEG `<image>`,
   role/aria-*/data-*; runtime text is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
+- A runtime string read from an unwritten module constant's data, including through a `for...of` const binding over
+  it, is markup: generation lowers each text it can hold and the string selects one.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
   ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
   content and dynamic markup with controls refuse; whitespace between options is not kept.
