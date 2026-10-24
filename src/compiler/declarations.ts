@@ -1682,10 +1682,7 @@ export class DeclarationLowerer {
                         ...(narrowed.borrowedData
                             ? { borrowedData: true as const }
                             : {}),
-                        ...(narrowed.packagedBodySource &&
-                        !this.context.sharedClosures.identifierIsRebound(
-                            declaration.name,
-                        )
+                        ...(narrowed.packagedBodySource
                             ? {
                                   packagedBodySource:
                                       narrowed.packagedBodySource,

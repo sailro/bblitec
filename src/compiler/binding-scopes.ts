@@ -128,6 +128,17 @@ interface CodeReads {
     readonly calls: readonly ts.Node[];
 }
 
+/**
+ * What a value says of its initializer alone: a regular expression's
+ * captures and flags, the engine owner it was created from, a packaged
+ * body's source. A binding code reassigns holds none of them.
+ */
+const INITIALIZER_FACTS = [
+    "regexpLayout",
+    "engineOwnerIdentity",
+    "packagedBodySource",
+] as const satisfies readonly (keyof Value)[];
+
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
         Map<ts.Symbol, VariableBinding>
@@ -1042,28 +1053,15 @@ export class BindingScopes {
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
         value = this.closureSharedCell(identifier, value);
-        const storedType =
-            value.dataType?.kind === "optional"
-                ? value.dataType.inner
-                : value.dataType;
+        // A later assignment, even through a closure or a loop, replaces
+        // what the initializer's value alone says.
         if (
-            storedType?.kind === "regexp" &&
-            ts.isIdentifier(identifier) &&
-            this.context.sharedClosures.identifierIsRebound(identifier)
-        ) {
-            // A later assignment may change the grammar even through a
-            // closure or loop; the initializer's captures and flags no
-            // longer describe this binding's runtime value.
-            value = { ...value };
-            delete writable(value).regexpLayout;
-        }
-        if (
-            value.engineOwnerIdentity &&
+            INITIALIZER_FACTS.some((fact) => value[fact] !== undefined) &&
             ts.isIdentifier(identifier) &&
             this.context.sharedClosures.identifierIsRebound(identifier)
         ) {
             value = { ...value };
-            delete writable(value).engineOwnerIdentity;
+            for (const fact of INITIALIZER_FACTS) delete writable(value)[fact];
         }
         if (value.kind === "engine" && !value.engineIdentity)
             value = { ...value, engineIdentity: Symbol() };
