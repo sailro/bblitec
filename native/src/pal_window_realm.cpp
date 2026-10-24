@@ -1,6 +1,7 @@
 #include <bblite/features/has_audio.hpp>
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/has_engine.hpp>
+#include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 
 #include <bblite/pal_window_realm.hpp>
@@ -1368,7 +1369,12 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             std::filesystem::remove(detail::utf8_file_path(checkpoint.path));
             std::filesystem::remove(detail::utf8_file_path(checkpoint.path + ".build-stamp"));
         }
-        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
+        SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+#if BBLITE_HAS_GAMEPAD
+        // The realm polls gamepads; their connections arrive with this thread's events.
+        init_flags |= SDL_INIT_GAMEPAD;
+#endif
+        if (!SDL_Init(init_flags))
             throw std::runtime_error(SDL_GetError());
         struct Quit {
             ~Quit() {

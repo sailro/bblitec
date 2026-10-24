@@ -957,6 +957,9 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
           (features.includes("platform:window")
               ? "#include <bblite/pal_window_realm.hpp>\n"
               : "") +
+          (features.includes("input:gamepad") && features.includes("input:dom")
+              ? "#include <bblite/pal_dom_gamepads.hpp>\n"
+              : "") +
           (projection.workers.hasEngine || features.includes("backend:sdl")
               ? "#include <bblite/pal_async_engine.hpp>\n"
               : "")

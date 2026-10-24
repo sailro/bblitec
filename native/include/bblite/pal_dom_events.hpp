@@ -173,6 +173,9 @@ struct DomPointerCaptures {
     }
 };
 
+/** Defined with its realm task source in `pal_dom_gamepads.hpp`. */
+struct PlatformGamepadEvent;
+
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
@@ -180,6 +183,9 @@ struct DomInput {
     DomEventListeners<PlatformTransitionEvent> transition;
     DomEventListeners<PlatformDragEvent> drag;
     DomEventListeners<PlatformStorageEvent> storage;
+    DomEventListeners<PlatformGamepadEvent> gamepad;
+    /** Whether the realm polls gamepad connections for `gamepad` listeners. */
+    bool gamepads_watched = false;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -215,6 +221,7 @@ struct DomInput {
         transition.gc_trace(visitor);
         drag.gc_trace(visitor);
         storage.gc_trace(visitor);
+        gamepad.gc_trace(visitor);
     }
 #endif
 };

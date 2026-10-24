@@ -14,7 +14,7 @@ import {
     type Value,
 } from "../types.js";
 
-import { pickedMeshHandleCpp } from "../properties.js";
+import { pickedMeshHandle } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import type { LoweringServices } from "../lowering-services.js";
@@ -354,7 +354,7 @@ function valueResource(
         dataType.handle === "mesh" &&
         value.kind === "picked-node"
     ) {
-        return pickedMeshHandleCpp(lowerer.context, value, node);
+        return pickedMeshHandle(lowerer.context, value, node).cpp;
     }
     if (
         dataType.kind === "handle" &&

@@ -85,8 +85,6 @@ const serviceNames = new Set([
     "fullscreenerror",
     "load",
     "DOMContentLoaded",
-    "gamepadconnected",
-    "gamepaddisconnected",
     "touchstart",
     "touchmove",
     "touchend",
@@ -104,6 +102,9 @@ const dragNames = new Set(["dragenter", "dragover", "dragleave", "drop"]);
 
 const keyboardNames = new Set(["keydown", "keyup"]);
 
+/** The Window's gamepad task source fires these (`pal_dom_gamepads.hpp`). */
+const gamepadNames = new Set(["gamepadconnected", "gamepaddisconnected"]);
+
 /** CSS transition events the UI projection sources. */
 const transitionNames = new Set(["transitionend"]);
 
@@ -116,6 +117,7 @@ export function isCustomDomEventName(type: string): boolean {
         !pointerNames.has(type) &&
         !serviceNames.has(type) &&
         !keyboardNames.has(type) &&
+        !gamepadNames.has(type) &&
         !transitionNames.has(type) &&
         !dragNames.has(type) &&
         type !== "storage" &&
@@ -124,12 +126,19 @@ export function isCustomDomEventName(type: string): boolean {
 }
 
 type DomListenerFamily =
-    "custom" | "keyboard" | "pointer" | "transition" | "drag" | "storage";
+    | "custom"
+    | "keyboard"
+    | "pointer"
+    | "transition"
+    | "drag"
+    | "storage"
+    | "gamepad";
 
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
     if (type === "storage") return "storage";
     if (keyboardNames.has(type)) return "keyboard";
+    if (gamepadNames.has(type)) return "gamepad";
     if (pointerNames.has(type)) return "pointer";
     if (transitionNames.has(type)) return "transition";
     if (dragNames.has(type)) return "drag";
@@ -144,6 +153,7 @@ export function elementDomHandlerFamily(
     return family === "custom" ||
         family === "transition" ||
         family === "storage" ||
+        family === "gamepad" ||
         type === "resize"
         ? undefined
         : family;
@@ -198,6 +208,11 @@ const DOM_CALLBACK_EVENTS = {
     // Read through the base Event view; TransitionEvent adds propertyName.
     transition: {
         cppType: "const bbl::PlatformTransitionEvent&",
+        kind: "platform-mouse-event",
+    },
+    // Read through the base Event view; GamepadEvent adds gamepad.
+    gamepad: {
+        cppType: "const bbl::PlatformGamepadEvent&",
         kind: "platform-mouse-event",
     },
 } as const;
@@ -448,7 +463,10 @@ function compileDomCallback(
         callback,
         { cppType: event.cppType, name },
         [
-            family === "transition" || family === "drag" || family === "storage"
+            family === "transition" ||
+            family === "drag" ||
+            family === "storage" ||
+            family === "gamepad"
                 ? valueForKind("platform-mouse-event", {
                       cpp: `bbl::js::BorrowedEvent(${name})`,
                       readOnly: true,
@@ -633,6 +651,10 @@ export function emitDomEventListener(
     const family =
         pageLifecycle || resourceLoad ? "pointer" : domListenerFamily(type);
     if (!family) return false;
+    if (family === "gamepad") {
+        if (!context.options.workers) throw new ApplicationRealmRequired();
+        context.reachFeature("input:gamepad", call);
+    }
     const custom = family === "custom";
     if (
         custom &&
@@ -664,6 +686,12 @@ export function emitDomEventListener(
         });
         return true;
     }
+    // Connections are those of the gamepads `navigator.getGamepads()` reads.
+    if (family === "gamepad")
+        context.emit({
+            kind: "expression",
+            code: `bbl::watch_dom_gamepads(${engine}, ${context.requireDefaultEngine(call)});`,
+        });
     const compiled = compileDomCallback(context, callback, family, engine);
     const { listener, options } = signalListener(
         context,

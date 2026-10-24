@@ -9136,6 +9136,48 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "async-functions-a-record-carries-re-enter-their-caller",
+    `
+    const log: string[] = [];
+    function drive(frame: () => void): () => void {
+        let disposed = false;
+        setTimeout(() => { if (!disposed) frame(); }, 0);
+        return () => { disposed = true; };
+    }
+    interface Nav { goToMenu: () => Promise<void>; restart?: () => Promise<void> }
+    async function build(nav: Nav, menu: boolean): Promise<() => void> {
+        await Promise.resolve();
+        log.push(menu ? "menu" : "race");
+        const exit = menu ? null : { hint: 1 };
+        return drive(() => {
+            if (exit) void nav.goToMenu();
+            else if (nav.restart) void nav.restart();
+        });
+    }
+    async function run(): Promise<void> {
+        let stop: (() => void) | null = null;
+        async function goToMenu(): Promise<void> {
+            stop?.();
+            stop = await build({ goToMenu }, true);
+        }
+        function race(): () => Promise<void> {
+            const start = async (): Promise<void> => {
+                stop?.();
+                stop = await build({ goToMenu, restart: start }, false);
+            };
+            return start;
+        }
+        await race()();
+        setTimeout(() => setTimeout(() => {
+            if (log.join(",") !== "race,menu") throw new Error(log.join(","));
+            globalThis.close();
+        }, 0), 0);
+    }
+    void run();
+`,
+);
+
 check(
     "defaulted-parameters-through-stored-method-views",
     `
