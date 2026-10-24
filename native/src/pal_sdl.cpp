@@ -286,7 +286,7 @@ void settle_renderer_failure(Engine& engine, const std::exception& error) {
 }
 #endif
 
-#if !BBLITE_WORKERS
+/** The backend's driver for `kind`, presenting to its window or an application realm's endpoint. */
 pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
     pal::SceneRun (*context)(Engine&) = nullptr;
     switch (kind) {
@@ -309,7 +309,8 @@ pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBack
         refuse_uncompiled_renderer(kind, backend);
     return context(engine);
 }
-#else
+
+#if BBLITE_WORKERS
 /** Rejects the first-frame promise, or reports a later failure as the realm's uncaught error. */
 void deliver_realm_frame_failure(js::Promise<js::PromiseVoid>& ready, std::exception_ptr failure) {
     if (ready.pending())
@@ -323,14 +324,15 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
     try {
         for (;;) {
             const auto kind = renderer_kind(*engine);
-            if (kind != RendererKind::scene)
-                throw std::runtime_error(std::string(renderer_name(kind)) +
-                                         " does not yet support realm animation tasks.");
+            // The engine holds a registered FrameGraphContext by address, and
+            // the realm entry that declares it returns at the first frame.
+            if (kind == RendererKind::frame_graph)
+                throw std::runtime_error(
+                    "A frame graph does not yet support realm animation tasks: the engine holds "
+                    "its registered FrameGraphContext by address, past the realm entry's return.");
             engine->renderer_restart_requested = false;
             const pal::GpuBackend& backend = pal::selected_gpu_backend();
-            if (!backend.run_scene)
-                refuse_uncompiled_renderer(kind, backend);
-            auto driver = backend.run_scene(*engine);
+            auto driver = run_renderer(*engine, kind, backend);
             driver.ready().observe(
                 [ready](const js::PromiseVoid&) { ready.resolve(js::PromiseVoid{}); },
                 [](std::exception_ptr) {}); // The finished result owns the error path below.
@@ -378,16 +380,11 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
 #endif
     for (;;) {
         const RendererKind kind = renderer_kind(engine);
-        if (pal::OffscreenRun::current()) {
-            if (kind != RendererKind::scene) {
-                throw std::runtime_error(
-                    "Offscreen presentation currently supports scene renderers only.");
-            }
 #if BBLITE_HAS_UI
+        if (pal::OffscreenRun::current())
             throw std::runtime_error(
                 "Offscreen presentation does not yet support a retained UI runtime.");
 #endif
-        }
         engine.renderer_restart_requested = false;
         try {
             auto renderer = run_renderer(engine, kind, pal::selected_gpu_backend());

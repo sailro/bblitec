@@ -744,11 +744,7 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         offscreen = OffscreenRun::current();
         if (offscreen) {
-            auto* shared = dynamic_cast<SdlOffscreenDevice*>(&offscreen->device());
-            if (!shared)
-                throw std::runtime_error("Offscreen surface does not own an SDL GPU device.");
-            state.device = shared->device;
-            state.owns_device = false;
+            bind_sdl_offscreen_device(*offscreen, state);
             sync_engine_canvas_size(nullptr, engine);
             if (!frame_options.screenshot_path.empty()) {
                 throw std::runtime_error("Capture offscreen output from its presentation host.");
@@ -778,7 +774,7 @@ public:
         }
         swapchain_format =
 #if BBLITE_OFFSCREEN_SURFACES
-            offscreen ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM :
+            offscreen ? sdl_offscreen_image_format :
 #endif
                       SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
 #if BBLITE_HAS_UI && !BBLITE_WORKERS

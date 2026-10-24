@@ -316,6 +316,7 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- A scene-less `FrameGraphContext` refuses in an application realm: the engine holds it by address.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which

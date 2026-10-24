@@ -156,11 +156,25 @@ struct SdlOffscreenDevice final : OffscreenDevice {
     const GpuAdapterInfo info;
 };
 
+/** The format of every image a producer publishes to its Window host. */
+inline constexpr SDL_GPUTextureFormat sdl_offscreen_image_format =
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+
+/** A producer renders on its Window host's shared device, which it never destroys. */
+inline void bind_sdl_offscreen_device(OffscreenRun& run, SdlGpuDevice& gpu) {
+    auto* shared = dynamic_cast<SdlOffscreenDevice*>(&run.device());
+    if (!shared)
+        throw std::runtime_error("Offscreen surface does not own an SDL GPU device.");
+    gpu.device = shared->device;
+    gpu.owns_device = false;
+    gpu.swapchain_format = sdl_offscreen_image_format;
+}
+
 struct SdlOffscreenImage final : OffscreenImage {
     SdlOffscreenImage(SDL_GPUDevice* owner, std::uint32_t width, std::uint32_t height)
         : device(owner),
           texture(create_frame_texture(
-              owner, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_SAMPLECOUNT_1, width, height,
+              owner, sdl_offscreen_image_format, SDL_GPU_SAMPLECOUNT_1, width, height,
               SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, 1, true)) {}
     ~SdlOffscreenImage() override { SDL_ReleaseGPUTexture(device, texture); }
     SDL_GPUDevice* device;

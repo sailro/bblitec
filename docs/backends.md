@@ -28,6 +28,7 @@ Both backends consume the same generated plans, layouts and uniform writers.
 | `pal_frame_conductor.hpp` | Frame phases for scene, sprite, effect and frame-graph drivers |
 | `pal_gpu_dispatch.hpp` | Per-backend entry points and Window presenter |
 | `pal_frame_session.hpp` (`RendererRun`) | Standalone input, clock, capture and benchmark phases |
+| `pal_<backend>_presentation.hpp` | Standalone drivers' window swapchain or application-realm canvas image |
 | `pal_gpu_frame.*`, `pal_gpu_images.*` | Scene-invariant run options, clocks, capture gates, texel packing, readback |
 | `pal_gpu_*.hpp` + `pal_gpu_shared.cpp` | Scene-shaped shared concerns, compiled once per build |
 | `pal_<backend>.cpp`, `pal_<backend>_scene.hpp` | Scene driver and state, `<backend>` = `sdl_gpu` or `dawn` |
