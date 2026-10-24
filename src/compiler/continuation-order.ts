@@ -22,7 +22,6 @@ import {
     calledOrigin,
     declarationOrigin,
     declaredSymbol,
-    libraryName,
     namedMember,
     resolvedSymbol,
 } from "./symbols.js";
@@ -42,6 +41,7 @@ import {
     type SupportedFunction,
 } from "./syntax.js";
 import { schedulerOf } from "./schedulers.js";
+import { PageNesting } from "./page-nesting.js";
 
 /*
  * The order code JavaScript defers runs in. An activation's code after it
@@ -59,6 +59,7 @@ type OrderContext = Pick<
     | "checker"
     | "evaluationOrder"
     | "libraryGlobal"
+    | "options"
     | "sourceFile"
     | "sourceFiles"
     | "symbols"
@@ -260,17 +261,27 @@ function isImmutableBinding(declaration: ts.Declaration): boolean {
     );
 }
 
-/** Elements that contain no other element: an event on another never reaches them. */
-const LEAF_ELEMENTS: ReadonlySet<string> = new Set([
-    "HTMLImageElement",
-    "HTMLInputElement",
-    "HTMLTextAreaElement",
-]);
+/** @unjournaled A whole-program analysis of compiler inputs, built on first use. */
+const pageNestings = new WeakMap<ts.TypeChecker, PageNesting>();
+
+/** Which page elements may sit inside which ({@link PageNesting}), once per program. */
+function pageNesting(context: OrderContext): PageNesting {
+    let nesting = pageNestings.get(context.checker);
+    if (!nesting) {
+        nesting = new PageNesting(
+            context.checker,
+            context.sourceFiles(),
+            context.options.nativeHostUi,
+        );
+        pageNestings.set(context.checker, nesting);
+    }
+    return nesting;
+}
 
 /**
  * Whether no event dispatched to the element `targetId` finds reaches a
- * listener of `other`: `other` is an element no element sits inside, found
- * by another id, so it is neither the target nor one of its ancestors.
+ * listener of `other`: an element found by another id that the page never
+ * puts around the target.
  */
 function unreachedTarget(
     context: OrderContext,
@@ -281,10 +292,7 @@ function unreachedTarget(
     return (
         targetId !== undefined &&
         otherId !== undefined &&
-        targetId !== otherId &&
-        LEAF_ELEMENTS.has(
-            libraryName(context.checker.getTypeAtLocation(other)) ?? "",
-        )
+        !pageNesting(context).mayContain(otherId, targetId)
     );
 }
 
