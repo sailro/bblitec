@@ -547,8 +547,18 @@ export interface AliasedMutationScan {
     readonly namesAlias: (node: ts.Node) => boolean;
     /** Whether any identifier in the subtree names a tracked alias. */
     readonly containsAlias: (node: ts.Node) => boolean;
+    /** Whether a symbol is tracked. */
+    readonly holds: (symbol: ts.Symbol) => boolean;
     /** Track one more alias; a new symbol queues another pass. */
     readonly addAlias: (symbol: ts.Symbol | undefined) => void;
+}
+
+/** The name of the function declaration a `return` leaves, if it has one. */
+export function returningFunctionName(
+    statement: ts.ReturnStatement,
+): ts.Identifier | undefined {
+    const owner = ts.findAncestor(statement.parent, ts.isFunctionLike);
+    return owner && ts.isFunctionDeclaration(owner) ? owner.name : undefined;
 }
 
 /** A native API that retains an object and writes it after the call returns. */
@@ -561,6 +571,69 @@ export function retainedNativeMutationTarget(
         symbols.importedName(node.expression) === "createPropertyAnimationGroup"
         ? node.arguments[1]
         : undefined;
+}
+
+/** A name one node binds to what an expression yields. */
+export interface AliasSite {
+    readonly name: ts.Identifier;
+    readonly source: ts.Expression;
+    /**
+     * What the name holds: the source's value (a declaration or an
+     * assignment), a member of it (a destructured leaf, an assigned pattern
+     * or loop target), an element it iterates (a declared loop name), or what
+     * a named function's `return` yields (its calls hold it).
+     */
+    readonly holds: "value" | "member" | "element" | "returned";
+}
+
+/** The names `node` binds to values: every alias an identity can gain there. */
+export function aliasSites(node: ts.Node): readonly AliasSite[] {
+    const sites: AliasSite[] = [];
+    if (ts.isReturnStatement(node) && node.expression) {
+        const owner = returningFunctionName(node);
+        if (owner)
+            sites.push({
+                name: owner,
+                source: node.expression,
+                holds: "returned",
+            });
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+        if (ts.isIdentifier(node.name))
+            sites.push({
+                name: node.name,
+                source: node.initializer,
+                holds: "value",
+            });
+        else
+            for (const leaf of bindingNameIdentifiers(node.name))
+                sites.push({
+                    name: leaf,
+                    source: node.initializer,
+                    holds: "member",
+                });
+    }
+    // `for (const v of source)` binds a member of the source.
+    if (
+        ts.isForOfStatement(node) &&
+        ts.isVariableDeclarationList(node.initializer)
+    )
+        for (const declaration of node.initializer.declarations)
+            for (const leaf of bindingNameIdentifiers(declaration.name))
+                sites.push({
+                    name: leaf,
+                    source: node.expression,
+                    holds: "element",
+                });
+    for (const { target, stored, from } of writeSites(node)) {
+        if (!ts.isIdentifier(target)) continue;
+        if (stored)
+            sites.push({ name: target, source: stored, holds: "value" });
+        // A pattern leaf takes a member of what the assignment reads.
+        else if (from)
+            sites.push({ name: target, source: from, holds: "member" });
+    }
+    return sites;
 }
 
 /**
@@ -576,12 +649,24 @@ export function retainedNativeMutationTarget(
  * `addAlias` (the object walk follows call arguments into parameters).
  * A walk that tracks members too says through `aliasingMember` which name
  * a destructuring binds out of `source` (`const { b } = record`,
- * `[, s] = values`) holds one.
+ * `[, s] = values`) holds one. A cross-file walk names its `files` and the
+ * files each new alias adds; `aliasingReturn` makes a named function whose
+ * `return` carries an alias one more alias (its calls hold the identity).
  */
 export function aliasedMutationScan(
     identifier: ts.Identifier,
     valueSymbol: (identifier: ts.Identifier) => ts.Symbol | undefined,
     walk: {
+        readonly files?: {
+            readonly initial: readonly ts.SourceFile[];
+            readonly referencing: (
+                symbol: ts.Symbol,
+            ) => readonly ts.SourceFile[];
+        };
+        readonly aliasingReturn?: (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ) => boolean;
         readonly aliasingInitializer: (
             initializer: ts.Expression,
             scan: AliasedMutationScan,
@@ -607,62 +692,42 @@ export function aliasedMutationScan(
     const initial = valueSymbol(identifier);
     if (!initial) return false;
     const aliases = new EmissionSet<ts.Symbol>([initial]);
-    const source = identifier.getSourceFile();
+    const files = new Set(walk.files?.initial ?? [identifier.getSourceFile()]);
     let changed = true;
     const scan: AliasedMutationScan = {
         namesAlias: (node) =>
             ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
         containsAlias: (node) => someAnalysisNode(node, scan.namesAlias),
+        holds: (symbol) => aliases.has(symbol),
         addAlias: (symbol) => {
             if (symbol && !aliases.has(symbol)) {
                 aliases.add(symbol);
                 changed = true;
+                for (const file of walk.files?.referencing(symbol) ?? [])
+                    files.add(file);
             }
         },
     };
+    const visit = (node: ts.Node): boolean => {
+        if (walk.mutates(node, scan)) return true;
+        for (const { name, source, holds } of aliasSites(node)) {
+            const aliasing =
+                holds === "value"
+                    ? walk.aliasingInitializer(source, scan)
+                    : holds === "member"
+                      ? walk.aliasingMember?.(source, name, scan)
+                      : holds === "element"
+                        ? walk.aliasingIteration?.(source, name, scan)
+                        : walk.aliasingReturn?.(source, scan);
+            if (aliasing) scan.addAlias(valueSymbol(name));
+        }
+        return false;
+    };
     while (changed) {
         changed = false;
-        const mutated = sourceFileNodes(source).some((node) => {
-            if (walk.mutates(node, scan)) return true;
-            if (ts.isVariableDeclaration(node) && node.initializer) {
-                if (ts.isIdentifier(node.name)) {
-                    if (walk.aliasingInitializer(node.initializer, scan))
-                        scan.addAlias(valueSymbol(node.name));
-                } else
-                    for (const leaf of bindingNameIdentifiers(node.name))
-                        if (walk.aliasingMember?.(node.initializer, leaf, scan))
-                            scan.addAlias(valueSymbol(leaf));
-            }
-            // `for (const v of source)` binds a member of the source.
-            if (
-                ts.isForOfStatement(node) &&
-                ts.isVariableDeclarationList(node.initializer)
-            )
-                for (const declaration of node.initializer.declarations)
-                    for (const leaf of bindingNameIdentifiers(declaration.name))
-                        if (
-                            walk.aliasingIteration?.(
-                                node.expression,
-                                leaf,
-                                scan,
-                            )
-                        )
-                            scan.addAlias(valueSymbol(leaf));
-            for (const { target, stored, from } of writeSites(node)) {
-                if (!ts.isIdentifier(target)) continue;
-                if (stored ? walk.aliasingInitializer(stored, scan) : false)
-                    scan.addAlias(valueSymbol(target));
-                // A pattern leaf takes a member of what the assignment reads.
-                else if (
-                    !stored &&
-                    from &&
-                    walk.aliasingMember?.(from, target, scan)
-                )
-                    scan.addAlias(valueSymbol(target));
-            }
-            return false;
-        });
-        if (mutated) return true;
+        // A file an alias adds joins this pass.
+        for (const file of files)
+            if (sourceFileNodes(file).some(visit)) return true;
     }
     return false;
 }

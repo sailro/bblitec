@@ -27,7 +27,6 @@ import {
 import {
     forEachAnalysisNode,
     someAnalysisNode,
-    sourceFileNodes,
 } from "./compiler/analysis-walk.js";
 import {
     emissionArray,
@@ -218,11 +217,10 @@ import {
 } from "./compiler/loop-control.js";
 import {
     isModuleInitializerStatement,
-    moduleContainerReferenceFiles,
-    moduleContainerSymbol,
     planEntryModuleState,
     planImportedModuleState,
 } from "./compiler/module-initializers.js";
+import { moduleConstantIsWritten } from "./compiler/module-container-writes.js";
 import {
     namespaceMemberName,
     refuseNamespaceMemberWrite,
@@ -235,10 +233,9 @@ import {
     ModuleNamespaces,
 } from "./compiler/module-namespaces.js";
 import { RecordProxies } from "./compiler/proxies.js";
-import { PropertyAccessLowerer, propertyRules } from "./compiler/properties.js";
+import { PropertyAccessLowerer } from "./compiler/properties.js";
 import {
     CompilerSymbols,
-    memberAccessors,
     staticAccessKey,
     declaredIn,
     declaredInDomLibrary,
@@ -269,7 +266,6 @@ import {
     retainedStaticText,
     StaticEvaluator,
 } from "./compiler/static-evaluator.js";
-import { programObservations } from "./compiler/program-observations.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
 import {
@@ -284,32 +280,25 @@ import {
 } from "./compiler/user-functions.js";
 import {
     callArgumentIsReadOnly,
-    libraryArgumentIsReadOnly,
     parameterIsReadOnly,
     parameterWrittenSlots,
 } from "./compiler/parameter-effects.js";
 import { promiseReactionOf } from "./compiler/promises.js";
 import { recordComponents } from "./compiler/record-components.js";
 import { recordFieldIsWritten } from "./compiler/record-observations.js";
-import {
-    parameterProjectionIsReadOnly,
-    visitMutableArgumentReferences,
-} from "./compiler/parameter-projection-effects.js";
+import { parameterProjectionIsReadOnly } from "./compiler/parameter-projection-effects.js";
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
-    bindingNameIdentifiers,
     heldIdentifiers,
     identifierText,
     isAssignmentExpression,
     isDeclaredInside,
     literalMember,
     isUpdateExpression,
-    propertyKey,
     sourceFunctionName,
     stringLiteralText,
     unwrappedIdentifier,
-    wrappedParent,
     writeSites,
     isValueReference,
     expressionHasEffects,
@@ -320,9 +309,7 @@ import {
     functionKind,
     isSupportedFunction,
     variableKind,
-    rootExpression,
     referenceBases,
-    unwrapExpression,
     keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
@@ -388,10 +375,6 @@ import { PlatformCalls } from "./compiler/platform-calls.js";
 import { emitSharedCell } from "./compiler/shared-cells.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
-import {
-    callResultCanHoldReceiver,
-    keptArguments,
-} from "./compiler/kept-values.js";
 
 export type {
     CompileAsset,
@@ -1035,13 +1018,6 @@ class Compiler implements LoweringServices {
         emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
-    /** @unjournaled `moduleConstantIsWritten` answers, a function of the program. */
-    private readonly writtenModuleConstants = new Map<ts.Symbol, boolean>();
-    /** @unjournaled Destination exposure depends only on the checked program. */
-    private readonly nativeValueExposure = new Map<
-        ts.Type,
-        Map<string, boolean>
-    >();
     /**
      * @unjournaled Only compared before and after one initializer's compile; a
      * discarded attempt can only over-count, which keeps a `const` a snapshot.
@@ -1590,7 +1566,7 @@ class Compiler implements LoweringServices {
      * runtime copy of every lookup table merely because it was imported.
      */
     private emitImportedModuleInitializers(): void {
-        const { modules, mutatedContainers } = planImportedModuleState(
+        const modules = planImportedModuleState(
             this.program,
             this.sourceFile,
             this.checker,
@@ -1598,7 +1574,6 @@ class Compiler implements LoweringServices {
             this.evaluationOrder,
             this.dynamicBindings.keys(),
         );
-        this.mutatedModuleContainers = mutatedContainers;
         if (modules.length === 0) return;
 
         const staticDeclarations = new Set<ts.VariableDeclaration>();
@@ -1695,9 +1670,7 @@ class Compiler implements LoweringServices {
         });
     }
 
-    /** @unjournaled Immutable source facts established before module declarations lower. */
-    private mutatedModuleContainers: ReadonlySet<ts.Symbol> = new Set();
-
+    /** Whether a module-scope container is written through anywhere. */
     public moduleContainerIsMutated(name: ts.Identifier): boolean {
         const declaration = name.parent;
         if (
@@ -1707,8 +1680,7 @@ class Compiler implements LoweringServices {
             !ts.isSourceFile(declaration.parent.parent.parent)
         )
             return false;
-        const symbol = this.symbols.valueSymbol(name);
-        return symbol !== undefined && this.mutatedModuleContainers.has(symbol);
+        return this.moduleConstantIsWritten(name);
     }
 
     /**
@@ -3059,376 +3031,9 @@ class Compiler implements LoweringServices {
         return written;
     }
 
-    /**
-     * Whether the program writes through a module constant: an assignment,
-     * an update or a mutating call through it, through a binding initialized
-     * from an expression that carries it, or through an iteration binding
-     * over one; or it hands one to a call that may write it. The scan covers
-     * the constant's file, and referencing files when it is exported. A binding
-     * carrying a copied scalar does not carry its source object's identity.
-     */
+    /** `moduleConstantIsWritten` over this compiler's program. */
     private moduleConstantIsWritten(name: ts.Identifier): boolean {
-        const symbol = this.symbols.valueSymbol(name);
-        const declaration = symbol?.declarations?.find(
-            ts.isVariableDeclaration,
-        );
-        if (!symbol || !declaration) return true;
-        const cached = this.writtenModuleConstants.get(symbol);
-        if (cached !== undefined) return cached;
-        const exported =
-            (ts.getCombinedModifierFlags(declaration) &
-                ts.ModifierFlags.Export) !==
-            0;
-        const files = exported
-            ? moduleContainerReferenceFiles(
-                  this.program,
-                  this.checker,
-                  this.symbols,
-                  symbol,
-              )
-            : [declaration.getSourceFile()];
-        const written = this.writesThroughBinding(files, symbol);
-        this.writtenModuleConstants.set(symbol, written);
-        return written;
-    }
-
-    /** A copied native value cannot expose its source identity when never read back. */
-    private unobservedNativeValueAssignment(
-        node: ts.BinaryExpression,
-    ): boolean {
-        const left = this.unwrap(node.left);
-        if (
-            node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-            !ts.isExpressionStatement(wrappedParent(node)) ||
-            !ts.isPropertyAccessExpression(left)
-        )
-            return false;
-        const ownerType = this.checker.getTypeAtLocation(left.expression);
-        const owner = pinnedHandleKind(ownerType);
-        const property = left.name.text;
-        if (
-            !propertyRules.some(
-                (rule) =>
-                    rule.owner === owner &&
-                    rule.property === property &&
-                    "value" in rule &&
-                    rule.value === "color4" &&
-                    rule.field !== undefined,
-            )
-        )
-            return false;
-        let byProperty = this.nativeValueExposure.get(ownerType);
-        if (!byProperty)
-            this.nativeValueExposure.set(
-                ownerType,
-                (byProperty = new Map<string, boolean>()),
-            );
-        const known = byProperty.get(property);
-        if (known !== undefined) return !known;
-        const observations = programObservations(this.program);
-        const exposed =
-            (observations.namedReads.get(property)?.length ?? 0) > 0 ||
-            observations.wholesaleReads.some((read) => {
-                const parent = read.parent;
-                if (
-                    ts.isElementAccessExpression(parent) &&
-                    parent.expression === read
-                ) {
-                    const key = this.checker.getTypeAtLocation(
-                        parent.argumentExpression,
-                    );
-                    const keys = unionMembers(key);
-                    if (
-                        keys.every(
-                            (member) =>
-                                member.isStringLiteral() &&
-                                member.value !== property,
-                        )
-                    )
-                        return false;
-                }
-                const type = this.checker.getTypeAtLocation(read);
-                return (
-                    (type.flags &
-                        (ts.TypeFlags.Any |
-                            ts.TypeFlags.Unknown |
-                            ts.TypeFlags.TypeParameter |
-                            ts.TypeFlags.IndexedAccess |
-                            ts.TypeFlags.Conditional |
-                            ts.TypeFlags.Substitution)) !==
-                        0 || this.checker.isTypeAssignableTo(ownerType, type)
-                );
-            });
-        byProperty.set(property, exposed);
-        return !exposed;
-    }
-
-    private writesThroughBinding(
-        initialFiles: readonly ts.SourceFile[],
-        symbol: ts.Symbol,
-    ): boolean {
-        const declaration = symbol.valueDeclaration;
-        const initializer =
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer
-                ? this.unwrap(declaration.initializer)
-                : undefined;
-        const scalarRecord =
-            initializer &&
-            ts.isObjectLiteralExpression(initializer) &&
-            (plainDataMembers(initializer)?.every(
-                (member) =>
-                    !typeCanCarryReference(
-                        this.checker.getTypeAtLocation(member.value),
-                    ),
-            ) ??
-                false);
-        const selectedRecordKeys =
-            scalarRecord &&
-            initializer &&
-            ts.isObjectLiteralExpression(initializer)
-                ? new Set(
-                      initializer.properties.flatMap((property) => {
-                          if (
-                              !ts.isPropertyAssignment(property) &&
-                              !ts.isShorthandPropertyAssignment(property)
-                          )
-                              return [];
-                          const key = propertyKey(property.name);
-                          return key === undefined ? [] : [key];
-                      }),
-                  )
-                : undefined;
-        const files = new Set(initialFiles);
-        const aliases = new Set([symbol]);
-        // Named helpers that return the constant: a call of one is the
-        // constant.
-        const returners = new Set<ts.Symbol>();
-        const returnsConstant = (call: ts.CallExpression): boolean => {
-            const callee = unwrapExpression(call.expression);
-            const called = ts.isIdentifier(callee)
-                ? this.symbols.valueSymbol(callee)
-                : undefined;
-            return called !== undefined && returners.has(called);
-        };
-        const names = (node: ts.Node): boolean => {
-            // A member chain rooted at a call reads that call's result.
-            const root = ts.isExpression(node) ? rootExpression(node) : node;
-            if (ts.isCallExpression(root) && returnsConstant(root)) return true;
-            const named =
-                ts.isIdentifier(node) ||
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node) ||
-                ts.isCallExpression(node)
-                    ? moduleContainerSymbol(node, this.checker, this.symbols)
-                    : undefined;
-            return named !== undefined && aliases.has(named);
-        };
-        // A function inside the expression reads the constant without
-        // handing it on; its own body is part of the walk.
-        const mentions = (expression: ts.Expression): boolean =>
-            someAnalysisNode(
-                expression,
-                (node) => {
-                    if (
-                        ts.isExpression(node) &&
-                        !typeCanCarryReference(
-                            this.checker.getTypeAtLocation(node),
-                        )
-                    )
-                        return "skip";
-                    if (ts.isCallExpression(node)) {
-                        // A function's result is not the function; a
-                        // method's can be its receiver or a member of it.
-                        let retained = ts.isIdentifier(
-                            unwrapExpression(node.expression),
-                        )
-                            ? returnsConstant(node)
-                            : callResultCanHoldReceiver(this.checker, node) &&
-                              someAnalysisNode(node.expression, names, {
-                                  functions: "skip",
-                              });
-                        node.arguments.forEach((_, index) => {
-                            visitMutableArgumentReferences(
-                                this.checker,
-                                node,
-                                index,
-                                (reference) => {
-                                    if (names(reference)) retained = true;
-                                },
-                                scalarRecord ? names : undefined,
-                                selectedRecordKeys,
-                            );
-                        });
-                        return retained ? true : "skip";
-                    }
-                    return names(node);
-                },
-                { functions: "skip" },
-            );
-        const writesArgument = (
-            call: ts.CallExpression,
-            index: number,
-        ): boolean => {
-            let written = false;
-            visitMutableArgumentReferences(
-                this.checker,
-                call,
-                index,
-                (reference) => {
-                    if (names(reference)) written = true;
-                },
-                scalarRecord ? names : undefined,
-                selectedRecordKeys,
-            );
-            return written;
-        };
-        let changed = true;
-        const addAlias = (aliased: ts.Symbol): void => {
-            if (aliases.has(aliased)) return;
-            aliases.add(aliased);
-            changed = true;
-            for (const file of moduleContainerReferenceFiles(
-                this.program,
-                this.checker,
-                this.symbols,
-                aliased,
-            ))
-                files.add(file);
-        };
-        const alias = (binding: ts.BindingName): void => {
-            for (const identifier of bindingNameIdentifiers(binding)) {
-                const aliased = this.symbols.valueSymbol(identifier);
-                if (aliased) addAlias(aliased);
-            }
-        };
-        while (changed) {
-            changed = false;
-            for (const file of files) {
-                const written = sourceFileNodes(file).some((node) => {
-                    if (
-                        ts.isReturnStatement(node) &&
-                        node.expression &&
-                        mentions(node.expression)
-                    ) {
-                        // A named helper can return a container holding the
-                        // identity. Follow its callers, including importing
-                        // files; a scalar record's certificate cannot follow
-                        // any other function's result.
-                        const owner = ts.findAncestor(
-                            node.parent,
-                            ts.isFunctionLike,
-                        );
-                        const returnedBy =
-                            owner &&
-                            ts.isFunctionDeclaration(owner) &&
-                            owner.name
-                                ? this.symbols.valueSymbol(owner.name)
-                                : undefined;
-                        if (returnedBy) {
-                            if (!returners.has(returnedBy)) {
-                                returners.add(returnedBy);
-                                changed = true;
-                            }
-                            addAlias(returnedBy);
-                        } else if (scalarRecord) return true;
-                    }
-                    // Stored or returned references can acquire aliases outside
-                    // this binding walk. A closed scalar-record certificate must
-                    // not use its initializer after that identity escapes.
-                    if (
-                        scalarRecord &&
-                        ((isAssignmentExpression(node) &&
-                            mentions(node.right) &&
-                            !(
-                                names(this.unwrap(node.right)) &&
-                                this.unobservedNativeValueAssignment(node)
-                            )) ||
-                            ((ts.isThrowStatement(node) ||
-                                ts.isExportAssignment(node)) &&
-                                node.expression !== undefined &&
-                                mentions(node.expression)) ||
-                            (ts.isArrowFunction(node) &&
-                                !ts.isBlock(node.body) &&
-                                mentions(node.body)) ||
-                            ((ts.isParameter(node) ||
-                                ts.isPropertyDeclaration(node)) &&
-                                node.initializer !== undefined &&
-                                mentions(node.initializer)))
-                    )
-                        return true;
-                    if (
-                        ts.isVariableDeclaration(node) &&
-                        node.initializer &&
-                        mentions(node.initializer)
-                    )
-                        alias(node.name);
-                    if (
-                        ts.isForOfStatement(node) &&
-                        ts.isVariableDeclarationList(node.initializer) &&
-                        mentions(node.expression)
-                    )
-                        for (const iterated of node.initializer.declarations)
-                            alias(iterated.name);
-                    // `view = M`, `view ??= M`, a pattern leaf or a loop target:
-                    // the name holds what it receives.
-                    for (const { target, stored, from } of writeSites(node)) {
-                        const source = stored ?? from;
-                        if (
-                            ts.isIdentifier(target) &&
-                            source &&
-                            mentions(source)
-                        )
-                            alias(target);
-                    }
-                    return (
-                        // The alias walk can stop at a getter's scalar result,
-                        // but evaluating that getter may still mutate its owner.
-                        ((ts.isPropertyAccessExpression(node) ||
-                            ts.isElementAccessExpression(node)) &&
-                            mentions(node.expression) &&
-                            memberAccessors(this.checker, node, "get").length >
-                                0 &&
-                            this.evaluationOrder.writesStorage(node)) ||
-                        writesThroughTrackedRoot(
-                            node,
-                            (callee) => namedMember(this.checker, callee),
-                            // Assigning an alias name rebinds the name; the
-                            // object it held is unchanged.
-                            (target, via) => {
-                                const written = this.unwrap(target);
-                                return via === "assignment" &&
-                                    ts.isIdentifier(written)
-                                    ? this.symbols.valueSymbol(written) ===
-                                          symbol
-                                    : names(written);
-                            },
-                            undefined,
-                            this.checker,
-                            this.program.getSourceFiles(),
-                        ) ||
-                        (ts.isCallExpression(node) &&
-                            node.arguments.some(
-                                (argument, index) =>
-                                    mentions(argument) &&
-                                    !libraryArgumentIsReadOnly(
-                                        this.checker,
-                                        node,
-                                        index,
-                                    ) &&
-                                    writesArgument(node, index),
-                            )) ||
-                        // The constant, or a member of it, kept past the call
-                        // (a construction, a storing call) is written through
-                        // its new owner.
-                        keptArguments(this.checker, node).some(mentions)
-                    );
-                });
-                if (written) return true;
-            }
-        }
-        return false;
+        return moduleConstantIsWritten(this, name);
     }
 
     /**

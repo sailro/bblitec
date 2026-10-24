@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { moduleContainerReferenceFiles } from "../src/compiler/module-initializers.js";
+import { moduleContainerReferenceFiles } from "../src/compiler/module-container-writes.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 import {

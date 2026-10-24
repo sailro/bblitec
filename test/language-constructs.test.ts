@@ -14954,6 +14954,31 @@ test("imported containers written through a destructured or exported alias are w
     await executeGeneratedAssertions(t, "imported-container-aliases", cpp);
 });
 
+// A module container a function keeps is written through its new holder;
+// one a function only reads stays a constant.
+check(
+    "module-containers-kept-by-a-function-are-written-through-the-holder",
+    `
+    const ITEMS: number[] = [1, 2];
+    const CONFIG = { size: 1 };
+    const CODES = new Set(["a", "b"]);
+    const holder: { list: number[] } = { list: [] };
+    const slots: { size: number }[] = [];
+    function keep(list: number[]): void { holder.list = list; }
+    function register(config: { size: number }): void { slots.push(config); }
+    function anyIn(codes: Set<string>, key: string): boolean {
+        for (const code of codes) if (code === key) return true;
+        return false;
+    }
+    keep(ITEMS);
+    holder.list.push(3);
+    register(CONFIG);
+    slots[0]!.size = 7;
+    if (ITEMS.length !== 3 || CONFIG.size !== 7) throw new Error("kept " + ITEMS.length + " " + CONFIG.size);
+    if (!anyIn(CODES, "b") || anyIn(CODES, "z")) throw new Error("read-only set");
+`,
+);
+
 check(
     "functions-run-on-a-receiver-they-are-handed",
     `

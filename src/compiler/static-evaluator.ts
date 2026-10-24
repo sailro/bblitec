@@ -69,13 +69,19 @@ import {
     staticNumberValue,
     type StaticFoldContext,
 } from "./option-helpers.js";
-import { resolveFunctionDeclaration } from "./user-functions.js";
+import {
+    aliasedMutationScan,
+    resolveFunctionDeclaration,
+    type AliasedMutationScan,
+} from "./user-functions.js";
+import { literalHeldValues } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
     excludesObjectColour,
     isNullable,
     stringPlusOperands,
+    typeCanCarryReference,
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -90,10 +96,11 @@ import {
     hasNonNullAssertion,
     unwrapExpression,
     argumentAt,
+    isMemberAccess,
+    referenceBases,
     soleReturnedExpression,
     isTypeAssertion,
     wrappersUnder,
-    rootExpression,
     writeSites,
     expressionHasEffects,
     functionKind,
@@ -1639,7 +1646,8 @@ export class StaticEvaluator {
     }
 
     /**
-     * Whether anything in the binding's scope writes through it.
+     * Whether anything writes through the binding or a name holding its
+     * object or a member of it (`aliasedMutationScan`).
      *
      * `const` freezes the BINDING, not the object: `const p = {n: 1}`
      * followed by `p.n = 2`, `p.n++`, `delete p.n` or `reset(p)` all leave
@@ -1661,44 +1669,51 @@ export class StaticEvaluator {
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
     public isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
-        const symbol = ts.isIdentifier(declaration.name)
-            ? declaredSymbol(this.checker, declaration.name)
-            : undefined;
-        if (symbol === undefined) {
-            return true;
-        }
-        let scope: ts.Node = declaration;
-        while (scope.parent && !ts.isFunctionLike(scope)) {
-            scope = scope.parent;
-        }
-        const namesBinding = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) &&
-            declaredSymbol(this.checker, node) === symbol;
+        if (!ts.isIdentifier(declaration.name)) return true;
+        // A name holding the object or a member of it: the binding, an
+        // alias, a destructured or iterated leaf, a literal holding one.
+        const holds = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean =>
+            typeCanCarryReference(this.checker.getTypeAtLocation(expression)) &&
+            (referenceBases(expression).some(scan.namesAlias) ||
+                literalHeldValues(expression).some((value) =>
+                    holds(value, scan),
+                ));
         // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
-        const throughBinding = (expression: ts.Expression): boolean => {
+        const throughAlias = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
             const target = unwrapExpression(expression);
             return (
-                (ts.isPropertyAccessExpression(target) ||
-                    ts.isElementAccessExpression(target)) &&
-                namesBinding(rootExpression(target))
+                isMemberAccess(target) &&
+                referenceBases(target).some(scan.namesAlias)
             );
         };
-
-        const written = someAnalysisNode(scope, (node) => {
-            if (writeSites(node).some(({ target }) => throughBinding(target)))
-                return true;
-            if (!ts.isCallExpression(node)) return false;
-            if (throughBinding(node.expression)) return true;
-            return (
-                node.arguments.some(
-                    (argument) =>
-                        namesBinding(unwrapExpression(argument)) ||
-                        throughBinding(argument),
-                ) && this.callReachesABody(node)
-            );
-        });
-
-        return written;
+        return aliasedMutationScan(
+            declaration.name,
+            (identifier) => declaredSymbol(this.checker, identifier),
+            {
+                aliasingInitializer: holds,
+                aliasingMember: (source, _leaf, scan) => holds(source, scan),
+                aliasingIteration: (source, _leaf, scan) => holds(source, scan),
+                mutates: (node, scan) =>
+                    writeSites(node).some(({ target }) =>
+                        throughAlias(target, scan),
+                    ) ||
+                    (ts.isCallExpression(node) &&
+                        (throughAlias(node.expression, scan) ||
+                            (node.arguments.some(
+                                (argument) =>
+                                    scan.namesAlias(
+                                        unwrapExpression(argument),
+                                    ) || throughAlias(argument, scan),
+                            ) &&
+                                this.callReachesABody(node)))),
+            },
+        );
     }
 
     /**

@@ -1227,7 +1227,6 @@ test("an access's accessors are read through memberAccessors", () => {
         "src/compiler/symbols.ts",
     ]);
     for (const path of [
-        "src/compiler.ts",
         "src/compiler/canvas-instrumentation.ts",
         "src/compiler/classes.ts",
         "src/compiler/concrete-argument-identities.ts",
@@ -1237,6 +1236,7 @@ test("an access's accessors are read through memberAccessors", () => {
         "src/compiler/evaluation-order.ts",
         "src/compiler/expressions.ts",
         "src/compiler/function-specializations.ts",
+        "src/compiler/module-container-writes.ts",
         "src/compiler/native-inert-calls.ts",
         "src/compiler/parameter-projection-effects.ts",
         "src/compiler/resource-loops.ts",

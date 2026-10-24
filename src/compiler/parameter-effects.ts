@@ -1308,16 +1308,28 @@ export function libraryCallMayWriteArgument(
     );
 }
 
-/** Whether a default-library call leaves its argument at `index` unwritten. */
-export function libraryArgumentIsReadOnly(
+/**
+ * Whether a call leaves the object it is handed at `index` as it was: the
+ * library table says it reads it, engine bodies write nothing through the
+ * parameter (positive evidence; what the engine keeps is `keptArguments`'
+ * question), or program bodies only read it (`onlyRead`: no write, and
+ * nothing keeps it past the call).
+ */
+export function callLeavesArgumentIntact(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
 ): boolean {
-    return (
-        callTarget(checker, call).kind === "library" &&
-        libraryArgumentEffect(checker, call, index) === "reads"
-    );
+    const target = callTarget(checker, call);
+    return target.kind === "library"
+        ? libraryArgumentEffect(checker, call, index) === "reads"
+        : target.kind === "bodies" &&
+              everyArgumentBody(
+                  call,
+                  target,
+                  index,
+                  target.engine ? parameterIsReadOnly : onlyRead,
+              );
 }
 
 /**

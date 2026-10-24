@@ -25,8 +25,8 @@ import { readOnlyDataMethods } from "./receiver-methods.js";
 import { callWritesReceiver } from "./parameter-effects.js";
 import {
     outermostWrapper,
+    referenceBases,
     regularExpressionParts,
-    rootIdentifier,
     unwrapExpression,
     writeSites,
     referenceSite,
@@ -43,6 +43,8 @@ import {
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import { valueKindOf } from "./type-facts.js";
 import { bindingRebinds, fileRebinds } from "./binding-rebinds.js";
+import { literalHeldValues } from "./kept-values.js";
+import { aliasSites } from "./user-functions.js";
 
 type Context = Pick<
     LoweringServices,
@@ -359,20 +361,30 @@ function sourceGraph(
         // Native object mutations do not mutate the containing authored record.
         if (isLibraryObject(checker, type)) return;
         const from = resolvedSymbol(checker, target);
-        const root = rootIdentifier(source);
-        const to = root && resolvedSymbol(checker, root);
-        if (from && to) {
+        if (!from) return;
+        // Every binding the source's value can come from: a selection's
+        // operands, and what a literal holds.
+        const roots = (value: ts.Expression): ts.Identifier[] => [
+            ...referenceBases(value).filter(ts.isIdentifier),
+            ...literalHeldValues(value).flatMap(roots),
+        ];
+        for (const root of roots(source)) {
+            const to = resolvedSymbol(checker, root);
+            if (!to) continue;
             const targets = aliases.get(from) ?? new Set<ts.Symbol>();
             targets.add(to);
             aliases.set(from, targets);
         }
     };
+    // Every binding a write can reach: a selection writes through each operand.
     const mutate = (expression: ts.Expression): void => {
-        const root = rootIdentifier(expression);
-        const symbol = root && resolvedSymbol(checker, root);
-        if (symbol) {
-            mutated.add(symbol);
-            otherwiseMutated.add(symbol);
+        for (const root of referenceBases(expression)) {
+            const symbol =
+                ts.isIdentifier(root) && resolvedSymbol(checker, root);
+            if (symbol) {
+                mutated.add(symbol);
+                otherwiseMutated.add(symbol);
+            }
         }
     };
     const recordCall = (
@@ -401,12 +413,15 @@ function sourceGraph(
                         declaration && functionOfDeclaration(declaration);
                     if (used) escaped.add(used);
                 }
+                // A name a declaration, pattern, loop or assignment binds
+                // holds what it reads.
+                for (const { name, source, holds } of aliasSites(node))
+                    if (holds !== "returned") alias(name, source);
                 if (
                     ts.isVariableDeclaration(node) &&
                     ts.isIdentifier(node.name) &&
                     node.initializer
                 ) {
-                    alias(node.name, node.initializer);
                     const registry = mapRegistry(checker, node);
                     const symbol =
                         registry && resolvedSymbol(checker, node.name);
