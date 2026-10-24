@@ -22,6 +22,7 @@ import { isSymbolPropertyKey } from "./symbols.js";
 import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
+import { defineDevicePixelRatio } from "./device-pixel-ratio.js";
 import { callableRecordValue } from "./callable-records.js";
 import {
     compileCollectionEntries,
@@ -61,6 +62,7 @@ type ObjectStaticContext = Pick<
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
+    | "options"
     | "fail"
     | "emitUiDatasetProperty"
     | "emitUiStyleValue"
@@ -1136,11 +1138,13 @@ interface PropertyDefinition {
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
 
+/** `existing`: the target already has an enumerable property, which an omitted `enumerable` keeps. */
 function propertyDefinition(
     context: ObjectStaticContext,
     operation: DefinitionOperation,
     key: string,
     expression: ts.Expression,
+    existing = false,
 ): PropertyDefinition {
     const refuse = (message: string): never =>
         context.fail(expression, `Object.${operation} ${message}`);
@@ -1206,9 +1210,14 @@ function propertyDefinition(
             return refuse(
                 "requires an accessor getter; setter-only descriptors are not represented.",
             );
-        if (!attributes.has("enumerable") || !attributes.has("configurable"))
+        if (
+            (!existing && !attributes.has("enumerable")) ||
+            !attributes.has("configurable")
+        )
             return refuse(
-                "requires enumerable true and an explicit boolean configurable attribute for accessors.",
+                existing
+                    ? "requires an explicit boolean configurable attribute for accessors."
+                    : "requires enumerable true and an explicit boolean configurable attribute for accessors.",
             );
     } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
@@ -1443,21 +1452,98 @@ function applyPropertyDefinitions(
     return target;
 }
 
+/** A Window realm's global object, whose host properties a definition replaces. */
+function isRealmGlobalObject(
+    context: ObjectStaticContext,
+    expression: ts.Expression,
+): boolean {
+    const workers = context.options.workers;
+    return (
+        workers !== undefined &&
+        !workers.namespace &&
+        ["globalThis", "window", "self"].includes(
+            context.libraryGlobal(context.unwrap(expression)) ?? "",
+        )
+    );
+}
+
+/** Evaluate every getter, then redefine the global's represented host properties in order. */
+function applyGlobalDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+    definitions: readonly PropertyDefinition[],
+): Value {
+    const applied = definitions.map((definition) => {
+        const refuse = (message: string): never =>
+            context.fail(definition.node, `Object.${operation} ${message}`);
+        if (definition.key !== "devicePixelRatio")
+            return refuse(
+                `on the global object represents only 'devicePixelRatio', not '${definition.key}'.`,
+            );
+        const getter = definition.members.find(
+            (member) => member.name === "get",
+        );
+        if (definition.setter || getter?.name !== "get")
+            return refuse(
+                "defines the global devicePixelRatio only with a getter.",
+            );
+        if (functionUsesDynamicThis(getter.callback))
+            return refuse(
+                "does not represent a devicePixelRatio getter that reads 'this'.",
+            );
+        const name = context.allocateTemporaryCppName("defined_property");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name,
+            initializer: context.compileStoredDataFunction(getter.callback, {
+                kind: "function",
+                parameters: [],
+                result: { kind: "number" },
+            }),
+        });
+        return defineDevicePixelRatio(name, definition.configurable);
+    });
+    for (const code of applied) context.emit({ kind: "expression", code });
+    return ts.isExpressionStatement(call.parent)
+        ? { kind: "void", cpp: "" }
+        : context.compileValue(argumentAt(call, 0));
+}
+
 function compileObjectDefineProperty(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 3, 3);
-    const target = definitionTarget(context, call, "defineProperty");
+    const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const target = global
+        ? undefined
+        : definitionTarget(context, call, "defineProperty");
     const key = context.compileValue(argumentAt(call, 1)).staticString;
     if (key === undefined)
         return context.fail(
             call,
             "Object.defineProperty needs a property key known at generation.",
         );
-    return applyPropertyDefinitions(context, call, "defineProperty", target, [
-        propertyDefinition(context, "defineProperty", key, argumentAt(call, 2)),
-    ]);
+    const definitions = [
+        propertyDefinition(
+            context,
+            "defineProperty",
+            key,
+            argumentAt(call, 2),
+            global,
+        ),
+    ];
+    return target
+        ? applyPropertyDefinitions(
+              context,
+              call,
+              "defineProperty",
+              target,
+              definitions,
+          )
+        : applyGlobalDefinitions(context, call, "defineProperty", definitions);
 }
 
 function compileObjectDefineProperties(
@@ -1465,7 +1551,10 @@ function compileObjectDefineProperties(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const target = definitionTarget(context, call, "defineProperties");
+    const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const target = global
+        ? undefined
+        : definitionTarget(context, call, "defineProperties");
     const descriptors = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(descriptors))
         return context.fail(
@@ -1493,9 +1582,17 @@ function compileObjectDefineProperties(
                 "defineProperties",
                 key,
                 property.initializer,
+                global,
             ),
         );
     }
+    if (!target)
+        return applyGlobalDefinitions(
+            context,
+            call,
+            "defineProperties",
+            definitions,
+        );
     return applyPropertyDefinitions(
         context,
         call,

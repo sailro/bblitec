@@ -6277,6 +6277,22 @@ class Compiler implements LoweringServices {
         return this.returnFrames.some((frame) => frame.kind === "native");
     }
 
+    /**
+     * Whether a function expression evaluated here mints one function object
+     * per run-time evaluation: in a loop, a native function body, or on a
+     * shared class instance (one per construction).
+     */
+    public isFunctionEvaluationRepeated(
+        lexicalThis: Value | undefined,
+    ): boolean {
+        return (
+            this.isInRuntimeIteration() ||
+            this.isInNativeFunctionBody() ||
+            (lexicalThis?.dataType?.kind === "struct" &&
+                this.dataTypes.isClassStruct(lexicalThis.dataType.name))
+        );
+    }
+
     public isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean {
         const container = callbackClosureContainer(declaration);
         return (
@@ -7017,6 +7033,43 @@ class Compiler implements LoweringServices {
         return this.defaultEngineCpp;
     }
 
+    /**
+     * @journaled The engine binding every store so far put in a struct's engine
+     * field (`Struct.field`), or undefined once two stores disagree.
+     */
+    private readonly engineSlots = new EmissionMap<
+        string,
+        symbol | undefined
+    >();
+    /** @journaled Engine fields an implicit resource constructor relied on. */
+    private readonly reliedEngineSlots = new EmissionSet<string>();
+
+    /** Records the engine binding (none: unknown) one store puts in a struct's engine field. */
+    public noteEngineSlot(
+        slot: string,
+        identity: symbol | undefined,
+        node: ts.Node,
+    ): void {
+        if (!this.engineSlots.has(slot)) {
+            this.engineSlots.set(slot, identity);
+            return;
+        }
+        if (this.engineSlots.get(slot) === identity) return;
+        if (this.reliedEngineSlots.has(slot))
+            this.fail(
+                node,
+                "An engine field stores another engine than the one an earlier implicit resource constructor took from it.",
+            );
+        this.engineSlots.set(slot, undefined);
+    }
+
+    /** The engine binding every store put in a struct's engine field. */
+    private engineSlotIdentity(slot: string): symbol | undefined {
+        const identity = this.engineSlots.get(slot);
+        if (identity) this.reliedEngineSlots.add(slot);
+        return identity;
+    }
+
     /** Explicit engine parameters and their record fields supply a native body's
      * implicit resource context, without changing the entry's engine binding. */
     private scopedEngineContexts(): { engine: Value; owner: Value }[] {
@@ -7033,10 +7086,16 @@ class Compiler implements LoweringServices {
             cpp: string,
             owner: Value,
             known: Value | undefined,
+            slot?: string,
         ): void => {
             if (type.kind === "handle" && type.handle === "engine") {
                 const engine = `(*${cpp})`;
-                candidates.set(known?.engineIdentity ?? engine, {
+                const identity =
+                    known?.engineIdentity ??
+                    (slot === undefined
+                        ? undefined
+                        : this.engineSlotIdentity(slot));
+                candidates.set(identity ?? engine, {
                     engine: this.dataLowerer.leafValue(cpp, type),
                     owner,
                 });
@@ -7061,6 +7120,7 @@ class Compiler implements LoweringServices {
                             field.readOnly
                                 ? known?.recordProperties?.[field.sourceName]
                                 : undefined,
+                            `${type.name}.${field.name}`,
                         );
                 }
             } finally {
@@ -9389,12 +9449,7 @@ class Compiler implements LoweringServices {
                           cpp: "",
                       }),
                       ...this.captureRecordScopes(),
-                      ...(this.isInRuntimeIteration() ||
-                      this.isInNativeFunctionBody() ||
-                      (lexicalThis?.dataType?.kind === "struct" &&
-                          this.dataTypes.isClassStruct(
-                              lexicalThis.dataType.name,
-                          ))
+                      ...(this.isFunctionEvaluationRepeated(lexicalThis)
                           ? {
                                 repeatedCallbackEvaluation: true as const,
                             }

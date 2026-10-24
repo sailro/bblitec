@@ -105,7 +105,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Canvas2D
 
 Backing dimensions, scale, full clear, fillRect/strokeRect, bounded paths, putImageData, destination-rect drawImage,
-bounded fillText. Offscreen pixels are premultiplied RGBA; closed producers can bake `getImageData`. Partial clear,
+bounded fillText. A canvas kept in a record, container or class field, and a 2D context kept in a class field, keep
+their roles. Offscreen pixels are premultiplied RGBA; closed producers can bake `getImageData`. Partial clear,
 source-rect blits, general transforms/clipping and non-convex tessellation refuse.
 
 ## CSS

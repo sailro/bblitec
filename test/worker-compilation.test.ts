@@ -384,7 +384,7 @@ test("Window metrics select the native host without static host markup", () => {
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.ok(result.manifest.features.includes("ui:rml"));
     assert.match(result.cpp, /run_window_application/);
-    assert.match(result.cpp, /window_device_pixel_ratio/);
+    assert.match(result.cpp, /realm_device_pixel_ratio\(\)/);
     assert.match(result.cpp, /window_viewport_size\(\).width/);
     assert.match(result.cpp, /window_viewport_size\(\).height/);
     assert.match(result.cpp, /window_screen_metrics\(\).available_width/);

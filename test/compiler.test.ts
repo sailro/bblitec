@@ -12617,33 +12617,38 @@ test("keeps the packaged success arm of a nullable retained-canvas factory", () 
 });
 
 test("does not erase an application condition from a retained-canvas factory", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                class OptionalHud {
-                    private readonly canvas: HTMLCanvasElement;
+    const result = compileSource(`
+        class OptionalHud {
+            private readonly canvas: HTMLCanvasElement;
 
-                    private constructor() {
-                        this.canvas = document.createElement("canvas");
-                    }
+            private constructor() {
+                this.canvas = document.createElement("canvas");
+            }
 
-                    static async create(enabled: boolean): Promise<OptionalHud | null> {
-                        try {
-                            if (!enabled) return null;
-                            return new OptionalHud();
-                        } catch {
-                            return null;
-                        }
-                    }
-
-                    static async run(): Promise<void> {
-                        await OptionalHud.create(true);
-                    }
+            static async create(enabled: boolean): Promise<OptionalHud | null> {
+                try {
+                    if (!enabled) return null;
+                    return new OptionalHud();
+                } catch {
+                    return null;
                 }
+            }
 
-                void OptionalHud.run();
-            `),
-        /outside the native data model/,
+            static async run(): Promise<void> {
+                const hud = await OptionalHud.create(Math.random() > 0.5);
+                if (hud) globalThis.close();
+            }
+        }
+
+        void OptionalHud.run();
+    `);
+    assert.match(
+        result.cpp,
+        /if \(!\(v_fn\d+_enabled\)\) \{\s*co_return bblscene::OptionalHud\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /->canvas = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
     );
 });
 

@@ -25,6 +25,7 @@ import { NumericSlotStorageRequired } from "./numeric-slot-storage.js";
 import { EnumArrayStorageRequired } from "./enum-array-storage.js";
 import { EnumRecordStorageRequired } from "./enum-record-storage.js";
 import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
+import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
@@ -41,7 +42,8 @@ type StorageDemand =
     | NumericSlotStorageRequired
     | EnumArrayStorageRequired
     | EnumRecordStorageRequired
-    | ThrownValueStorageRequired;
+    | ThrownValueStorageRequired
+    | SharedClassStorageRequired;
 
 export function storageRequest(error: StorageDemand): StorageRequest {
     if (error instanceof DynamicBindingStorageRequired)
@@ -82,6 +84,8 @@ export function storageRequest(error: StorageDemand): StorageRequest {
         return { kind: "enum-record", schema: error.schema };
     if (error instanceof ThrownValueStorageRequired)
         return { kind: "thrown-value", valueKind: error.kind };
+    if (error instanceof SharedClassStorageRequired)
+        return { kind: "shared-class", declaration: error.declaration };
     return { kind: "generic", demand: error.demand };
 }
 
@@ -98,7 +102,8 @@ export function isStorageDemand(error: unknown): error is StorageDemand {
         error instanceof NumericSlotStorageRequired ||
         error instanceof EnumArrayStorageRequired ||
         error instanceof EnumRecordStorageRequired ||
-        error instanceof ThrownValueStorageRequired
+        error instanceof ThrownValueStorageRequired ||
+        error instanceof SharedClassStorageRequired
     );
 }
 
@@ -227,7 +232,8 @@ function independentDemand(
         return independentGenericCall(context, statement, error);
     return !(
         error instanceof DynamicBindingStorageRequired ||
-        error instanceof NativeRecordStorageRequired
+        error instanceof NativeRecordStorageRequired ||
+        error instanceof SharedClassStorageRequired
     );
 }
 
