@@ -79,3 +79,64 @@ test("an awaited erased browser promise suspends once and settles to its erased 
         );
     });
 });
+
+test("an erased browser value an awaited declaration binds still suspends once per await in the application realm", async (t) => {
+    // The declaration's initializer erases; its awaits still take their
+    // turns, so the ticker interleaves as in JavaScript.
+    const source = `
+        const order: string[] = [];
+        async function query(): Promise<void> {
+            order.push("q0");
+            const estimate = await navigator.storage.estimate();
+            order.push("q1");
+            const again = await navigator.storage.estimate();
+            order.push("q2");
+        }
+        async function tick(): Promise<void> {
+            order.push("t0");
+            await null;
+            order.push("t1");
+            await null;
+            order.push("t2");
+        }
+        void (async () => {
+            const both = [query(), tick()];
+            order.push("caller");
+            await Promise.all(both);
+            if (order.join(",") !== "q0,t0,caller,q1,t1,q2,t2") throw new Error(order.join(","));
+            globalThis.close();
+        })();
+    `;
+    let closed = false;
+    const context = createContext({ close: () => (closed = true) });
+    runInContext(
+        `globalThis.navigator = { storage: { estimate: () => Promise.resolve({}) } };`,
+        context,
+    );
+    runInContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+        context,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(closed, true);
+    const result = compileSource(source);
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "async/erased-awaited-declarations",
+            result.cpp,
+            {
+                flags: ["/DBBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+});

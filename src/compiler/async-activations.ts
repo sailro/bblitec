@@ -100,6 +100,11 @@ export class AsyncActivations {
         return undefined;
     }
 
+    /** See {@link AsyncLowerer.emitErasedSuspensions}. */
+    public emitErasedSuspensions(node: ts.Node): void {
+        this.context.asyncLowerer.emitErasedSuspensions(node);
+    }
+
     public compileSynchronousPromise(node: ts.NewExpression): Value {
         return this.context.asyncLowerer.compileSynchronousConstructor(node);
     }

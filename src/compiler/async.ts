@@ -45,7 +45,11 @@ import {
     withKindValueFacts,
     type Value,
 } from "./types.js";
-import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import {
+    findAnalysisNode,
+    forEachAnalysisNode,
+    someAnalysisNode,
+} from "./analysis-walk.js";
 import {
     dataTypesEqual,
     propertyIsReadOnly,
@@ -200,6 +204,30 @@ export class AsyncLowerer {
             return "bbl::js::PromiseVoid{}";
         }
         return convert(value, type, expression);
+    }
+
+    /**
+     * Code erasure drops still suspends where JavaScript would: one turn per
+     * `await` it holds, as an erased void await takes. Outside a realm
+     * activation nothing suspends.
+     */
+    emitErasedSuspensions(node: ts.Node): void {
+        if (!this.depth) return;
+        forEachAnalysisNode(
+            node,
+            (child) => {
+                if (!ts.isAwaitExpression(child)) return;
+                this.context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: this.context.allocateTemporaryCppName("erased_await"),
+                    initializer:
+                        "co_await bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+                    attributes: "[[maybe_unused]] ",
+                });
+            },
+            { functions: "skip", types: "skip" },
+        );
     }
 
     compile(expression: ts.Expression): Value | undefined {

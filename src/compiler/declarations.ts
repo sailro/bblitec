@@ -192,6 +192,7 @@ interface DeclarationContext
             | "symbols"
             | "takeNativeTemporary"
             | "varBindings"
+            | "asyncActivations"
             | "withRecordScopes"
         > {
     /** The engine the entry created, once it has. */
@@ -1023,6 +1024,9 @@ export class DeclarationLowerer {
                     declaration.name,
                 )
             )) {
+                this.context.asyncActivations.emitErasedSuspensions(
+                    declaration.initializer,
+                );
                 this.context.bindings.defineVariable(declaration.name, {
                     kind: "browser",
                     cpp: "",
