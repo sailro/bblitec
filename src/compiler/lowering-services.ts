@@ -115,6 +115,8 @@ export interface LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+    /** Record parameters a storage demand gave their own object. */
+    readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;

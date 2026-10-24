@@ -34,6 +34,17 @@ export class DynamicBindingStorageRequired extends Error {
     }
 }
 
+/**
+ * A parameter whose record a store keeps as one object: the compile
+ * replays with the parameter holding its argument as a native object
+ * rather than as separate field storage.
+ */
+export class ParameterObjectStorageRequired extends Error {
+    constructor(readonly declaration: ts.ParameterDeclaration) {
+        super("A record parameter requires its own native object.");
+    }
+}
+
 /** What typing a demanded binding reads of the compiler. */
 export interface DemandedStorageContext {
     readonly checker: ts.TypeChecker;
@@ -174,11 +185,15 @@ export interface OneObjectContext
 
 /** What keeping a stored record's object reads of the compiler. */
 export interface HeldRecordContext {
-    readonly bindings: Pick<BindingScopes, "recordDeclaration">;
+    readonly bindings: Pick<
+        BindingScopes,
+        "recordDeclaration" | "recordParameter"
+    >;
     readonly dynamicBindings: ReadonlyMap<
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+    readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -200,7 +215,13 @@ export function requireHeldRecordStorage(
 ): void {
     if (value.kind !== "record") return;
     const declaration = context.bindings.recordDeclaration(value, expression);
-    if (!declaration) return;
+    if (!declaration) {
+        // A parameter's record held as field storage has no object yet.
+        const parameter = context.bindings.recordParameter(value);
+        if (parameter && !context.parameterObjects.has(parameter))
+            throw new ParameterObjectStorageRequired(parameter);
+        return;
+    }
     // A binding already given its own storage is still a record only when
     // lowering its initializer into that storage refused.
     if (context.dynamicBindings.get(declaration) !== undefined)

@@ -15,7 +15,10 @@ import { EngineOwnerStorageRequired } from "./engine-owner-storage.js";
 import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
 import { CompletionStorageRequired } from "./completion-storage.js";
 import { TupleArraySlotRequired } from "./tuple-array-storage.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    ParameterObjectStorageRequired,
+} from "./dynamic-binding-storage.js";
 import { GenericFunctionStorageRequired } from "./generic-function-storage.js";
 import {
     NativeRecordStorageRequired,
@@ -31,6 +34,7 @@ import { callSignatures } from "./type-facts.js";
 
 type StorageDemand =
     | DynamicBindingStorageRequired
+    | ParameterObjectStorageRequired
     | NativeRecordStorageRequired
     | GenericFunctionStorageRequired
     | AbsenceTagStorageRequired
@@ -50,6 +54,8 @@ export function storageRequest(error: StorageDemand): StorageRequest {
             declaration: error.declaration,
             storage: error.storage,
         };
+    if (error instanceof ParameterObjectStorageRequired)
+        return { kind: "parameter-object", declaration: error.declaration };
     if (error instanceof NativeRecordStorageRequired)
         return { kind: "record", demand: error.demand };
     if (error instanceof AbsenceTagStorageRequired)
@@ -88,6 +94,7 @@ export function storageRequest(error: StorageDemand): StorageRequest {
 export function isStorageDemand(error: unknown): error is StorageDemand {
     return (
         error instanceof DynamicBindingStorageRequired ||
+        error instanceof ParameterObjectStorageRequired ||
         error instanceof NativeRecordStorageRequired ||
         error instanceof GenericFunctionStorageRequired ||
         error instanceof AbsenceTagStorageRequired ||
@@ -224,6 +231,7 @@ function independentDemand(
         return independentGenericCall(context, statement, error);
     return !(
         error instanceof DynamicBindingStorageRequired ||
+        error instanceof ParameterObjectStorageRequired ||
         error instanceof NativeRecordStorageRequired
     );
 }

@@ -57,6 +57,7 @@ type ObjectStaticContext = Pick<
     | "isInRuntimeControlFlow"
     | "bindings"
     | "dynamicBindings"
+    | "parameterObjects"
     | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"

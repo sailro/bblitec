@@ -8952,6 +8952,27 @@ checkInRealm(
 );
 
 check(
+    "a-record-parameter-stays-one-object-wherever-it-is-stored",
+    `
+    interface Count { n: number }
+    function assign(p: Count): number { let o: Count; o = p; o.n = 2; return p.n; }
+    function destructure(p: Count): number { let o: Count; [o] = [p]; o.n = 3; return p.n; }
+    function iterate(p: Count): number { for (const o of [p]) o.n = 4; return p.n; }
+    function reassigned(p: Count): number { let o: Count = { n: 0 }; o = p; p.n = 5; return o.n; }
+    function boxed(p: Count): number { const box = { item: p }; box.item.n = 6; return p.n; }
+    function nested(p: { inner: Count }): number { let o: Count; o = p.inner; o.n = 7; return p.inner.n; }
+    function twice(p: Count, by: number): number { let o: Count; o = p; o.n += by; return p.n; }
+    if (assign({ n: 1 }) !== 2) throw new Error("assignment");
+    if (destructure({ n: 1 }) !== 3) throw new Error("destructuring assignment");
+    if (iterate({ n: 1 }) !== 4) throw new Error("for-of binding");
+    if (reassigned({ n: 1 }) !== 5) throw new Error("write through the parameter");
+    if (boxed({ n: 1 }) !== 6) throw new Error("object field");
+    if (nested({ inner: { n: 1 } }) !== 7) throw new Error("nested record");
+    if (twice({ n: 1 }, 1) !== 2 || twice({ n: 10 }, 5) !== 15) throw new Error("separate calls");
+`,
+);
+
+check(
     "gathered-activations-on-fresh-objects-run-where-they-start",
     `
     interface Level { lit: boolean; level: number }

@@ -659,6 +659,7 @@ interface DataLoweringContext extends Pick<
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
     | "dynamicBindings"
+    | "parameterObjects"
 > {
     /** Source storages that keep `null` and `undefined` apart. */
     readonly absenceTags: ReadonlySet<ts.Declaration>;

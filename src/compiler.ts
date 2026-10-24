@@ -1082,6 +1082,7 @@ class Compiler implements LoweringServices {
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly thrownValueKinds: ReadonlySet<"string">;
     public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
+    public readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
 
     public constructor(
         public readonly program: ts.Program,
@@ -1098,6 +1099,7 @@ class Compiler implements LoweringServices {
         this.absenceTags = storage.absenceTags;
         this.thrownValueKinds = storage.thrownValueKinds;
         this.tupleArraySlots = storage.tupleArraySlots;
+        this.parameterObjects = storage.parameterObjects;
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
         this.dataTypes = new DataTypeRegistry(

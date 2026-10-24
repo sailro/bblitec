@@ -95,6 +95,7 @@ interface BindingScopesContext extends Pick<
     | "fail"
     | "sharedClosures"
     | "options"
+    | "parameterObjects"
     | "probeEmission"
     | "reachJsData"
     | "registerNativeBinding"
@@ -346,6 +347,37 @@ export class BindingScopes {
             (bound) => bound.recordProperties,
             expression,
         );
+    }
+
+    /**
+     * The parameter whose binding holds this compile-time record, or a
+     * record nested in it, as field storage.
+     */
+    public recordParameter(value: Value): ts.ParameterDeclaration | undefined {
+        const members = value.recordProperties;
+        if (!members) return undefined;
+        const seen = new Set<Value>();
+        const holds = (owner: Value): boolean => {
+            if (seen.has(owner)) return false;
+            seen.add(owner);
+            return (
+                owner.recordProperties === members ||
+                Object.values(owner.recordProperties ?? {}).some(
+                    (member) => member.kind === "record" && holds(member),
+                )
+            );
+        };
+        for (const scope of this.variableScopes)
+            for (const [symbol, binding] of scope) {
+                const declaration = symbol.valueDeclaration;
+                if (
+                    declaration &&
+                    ts.isParameter(declaration) &&
+                    holds(binding.value)
+                )
+                    return declaration;
+            }
+        return undefined;
     }
 
     /** The earliest live declaration sharing this compile-time tuple, before any lexical aliases. */
@@ -1306,10 +1338,11 @@ export class BindingScopes {
             !this.context.classOf(narrowed) &&
             !this.containsPlatformEvent(narrowed) &&
             ts.isParameter(identifier.parent) &&
-            this.context.sharedClosures.needsSharedClosureStorage(
+            (this.context.sharedClosures.needsSharedClosureStorage(
                 identifier.parent,
                 identifier,
-            )
+            ) ||
+                this.context.parameterObjects.has(identifier.parent))
         ) {
             const declared = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(identifier),
@@ -1322,6 +1355,13 @@ export class BindingScopes {
                     declared,
                     identifier,
                 );
+            // A store demanded this parameter's object: its record type
+            // holds objects by reference wherever the store happens.
+            if (
+                represented?.kind === "struct" &&
+                this.context.parameterObjects.has(identifier.parent)
+            )
+                this.context.dataTypes.markStoredObjectReferences(represented);
             if (
                 represented?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(represented.name)
@@ -1421,6 +1461,8 @@ export class BindingScopes {
             !this.containsPlatformEvent(value) &&
             ts.isIdentifier(identifier) &&
             parameterDeclaration !== undefined &&
+            // A demand gave the parameter its argument's object to keep.
+            !this.context.parameterObjects.has(parameterDeclaration) &&
             isSupportedFunction(parameterDeclaration.parent) &&
             parameterIsMutated(
                 this.context.checker,

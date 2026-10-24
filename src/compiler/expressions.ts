@@ -262,6 +262,7 @@ export interface ExpressionContext
             LoweringServices,
             | "noteImpureRead"
             | "dynamicBindings"
+            | "parameterObjects"
             | "conditionOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
