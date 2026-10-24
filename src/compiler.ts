@@ -1232,6 +1232,7 @@ class Compiler implements LoweringServices {
         // After every feature has settled: retained UI must land on a frame
         // loop that presents it (NA-26).
         this.refuseMixedStandaloneTextContexts();
+        this.refuseRealmFrameGraph();
         this.refuseUiWithoutPresentation();
         this.refuseErasedElementWrites();
         this.ui.validateUiStaticProjection();
@@ -2752,19 +2753,22 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * `ui:rml` presents through the scene and sprite loops only; the
-     * standalone fullscreen-effect and frame-graph drivers have no UI path
-     * on either backend (`pal_sdl_gpu_effect.cpp`/`pal_sdl_gpu_frame_graph
-     * .cpp` and their Dawn twins render no `UiRenderFrame`). Refuse the
-     * combination while nothing reaches it so retained chrome cannot
-     * silently vanish from a task-only program. The driver mirror follows
-     * `pal_sdl.cpp`'s `renderer_kind` priority: a scene wins, then a frame
-     * graph, then an effect renderer, then sprites.
+     * Outside an application realm `ui:rml` presents through the scene and
+     * sprite loops only; the standalone fullscreen-effect and frame-graph
+     * drivers have no UI path on either backend (`pal_sdl_gpu_effect.cpp`/
+     * `pal_sdl_gpu_frame_graph.cpp` and their Dawn twins render no
+     * `UiRenderFrame`). Refuse the combination while nothing reaches it so
+     * retained chrome cannot silently vanish from a task-only program. In a
+     * realm the Window host presents the UI over every renderer's canvas
+     * frames. The driver mirror follows `pal_sdl.cpp`'s `renderer_kind`
+     * priority: a scene wins, then a frame graph, then an effect renderer,
+     * then sprites.
      */
     private refuseUiWithoutPresentation(): void {
         if (
             !this.features.has("ui:rml") ||
-            this.features.has("renderer:scene")
+            this.features.has("renderer:scene") ||
+            this.options.workers
         ) {
             return;
         }
@@ -2780,6 +2784,28 @@ class Compiler implements LoweringServices {
                 `scene reaches ui:rml${site ? ` (${site})` : ""} but that ` +
                 "frame loop presents no UI on either backend. Retained UI " +
                 "presents through the scene and sprite loops only.",
+        );
+    }
+
+    /**
+     * A standalone frame graph (no scene, which `renderer_kind` prefers)
+     * refuses in an application realm: the engine holds the registered
+     * `FrameGraphContext` by address, and the realm entry that declares it
+     * returns once the engine's first frame resolves (`run_realm_frames`).
+     */
+    private refuseRealmFrameGraph(): void {
+        if (
+            !this.options.workers ||
+            !this.features.has("renderer:frame-graph") ||
+            this.features.has("renderer:scene")
+        )
+            return;
+        const site = this.featureSites.get("renderer:frame-graph");
+        this.failAtFile(
+            `A standalone frame graph${site ? ` (${site})` : ""} does not yet run in an ` +
+                "application realm: the engine holds the registered FrameGraphContext by " +
+                "address, and the realm entry that declares it returns at the engine's " +
+                "first frame.",
         );
     }
 

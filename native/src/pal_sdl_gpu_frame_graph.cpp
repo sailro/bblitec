@@ -31,6 +31,7 @@
 #include "pal_sdl_gpu_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
+#include "pal_sdl_gpu_presentation.hpp"
 #if BBLITE_HAS_EFFECT_TASK
 #include "pal_sdl_gpu_effect.hpp"
 #endif
@@ -363,6 +364,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 namespace {
 class SdlFrameGraphRun : public RendererRun<SdlFrameGraphRun> {
     State state;
+    SdlFramePresentation presentation;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
     SdlGpuCommand command{nullptr};
@@ -387,8 +389,7 @@ public:
                             : gpu_sample_count_from(
                                   upstream::preferred_sample_count(engine.options.msaa_samples));
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_sdl_gpu_device(engine.options, device_options, state.gpu);
-        sync_engine_canvas_size(state.gpu.window, engine);
+        presentation.open(offscreen, engine, device_options, state.gpu);
 #if BBLITE_HAS_POST_PROCESS
         SDL_GPUSamplerCreateInfo sampler{};
         sampler.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
@@ -421,7 +422,7 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!command.acquire_swapchain(state.gpu.window, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, state.gpu.window, engine, &swapchain, &width, &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture frame graph");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -517,7 +518,7 @@ public:
             save_texture_png(state.gpu.device, command, capture_texture, state.gpu.swapchain_format,
                              width, height, frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!command.submit()) {
+        } else if (!presentation.submit(command)) {
             gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
         }
         finish_gpu_task_timing_frame(engine);

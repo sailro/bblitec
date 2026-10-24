@@ -4898,11 +4898,9 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.1,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                ...adHocCaptureEnvironment(),
-                // The initial HUD message hides after 3s, then fades for 300ms.
-                BBLITE_SCREENSHOT_FRAME: "211",
-            },
+            // The initial HUD message hides after 3s, then fades for 300ms:
+            // frame 211, which the golden also freezes (`goldenFixedFrame`).
+            nativeEnvironment: adHocCaptureEnvironment(3500),
         },
     },
     {
@@ -5365,6 +5363,20 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
         ...parity,
         ...derivedSeekEnvironment(scene.id, parity),
     };
+    // A Window captures the engine frame; every other run the screenshot frame.
+    const screenshotFrame = parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME;
+    const engineFrame = parity.nativeEnvironment?.BBLITE_CAPTURE_ENGINE_FRAME;
+    if (
+        screenshotFrame !== undefined &&
+        engineFrame !== undefined &&
+        screenshotFrame !== engineFrame
+    ) {
+        throw new Error(
+            `Scene '${scene.id}' spells its capture frame twice and they disagree: ` +
+                `BBLITE_SCREENSHOT_FRAME='${screenshotFrame}' but ` +
+                `BBLITE_CAPTURE_ENGINE_FRAME='${engineFrame}'.`,
+        );
+    }
     const parityWithFrame = {
         ...parityWithSeek,
         ...derivedReferenceFrameEnvironment(scene.id, parityWithSeek),

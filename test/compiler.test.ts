@@ -12571,6 +12571,54 @@ test("refuses retained UI under the standalone effect and frame-graph drivers", 
     );
 });
 
+test("presents a realm's retained UI over an effect renderer and refuses a realm frame graph", () => {
+    // The idle callback takes the application realm, whose Window host
+    // composites the UI over every renderer's canvas frames.
+    const program = (registration: string) => `
+        import {
+            createEffectRenderer,
+            createEffectWrapper,
+            createEngine,
+            createFrameGraphContext,
+            registerEffectRenderer,
+            registerFrameGraphContext,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            requestIdleCallback(() => {});
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            ${registration}
+            const hint = document.createElement("div");
+            hint.textContent = "hint";
+            document.body.appendChild(hint);
+            await startEngine(engine);
+        }
+
+        void main();
+    `;
+    const effect = compileSource(
+        program(`const effect = createEffectWrapper(engine, {
+            name: "fx",
+            fragmentWGSL: "@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+        });
+        registerEffectRenderer(createEffectRenderer(engine, effect, { name: "fx-renderer" }));`),
+    );
+    for (const feature of ["platform:workers", "ui:rml", "renderer:effect"])
+        assert.ok(effect.manifest.features.includes(feature), feature);
+    // The engine holds a registered FrameGraphContext by address.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    "registerFrameGraphContext(createFrameGraphContext(engine));",
+                ),
+            ),
+        /A standalone frame graph .*does not yet run in an application realm/,
+    );
+});
+
 test("keeps the packaged success arm of a nullable retained-canvas factory", () => {
     const result = compileSource(
         `

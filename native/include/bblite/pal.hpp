@@ -76,6 +76,9 @@ double performance_milliseconds();
 // zero, so the two add up to `Date.now()`; one per process.
 double performance_time_origin();
 void advance_performance_milliseconds(double delta_ms);
+// A fixed-delta capture thread's clock moves forward to `milliseconds`, a time
+// on the same steps another thread's clock reached; ordinary runs ignore it.
+void advance_performance_milliseconds_to(double milliseconds);
 /**
  * Resident bytes on Windows and Apple platforms; refuses on other platforms.
  * BBLITE_MEM_PROFILE uses this to measure whether a long run's memory settles.

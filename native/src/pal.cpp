@@ -409,6 +409,20 @@ void advance_performance_milliseconds(double delta_ms) {
     }
 }
 
+void advance_performance_milliseconds_to(double milliseconds) {
+    auto& state = performance_clock_state();
+    if (!state.fixed)
+        return;
+    // Count steps as `advance_performance_milliseconds` does, so both
+    // threads read the same double for the same step.
+    const auto steps =
+        static_cast<std::uint64_t>(std::llround(milliseconds / state.fixed_delta_ms));
+    if (steps <= state.fixed_steps)
+        return;
+    state.fixed_steps = steps;
+    state.milliseconds = static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;
+}
+
 std::size_t process_working_set_bytes() {
 #if defined(_WIN32)
     PROCESS_MEMORY_COUNTERS counters{};

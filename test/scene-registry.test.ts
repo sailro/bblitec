@@ -479,6 +479,12 @@ test("registers unique generated scene targets", () => {
         getScene("quake").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "211",
     );
+    // A Window realm captures the engine frame the golden freezes.
+    assert.equal(
+        getScene("quake").parity?.nativeEnvironment
+            ?.BBLITE_CAPTURE_ENGINE_FRAME,
+        "211",
+    );
     assert.equal(getScene("quake").parity?.maxFullMad, 0.1);
     assert.equal(getScene("quake").parity?.maxForegroundMad, 0.1);
     assert.equal(

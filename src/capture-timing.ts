@@ -17,16 +17,21 @@ export function fixedCaptureEnvironment(): Record<string, string> {
     };
 }
 
-/** The native frame options that reproduce the browser settle interval. */
-export function adHocCaptureEnvironment(): Record<string, string> {
+/**
+ * The native frame options that reproduce a browser settle interval: the
+ * harness's own by default, or a longer span a scene waits out. One frame
+ * names both the screenshot and the engine frame a Window captures.
+ */
+export function adHocCaptureEnvironment(
+    settleMilliseconds = captureSettleMilliseconds,
+): Record<string, string> {
     // A timeout resolves no earlier than its requested span; select the
     // first fixed-rate frame strictly beyond that boundary. Besides matching
     // browser scheduling, this avoids a float32 delta sum landing one ulp
     // below an integral timer boundary.
     const elapsedFrameCount =
-        Math.floor(
-            (captureSettleMilliseconds * adHocCaptureFramesPerSecond) / 1000,
-        ) + 1;
+        Math.floor((settleMilliseconds * adHocCaptureFramesPerSecond) / 1000) +
+        1;
     return {
         ...fixedCaptureEnvironment(),
         // Frame zero intentionally reports no elapsed time. The screenshot

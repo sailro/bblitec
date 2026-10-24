@@ -28,6 +28,7 @@ Both backends consume the same generated plans, layouts and uniform writers.
 | `pal_frame_conductor.hpp` | Frame phases for scene, sprite, effect and frame-graph drivers |
 | `pal_gpu_dispatch.hpp` | Per-backend entry points and Window presenter |
 | `pal_frame_session.hpp` (`RendererRun`) | Standalone input, clock, capture and benchmark phases |
+| `pal_<backend>_presentation.hpp` | Standalone drivers' window swapchain or application-realm canvas image |
 | `pal_gpu_frame.*`, `pal_gpu_images.*` | Scene-invariant run options, clocks, capture gates, texel packing, readback |
 | `pal_gpu_*.hpp` + `pal_gpu_shared.cpp` | Scene-shaped shared concerns, compiled once per build |
 | `pal_<backend>.cpp`, `pal_<backend>_scene.hpp` | Scene driver and state, `<backend>` = `sdl_gpu` or `dawn` |
@@ -111,6 +112,9 @@ buffer; SDL delays draw encoding until final writes exist. Resize recreates targ
 - `close` finishes the active callback and microtasks; `terminate` stops at compiled cancellation points only.
 - Window pacing: compositor-clock heartbeat on Windows (mailbox, FIFO fallback), presentation completion elsewhere.
   A three-image mailbox keeps the latest frame; captures use readback.
+- Fixed capture clock (`BBLITE_FRAME_DELTA_MS`): an engine realm's clock holds at zero until the engine's first
+  rendered frame. Each animation frame ends with the Window applying the document at that frame's time, which also
+  times its CSS animations, and each repaint presents only its completed animation frame.
 - Native jobs (`pal_native_job.hpp`) settle on the realm in start order, one task each, on the shared bounded workers
   (`pal_native_workers.hpp`); native work never waits on native work. Jobs: `loadTexture2D` decode, `loadGltf`
   reads/parsing/decoding, IBL BRDF reads, packaged `fetch` reads, audio device opens and decodes.

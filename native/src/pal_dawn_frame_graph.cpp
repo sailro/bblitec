@@ -34,6 +34,7 @@
 #include "pal_dawn_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
+#include "pal_dawn_presentation.hpp"
 
 namespace bbl::pal {
 
@@ -353,6 +354,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 namespace {
 class DawnFrameGraphRun : public RendererRun<DawnFrameGraphRun> {
     State state;
+    DawnFramePresentation presentation;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
     DawnCommandEncoder encoder;
@@ -379,9 +381,7 @@ public:
                             ? 1u
                             : upstream::preferred_sample_count(engine.options.msaa_samples);
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_dawn_device(engine.options, device_options, state);
-        sync_engine_canvas_size(state.window, engine);
-        resize_dawn_surface(state, engine.options);
+        presentation.open(offscreen, engine, device_options, state);
 #if BBLITE_HAS_POST_PROCESS
         WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
         sampler.addressModeU = WGPUAddressMode_ClampToEdge;
@@ -412,7 +412,7 @@ public:
             height = state.surface_height;
             build_graph(state, engine, width, height);
         }
-        return state.surface ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(state) ? FramePreparation::ready : FramePreparation::skip;
     }
     FramePreparation update() {
         static_cast<void>(
@@ -422,7 +422,7 @@ public:
         return FramePreparation::ready;
     }
     bool acquire() {
-        if (!acquire_dawn_surface_texture(state, surface_texture))
+        if (!presentation.acquire(state, surface_texture))
             return false;
         surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
@@ -526,7 +526,7 @@ public:
             captures.screenshot_saved = true;
         }
         capture.readback.reset();
-        wgpuSurfacePresent(state.surface);
+        presentation.present(state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

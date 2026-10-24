@@ -25,6 +25,7 @@
 #include "pal_gpu_frame.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
+#include "pal_sdl_gpu_presentation.hpp"
 
 #if BBLITE_HAS_EFFECT_RENDERER
 #include "pal_sdl_gpu_effect.hpp"
@@ -37,6 +38,7 @@ namespace bbl::pal {
 namespace {
 class SdlEffectRun : public RendererRun<SdlEffectRun> {
     SdlGpuDevice gpu;
+    SdlFramePresentation presentation;
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
     SDL_GPUTextureFormat swapchain_format{};
@@ -67,8 +69,7 @@ public:
         if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_sdl_gpu_device(engine.options, device_options, gpu);
-        sync_engine_canvas_size(window, engine);
+        presentation.open(offscreen, engine, device_options, gpu);
         swapchain_format = gpu.swapchain_format;
 
         // The surface's own sample count: `createEffectRenderer` renders into
@@ -98,7 +99,7 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!command.acquire_swapchain(window, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, window, engine, &swapchain, &width, &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -194,7 +195,7 @@ public:
             save_texture_png(device, command, resolve, swapchain_format, width, height,
                              frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!command.submit()) {
+        } else if (!presentation.submit(command)) {
             gpu_error("SDL_SubmitGPUCommandBuffer effect");
         }
     }

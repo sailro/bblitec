@@ -28,6 +28,7 @@
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_EFFECT_RENDERER
 #include "pal_dawn_effect.hpp"
+#include "pal_dawn_presentation.hpp"
 #endif
 
 namespace bbl::pal {
@@ -37,6 +38,7 @@ namespace bbl::pal {
 namespace {
 class DawnEffectRun : public RendererRun<DawnEffectRun> {
     DawnDevice state;
+    DawnFramePresentation presentation;
     std::vector<DawnEffectPass> passes;
     DawnTexture msaa_texture;
     DawnTextureView msaa_view;
@@ -83,9 +85,7 @@ public:
         if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_dawn_device(engine.options, device_options, state);
-        sync_engine_canvas_size(state.window, engine);
-        resize_dawn_surface(state, engine.options);
+        presentation.open(offscreen, engine, device_options, state);
 
         width = state.surface_width;
         height = state.surface_height;
@@ -119,10 +119,10 @@ public:
             height = state.surface_height;
             recreate_msaa_target();
         }
-        return state.surface ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(state) ? FramePreparation::ready : FramePreparation::skip;
     }
     bool acquire() {
-        if (!acquire_dawn_surface_texture(state, surface_texture))
+        if (!presentation.acquire(state, surface_texture))
             return false;
         surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
@@ -186,7 +186,7 @@ public:
         }
         capture.readback.reset();
 
-        wgpuSurfacePresent(state.surface);
+        presentation.present(state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

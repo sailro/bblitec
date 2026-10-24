@@ -81,6 +81,11 @@ struct InputDriver {
         int* ui_runtime;
     } resources{state, &ui};
     unsigned width = 640, height = 480;
+    // A window run: no application realm presentation endpoint is bound.
+    OffscreenRun* offscreen = nullptr;
+    struct {
+        bool ready(const InputState& surface) const { return surface.surface; }
+    } presentation;
     Scene scene;
     std::vector<std::shared_ptr<Scene>> active_registered_scenes;
     int camera_value = 0;
