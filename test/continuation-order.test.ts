@@ -80,6 +80,32 @@ void main();`),
     );
 });
 
+test("a run's own objects stay its own while closures or literals it returns keep them", () => {
+    const loads = (before: string): string => `
+const all: Map<string, number>[] = [];
+async function load(count: number): Promise<{ size: number; frame: (key: string) => number | undefined; frames: number[] }> {
+    const index = new Map<string, number>();
+    ${before}
+    await null;
+    const frames: number[] = [];
+    for (let i = 0; i < count; i++) {
+        index.set(String(i), i);
+        frames.push(i * 2);
+    }
+    const sheet = { frames };
+    const frame = (key: string): number | undefined => index.get(key);
+    return { size: index.size, frame, frames: sheet.frames };
+}
+async function main(): Promise<void> {
+    const [a, b] = await Promise.all([load(2), load(3)]);
+    if (a.size + b.size !== 5 || a.frame("1") !== 1) throw new Error("sheets");
+}
+void main();`;
+    assert.ok(!inRealm(loads("")));
+    // Handed to shared state before the run suspends, another run can see it.
+    assert.ok(inRealm(loads("all.push(index);")));
+});
+
 test("a reaction runs at once only when the code after it cannot tell", () => {
     const value = `async function v(): Promise<number> { return 1; }\nlet seen = 0;`;
     assert.ok(

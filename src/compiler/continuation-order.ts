@@ -819,10 +819,12 @@ function iteratesLibraryCollection(
 const ownedObjects = new WeakMap<ts.Node, ReadonlySet<ts.Symbol>>();
 
 /**
- * The bindings of `owner` that hold an object only it reaches: a binding
- * never reassigned, holding an object created here (a fresh object, a page
- * node) or one such an object owns (a canvas's context), and never handed
- * on: not passed, stored, captured, awaited or thrown, only returned.
+ * The bindings of `owner` that hold an object only one run of it reaches
+ * until it returns: a binding never reassigned, holding an object created
+ * here (a fresh object or closure, a page node) or one such an object owns
+ * (a canvas's context). Its object may be read through, called, returned,
+ * captured by a closure or kept in a literal or binding that stays private
+ * itself; passing, storing, awaiting or throwing it hands it on.
  */
 function privateObjects(
     checker: ts.TypeChecker,
@@ -831,7 +833,13 @@ function privateObjects(
     const known = ownedObjects.get(owner);
     if (known) return known;
     const candidates = new Set<ts.Symbol>();
-    const ownedBy = new Map<ts.Symbol, ts.Symbol>();
+    // A candidate stays private only while each binding it is kept in does.
+    const keptIn = new Map<ts.Symbol, ts.Symbol[]>();
+    const keep = (symbol: ts.Symbol, holder: ts.Symbol): void => {
+        const holders = keptIn.get(symbol);
+        if (holders) holders.push(holder);
+        else keptIn.set(symbol, [holder]);
+    };
     forEachAnalysisNode(
         owner,
         (node) => {
@@ -855,6 +863,8 @@ function privateObjects(
                     : undefined;
             if (
                 freshValue(checker, initializer) ||
+                ts.isArrowFunction(initializer) ||
+                ts.isFunctionExpression(initializer) ||
                 (method && PAGE_ACCESSES.get(method.name) === "creates")
             ) {
                 candidates.add(symbol);
@@ -867,32 +877,64 @@ function privateObjects(
                     : undefined;
             if (base && candidates.has(base)) {
                 candidates.add(symbol);
-                ownedBy.set(symbol, base);
+                keep(symbol, base);
             }
         },
         { types: "skip" },
     );
     if (candidates.size > 0) {
+        // Values read out of a candidate, which may be what it keeps.
+        const readOut = new Map<ts.Symbol, ts.Expression[]>();
         forEachAnalysisNode(
             owner,
             (node) => {
                 if (!ts.isIdentifier(node) || !isValueReference(node)) return;
                 const symbol = resolvedSymbol(checker, node);
-                if (
-                    symbol &&
-                    candidates.has(symbol) &&
-                    (ts.findAncestor(node.parent, runsAsOwner) !== owner ||
-                        handsOn(node))
-                )
-                    candidates.delete(symbol);
+                if (!symbol || !candidates.has(symbol)) return;
+                const holder = useHolder(owner, node);
+                if (holder === "escapes") candidates.delete(symbol);
+                else if (holder !== "kept") {
+                    const held = declaredSymbol(checker, holder);
+                    if (held && candidates.has(held)) keep(symbol, held);
+                    else candidates.delete(symbol);
+                }
+                const position = outermostWrapper(node);
+                const access = position.parent;
+                if (isMemberAccess(access) && access.expression === position) {
+                    const call = access.parent;
+                    const read =
+                        ts.isCallExpression(call) && call.expression === access
+                            ? call
+                            : access;
+                    const list = readOut.get(symbol);
+                    if (list) list.push(read);
+                    else readOut.set(symbol, [read]);
+                }
             },
             { types: "skip" },
         );
-        // What an escaped object owns escapes with it.
+        // A candidate keeping others hands them on through what it gives out.
+        for (const holders of keptIn.values())
+            for (const holder of holders)
+                if (
+                    readOut
+                        .get(holder)
+                        ?.some(
+                            (read) =>
+                                typeCanCarryReference(
+                                    checker.getTypeAtLocation(read),
+                                ) && useHolder(owner, read) !== "kept",
+                        )
+                )
+                    candidates.delete(holder);
+        // What an escaped object keeps escapes with it.
         for (let changed = true; changed;) {
             changed = false;
-            for (const [symbol, base] of ownedBy)
-                if (candidates.has(symbol) && !candidates.has(base)) {
+            for (const [symbol, holders] of keptIn)
+                if (
+                    candidates.has(symbol) &&
+                    holders.some((holder) => !candidates.has(holder))
+                ) {
                     candidates.delete(symbol);
                     changed = true;
                 }
@@ -900,6 +942,63 @@ function privateObjects(
     }
     ownedObjects.set(owner, candidates);
     return candidates;
+}
+
+/**
+ * Where a value `owner` evaluates can be reached from: only this run of
+ * `owner` ("kept": read through, called, tested, returned by `owner`), the
+ * binding a declaration of `owner` initializes, or anywhere ("escapes"). A
+ * use inside a closure of `owner` keeps it when the closure keeps it and is
+ * itself kept; what a closure returns escapes.
+ */
+function useHolder(
+    owner: ts.Node,
+    value: ts.Expression,
+): "kept" | "escapes" | ts.Identifier {
+    const closure = ts.findAncestor(value.parent, runsAsOwner);
+    if (closure === owner) return heldAt(owner, value, true);
+    if (
+        !closure ||
+        (!ts.isArrowFunction(closure) && !ts.isFunctionExpression(closure)) ||
+        ts.findAncestor(closure.parent, runsAsOwner) !== owner ||
+        heldAt(closure, value, false) !== "kept"
+    )
+        return "escapes";
+    return useHolder(owner, closure);
+}
+
+/** {@link useHolder} for a value `owner` evaluates itself. */
+function heldAt(
+    owner: ts.Node,
+    value: ts.Expression,
+    returnsKeep: boolean,
+): "kept" | "escapes" | ts.Identifier {
+    const position = outermostWrapper(value);
+    const parent = position.parent;
+    // A literal's member or element goes where the literal goes.
+    if (
+        (ts.isShorthandPropertyAssignment(parent) ||
+            (ts.isPropertyAssignment(parent) &&
+                parent.initializer === position)) &&
+        ts.isObjectLiteralExpression(parent.parent)
+    )
+        return heldAt(owner, parent.parent, returnsKeep);
+    if (ts.isArrayLiteralExpression(parent))
+        return heldAt(owner, parent, returnsKeep);
+    if (
+        ts.isReturnStatement(parent) ||
+        (ts.isArrowFunction(parent) && parent.body === position)
+    )
+        return returnsKeep ? "kept" : "escapes";
+    if (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === position &&
+        ts.isIdentifier(parent.name)
+    )
+        return returnsKeep ? parent.name : "escapes";
+    if (ts.isCallExpression(parent) && parent.expression === position)
+        return "kept";
+    return handsOn(value) ? "escapes" : "kept";
 }
 
 /**
