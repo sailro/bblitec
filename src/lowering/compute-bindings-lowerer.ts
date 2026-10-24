@@ -7,6 +7,8 @@ import {
 } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
+    collectionBinding,
+    memberElement,
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
@@ -128,6 +130,19 @@ function scope(
     };
     for (const [name, [cpp, type]] of Object.entries(properties))
         bindings.set(name, { cpp, type });
+    // The resource names walk the native map's keys.
+    bindings.set(
+        "Object.keys(resources)",
+        collectionBinding(
+            "resources",
+            (name) =>
+                new Map([[name, { cpp: `${name}.first`, type: "opaque" }]]),
+        ),
+    );
+    bindings.set(
+        "shader._decls",
+        collectionBinding("shader->decls", memberElement(bindings)),
+    );
     const calls = new Map<string, (args: readonly string[]) => string>([
         [
             "_assertComputeShaderLive",
@@ -248,31 +263,6 @@ function scope(
                     );
                 return `shader->engine->offscreen_run->device().create_compute_bind_group(${pinnedRecordLiteral(context, l, node.arguments[0]!, groupSchema)})`;
             }
-            return undefined;
-        },
-        forOf(iterated, element) {
-            if (
-                context.expressionMatchesShape(
-                    iterated,
-                    "Object.keys(resources)",
-                )
-            )
-                return {
-                    range: "resources",
-                    bindings: new Map([
-                        [element, { cpp: `${element}.first`, type: "opaque" }],
-                    ]),
-                };
-            if (context.expressionMatchesShape(iterated, "shader._decls"))
-                return {
-                    range: "shader->decls",
-                    bindings: new Map([
-                        ...[...bindings].filter(([name]) =>
-                            name.startsWith(`${element}.`),
-                        ),
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
             return undefined;
         },
         statement(node, l, indent) {

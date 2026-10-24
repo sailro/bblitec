@@ -19,6 +19,22 @@ import {
     pinnedRemainderCall,
 } from "../pinned-operators.js";
 
+/**
+ * A dynamic glTF value: absent when it is not truthy, and iterated as its
+ * array elements, each one such a value again.
+ */
+function gltfValue(cpp: string, absent = true): PinnedBinding {
+    return {
+        cpp,
+        type: "opaque",
+        ...(absent ? { absentCpp: `!${cpp}.truthy()` } : {}),
+        elements: {
+            range: `${cpp}.elements()`,
+            element: (name) => new Map([[name, gltfValue(name)]]),
+        },
+    };
+}
+
 const numericOperators = new Map([
     ...PINNED_ARITHMETIC_OPERATORS,
     ...PINNED_RELATIONAL_OPERATORS,
@@ -81,10 +97,10 @@ export function lowerGltfMaterialObjectFunction(
     };
     const bindings = new Map<string, PinnedBinding>();
     for (const [name, value] of target.constants ?? [])
-        bindings.set(name, {
-            cpp: `GltfPbrValue{${JSON.stringify(value)}}`,
-            type: "opaque",
-        });
+        bindings.set(
+            name,
+            gltfValue(`GltfPbrValue{${JSON.stringify(value)}}`, false),
+        );
     const parameters = declaration.parameters.map((parameter) => {
         if (!ts.isIdentifier(parameter.name))
             context.contractError(
@@ -92,11 +108,7 @@ export function lowerGltfMaterialObjectFunction(
                 "Expected named material parameters.",
             );
         const sourceName = parameter.name.text;
-        bindings.set(sourceName, {
-            cpp: sourceName,
-            type: "opaque",
-            absentCpp: `!${sourceName}.truthy()`,
-        });
+        bindings.set(sourceName, gltfValue(sourceName));
         return sourceName === contextParameter
             ? `const ${target.contextType ?? "GltfPbrContext"}& ${sourceName}`
             : `GltfPbrValue ${sourceName}`;
@@ -169,23 +181,6 @@ export function lowerGltfMaterialObjectFunction(
         condition: (expression, lowerer) =>
             `${value(expression, lowerer)}.truthy()`,
         foldConditions: false,
-        forOf(_iterated, element, range) {
-            return range
-                ? {
-                      range: `${range.cpp}.elements()`,
-                      bindings: new Map([
-                          [
-                              element,
-                              {
-                                  cpp: element,
-                                  type: "opaque",
-                                  absentCpp: `!${element}.truthy()`,
-                              },
-                          ],
-                      ]),
-                  }
-                : undefined;
-        },
         expression(node, lowerer) {
             if (ts.isAwaitExpression(node))
                 return lowerer.expression(node.expression);
@@ -229,11 +224,7 @@ export function lowerGltfMaterialObjectFunction(
                             "Expected a named material callback parameter.",
                         );
                     const name = parameter.name.text;
-                    lowerer.bindLocal(parameter.name, {
-                        cpp: name,
-                        type: "opaque",
-                        absentCpp: `!${name}.truthy()`,
-                    });
+                    lowerer.bindLocal(parameter.name, gltfValue(name));
                     return `GltfPbrValue ${name}`;
                 });
                 const body = value(node.body, lowerer);
@@ -586,11 +577,7 @@ export function lowerGltfMaterialObjectFunction(
                                 "Expected a named material state.",
                             );
                         const name = variable.name.text;
-                        lowerer.bindLocal(variable.name, {
-                            cpp: name,
-                            type: "opaque",
-                            absentCpp: `!${name}.truthy()`,
-                        });
+                        lowerer.bindLocal(variable.name, gltfValue(name));
                         return [`${indent}GltfPbrValue ${name};`];
                     }
                     const initializer = context.unwrapExpression(
@@ -652,11 +639,7 @@ export function lowerGltfMaterialObjectFunction(
                                     "Unsupported material result destructuring.",
                                 );
                             const name = element.name.text;
-                            lowerer.bindLocal(element.name, {
-                                cpp: name,
-                                type: "opaque",
-                                absentCpp: `!${name}.truthy()`,
-                            });
+                            lowerer.bindLocal(element.name, gltfValue(name));
                             lines.push(
                                 `${indent}GltfPbrValue ${name} = ${result}.at(${context.doubleLiteral(index)});`,
                             );
@@ -678,11 +661,7 @@ export function lowerGltfMaterialObjectFunction(
                         return [`${indent}const auto ${name} = ${callback};`];
                     }
                     const initial = value(initializer, lowerer);
-                    lowerer.bindLocal(variable.name, {
-                        cpp: name,
-                        type: "opaque",
-                        absentCpp: `!${name}.truthy()`,
-                    });
+                    lowerer.bindLocal(variable.name, gltfValue(name));
                     return [`${indent}GltfPbrValue ${name} = ${initial};`];
                 },
             );

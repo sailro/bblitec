@@ -5,7 +5,11 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import {
     pinnedRecordLiteral,
     pinnedRecordSchema,
@@ -36,7 +40,6 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             "encoder",
             "states",
             "state",
-            "hooks",
             "dispatch",
             "previousTaskResolver",
             "entry",
@@ -55,6 +58,10 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             "current.cancel": "current->cancel",
         }))
             bindings.set(name, { cpp, type: "opaque" });
+        bindings.set(
+            "hooks",
+            collectionBinding("hooks", memberElement(bindings)),
+        );
         bindings.set("state.hooks.size", {
             cpp: "static_cast<double>(state->hooks.size())",
             type: "scalar",
@@ -101,19 +108,6 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             bindings,
             calls,
             foldConditions: false,
-            forOf(iterated, element) {
-                return sameSource(iterated, "hooks")
-                    ? {
-                          range: "hooks",
-                          bindings: new Map([
-                              ...[...bindings].filter(([name]) =>
-                                  name.startsWith(`${element}.`),
-                              ),
-                              [element, { cpp: element, type: "opaque" }],
-                          ]),
-                      }
-                    : undefined;
-            },
             expression(input, lowerer) {
                 const node = unwrapExpression(input);
                 if (ts.isStringLiteralLike(node))

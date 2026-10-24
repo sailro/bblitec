@@ -4,7 +4,11 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { computeTextureSamplingCpp } from "./compute-texture-descriptor.js";
 import { sameSource, declaredKey } from "../compiler/syntax.js";
@@ -127,8 +131,6 @@ export function lowerComputeTextureMipmaps(
     for (const name of [
         "engine",
         "name",
-        "textures",
-        "prepared",
         "resource",
         "pipeline",
         "bindGroup",
@@ -141,6 +143,9 @@ export function lowerComputeTextureMipmaps(
             cpp: name === "bindGroup" ? "bind_group" : name,
             type: "opaque",
         });
+    // The texture and prepared-level lists, walked element by element.
+    for (const list of ["textures", "prepared"])
+        bindings.set(list, collectionBinding(list, memberElement(bindings)));
     bindings.set("drawCount", { cpp: "draw_count", type: "scalar" });
     bindings.set("count", { cpp: "count", type: "scalar" });
     const calls = new Map<string, (args: readonly string[]) => string>([
@@ -188,22 +193,6 @@ export function lowerComputeTextureMipmaps(
                     return `${owner}[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             }
             return undefined;
-        },
-        forOf(iterated, element) {
-            const range = context.matchingExpressionShape(iterated, [
-                "textures",
-                "prepared",
-            ]);
-            if (range === undefined) return undefined;
-            return {
-                range,
-                bindings: new Map([
-                    ...[...bindings].filter(([name]) =>
-                        name.startsWith(`${element}.`),
-                    ),
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
         },
         statement(node, lowerer, indent) {
             if (ts.isExpressionStatement(node)) {

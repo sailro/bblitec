@@ -315,6 +315,22 @@ export class PinnedBindings<T> {
                   }
                 : undefined;
         }
+        if (ts.isArrayLiteralExpression(node)) {
+            // `[...list]`: a copy is keyed by what it copies, element by element.
+            const parts = node.elements.map((element) => {
+                const spread = ts.isSpreadElement(element);
+                const part = this.indexKey(
+                    unwrapExpression(spread ? element.expression : element),
+                    at,
+                );
+                return part === undefined
+                    ? undefined
+                    : `${spread ? "spread:" : ""}${part}`;
+            });
+            return parts.every((part): part is string => part !== undefined)
+                ? { root: this.externalRoot("@array"), path: parts }
+                : undefined;
+        }
         if (ts.isPrefixUnaryExpression(node)) {
             const operand = this.indexKey(unwrapExpression(node.operand), at);
             return operand === undefined

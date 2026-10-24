@@ -1651,4 +1651,38 @@ test("the order deferred code runs in has one owner", () => {
             .sort(),
         ["src/compiler/async-activations.ts", "src/compiler/promises.ts"],
     );
+
+test("a pinned for-of reads what it walks off the collection's binding", () => {
+    // `for (const x of xs)` in a pinned body resolves `xs` through the
+    // declaration-keyed bindings table like any other read: the binding's
+    // `elements` (or a record list's `record`) give the native range and
+    // what `x` binds. No scope supplies a hook that recognises the
+    // iterated expression by its spelling. Ratchet: zero such providers.
+    const providers = sourcePaths.flatMap((path) =>
+        [
+            ...sourceText(path).matchAll(
+                /\bforOf\s*\??\s*[:(]|[.]forOf\s*=|\bforOf\s*,/g,
+            ),
+        ].map(() => path),
+    );
+    assert.deepEqual(providers, []);
+    // The numeric translator's iteration is the binding path; the typed
+    // record and character-kernel lowerers answer from the iterated value's
+    // own type.
+    const definitions = sourcePaths.filter((path) =>
+        /\bforOfIteration\(\s*statement: ts\.ForOfStatement/.test(
+            sourceText(path),
+        ),
+    );
+    assert.deepEqual(definitions.sort(), [
+        "src/lowering/character-kernel-lowerer.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+    ]);
+    const numeric = sourceText("src/lowering/pinned-numeric-lowerer.ts");
+    const [iteration = ""] = numeric
+        .slice(numeric.indexOf("protected forOfIteration("))
+        .split(/\r?\n {4}\}\r?\n/);
+    assert.ok(iteration.includes("this.binding(statement.expression)"));
+    assert.ok(!/sameSource|Shape\(|sourceEntry/.test(iteration), iteration);
 });

@@ -1,6 +1,10 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "../pinned-numeric-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { sameSource } from "../../compiler/syntax.js";
 
@@ -20,24 +24,15 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
             "Expected the Gaussian-splat scene setup body.",
         );
     const body = lowerPinnedBody(file, setup.body.statements, {
-        bindings: new Map([
+        bindings: new Map<string, PinnedBinding>([
             ["mesh", { cpp: "mesh", type: "opaque" }],
             [
                 "Math.PI",
                 { cpp: String(Math.PI), type: "scalar", staticNumber: Math.PI },
             ],
+            ["prepared", collectionBinding("prepared")],
         ]),
         calls: new Map(),
-        forOf(iterated, element) {
-            return sameSource(iterated, "prepared") && element === "item"
-                ? {
-                      range: "prepared",
-                      bindings: new Map([
-                          ["item", { cpp: "item", type: "opaque" }],
-                      ]),
-                  }
-                : undefined;
-        },
         returnValue: (value, lowerer) =>
             value ? lowerer.expression(value) : "",
         statement(statement, lowerer, indent) {

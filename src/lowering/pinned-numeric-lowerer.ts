@@ -494,6 +494,68 @@ export interface PinnedBinding {
         present: string;
         members: ReadonlyMap<string, { cpp: string; absent?: string }>;
     };
+    /**
+     * What this binding holds, for a `for (const x of <it>)`: the range a
+     * native loop walks and what each element binds. A binding without
+     * one (and not a `record-list`, whose `record` already says) is not a
+     * collection, and a loop over it refuses by name.
+     */
+    elements?: PinnedElements;
+}
+
+/**
+ * The elements a collection binding holds. The translator has no types, so
+ * the caller that owns the native carrier says both what the loop walks and
+ * what one element of it is -- on the binding, so the iteration resolves
+ * through the same declaration-keyed table as every other read.
+ */
+export interface PinnedElements {
+    /** The C++ range the loop walks; the binding's own `cpp` when absent. */
+    readonly range?: string;
+    /**
+     * An element bound to one name (`for (const x of xs)`): what `x` and
+     * the member paths the body reads through it resolve to.
+     */
+    readonly element?: (name: string) => ReadonlyMap<string, PinnedBinding>;
+    /**
+     * An element the pin destructures (`for (const [a, b] of xs)`): each
+     * position's binding, by the name the pin gives it. The arity is the
+     * native element's, so a pattern of another length refuses.
+     */
+    readonly tuple?: readonly ((name: string) => PinnedBinding)[];
+}
+
+/** An element that is the opaque native value its loop variable names. */
+export function opaqueElement(name: string): Map<string, PinnedBinding> {
+    return new Map([[name, { cpp: name, type: "opaque" }]]);
+}
+
+/**
+ * An opaque element whose member reads are the rows `members` binds under
+ * the element's name (`md.id`, `sub.indexCount`): the caller's ports for
+ * the pin's own loop variable, bound again in the loop body's scope.
+ */
+export function memberElement(
+    members: ReadonlyMap<string, PinnedBinding>,
+): (name: string) => Map<string, PinnedBinding> {
+    return (name) =>
+        new Map([
+            ...[...members].filter(([port]) => port.startsWith(`${name}.`)),
+            ...opaqueElement(name),
+        ]);
+}
+
+/**
+ * A native collection the pin only walks: `range` is both its spelling and
+ * what the loop iterates, and `element` what one element binds.
+ */
+export function collectionBinding(
+    range: string,
+    element: (
+        name: string,
+    ) => ReadonlyMap<string, PinnedBinding> = opaqueElement,
+): PinnedBinding {
+    return { cpp: range, type: "opaque", elements: { element } };
 }
 
 /** One pinned callee's C++ spelling, over its already-lowered arguments. */
@@ -662,29 +724,6 @@ export interface PinnedNumericScope {
     localPrefix?: string;
     /** Keep source numeric loop values when callers do not guarantee integral bounds. */
     loopVariableType?: "index" | "scalar";
-    /**
-     * How a `for (const x of xs)` spells its range, and what `x` binds to.
-     *
-     * The translator has no types, so it cannot know what a pinned
-     * collection is or what its element exposes; the caller that owns the
-     * native carrier answers both. Returning `undefined` refuses the loop
-     * by name rather than guessing a range.
-     */
-    forOf?: (
-        /** The iterated expression, matched by its syntax. */
-        iterated: ts.Expression,
-        element: string,
-        /** What the iterated expression is bound to, where it is bound. */
-        binding: PinnedBinding | undefined,
-        syntax: { binding: ts.BindingName },
-    ) =>
-        | {
-              /** The C++ range expression, e.g. `scene.caster_meshes`. */
-              range: string;
-              /** What the element name and its member paths resolve to. */
-              bindings: ReadonlyMap<string, PinnedBinding>;
-          }
-        | undefined;
     /**
      * How a `{ x, y, z }` object literal spells the native record it is.
      *
@@ -1189,35 +1228,51 @@ export class PinnedNumericLowerer {
                 ))
         ))
             return this.fail(binding, "for-of initializer");
+        // One name, or the names of a destructured `[a, b]` element.
+        const names = ts.isIdentifier(binding)
+            ? undefined
+            : binding.elements.map((entry) => {
+                  if (
+                      !ts.isBindingElement(entry) ||
+                      !ts.isIdentifier(entry.name)
+                  )
+                      return this.fail(entry, "for-of initializer");
+                  return entry.name.text;
+              });
         const element = ts.isIdentifier(binding)
             ? binding.text
-            : `[${binding.elements
-                  .map((entry) => {
-                      if (
-                          !ts.isBindingElement(entry) ||
-                          !ts.isIdentifier(entry.name)
-                      )
-                          return this.fail(entry, "for-of initializer");
-                      return entry.name.text;
-                  })
-                  .join(", ")}]`;
-        const resolved =
-            this.scope.forOf?.(
-                statement.expression,
-                element,
-                this.binding(statement.expression),
-                { binding },
-            ) ??
-            (ts.isIdentifier(binding)
-                ? this.recordListForOf(statement.expression, element)
-                : undefined);
-        if (!resolved)
+            : `[${(names ?? []).join(", ")}]`;
+        // What the iterated expression holds is its binding's to say, as
+        // for any other read; an unbound or non-collection one refuses.
+        const collection = this.binding(statement.expression);
+        const elements = collection && this.elementsOf(collection);
+        const tuple = elements?.tuple;
+        const bindings = !names
+            ? elements?.element?.(element)
+            : tuple?.length === names.length
+              ? new Map(names.map((name, index) => [name, tuple[index]!(name)]))
+              : undefined;
+        if (!elements || !bindings)
             return this.fail(
                 statement,
                 `for-of over '${statement.expression.getText(this.file)}'`,
             );
-        this.bindPorts(resolved.bindings, statement.statement);
-        return { header: `const auto& ${element} : ${resolved.range}` };
+        this.bindPorts(bindings, statement.statement);
+        return {
+            header: `const auto& ${element} : ${elements.range ?? collection.cpp}`,
+        };
+    }
+
+    /**
+     * What a collection binding holds: the caller's own element model, or a
+     * record list's, whose `record` is what every element is.
+     */
+    private elementsOf(collection: PinnedBinding): PinnedElements | undefined {
+        if (collection.elements) return collection.elements;
+        const record = collection.record;
+        return collection.type === "record-list" && record
+            ? { element: (name) => recordBindings(name, name, record) }
+            : undefined;
     }
 
     protected tryStatement(
@@ -2601,21 +2656,6 @@ export class PinnedNumericLowerer {
             cpp,
             this.expression(expression.right),
         )!;
-    }
-
-    /** A `for (const x of list)` over a record list, element by element. */
-    private recordListForOf(
-        iterated: ts.Expression,
-        element: string,
-    ):
-        | { range: string; bindings: ReadonlyMap<string, PinnedBinding> }
-        | undefined {
-        const list = this.binding(iterated);
-        if (list?.type !== "record-list" || !list.record) return undefined;
-        return {
-            range: list.cpp,
-            bindings: recordBindings(element, element, list.record),
-        };
     }
 
     /** One element of a record list, or a bound record, and its struct. */

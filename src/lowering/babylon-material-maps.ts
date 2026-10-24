@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { memberElement, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { soleBindingName } from "../compiler/syntax.js";
 
 /** JSON map entries retain the pin's iteration order and replacement semantics. */
@@ -71,6 +71,16 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
             created,
             "Expected the Standard material factory.",
         );
+    // Each map's records, read through the members bound under the pin's
+    // names for them.
+    const members = new Map<string, PinnedBinding>([
+        ["md.id", { cpp: 'string_or(md, "id")', type: "opaque" }],
+        ["mm.id", { cpp: 'string_or(mm, "id")', type: "opaque" }],
+        [
+            "mm.materials",
+            { cpp: 'babylon_material_ids(mm.at("materials"))', type: "opaque" },
+        ],
+    ]);
     const bindings = new Map<string, PinnedBinding>([
         [
             "data.materials",
@@ -78,6 +88,7 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
                 cpp: 'document.at("materials")',
                 type: "opaque",
                 absentCpp: '!babylon_json_truthy(document, "materials")',
+                elements: { element: memberElement(members) },
             },
         ],
         [
@@ -86,14 +97,10 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
                 cpp: 'document.at("multiMaterials")',
                 type: "opaque",
                 absentCpp: '!babylon_json_truthy(document, "multiMaterials")',
+                elements: { element: memberElement(members) },
             },
         ],
-        ["md.id", { cpp: 'string_or(md, "id")', type: "opaque" }],
-        ["mm.id", { cpp: 'string_or(mm, "id")', type: "opaque" }],
-        [
-            "mm.materials",
-            { cpp: 'babylon_material_ids(mm.at("materials"))', type: "opaque" },
-        ],
+        ...members,
         [created.name.text, { cpp: created.name.text, type: "opaque" }],
     ]);
     const body = lowerPinnedBody(
@@ -102,20 +109,6 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            forOf(_iterated, element, binding) {
-                const range = binding?.cpp;
-                return range
-                    ? {
-                          range,
-                          bindings: new Map([
-                              ...[...bindings].filter(([name]) =>
-                                  name.startsWith(`${element}.`),
-                              ),
-                              [element, { cpp: element, type: "opaque" }],
-                          ]),
-                      }
-                    : undefined;
-            },
             statement(statement, lowerer, indent) {
                 if (statement === materialLoop)
                     return lowerer.statement(
