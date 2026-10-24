@@ -75,6 +75,7 @@ import { readOnlyDataMethods } from "./receiver-methods.js";
 import { isReadOnlyRegExpCall } from "./regexp-call-effects.js";
 import {
     callArgumentIsReadOnly,
+    callWritesReceiver,
     isEffectFunction,
     libraryWrittenArgument,
     parameterIsReadOnly,
@@ -485,13 +486,9 @@ export function functionUsesDynamicThis(
  * recognize a write the same way, so a family added here has to reach one
  * place rather than several.
  *
- * `mutatesVia` is the third caller's axis. Asked of a value that may be any
- * data kind, the safe answer is "anything not proven read-only"
- * (`readOnlyDataMethods`, the default); asked of a value the caller already
- * knows is an array, whose method set is closed, the exact answer is
- * `mutatingArrayMethods`. Both are legitimate and neither is the other's
- * default, so the predicate is a parameter rather than a second copy of the
- * three clauses.
+ * `mutatesVia` decides which method calls write their receiver; with a
+ * checker the default is {@link callWritesReceiver}, without one every
+ * method not known to only read.
  *
  * `isTarget` learns whether the target is assigned or is a mutated
  * receiver: assigning a bare name rebinds it, which a caller tracking the
@@ -504,8 +501,11 @@ function writesThroughRoot(
         expression: ts.Expression,
         via: "assignment" | "receiver",
     ) => boolean,
-    mutatesVia: (method: string) => boolean = (method) =>
-        !readOnlyDataMethods.has(method),
+    mutatesVia?: (
+        method: string,
+        receiver: ts.Expression,
+        call: ts.CallExpression,
+    ) => boolean,
     checker?: ts.TypeChecker,
     sourceFiles?: readonly ts.SourceFile[],
 ): boolean {
@@ -521,7 +521,11 @@ function writesThroughRoot(
     const target = mutatingCallTarget(
         node,
         member,
-        mutatesVia,
+        mutatesVia ??
+            (checker
+                ? (method, receiver, call) =>
+                      callWritesReceiver(checker, method, receiver, call)
+                : (method) => !readOnlyDataMethods.has(method)),
         checker && ((call) => libraryWrittenArgument(checker, call)),
     );
     // Calling a method on a primitive field cannot write through its owner.

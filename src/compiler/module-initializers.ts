@@ -8,10 +8,10 @@ import {
     sourceFileNodes,
 } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
-import { receiverWritingMethods } from "./receiver-methods.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
 import {
     callArgumentIsReadOnly,
+    libraryCallWritesReceiver,
     libraryWrittenArgument,
     parameterIsReadOnly,
 } from "./parameter-effects.js";
@@ -31,6 +31,7 @@ import {
 } from "./class-members.js";
 import { EvaluationOrder } from "./evaluation-order.js";
 import {
+    bindingNameIdentifiers,
     mutatingCallTarget,
     unwrapExpression,
     writeSites,
@@ -290,14 +291,16 @@ function pinnedCallArgumentIsReadOnly(
 }
 
 /**
- * Every name whose container `sourceFile` writes INTO -- a field store, an
+ * Every name whose container `files` write INTO -- a field store, an
  * element store, an increment through it, a `delete`, or a mutating
- * method call on it -- anywhere in the file, callbacks included. Rebinding
- * the name itself is `isRebound`'s question (binding-rebinds.ts); this one is about
- * what the name holds.
+ * method call on it -- anywhere, callbacks included, directly or through a
+ * name any of the files binds to it or to a member of it (a declaration,
+ * a destructured or iterated leaf, an export). Rebinding the name itself
+ * is `isRebound`'s question (binding-rebinds.ts); this one is about what
+ * the name holds.
  */
 function collectMutatedContainerSymbols(
-    sourceFile: ts.SourceFile,
+    files: readonly ts.SourceFile[],
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
@@ -318,57 +321,106 @@ function collectMutatedContainerSymbols(
         )
             record(current.expression);
     };
-    sourceFileNodes(sourceFile).forEach((node) => {
-        if (
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.initializer &&
-            typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
-        ) {
-            const alias = symbols.valueSymbol(node.name);
-            // The container itself, or a literal holding it or its members.
-            const origins = [
-                node.initializer,
-                ...literalHeldValues(node.initializer).filter(heldReference),
-            ].flatMap((value) => {
-                const origin = moduleContainerSymbol(value, checker, symbols);
-                return origin ? [origin] : [];
-            });
-            if (alias && origins.length > 0) aliases.set(alias, origins);
+    // A leaf a pattern or a loop binds out of a container holds a member.
+    const bindLeaves = (name: ts.BindingName, source: ts.Expression): void => {
+        const origin = moduleContainerSymbol(source, checker, symbols);
+        if (!origin) return;
+        for (const leaf of bindingNameIdentifiers(name)) {
+            const alias = symbols.valueSymbol(leaf);
+            if (alias && heldReference(leaf)) aliases.set(alias, [origin]);
         }
-        // A container, or a member of one, kept past a call (a construction,
-        // a storing call) is written through its new owner.
-        for (const argument of keptArguments(checker, node))
-            if (heldReference(argument)) record(argument);
-        if (ts.isCallExpression(node)) {
-            const called = calledDeclaration(checker, node);
-            node.arguments.forEach((argument, index) => {
-                if (
-                    !typeCanCarryReference(
-                        checker.getTypeAtLocation(argument),
-                    ) ||
-                    pinnedCallArgumentIsReadOnly(node, called, index) ||
-                    callArgumentIsReadOnly(checker, node, index)
+    };
+    for (const sourceFile of files)
+        sourceFileNodes(sourceFile).forEach((node) => {
+            if (
+                ts.isVariableDeclaration(node) &&
+                !ts.isIdentifier(node.name) &&
+                node.initializer
+            )
+                bindLeaves(node.name, node.initializer);
+            if (
+                ts.isForOfStatement(node) &&
+                ts.isVariableDeclarationList(node.initializer)
+            )
+                for (const declaration of node.initializer.declarations)
+                    bindLeaves(declaration.name, node.expression);
+            if (
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.initializer &&
+                typeCanCarryReference(
+                    checker.getTypeAtLocation(node.initializer),
                 )
-                    return;
-                visitMutableArgumentReferences(checker, node, index, record);
-            });
-        }
-        const writes = writeSites(node);
-        if (writes.length > 0) {
-            for (const { target } of writes) recordThrough(target);
-        } else {
-            const target = mutatingCallTarget(
-                node,
-                (callee) => namedMember(checker, callee),
-                (method) => receiverWritingMethods.has(method),
-                (call) => libraryWrittenArgument(checker, call),
-            );
-            if (target) record(target);
-        }
-    });
-    for (const symbol of mutated)
-        for (const origin of aliases.get(symbol) ?? []) mutated.add(origin);
+            ) {
+                const alias = symbols.valueSymbol(node.name);
+                // The container itself, or a literal holding it or its members.
+                const origins = [
+                    node.initializer,
+                    ...literalHeldValues(node.initializer).filter(
+                        heldReference,
+                    ),
+                ].flatMap((value) => {
+                    const origin = moduleContainerSymbol(
+                        value,
+                        checker,
+                        symbols,
+                    );
+                    return origin ? [origin] : [];
+                });
+                if (alias && origins.length > 0) aliases.set(alias, origins);
+            }
+            // A container, or a member of one, kept past a call (a construction,
+            // a storing call) is written through its new owner.
+            for (const argument of keptArguments(checker, node))
+                if (heldReference(argument)) record(argument);
+            if (ts.isCallExpression(node)) {
+                const called = calledDeclaration(checker, node);
+                node.arguments.forEach((argument, index) => {
+                    if (
+                        !typeCanCarryReference(
+                            checker.getTypeAtLocation(argument),
+                        ) ||
+                        pinnedCallArgumentIsReadOnly(node, called, index) ||
+                        callArgumentIsReadOnly(checker, node, index)
+                    )
+                        return;
+                    visitMutableArgumentReferences(
+                        checker,
+                        node,
+                        index,
+                        record,
+                    );
+                });
+            }
+            const writes = writeSites(node);
+            if (writes.length > 0) {
+                for (const { target } of writes) recordThrough(target);
+            } else {
+                const target = mutatingCallTarget(
+                    node,
+                    (callee) => namedMember(checker, callee),
+                    (method, receiver, call) =>
+                        libraryCallWritesReceiver(
+                            checker,
+                            method,
+                            receiver,
+                            call,
+                        ),
+                    (call) => libraryWrittenArgument(checker, call),
+                );
+                if (target) record(target);
+            }
+        });
+    // Through aliases of aliases, to a fixed point.
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const symbol of [...mutated])
+            for (const origin of aliases.get(symbol) ?? [])
+                if (!mutated.has(origin)) {
+                    mutated.add(origin);
+                    changed = true;
+                }
+    }
     return mutated;
 }
 
@@ -565,7 +617,7 @@ class ModuleInitializerPlanner {
         const rebound = (symbol: ts.Symbol): boolean =>
             isRebound(this.checker, this.program.getSourceFiles(), symbol);
         const mutated = collectMutatedContainerSymbols(
-            this.sourceFile,
+            [this.sourceFile],
             this.checker,
             this.symbols,
         );
@@ -764,17 +816,11 @@ class ModuleInitializerPlanner {
     /** Container names any project file writes into, entry included. */
     public mutatedContainerSymbols(): Set<ts.Symbol> {
         if (!this.mutatedContainerCache) {
-            const mutated = new EmissionSet<ts.Symbol>();
-            for (const file of this.runtimeModules()) {
-                for (const symbol of collectMutatedContainerSymbols(
-                    file,
-                    this.checker,
-                    this.symbols,
-                )) {
-                    mutated.add(symbol);
-                }
-            }
-            this.mutatedContainerCache = mutated;
+            this.mutatedContainerCache = collectMutatedContainerSymbols(
+                this.runtimeModules(),
+                this.checker,
+                this.symbols,
+            );
         }
         return this.mutatedContainerCache;
     }

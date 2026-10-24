@@ -21,10 +21,8 @@ import {
     isObjectIdentityFunction,
     objectIdentityCallArgument,
 } from "./static-evaluator.js";
-import {
-    readOnlyDataMethods,
-    receiverWritingMethods,
-} from "./receiver-methods.js";
+import { readOnlyDataMethods } from "./receiver-methods.js";
+import { callWritesReceiver } from "./parameter-effects.js";
 import {
     outermostWrapper,
     regularExpressionParts,
@@ -499,7 +497,12 @@ function sourceGraph(
                         memberWrites.set(storedSymbol, list);
                     } else if (
                         method &&
-                        receiverWritingMethods.has(method.name)
+                        callWritesReceiver(
+                            checker,
+                            method.name,
+                            method.expression,
+                            node,
+                        )
                     )
                         mutate(method.expression);
                 }

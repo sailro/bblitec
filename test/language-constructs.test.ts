@@ -10565,6 +10565,42 @@ check(
 );
 
 check(
+    "date-utc-field-setters",
+    `
+    const when = new Date(Date.UTC(2020, 0, 15, 10, 20, 30, 400));
+    const first = when.setUTCFullYear(2001);
+    when.setUTCMonth(5, 2);
+    when.setUTCHours(23, 59);
+    when.setUTCSeconds(1, 2);
+    when.setUTCMilliseconds(999);
+    when.setUTCMinutes(7);
+    when.setUTCDate(31);
+    if (when.toISOString() !== "2001-07-01T23:07:01.999Z" || first !== Date.UTC(2001, 0, 15, 10, 20, 30, 400))
+        throw new Error("setters " + when.toISOString());
+    const early = new Date(0);
+    early.setUTCFullYear(50);
+    const invalid = new Date(NaN);
+    const hours = invalid.setUTCHours(1);
+    invalid.setUTCFullYear(2000);
+    if (early.getUTCFullYear() !== 50 || !Number.isNaN(hours) || invalid.getUTCFullYear() !== 2000 || invalid.getUTCMonth() !== 0)
+        throw new Error("year and invalid time");
+`,
+);
+
+check(
+    "typed-array-and-array-length-range-errors",
+    `
+    const empty = new Float32Array(Number("x"));
+    let typed = "";
+    try { void new Uint8Array(-1); } catch (error) { typed = (error as Error).name; }
+    const values = [1, 2, 3];
+    let plain = "";
+    try { values.length = -1; } catch (error) { plain = (error as Error).name; }
+    if (empty.length !== 0 || typed !== "RangeError" || plain !== "RangeError") throw new Error("lengths " + typed + " " + plain);
+`,
+);
+
+check(
     "element-reads-of-absent-receivers",
     `
     interface Control { u: number; lat?: number }
@@ -14865,6 +14901,57 @@ test("imported module records reached through holders and element reads are one 
         "imported-module-record-receivers",
         cpp,
     );
+});
+
+// A write through a selection writes the object it picks; a method writing
+// a member's array, or one of the object's own methods writing through
+// `this`, gives that array storage.
+check(
+    "writes-through-selections-and-members-reach-their-objects",
+    `
+    function local(): void {
+        const a = { n: 1 };
+        const b = { n: 2 };
+        (Number("1") > 0 ? a : b).n = 10;
+        const rows = [{ n: 1 }, { n: 2 }];
+        (Number("1") > 0 ? rows[1]! : rows[0]!).n = 7;
+        const cfg = { list: [1, 2], groups: { a: [1] as number[] } };
+        cfg.list.push(3);
+        cfg.groups.a.push(4);
+        const store = { items: [] as number[], add(v: number): void { this.items.push(v); } };
+        store.add(5);
+        if (a.n !== 10 || b.n !== 2 || rows[1]!.n !== 7 || rows[0]!.n !== 1 || cfg.list.join() !== "1,2,3" ||
+            cfg.groups.a.join() !== "1,4" || store.items.join() !== "5")
+            throw new Error("local");
+    }
+    local();
+    const left = { n: 1 };
+    const right = { n: 2 };
+    (Number("0") > 0 ? left : right).n = 20;
+    const shared = { items: [] as number[], add(v: number): void { this.items.push(v); } };
+    shared.add(6);
+    if (left.n !== 1 || right.n !== 20 || shared.items.length !== 1) throw new Error("module");
+`,
+);
+
+test("imported containers written through a destructured or exported alias are written", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-container-aliases"),
+        [
+            [
+                "state",
+                `export const state = { list: [] as string[] };
+                export const table = { xs: [1] };
+                export const xs = table.xs;`,
+            ],
+        ],
+        `import { state, table, xs } from "./state.js";
+        const { list } = state;
+        list.push("x");
+        xs.push(2);
+        if (state.list.length !== 1 || table.xs.length !== 2) throw new Error("aliases " + state.list.length + " " + table.xs.length);`,
+    );
+    await executeGeneratedAssertions(t, "imported-container-aliases", cpp);
 });
 
 // A record handed to a function that compares it is the one object its

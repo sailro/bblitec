@@ -2642,6 +2642,9 @@ export class DataLowerer {
             // path itself.
             const receiver = this.context.unwrap(unwrapped.expression);
             let owner =
+                (mode === "write" && ts.isConditionalExpression(receiver)
+                    ? this.selectedWriteOwner(receiver)
+                    : undefined) ??
                 this.guardedChainReceiver(unwrapped) ??
                 this.compileDataPath(unwrapped.expression, mode, true) ??
                 (ts.isCallExpression(receiver) ||
@@ -9713,6 +9716,72 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return value;
         });
+    }
+
+    /**
+     * The object a write through `c ? a : b` reaches: the arm the condition
+     * picks, read once before the value written. Both arms are write paths
+     * of one storage type.
+     */
+    private selectedWriteOwner(selection: ts.ConditionalExpression): Value {
+        const condition = this.context.conditions.compileCondition(
+            selection.condition,
+        );
+        const known = knownCondition(condition);
+        if (known !== undefined)
+            return this.selectedWriteArm(
+                known ? selection.whenTrue : selection.whenFalse,
+            );
+        const picked = this.context.allocateTemporaryCppName("write_selection");
+        this.context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name: picked,
+            initializer: condition,
+        });
+        const whenTrue = this.selectedWriteArm(selection.whenTrue);
+        const whenFalse = this.selectedWriteArm(selection.whenFalse);
+        if (
+            !whenTrue.dataType ||
+            !whenFalse.dataType ||
+            !dataTypesEqual(whenTrue.dataType, whenFalse.dataType)
+        )
+            return this.context.fail(
+                selection,
+                "A write through a selection requires both arms to share one storage type.",
+            );
+        return {
+            ...this.leafValue(
+                `(${picked} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
+                whenTrue.dataType,
+            ),
+            nativeCaptures: [
+                this.context.registerNativeConstBinding(picked),
+                ...(whenTrue.nativeCaptures ?? []),
+                ...(whenFalse.nativeCaptures ?? []),
+            ],
+        };
+    }
+
+    /**
+     * One arm a selection writes through, resolved as a member write's owner
+     * is (a data path, an element, a call's result), its snapshot cleared.
+     */
+    private selectedWriteArm(arm: ts.Expression): Value {
+        const expression = this.context.unwrap(arm);
+        const value =
+            this.compileDataPath(arm, "write", true) ??
+            (ts.isElementAccessExpression(expression) ||
+            ts.isCallExpression(expression)
+                ? this.context.compileValue(arm)
+                : undefined);
+        if (value?.kind !== "data")
+            return this.context.fail(
+                arm,
+                "A write through a selection requires each arm to be a represented data path.",
+            );
+        this.invalidateStaticElements(value);
+        return value;
     }
 
     /** Clear a complete element snapshot through every compiler alias. */

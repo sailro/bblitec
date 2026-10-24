@@ -27,7 +27,6 @@ import {
 import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
-import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     dataTypesEqual,
     isOpaqueReference,
@@ -88,6 +87,7 @@ import {
     isAssignmentExpression,
     isOperandSelection,
     propertyKey,
+    referenceBases,
     valueOperands,
     writeSites,
     rootIdentifier,
@@ -132,11 +132,14 @@ import {
     recursiveStorageEscapes,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
+    writesThroughTrackedRoot,
     type AliasedMutationScan,
 } from "./user-functions.js";
 import {
     engineCallMutatesArgument,
+    functionWritesThis,
     libraryCallMayWriteArgument,
+    libraryCallWritesReceiver,
     parameterHeldObjectWritten,
     parameterIsMutated,
     parameterMutatedPaths,
@@ -1334,13 +1337,13 @@ export class DeclarationLowerer {
             const accessorWrites = accessors.length
                 ? this.context.evaluationOrder.bodyAccess(accessors).writes
                 : undefined;
-            if (
+            const written =
                 value.kind === "record" &&
                 !aliasesRecord &&
                 (accessorWrites?.heap ||
                     accessorWrites?.any ||
-                    this.inferredObjectIsMutated(declaration.name))
-            ) {
+                    this.inferredObjectIsMutated(declaration.name));
+            if (written) {
                 // Accessor bodies can mutate their receiver even when a caller
                 // only consumes a scalar result through a structural view.
                 value = this.context.bindings.materializeRecordScalars(
@@ -1349,6 +1352,27 @@ export class DeclarationLowerer {
                     true,
                 );
             }
+            // A record written, or written by its own methods
+            // (`this.items.push(v)`), owns its declared arrays, as an
+            // annotated one does.
+            if (
+                value.kind === "record" &&
+                !aliasesRecord &&
+                !declaration.type &&
+                declaration.initializer &&
+                (written ||
+                    Object.values(value.recordMethods ?? {}).some(
+                        (method) =>
+                            ts.isFunctionLike(method) &&
+                            functionWritesThis(this.context.checker, method),
+                    ))
+            )
+                this.materializeRecordArrays(
+                    value,
+                    declaration.name,
+                    declaration.initializer,
+                    `${sourceName}_array`,
+                );
             this.context.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
@@ -4367,35 +4391,33 @@ export class DeclarationLowerer {
                             return true;
                         }
                     }
-                    if (ts.isCallExpression(node)) {
-                        const callee = namedMember(
+                    // A method writing the array or anything inside it.
+                    if (
+                        writesThroughTrackedRoot(
+                            node,
+                            (callee) =>
+                                namedMember(this.context.checker, callee),
+                            (target, via) =>
+                                via === "receiver" &&
+                                referenceBases(target).some(scan.namesAlias),
+                            undefined,
                             this.context.checker,
-                            node.expression,
-                        );
-                        if (
-                            callee &&
-                            scan.namesAlias(
-                                this.context.unwrap(callee.expression),
-                            ) &&
-                            mutatingArrayMethods.has(callee.name)
-                        ) {
-                            return true;
-                        }
-                        if (node.arguments.some(scan.containsAlias)) {
-                            return true;
-                        }
-                    }
+                            this.context.sourceFiles(),
+                        )
+                    )
+                        return true;
+                    if (
+                        ts.isCallExpression(node) &&
+                        node.arguments.some(scan.containsAlias)
+                    )
+                        return true;
                     return writeSites(node).some(
                         ({ target, from }) =>
                             // Rebinding an alias, or writing, stepping or
                             // deleting anything under one (`arr[0]++`,
-                            // `arr[1].v = 7`, `element.v = 7`).
-                            scan.namesAlias(target) ||
-                            ((ts.isElementAccessExpression(target) ||
-                                ts.isPropertyAccessExpression(target)) &&
-                                scan.namesAlias(
-                                    rootIdentifier(target) ?? target,
-                                )) ||
+                            // `arr[1].v = 7`, `element.v = 7`,
+                            // `(c ? a : b)[0] = 1`).
+                            referenceBases(target).some(scan.namesAlias) ||
                             // Storing an alias into another object.
                             ((ts.isPropertyAccessExpression(target) ||
                                 ts.isElementAccessExpression(target)) &&
@@ -4573,11 +4595,12 @@ export class DeclarationLowerer {
         ): boolean => {
             const node = unwrap(expression);
             if (ts.isIdentifier(node)) return scan.namesAlias(node);
-            if (
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
-            )
-                return isAlias(scan, node.expression, active, unwrap);
+            // Inside an alias's chain, or the operand a selection yields.
+            const bases = referenceBases(node, unwrap);
+            if (bases.length !== 1 || bases[0] !== node)
+                return bases.some((base) =>
+                    isAlias(scan, base, active, unwrap),
+                );
             if (!ts.isCallExpression(node)) return false;
             if (callResultHoldsArguments(this.context.checker, node))
                 return node.arguments.some((argument) =>
@@ -4689,6 +4712,28 @@ export class DeclarationLowerer {
                         )
                             return true;
                     }
+                    // A library method that writes its receiver, called on
+                    // the object or one of its members; a program method is
+                    // inlined on the record it binds.
+                    if (
+                        writesThroughTrackedRoot(
+                            node,
+                            (callee) =>
+                                namedMember(this.context.checker, callee),
+                            (target, via) =>
+                                via === "receiver" && isAlias(scan, target),
+                            (method, receiver, call) =>
+                                libraryCallWritesReceiver(
+                                    this.context.checker,
+                                    method,
+                                    receiver,
+                                    call,
+                                ),
+                            this.context.checker,
+                            this.context.sourceFiles(),
+                        )
+                    )
+                        return true;
                     if (
                         (ts.isCallExpression(node) ||
                             ts.isNewExpression(node)) &&
@@ -4779,6 +4824,32 @@ export class DeclarationLowerer {
                 },
             },
         );
+    }
+
+    /** Gives a record's compile-time array members the storage their declared type names. */
+    private materializeRecordArrays(
+        record: Value,
+        name: ts.Identifier,
+        initializer: ts.Expression,
+        label: string,
+    ): void {
+        const type = this.context.checker.getTypeAtLocation(name);
+        const properties = { ...record.recordProperties };
+        let changed = false;
+        for (const [key, member] of Object.entries(properties)) {
+            const field = type.getProperty(key);
+            if (member.kind !== "tuple" || !field) continue;
+            properties[key] =
+                this.context.bindings.materializeDeclaredRecordContainers(
+                    member,
+                    this.context.checker.getTypeOfSymbolAtLocation(field, name),
+                    initializer,
+                    `${label}_${key}`,
+                    field,
+                );
+            changed = true;
+        }
+        if (changed) writable(record).recordProperties = properties;
     }
 
     /**

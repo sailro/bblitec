@@ -404,6 +404,23 @@ export function rootExpression(
     return current;
 }
 
+/**
+ * The expressions whose objects `expression` evaluates to or into: the root
+ * of its access chain, and through a selection the root of each operand it
+ * may yield (`(c ? a : b).n` is in `a` or in `b`). A root that is no name
+ * -- a call, a literal -- is its caller's to follow.
+ */
+export function referenceBases(
+    expression: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+): readonly ts.Expression[] {
+    const root = rootExpression(expression, unwrap);
+    if (!isOperandSelection(root)) return [root];
+    return valueOperands(root, unwrap).flatMap((operand) =>
+        operand === root ? [root] : referenceBases(operand, unwrap),
+    );
+}
+
 /** The identifier a property/element-access chain is rooted at, if any. */
 export function rootIdentifier(
     expression: ts.Expression,
@@ -532,7 +549,11 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
 export function mutatingCallTarget(
     node: ts.Node,
     member: MemberReader,
-    mutatesVia: (method: string) => boolean,
+    mutatesVia: (
+        method: string,
+        receiver: ts.Expression,
+        call: ts.CallExpression,
+    ) => boolean,
     writtenArgument?: (call: ts.CallExpression) => ts.Expression | undefined,
 ): ts.Expression | undefined {
     if (!ts.isCallExpression(node)) return undefined;
@@ -546,7 +567,9 @@ export function mutatingCallTarget(
           ? node.arguments[0]
           : undefined;
     if (written) return written;
-    return mutatesVia(callee.name) ? callee.expression : undefined;
+    return mutatesVia(callee.name, callee.expression, node)
+        ? callee.expression
+        : undefined;
 }
 
 /**

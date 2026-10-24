@@ -11,13 +11,14 @@ import {
     type Projection,
 } from "./projections.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     callbackTakesReceiver,
     callsArgumentInPlace,
     isStoringDataCall,
     lengthPreservingArrayMethods,
+    libraryMethodWritesReceiver,
     readOnlyDataMethods,
     storingDataMethods,
 } from "./receiver-methods.js";
@@ -48,6 +49,8 @@ import {
     equalityOperator,
     parameterForArgument,
     functionKind,
+    mutatingCallTarget,
+    referenceBases,
     variableKind,
 } from "./syntax.js";
 import {
@@ -1941,4 +1944,114 @@ export function engineArgumentWritten(
         target.kind === "bodies" &&
         everyArgumentBody(call, target, index, onlyRead)
     );
+}
+
+/** Whether a call runs a function the program declares. */
+function callsProgramFunction(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
+    const declaration = calledDeclaration(checker, call);
+    return (
+        declaration !== undefined &&
+        !declaration.getSourceFile().isDeclarationFile &&
+        ts.isFunctionLike(declaration)
+    );
+}
+
+/**
+ * Whether a method call writes the object it is called on: a library
+ * method that writes a receiver of its type
+ * ({@link libraryMethodWritesReceiver}); a program method, unless its name
+ * is one only data reads take.
+ */
+export function callWritesReceiver(
+    checker: ts.TypeChecker,
+    method: string,
+    receiver: ts.Expression,
+    call: ts.CallExpression,
+): boolean {
+    return callsProgramFunction(checker, call)
+        ? !readOnlyDataMethods.has(method)
+        : libraryMethodWritesReceiver(checker, receiver, method);
+}
+
+/**
+ * {@link callWritesReceiver} for the library alone: a program method an
+ * analysis inlines on its receiver writes through the receiver it binds.
+ */
+export function libraryCallWritesReceiver(
+    checker: ts.TypeChecker,
+    method: string,
+    receiver: ts.Expression,
+    call: ts.CallExpression,
+): boolean {
+    return (
+        !callsProgramFunction(checker, call) &&
+        libraryMethodWritesReceiver(checker, receiver, method)
+    );
+}
+
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const thisWriters = new WeakMap<ts.Node, boolean>();
+
+/**
+ * Whether a function writes through `this`: a write or a writing method
+ * call on `this` or a member of it, its own or an arrow's sharing it, or
+ * a method of `this` that does.
+ */
+export function functionWritesThis(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration,
+    active = new Set<ts.Node>(),
+): boolean {
+    const known = thisWriters.get(declaration);
+    if (known !== undefined) return known;
+    const body = "body" in declaration ? declaration.body : undefined;
+    if (!body || active.has(declaration)) return false;
+    active.add(declaration);
+    const isThis = (expression: ts.Expression): boolean =>
+        referenceBases(expression).some(
+            (base) => base.kind === ts.SyntaxKind.ThisKeyword,
+        );
+    const writes = someAnalysisNode(
+        body,
+        (node) => {
+            const sites = writeSites(node);
+            if (sites.length > 0)
+                return sites.some(({ target }) => isThis(target));
+            const target = mutatingCallTarget(
+                node,
+                (callee) => namedMember(checker, callee),
+                (method, receiver, call) => {
+                    const called = calledDeclaration(checker, call);
+                    return called && callsProgramFunction(checker, call)
+                        ? ts.isFunctionLike(called) &&
+                              functionWritesThis(checker, called, active)
+                        : libraryMethodWritesReceiver(
+                              checker,
+                              receiver,
+                              method,
+                          );
+                },
+                (call) => libraryWrittenArgument(checker, call),
+            );
+            return (
+                target !== undefined &&
+                typeCanCarryReference(checker.getTypeAtLocation(target)) &&
+                isThis(target)
+            );
+        },
+        // An ordinary function nested here has a `this` of its own.
+        {
+            skip: (node) =>
+                node !== body &&
+                ts.isFunctionLike(node) &&
+                !ts.isArrowFunction(node),
+            types: "skip",
+        },
+    );
+    active.delete(declaration);
+    if (active.size === 0) thisWriters.set(declaration, writes);
+    return writes;
 }

@@ -7,7 +7,7 @@ import {
     type ClassHierarchy,
 } from "./class-members.js";
 import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
-import { receiverWritingMethods } from "./receiver-methods.js";
+import { libraryMethodWritesReceiver } from "./receiver-methods.js";
 import { propertyIsReadOnly } from "./data-types.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import {
@@ -1230,7 +1230,13 @@ export class EvaluationOrder {
                 access.writes.any = true;
             } else if (platform === "writes-receiver")
                 access.writes.heap = true;
-            if (receiverWritingMethods.has(callee.name)) {
+            if (
+                libraryMethodWritesReceiver(
+                    this.checker,
+                    callee.expression,
+                    callee.name,
+                )
+            ) {
                 access.writes.heap = true;
                 if (
                     this.mayHoldArray(

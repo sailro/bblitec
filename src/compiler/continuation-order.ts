@@ -15,7 +15,7 @@ import { promiseReactionOf, promiseStatic } from "./promises.js";
 import {
     callsArgumentInPlace,
     isListenerRegistration,
-    receiverWritingMethods,
+    libraryMethodWritesReceiver,
 } from "./receiver-methods.js";
 import { isRebound } from "./binding-rebinds.js";
 import { constInitializer, documentLookupCallId } from "./browser-erasure.js";
@@ -541,7 +541,8 @@ function summarize(
         const written = mutatingCallTarget(
             node,
             (expression) => namedMember(checker, expression),
-            (method) => receiverWritingMethods.has(method),
+            (method, receiver) =>
+                libraryMethodWritesReceiver(checker, receiver, method),
             (candidate) => libraryWrittenArgument(checker, candidate),
         );
         if (written) change(written);

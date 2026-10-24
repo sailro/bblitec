@@ -321,12 +321,12 @@ import {
     isSupportedFunction,
     variableKind,
     rootExpression,
+    referenceBases,
     unwrapExpression,
     keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
-import { mutatingArrayMethods } from "./compiler/receiver-methods.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
@@ -3410,31 +3410,25 @@ class Compiler implements LoweringServices {
      *
      * The three write shapes come from `writesThroughTrackedRoot`, the one
      * recognizer `parameterIsReadOnly` and `returnedValueCanMove` also
-     * read; this caller supplies the two things that are its own. The
-     * target is the alias OR an element of it, because writing one slot
-     * writes the array. And the mutating-method set is the exact one:
-     * the tracked value is known to be an array here, so its method set
-     * is closed, where the shared default has to treat anything not
-     * proven read-only as a write.
+     * read. The target is anything inside the array (`referenceBases`):
+     * writing a slot, its length or a member of an element changes what a
+     * fold would read.
      */
     private writesThroughArray(
         node: ts.Node,
         scan: AliasedMutationScan,
     ): boolean {
-        const isTarget = (expression: ts.Expression): boolean => {
-            const target = this.unwrap(expression);
-            return (
-                scan.namesAlias(target) ||
-                (ts.isElementAccessExpression(target) &&
-                    scan.namesAlias(this.unwrap(target.expression)))
+        const isTarget = (expression: ts.Expression): boolean =>
+            referenceBases(expression, (chain) => this.unwrap(chain)).some(
+                scan.namesAlias,
             );
-        };
         if (
             writesThroughTrackedRoot(
                 node,
                 (callee) => namedMember(this.checker, callee),
                 isTarget,
-                (method) => mutatingArrayMethods.has(method),
+                undefined,
+                this.checker,
             )
         ) {
             return true;

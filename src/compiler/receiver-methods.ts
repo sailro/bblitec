@@ -3,11 +3,21 @@ import { EmissionSet } from "./emission-transaction.js";
 import {
     declarationInDefaultLibrary,
     libraryGlobal,
+    libraryName,
     calledDeclaration,
     namedMember,
 } from "./symbols.js";
-import { callSignatures } from "./type-facts.js";
+import {
+    callSignatures,
+    PRIMITIVE_KINDS,
+    unionMembers,
+    valueKindOf,
+} from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
 
 /**
  * The built-in methods that change the container they are called on, read
@@ -56,6 +66,85 @@ export const receiverWritingMethods: ReadonlySet<string> = new EmissionSet([
     "clear",
     "delete",
 ]);
+
+/** Typed array methods that change the array in place. */
+const typedArrayWritingMethods: ReadonlySet<string> = new EmissionSet([
+    "copyWithin",
+    "fill",
+    "reverse",
+    "set",
+    "sort",
+]);
+
+/**
+ * Default-library classes whose methods leave the receiver as it was, but
+ * for the ones each names: setters, a RegExp's lastIndex readers.
+ */
+const LIBRARY_READING_METHODS: ReadonlyMap<
+    string,
+    (method: string) => boolean
+> = new Map<string, (method: string) => boolean>([
+    ["ArrayBuffer", (method) => method === "slice"],
+    ["DataView", (method) => !method.startsWith("set")],
+    ["Date", (method) => !method.startsWith("set")],
+    ["Error", () => true],
+    [
+        "Object",
+        (method) =>
+            [
+                "hasOwnProperty",
+                "isPrototypeOf",
+                "propertyIsEnumerable",
+                "toLocaleString",
+                "toString",
+                "valueOf",
+            ].includes(method),
+    ],
+    ["Promise", () => true],
+    [
+        "RegExp",
+        (method) =>
+            method !== "compile" && method !== "exec" && method !== "test",
+    ],
+    ["SharedArrayBuffer", (method) => method === "slice"],
+    ["WeakRef", () => true],
+]);
+
+/** Map, Set, WeakMap and WeakSet methods that change the collection. */
+const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
+    "add",
+    "clear",
+    "delete",
+    "set",
+]);
+
+/**
+ * Whether calling the library method `method` on `receiver` writes it, by
+ * the receiver's checked type: an array's or typed array's mutating
+ * methods, a collection's writers, none on a primitive, a library class's
+ * own writers, and on any other receiver every method not known to only
+ * read.
+ */
+export function libraryMethodWritesReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+    method: string,
+): boolean {
+    return unionMembers(
+        checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
+    ).some((member) => {
+        if (PRIMITIVE_KINDS.includes(valueKindOf(member))) return false;
+        if (checker.isArrayType(member) || checker.isTupleType(member))
+            return mutatingArrayMethods.has(method);
+        const name = libraryName(member) ?? "";
+        if (TYPED_ARRAY_KINDS.has(name) || BIGINT_ARRAY_KINDS.has(name))
+            return typedArrayWritingMethods.has(method);
+        if (["Map", "Set", "WeakMap", "WeakSet"].includes(name))
+            return collectionWritingMethods.has(method);
+        const reads = LIBRARY_READING_METHODS.get(name);
+        return reads ? !reads(method) : !readOnlyDataMethods.has(method);
+    });
+}
 
 /** Data-container methods whose receiver is not mutated. */
 export const readOnlyDataMethods: ReadonlySet<string> = new EmissionSet([
