@@ -725,29 +725,6 @@ export interface PinnedNumericScope {
     /** Keep source numeric loop values when callers do not guarantee integral bounds. */
     loopVariableType?: "index" | "scalar";
     /**
-     * How a `for (const x of xs)` spells its range, and what `x` binds to.
-     *
-     * The translator has no types, so it cannot know what a pinned
-     * collection is or what its element exposes; the caller that owns the
-     * native carrier answers both. Returning `undefined` refuses the loop
-     * by name rather than guessing a range.
-     */
-    forOf?: (
-        /** The iterated expression, matched by its syntax. */
-        iterated: ts.Expression,
-        element: string,
-        /** What the iterated expression is bound to, where it is bound. */
-        binding: PinnedBinding | undefined,
-        syntax: { binding: ts.BindingName },
-    ) =>
-        | {
-              /** The C++ range expression, e.g. `scene.caster_meshes`. */
-              range: string;
-              /** What the element name and its member paths resolve to. */
-              bindings: ReadonlyMap<string, PinnedBinding>;
-          }
-        | undefined;
-    /**
      * How a `{ x, y, z }` object literal spells the native record it is.
      *
      * The pin passes small positional records around by value -- a point
@@ -1265,17 +1242,9 @@ export class PinnedNumericLowerer {
         const element = ts.isIdentifier(binding)
             ? binding.text
             : `[${(names ?? []).join(", ")}]`;
+        // What the iterated expression holds is its binding's to say, as
+        // for any other read; an unbound or non-collection one refuses.
         const collection = this.binding(statement.expression);
-        const legacy = this.scope.forOf?.(
-            statement.expression,
-            element,
-            collection,
-            { binding },
-        );
-        if (legacy) {
-            this.bindPorts(legacy.bindings, statement.statement);
-            return { header: `const auto& ${element} : ${legacy.range}` };
-        }
         const elements = collection && this.elementsOf(collection);
         const tuple = elements?.tuple;
         const bindings = !names
