@@ -25,6 +25,7 @@ import {
     declarationInDefaultLibrary,
     declarationOrigin,
     declaredSymbol,
+    libraryCallName,
     libraryGlobal,
     libraryName,
     nullishComparison,
@@ -54,7 +55,10 @@ import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
 } from "./data-types/typed-arrays.js";
-import { callResultHoldsArguments } from "./kept-values.js";
+import {
+    callResultHoldsArguments,
+    libraryResultMayHold,
+} from "./kept-values.js";
 import {
     typeCanCarryReference,
     arrayElementType,
@@ -987,7 +991,7 @@ function mayReturnArgument(
 ): boolean {
     const target = callTarget(checker, call);
     if (target.kind === "library")
-        return libraryMayHold(checker, call, index, target.name);
+        return libraryResultMayHold(checker, call, index);
     if (target.kind === "unknown") return true;
     return target.bodies.some((body) => {
         const binding = argumentBinding(call, body, index);
@@ -1003,79 +1007,6 @@ function mayReturnArgument(
             )
         );
     });
-}
-
-/** Typed-array and view constructors: a view of a buffer, a copy of anything else. */
-const BINARY_VIEWS: ReadonlySet<string> = new Set([
-    ...TYPED_ARRAY_KINDS.keys(),
-    "DataView",
-]);
-
-/**
- * Library methods whose result holds an argument: a new array or
- * collection holding it, or the receiver it was stored into.
- */
-const ARGUMENT_HOLDING_METHODS: ReadonlySet<string> = new Set([
-    "add",
-    "concat",
-    "fill",
-    "set",
-    "toSpliced",
-    "with",
-]);
-
-/** Library statics and globals whose result is computed, holding no argument. */
-const COMPUTING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Array.isArray",
-    "Boolean",
-    "Number",
-    "String",
-    "isFinite",
-    "isNaN",
-    "parseFloat",
-    "parseInt",
-    "JSON.parse",
-    "JSON.stringify",
-    "Object.getOwnPropertyNames",
-    "Object.hasOwn",
-    "Object.is",
-    "Object.keys",
-    "structuredClone",
-]);
-
-/**
- * Whether a default-library call's result may be or hold the object it is
- * handed at `index`: a binary view over a buffer, a method storing its
- * argument into a result or receiver it returns, or a static or global
- * other than those computing a new value (`Math`, `JSON`, ...).
- */
-function libraryMayHold(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression | ts.NewExpression,
-    index: number,
-    name: string | undefined,
-): boolean {
-    if (name === undefined) return true;
-    if (BINARY_VIEWS.has(name) || BINARY_VIEWS.has(name.split(".")[0]!)) {
-        // A view over a buffer shares it; one over values copies them.
-        const argument = call.arguments?.[index];
-        const type =
-            argument &&
-            checker.getNonNullableType(checker.getTypeAtLocation(argument));
-        return (
-            type === undefined ||
-            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            unionMembers(type).some((member) => {
-                const name = libraryName(member);
-                return name === "ArrayBuffer" || name === "SharedArrayBuffer";
-            })
-        );
-    }
-    const callee = namedMember(checker, unwrapExpression(call.expression));
-    // A method of a library object: only the storing ones hand it back.
-    if (callee && libraryGlobal(checker, callee.expression) === undefined)
-        return ARGUMENT_HOLDING_METHODS.has(callee.name);
-    return !(COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math."));
 }
 
 /**
@@ -1122,19 +1053,6 @@ export function callTarget(
     return isEffectFunction(declaration) && declaration.body
         ? { kind: "bodies", checker, bodies: [declaration], engine: false }
         : { kind: "unknown" };
-}
-
-/** `Object.assign`, `Math.max`, a global's name, or a method's bare name. */
-function libraryCallName(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression | ts.NewExpression,
-): string | undefined {
-    const unwrapped = unwrapExpression(call.expression);
-    if (ts.isIdentifier(unwrapped)) return unwrapped.text;
-    const callee = namedMember(checker, unwrapped);
-    if (!callee) return undefined;
-    const owner = libraryGlobal(checker, callee.expression);
-    return owner ? `${owner}.${callee.name}` : callee.name;
 }
 
 /**

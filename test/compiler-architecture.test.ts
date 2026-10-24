@@ -1863,3 +1863,23 @@ test("a Math member is one row of MATH_MEMBERS", () => {
         [],
     );
 });
+
+test("what a library call's result holds is one table in kept-values.ts", () => {
+    // libraryResultMayHold answers for an argument, callResultHoldsArguments
+    // for any of them; the computing statics and the holding methods are
+    // listed once, and an unlisted static may hold.
+    for (const name of [
+        "libraryResultMayHold",
+        "callResultHoldsArguments",
+        "COMPUTING_LIBRARY_CALLS",
+        "ARGUMENT_HOLDING_METHODS",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/kept-values.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("libraryCallName"), [
+        "src/compiler/symbols.ts",
+    ]);
+});

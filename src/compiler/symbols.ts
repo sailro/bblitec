@@ -780,6 +780,19 @@ export interface LibraryStaticMember extends NamedMember {
     readonly owner: string;
 }
 
+/** `Object.assign`, `Math.max`, a global's name, or a method's bare name. */
+export function libraryCallName(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): string | undefined {
+    const unwrapped = unwrapExpression(call.expression);
+    if (ts.isIdentifier(unwrapped)) return unwrapped.text;
+    const callee = namedMember(checker, unwrapped);
+    if (!callee) return undefined;
+    const owner = libraryGlobal(checker, callee.expression);
+    return owner ? `${owner}.${callee.name}` : callee.name;
+}
+
 /**
  * The library global's static member a callee names ({@link namedMember}
  * on a {@link libraryGlobal} receiver), or undefined.
