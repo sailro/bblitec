@@ -5246,33 +5246,102 @@ class Compiler implements LoweringServices {
      * fields, evaluated by the same generation executor as its initializer.
      */
     private moduleConstantText(expression: ts.Expression): string | undefined {
-        const keys: string[] = [];
+        const [value] = this.moduleConstantReads(expression, false) ?? [];
+        return typeof value === "string" || typeof value === "number"
+            ? String(value)
+            : undefined;
+    }
+
+    /**
+     * Every text a read of an unwritten module constant's plain data can
+     * produce, where a `for...of` const binding over such a read stands for
+     * each element it yields: distinct texts in element order.
+     */
+    public moduleConstantTexts(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const values = this.moduleConstantReads(expression, true);
+        if (
+            !values?.every(
+                (value) =>
+                    typeof value === "string" || typeof value === "number",
+            )
+        )
+            return undefined;
+        return [...new Set(values.map(String))];
+    }
+
+    /**
+     * The values a member read of a module constant produces, run at
+     * generation. With `iterated`, a `for...of` const binding over such a
+     * read stands for each element, and the constant must be unwritten.
+     */
+    private moduleConstantReads(
+        expression: ts.Expression,
+        iterated: boolean,
+    ): unknown[] | undefined {
+        // A null key reads each element.
+        const keys: (string | null)[] = [];
         let root = this.unwrap(expression);
-        while (
-            ts.isPropertyAccessExpression(root) ||
-            ts.isElementAccessExpression(root)
-        ) {
-            const key = ts.isPropertyAccessExpression(root)
-                ? root.name.text
-                : this.evaluator.staticTextValue(root.argumentExpression);
-            if (key === undefined) return undefined;
-            keys.unshift(key);
-            root = this.unwrap(root.expression);
+        for (;;) {
+            if (
+                ts.isPropertyAccessExpression(root) ||
+                ts.isElementAccessExpression(root)
+            ) {
+                const key = ts.isPropertyAccessExpression(root)
+                    ? root.name.text
+                    : this.evaluator.staticTextValue(root.argumentExpression);
+                if (key === undefined) return undefined;
+                keys.unshift(key);
+                root = this.unwrap(root.expression);
+                continue;
+            }
+            const loop =
+                iterated && ts.isIdentifier(root)
+                    ? this.constForOf(root)
+                    : undefined;
+            if (!loop) break;
+            keys.unshift(null);
+            root = this.unwrap(loop.expression);
         }
         if (!ts.isIdentifier(root)) return undefined;
         const constant = this.moduleConstantDeclaration(root);
-        if (!constant) return undefined;
-        let value = this.runModuleConstant(constant.declaration);
+        if (!constant || (iterated && this.moduleConstantIsWritten(root)))
+            return undefined;
+        let values = [this.runModuleConstant(constant.declaration)];
         for (const key of keys) {
-            if (value === null || typeof value !== "object") return undefined;
-            const member: unknown = Object.getOwnPropertyDescriptor(
-                value,
-                key,
-            )?.value;
-            value = member;
+            const next: unknown[] = [];
+            for (const value of values) {
+                if (key === null) {
+                    if (!Array.isArray(value)) return undefined;
+                    value.forEach((element: unknown) => next.push(element));
+                    continue;
+                }
+                if (value === null || typeof value !== "object")
+                    return undefined;
+                next.push(Object.getOwnPropertyDescriptor(value, key)?.value);
+            }
+            values = next;
         }
-        return typeof value === "string" || typeof value === "number"
-            ? String(value)
+        return values;
+    }
+
+    /** The `for...of` statement whose const head declares `name`. */
+    private constForOf(name: ts.Identifier): ts.ForOfStatement | undefined {
+        const declaration = this.symbols.valueSymbol(name)?.valueDeclaration;
+        const list = declaration?.parent;
+        const loop = list?.parent;
+        return declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name) &&
+            list &&
+            ts.isVariableDeclarationList(list) &&
+            variableKind(list) === "const" &&
+            loop &&
+            ts.isForOfStatement(loop) &&
+            loop.initializer === list &&
+            !loop.awaitModifier
+            ? loop
             : undefined;
     }
 

@@ -96,6 +96,46 @@ test("closed markup reuses immutable string storage", () => {
     assert.doesNotMatch(result.cpp, /v_bblite_markup_text_/);
 });
 
+test("runtime iteration selects the closed markup an unwritten module constant's records hold", () => {
+    const source = (write: string) => `
+        const ICON_A = ['<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">', '<path d="M12 2v20"/>', "</svg>"].join("");
+        const ICON_B = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13"/></svg>';
+        interface Def { hotkey: string; icon: string; }
+        const DEFS: Def[] = [{ hotkey: "1", icon: ICON_A }, { hotkey: "2", icon: ICON_B }];
+        ${write}
+        async function main(): Promise<void> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+            for (const def of DEFS) {
+                const button = document.createElement("button");
+                button.innerHTML = def.icon + \`<span>\${def.hotkey}</span>\`;
+                document.body.appendChild(button);
+            }
+        }
+        main().catch(() => {});
+    `;
+    const selected = compileSource(source(""));
+    assert.ok(selected.manifest.features.includes("ui:inline-svg"));
+    assert.match(
+        selected.cpp,
+        /if \(v_bblite_markup_text_\d+ == "<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\"><path/,
+    );
+    assert.match(selected.cpp, /<path d=\\"M12 2v20\\" data-bbl-node=/);
+    assert.match(selected.cpp, /<rect x=\\"9\\" y=\\"9\\"[^>]*data-bbl-node=/);
+    assert.doesNotMatch(
+        selected.cpp,
+        /ui_escape_rml\(v_bblite_markup_text_\d+\), "<span/,
+    );
+    // A written constant's records hold runtime text.
+    const written = compileSource(
+        source("DEFS[0]!.icon = String(performance.now());"),
+    );
+    assert.ok(!written.manifest.features.includes("ui:inline-svg"));
+    assert.match(
+        written.cpp,
+        /ui_escape_rml\(v_bblite_markup_text_\d+\), "<span/,
+    );
+});
+
 test("closed markup refuses ambiguous stored spans, unknown attributes and unsupported alternatives", () => {
     for (const [source, message] of [
         [
