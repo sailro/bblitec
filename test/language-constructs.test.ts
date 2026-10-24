@@ -8952,6 +8952,26 @@ checkInRealm(
 );
 
 check(
+    "number-to-string-checks-its-radix-first",
+    `
+    const rangeErrorOf = (run: () => string): string => {
+        try {
+            return run();
+        } catch (error) {
+            return error instanceof RangeError ? "RangeError" : "other";
+        }
+    };
+    const n = Number("255");
+    if (n.toString(16) !== "ff" || n.toString(Number("16.9")) !== "ff") throw new Error("radix as an integer");
+    if (rangeErrorOf(() => n.toString(Number("1"))) !== "RangeError") throw new Error("radix below 2");
+    if (rangeErrorOf(() => Number("x").toString(Number("37"))) !== "RangeError") throw new Error("NaN receiver");
+    if (rangeErrorOf(() => n.toString(Number("y"))) !== "RangeError") throw new Error("NaN radix");
+    if (rangeErrorOf(() => n.toString(Number("1e10"))) !== "RangeError") throw new Error("huge radix");
+    if (Number("Infinity").toString(16) !== "Infinity") throw new Error("infinite receiver");
+`,
+);
+
+check(
     "a-record-parameter-stays-one-object-wherever-it-is-stored",
     `
     interface Count { n: number }

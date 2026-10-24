@@ -7121,7 +7121,7 @@ export class ExpressionLowerer {
                 return {
                     kind: "data",
                     cpp: radix
-                        ? `bbl::js::number_to_string_radix(${owner.cpp}, static_cast<int>(${this.context.compileNumber(radix, "double")}))`
+                        ? `bbl::js::number_to_string_radix(${owner.cpp}, ${this.context.compileNumber(radix, "double")})`
                         : `bbl::js::number_to_string(${owner.cpp})`,
                     dataType: { kind: "string" },
                 };

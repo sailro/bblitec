@@ -3960,15 +3960,18 @@ infinity_at(std::string_view value, std::size_t index) {
 }
 
 /**
- * `Number.prototype.toString(radix)`: the integer part by repeated
- * division and the fraction by repeated multiplication, to the
- * precision a double carries; radix 10 is the ordinary spelling.
+ * `Number.prototype.toString(radix)`: the radix as an integer (NaN is 0),
+ * checked before anything else; the integer part by repeated division and
+ * the fraction by repeated multiplication, to the precision a double
+ * carries; radix 10 is the ordinary spelling.
  */
-[[nodiscard]] inline std::string number_to_string_radix(double value, int radix) {
+[[nodiscard]] inline std::string number_to_string_radix(double value, double radix_value) {
+    const double whole = std::isnan(radix_value) ? 0.0 : std::trunc(radix_value);
+    if (whole < 2.0 || whole > 36.0)
+        throw NamedError("RangeError", "toString() radix must be between 2 and 36");
+    const int radix = static_cast<int>(whole);
     if (radix == 10 || !std::isfinite(value))
         return number_to_string(value);
-    if (radix < 2 || radix > 36)
-        throw std::runtime_error("toString() radix must be between 2 and 36");
     const char* digits = "0123456789abcdefghijklmnopqrstuvwxyz";
     const bool negative = value < 0.0;
     double magnitude = std::fabs(value);
