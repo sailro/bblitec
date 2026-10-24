@@ -42,6 +42,7 @@ import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
+import type { VarBindings } from "./var-bindings.js";
 import type { PropertyAccessLowerer } from "./properties.js";
 import type { CallbackLowerer } from "./callbacks.js";
 import type { AsyncActivations } from "./async-activations.js";
@@ -117,6 +118,8 @@ export interface LoweringServices {
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
+    /** Hoisted `var` storage and its declaration-site assignments. */
+    readonly varBindings: VarBindings;
     readonly propertyAccess: PropertyAccessLowerer;
     readonly callbacks: CallbackLowerer;
     readonly asyncActivations: AsyncActivations;

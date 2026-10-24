@@ -104,6 +104,7 @@ interface BindingScopesContext extends Pick<
     | "symbols"
     | "takeNativeTemporary"
     | "useNativeValue"
+    | "varBindings"
 > {
     describeNativeValue(value: Value): void;
     hasStableNativeBinding(value: Value): boolean;
@@ -278,6 +279,8 @@ export class BindingScopes {
                     binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
+                if (binding.unassignedVar)
+                    this.context.varBindings.refuseUnassignedRead(identifier);
                 this.context.useNativeValue(binding.value);
                 return binding.value;
             }
@@ -306,6 +309,8 @@ export class BindingScopes {
                     binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
+                if (binding.unassignedVar)
+                    this.context.varBindings.refuseUnassignedRead(identifier);
                 this.context.useNativeValue(binding.value);
                 return binding.value;
             }
@@ -998,6 +1003,8 @@ export class BindingScopes {
     }
 
     public defineVariable(identifier: ts.MemberName, value: Value): void {
+        // A hoisted `var` declared here is assigned, not bound again.
+        if (this.context.varBindings.assignsDeclared(identifier, value)) return;
         // A parameter's record was settled where the call built it: what the
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
@@ -1105,6 +1112,35 @@ export class BindingScopes {
             name: identifier.text,
             value,
         });
+    }
+
+    /** A hoisted `var` just declared holds nothing its type admits yet. */
+    public markVarUnassigned(symbol: ts.Symbol): void {
+        const owner = this.bindingScope(symbol);
+        const binding = owner?.get(symbol);
+        if (owner && binding)
+            owner.set(symbol, { ...binding, unassignedVar: true });
+    }
+
+    /**
+     * An assignment to a hoisted `var` makes it readable for the rest of
+     * the scope it ran in: the binding's own scope when every scope between
+     * runs with it, else the innermost, which ends with that branch.
+     */
+    public markVarAssigned(identifier: ts.Identifier): void {
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        if (!symbol) return;
+        const owner = this.bindingScope(symbol);
+        const binding = owner?.get(symbol);
+        if (!owner || !binding?.unassignedVar) return;
+        const { unassignedVar: _unassigned, ...assigned } = binding;
+        const scopes = this.variableScopes.slice(
+            this.variableScopes.indexOf(owner) + 1,
+        );
+        (scopes.every((scope) => this.transparentRebindingScopes.has(scope))
+            ? owner
+            : this.variableScopes.at(-1)!
+        ).set(symbol, assigned);
     }
 
     /**

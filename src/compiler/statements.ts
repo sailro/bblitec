@@ -28,6 +28,7 @@ import {
     isHandleKind,
     isDataTuple,
     tupleComponents,
+    type DataIterationElement,
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -63,6 +64,7 @@ import {
     jumpsTo,
     isDeclaredInside,
     labeledBody,
+    unwrapExpression,
     variableKind,
 } from "./syntax.js";
 import {
@@ -168,6 +170,7 @@ interface StatementLoweringContext extends Pick<
     | "probeEmission"
     | "allocateTemporaryCppName"
     | "declarations"
+    | "varBindings"
     | "emitAssignment"
     | "noteHeldNativeBindings"
     | "emitWindowLogicalAssignment"
@@ -306,6 +309,26 @@ function bodyStatements(
     return ts.isBlock(statement.statement)
         ? statement.statement.statements
         : [statement.statement];
+}
+
+/**
+ * A for-in/of head: the binding its declaration makes each iteration, or
+ * an existing target (a variable, a member, an assignment pattern) each
+ * element is assigned to, as `target = element` would.
+ */
+type LoopHead =
+    { readonly name: ts.BindingName } | { readonly target: ts.Expression };
+
+/** A head's declared identifier, which collection walks bind a handle to. */
+function headIdentifier(head: LoopHead): ts.Identifier | undefined {
+    return "name" in head && ts.isIdentifier(head.name) ? head.name : undefined;
+}
+
+/** Whether a head destructures an array: a pattern declared or assigned. */
+function headIsArrayPattern(head: LoopHead): boolean {
+    return "name" in head
+        ? ts.isArrayBindingPattern(head.name)
+        : ts.isArrayLiteralExpression(unwrapExpression(head.target));
 }
 
 /**
@@ -971,6 +994,7 @@ export class StatementLowerer {
         statement: ts.Statement,
     ): void {
         context.asyncActivations.requirePendingActivationRealm(statement);
+        context.varBindings.declareFor(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts
@@ -2970,6 +2994,19 @@ export class StatementLowerer {
             context.requiresStaticDataIteration(statement.statement) ||
             containsFrameYield(context, statement.statement);
         if (!requiresStaticIteration) return false;
+        // Unrolled, each pass binds its own index; a hoisted `var` counter
+        // is one binding the loop leaves at its final value.
+        if (
+            statement.initializer &&
+            ts.isVariableDeclarationList(statement.initializer) &&
+            statement.initializer.declarations.some((declaration) =>
+                context.varBindings.hoists(declaration),
+            )
+        )
+            context.fail(
+                statement.initializer,
+                "A statically expanded loop counts with its own binding; declare its counter with `let`.",
+            );
         const length = context.compileValue(endExpression);
         const bound = context.unwrap(endExpression);
         const cardinality =
@@ -3110,22 +3147,12 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForInStatement,
     ): void {
-        if (
-            !ts.isVariableDeclarationList(statement.initializer) ||
-            statement.initializer.declarations.length !== 1
-        ) {
+        const head = this.loopHead(context, statement);
+        if ("name" in head && !ts.isIdentifier(head.name))
             context.fail(
-                statement.initializer,
-                "for...in requires one variable declaration naming its key.",
+                head.name,
+                "for...in declares one identifier naming its key.",
             );
-        }
-        const declaration = statement.initializer.declarations[0]!;
-        if (!ts.isIdentifier(declaration.name))
-            context.fail(
-                declaration.name,
-                "for...in requires one variable declaration naming its key.",
-            );
-        const binding = declaration.name;
         const raw = context.compileValue(statement.expression);
         const owner =
             raw.kind === "data"
@@ -3154,7 +3181,7 @@ export class StatementLowerer {
                         () =>
                             this.bindStaticIterationValue(
                                 context,
-                                binding,
+                                head,
                                 staticStringValue(key, (text) =>
                                     context.cppString(text),
                                 ),
@@ -3177,9 +3204,7 @@ export class StatementLowerer {
         const lines = context.captureEmittedStatements(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             try {
-                context.bindDataIterationVariable(binding, item, {
-                    kind: "string",
-                });
+                this.bindLoopElement(context, head, item, { kind: "string" });
                 this.inRuntimeIteration(
                     context,
                     () =>
@@ -3315,7 +3340,7 @@ export class StatementLowerer {
     private emitForAwait(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): void {
         if (!context.options.workers) throw new ApplicationRealmRequired();
         const iterator = context.compileValue(statement.expression);
@@ -3325,22 +3350,18 @@ export class StatementLowerer {
                 statement.expression,
                 "for await requires an asynchronous iterator.",
             );
-        this.emitIteratorLoop(context, statement, declaration, iterator, type);
+        this.emitIteratorLoop(context, statement, head, iterator, type);
     }
 
     private emitIteratorLoop(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
         iterator: Value,
         type: DataType<"iterator">,
     ): void {
         this.emitIteratorWalk(context, statement, iterator, type, (element) => {
-            context.bindDataIterationVariable(
-                declaration.name,
-                element,
-                type.element,
-            );
+            this.bindLoopElement(context, head, element, type.element);
             this.inRuntimeIteration(
                 context,
                 () =>
@@ -3425,24 +3446,9 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
     ): void {
-        if (
-            !ts.isVariableDeclarationList(statement.initializer) ||
-            statement.initializer.declarations.length !== 1
-        ) {
-            context.fail(
-                statement.initializer,
-                "for...of requires one variable declaration.",
-            );
-        }
-        const declaration = statement.initializer.declarations[0]!;
+        const head = this.loopHead(context, statement);
         if (isSuspensionPoint(statement))
-            return this.emitForAwait(context, statement, declaration);
-        if (declaration.initializer) {
-            context.fail(
-                declaration,
-                "for...of bindings cannot carry initializers.",
-            );
-        }
+            return this.emitForAwait(context, statement, head);
         // A retained callback can run after another closure registers members.
         // Its initial empty cardinality is not a proof that its loop is empty.
         const subject = context.unwrap(statement.expression);
@@ -3456,7 +3462,7 @@ export class StatementLowerer {
                 : undefined;
         if (
             liveElement?.kind === "function" &&
-            this.emitRuntimeForOf(context, statement, declaration)
+            this.emitRuntimeForOf(context, statement, head)
         )
             return;
         const runtimeCardinality = context.runtimeCollectionCardinality(
@@ -3470,11 +3476,7 @@ export class StatementLowerer {
                 statement,
                 plan.iterations,
                 () => {
-                    emitted = this.emitRuntimeForOf(
-                        context,
-                        statement,
-                        declaration,
-                    );
+                    emitted = this.emitRuntimeForOf(context, statement, head);
                 },
             );
             if (emitted || plan.iterations === 0) return;
@@ -3482,30 +3484,28 @@ export class StatementLowerer {
         if (
             context.requiresStaticIteration(statement.statement) &&
             this.bindsEnclosingLoop(statement.statement) &&
-            this.emitStaticResourceExitForOf(context, statement, declaration)
+            this.emitStaticResourceExitForOf(context, statement, head)
         ) {
             return;
         }
         // The engine-collection paths answer first: their expressions are
         // property reads (or a `?? []` over one), which the static probe
         // would try to resolve as a value and refuse.
-        if (this.emitAssetEntitiesForOf(context, statement, declaration)) {
+        if (this.emitAssetEntitiesForOf(context, statement, head)) {
             return;
         }
-        if (this.emitAssetRootChildrenForOf(context, statement, declaration)) {
+        if (this.emitAssetRootChildrenForOf(context, statement, head)) {
+            return;
+        }
+        if (this.emitAssetFlattenedMeshesForOf(context, statement, head)) {
+            return;
+        }
+        if (this.emitHandleCollectionForOf(context, statement, head)) {
             return;
         }
         if (
-            this.emitAssetFlattenedMeshesForOf(context, statement, declaration)
-        ) {
-            return;
-        }
-        if (this.emitHandleCollectionForOf(context, statement, declaration)) {
-            return;
-        }
-        if (
-            this.emitTupleIteratorForOf(context, statement, declaration) ||
-            this.emitTupleForOf(context, statement, declaration)
+            this.emitTupleIteratorForOf(context, statement, head) ||
+            this.emitTupleForOf(context, statement, head)
         ) {
             return;
         }
@@ -3516,7 +3516,7 @@ export class StatementLowerer {
         // iterations and erase the body.
         if (
             liveElement?.kind === "handle" &&
-            this.emitRuntimeForOf(context, statement, declaration)
+            this.emitRuntimeForOf(context, statement, head)
         ) {
             return;
         }
@@ -3538,8 +3538,8 @@ export class StatementLowerer {
         // Static destructuring is the fallback for tuples whose mixed or
         // optional lanes cannot be represented as one native container.
         if (
-            (!staticLiteral || ts.isArrayBindingPattern(declaration.name)) &&
-            this.emitRuntimeForOf(context, statement, declaration)
+            (!staticLiteral || headIsArrayPattern(head)) &&
+            this.emitRuntimeForOf(context, statement, head)
         ) {
             return;
         }
@@ -3550,7 +3550,7 @@ export class StatementLowerer {
         );
         if (
             executed &&
-            this.emitRuntimeForOf(context, statement, declaration, {
+            this.emitRuntimeForOf(context, statement, head, {
                 kind: "tuple",
                 cpp: "",
                 tupleElements: executed,
@@ -3563,11 +3563,7 @@ export class StatementLowerer {
                 statement,
                 executed.map(
                     (value) => () =>
-                        this.bindStaticIterationValue(
-                            context,
-                            declaration.name,
-                            value,
-                        ),
+                        this.bindStaticIterationValue(context, head, value),
                 ),
             );
             return;
@@ -3589,19 +3585,14 @@ export class StatementLowerer {
             : undefined;
         if (
             compiled &&
-            this.emitNativeHandleTableForOf(
-                context,
-                statement,
-                declaration,
-                compiled,
-            )
+            this.emitNativeHandleTableForOf(context, statement, head, compiled)
         ) {
             return;
         }
         if (
             compiled &&
             context.emitNativeDataIteration(statement, () =>
-                this.emitRuntimeForOf(context, statement, declaration, {
+                this.emitRuntimeForOf(context, statement, head, {
                     kind: "tuple",
                     cpp: "",
                     tupleElements: compiled,
@@ -3616,7 +3607,7 @@ export class StatementLowerer {
             values.elements.map((element, index) => () => {
                 this.bindStaticIterationValue(
                     context,
-                    declaration.name,
+                    head,
                     compiled?.[index] ?? context.compileValue(element),
                 );
             }),
@@ -3626,10 +3617,11 @@ export class StatementLowerer {
     private emitStaticResourceExitForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
-        const bindingSymbol = ts.isIdentifier(declaration.name)
-            ? context.symbols.valueSymbol(declaration.name)
+        const identifier = headIdentifier(head);
+        const bindingSymbol = identifier
+            ? context.symbols.valueSymbol(identifier)
             : undefined;
         if (
             !context.requiresStaticDataIteration(statement.statement) &&
@@ -3694,11 +3686,7 @@ export class StatementLowerer {
             statement,
             values.map(
                 (value) => () =>
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        value,
-                    ),
+                    this.bindStaticIterationValue(context, head, value),
             ),
         );
         return true;
@@ -3719,12 +3707,13 @@ export class StatementLowerer {
     private emitAssetRootChildrenForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
-        if (!ts.isIdentifier(declaration.name)) return false;
+        const binding = headIdentifier(head);
+        if (!binding) return false;
         const materialAssignment = isRecursiveImportedMeshWalk(
             statement,
-            declaration.name,
+            binding,
         );
         if (!materialAssignment) return false;
         const target = context.probeEmission(
@@ -3742,28 +3731,20 @@ export class StatementLowerer {
                 "The imported hierarchy material walk currently accepts only a scene-created PBR material; other families do not all consume clone-root outer transforms.",
             );
         }
-        emitHandleCollectionLoop(
-            context,
-            target,
-            declaration.name,
-            (loopContext) => {
-                this.inRuntimeIteration(
-                    loopContext,
-                    () => {
-                        this.inRuntimeControlFlow(loopContext, () => {
-                            const branch = bodyStatements(
-                                statement,
-                            )[0] as ts.IfStatement;
-                            this.emitScopedBody(
-                                loopContext,
-                                branch.elseStatement!,
-                            );
-                        });
-                    },
-                    statement,
-                );
-            },
-        );
+        emitHandleCollectionLoop(context, target, binding, (loopContext) => {
+            this.inRuntimeIteration(
+                loopContext,
+                () => {
+                    this.inRuntimeControlFlow(loopContext, () => {
+                        const branch = bodyStatements(
+                            statement,
+                        )[0] as ts.IfStatement;
+                        this.emitScopedBody(loopContext, branch.elseStatement!);
+                    });
+                },
+                statement,
+            );
+        });
         return true;
     }
 
@@ -3786,7 +3767,7 @@ export class StatementLowerer {
     private emitAssetFlattenedMeshesForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
         const resolved =
             context.handleCollections.assetFlattenedMeshesIterationTarget(
@@ -3804,7 +3785,7 @@ export class StatementLowerer {
         this.emitCollectionForOfBody(
             context,
             statement,
-            declaration,
+            head,
             resolved.target,
             { assetWholeMeshList: resolved.asset },
         );
@@ -3826,7 +3807,7 @@ export class StatementLowerer {
     private emitAssetEntitiesForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
         const target = context.handleCollections.assetEntitiesIterationTarget(
             statement.expression,
@@ -3834,9 +3815,10 @@ export class StatementLowerer {
         if (!target) {
             return false;
         }
-        if (!ts.isIdentifier(declaration.name)) {
+        const binding = headIdentifier(head);
+        if (!binding) {
             context.fail(
-                declaration.name,
+                statement.initializer,
                 "Iterating entities requires an identifier binding.",
             );
         }
@@ -3848,7 +3830,7 @@ export class StatementLowerer {
         }
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            context.bindings.bindLocalValue(declaration.name, target);
+            context.bindings.bindLocalValue(binding, target);
             for (const nested of bodyStatements(statement)) {
                 this.emit(context, nested);
             }
@@ -3875,7 +3857,7 @@ export class StatementLowerer {
     private emitTupleIteratorForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
         const iterator = iteratorMethodCall(
             statement.expression,
@@ -3896,11 +3878,11 @@ export class StatementLowerer {
             (result) => result !== undefined,
         );
         if (!elements) {
-            return this.emitRuntimeForOf(context, statement, declaration);
+            return this.emitRuntimeForOf(context, statement, head);
         }
         if (
             this.preferNativeDataIteration(context, statement) &&
-            this.emitRuntimeForOf(context, statement, declaration)
+            this.emitRuntimeForOf(context, statement, head)
         ) {
             return true;
         }
@@ -3924,7 +3906,7 @@ export class StatementLowerer {
                                 cpp: "",
                                 tupleElements: [indexValue, element],
                             };
-                this.bindStaticIterationValue(context, declaration.name, value);
+                this.bindStaticIterationValue(context, head, value);
             }),
         );
         return true;
@@ -3933,7 +3915,7 @@ export class StatementLowerer {
     private emitTupleForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
         // Both questions below answer by RESOLVING the loop's subject, and
         // resolving a call compiles it. A probe that then declines must take
@@ -3943,7 +3925,7 @@ export class StatementLowerer {
         const elements = context.probeEmission(
             () => {
                 if (
-                    ts.isArrayBindingPattern(declaration.name) &&
+                    headIsArrayPattern(head) &&
                     context.dataIterationTarget(statement.expression)
                 ) {
                     // A homogeneous static table already has an exact native
@@ -3963,12 +3945,7 @@ export class StatementLowerer {
         }
         if (elements.length === 0) return true;
         if (
-            this.emitNativeHandleTableForOf(
-                context,
-                statement,
-                declaration,
-                elements,
-            )
+            this.emitNativeHandleTableForOf(context, statement, head, elements)
         ) {
             return true;
         }
@@ -3977,7 +3954,7 @@ export class StatementLowerer {
         if (
             this.preferNativeDataIteration(context, statement) &&
             context.emitNativeDataIteration(statement, () =>
-                this.emitRuntimeForOf(context, statement, declaration, {
+                this.emitRuntimeForOf(context, statement, head, {
                     kind: "tuple",
                     cpp: "",
                     tupleElements: [...elements],
@@ -3996,11 +3973,7 @@ export class StatementLowerer {
             context,
             statement,
             elements.map((element) => () => {
-                this.bindStaticIterationValue(
-                    context,
-                    declaration.name,
-                    element,
-                );
+                this.bindStaticIterationValue(context, head, element);
             }),
         );
         return true;
@@ -4010,12 +3983,11 @@ export class StatementLowerer {
     private emitNativeHandleTableForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
         elements: readonly Value[],
     ): boolean {
-        if (!ts.isIdentifier(declaration.name) || elements.length === 0)
-            return false;
-        const binding = declaration.name;
+        const binding = headIdentifier(head);
+        if (!binding || elements.length === 0) return false;
         const first = elements[0]!;
         const kind = first.kind;
         if (
@@ -4078,12 +4050,63 @@ export class StatementLowerer {
         });
     }
 
+    /**
+     * The head of a for-in/of loop: one declared binding, or an existing
+     * target the loop assigns.
+     */
+    private loopHead(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement | ts.ForInStatement,
+    ): LoopHead {
+        const initializer = statement.initializer;
+        if (!ts.isVariableDeclarationList(initializer))
+            return { target: initializer };
+        const [declaration, ...rest] = initializer.declarations;
+        if (!declaration || rest.length > 0)
+            context.fail(initializer, "A loop head declares one binding.");
+        if (declaration.initializer)
+            context.fail(
+                declaration,
+                "A for...in/of binding cannot carry an initializer.",
+            );
+        return { name: declaration.name };
+    }
+
+    /** Binds or assigns a runtime iteration's item to a loop head. */
+    private bindLoopElement(
+        context: StatementLoweringContext,
+        head: LoopHead,
+        itemCpp: string,
+        element: DataIterationElement,
+        template?: Value,
+    ): void {
+        if ("target" in head)
+            context.dataLowerer.assignIterationTarget(
+                head.target,
+                itemCpp,
+                element,
+                template,
+            );
+        else
+            context.bindDataIterationVariable(
+                head.name,
+                itemCpp,
+                element,
+                template,
+            );
+    }
+
     /** Binds one statically unrolled element, including tuple and object patterns. */
     private bindStaticIterationValue(
         context: StatementLoweringContext,
-        name: ts.BindingName,
+        head: LoopHead,
         value: Value,
     ): void {
+        if ("target" in head) {
+            context.dataLowerer.emitAssignmentTargetWrite(head.target, value);
+            return;
+        }
+        const name = head.name;
         if (ts.isIdentifier(name)) {
             // A statically unrolled handle loop aliases the same JavaScript
             // object stored in the tuple. Keep the Value object itself so
@@ -4117,17 +4140,17 @@ export class StatementLowerer {
     private emitCollectionForOfBody(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
         target: HandleCollectionTarget,
         extraBinding?: Partial<Value>,
     ): void {
-        if (!ts.isIdentifier(declaration.name)) {
+        const binding = headIdentifier(head);
+        if (!binding) {
             context.fail(
-                declaration.name,
+                statement.initializer,
                 `Iterating ${target.property} requires an identifier binding.`,
             );
         }
-        const binding = declaration.name;
         const emitBody = (): void =>
             emitHandleCollectionLoop(
                 context,
@@ -4167,7 +4190,7 @@ export class StatementLowerer {
     private emitHandleCollectionForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
     ): boolean {
         const target = context.handleCollections.iterationTarget(
             statement.expression,
@@ -4175,7 +4198,7 @@ export class StatementLowerer {
         if (!target) {
             return false;
         }
-        this.emitCollectionForOfBody(context, statement, declaration, target);
+        this.emitCollectionForOfBody(context, statement, head, target);
         return true;
     }
 
@@ -4187,7 +4210,7 @@ export class StatementLowerer {
     private emitRuntimeForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
-        declaration: ts.VariableDeclaration,
+        head: LoopHead,
         knownTuple?: Value,
     ): boolean {
         const target = context.dataIterationTarget(
@@ -4212,7 +4235,7 @@ export class StatementLowerer {
             this.emitIteratorLoop(
                 context,
                 statement,
-                declaration,
+                head,
                 target.container,
                 target.container.dataType,
             );
@@ -4292,8 +4315,9 @@ export class StatementLowerer {
                         kind: "expression",
                         code: `++${iterator};`,
                     });
-                    context.bindDataIterationVariable(
-                        declaration.name,
+                    this.bindLoopElement(
+                        context,
+                        head,
                         member,
                         target.element,
                         target.template,
@@ -4318,8 +4342,9 @@ export class StatementLowerer {
             container?.kind === "vector" &&
             !context.evaluationOrder.mayWriteArray(statement.statement) &&
             !(
-                ts.isIdentifier(declaration.name) &&
-                context.sharedClosures.identifierIsRebound(declaration.name)
+                "name" in head &&
+                ts.isIdentifier(head.name) &&
+                context.sharedClosures.identifierIsRebound(head.name)
             );
         // A span views a constant table: its items are constant, and a
         // closure capturing one borrows it as such; so does a borrowed
@@ -4332,8 +4357,9 @@ export class StatementLowerer {
         const lines = context.captureEmittedStatements(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             try {
-                context.bindDataIterationVariable(
-                    declaration.name,
+                this.bindLoopElement(
+                    context,
+                    head,
                     item,
                     target.element,
                     target.template,

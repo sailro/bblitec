@@ -191,6 +191,7 @@ interface DeclarationContext
             | "requireDefaultEngine"
             | "symbols"
             | "takeNativeTemporary"
+            | "varBindings"
             | "withRecordScopes"
         > {
     /** The engine the entry created, once it has. */
@@ -557,6 +558,7 @@ export class DeclarationLowerer {
         declaration: ts.VariableDeclaration,
         cppName: string,
         sharedClosureStorage: boolean,
+        source = declaration.initializer,
     ): boolean {
         if (!ts.isIdentifier(declaration.name)) return false;
         const type = this.context.dataTypes.taggedDeclarationStorage(
@@ -569,11 +571,8 @@ export class DeclarationLowerer {
         if (!type) return false;
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(type);
-        const initializer = declaration.initializer
-            ? this.context.dataLowerer.compileForSink(
-                  declaration.initializer,
-                  type,
-              )
+        const initializer = source
+            ? this.context.dataLowerer.compileForSink(source, type)
             : undefined;
         const cell = sharedClosureStorage
             ? emitSharedCell(this.context, cppName, {
@@ -608,11 +607,135 @@ export class DeclarationLowerer {
         return true;
     }
 
+    /**
+     * The binding `let name;` makes: storage of its declared type, default
+     * (undefined where the type admits it) until an assignment, or a binding
+     * the first assignment decides. `declaration` is the one whose annotation
+     * and storage demands apply; a pattern leaf has none.
+     */
+    public declareUnassigned(
+        name: ts.Identifier,
+        declaration: ts.VariableDeclaration | undefined,
+        cppName: string,
+        sharedClosureStorage: boolean,
+    ): void {
+        if (
+            declaration &&
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+                undefined,
+            )
+        )
+            return;
+        const resource = this.context.nullableResourceKind(name, true);
+        if (resource) {
+            this.bindOptionalResource(
+                name,
+                cppName,
+                resource,
+                sharedClosureStorage,
+            );
+            return;
+        }
+        const declaredType = this.context.checker.getTypeAtLocation(name);
+        const demanded =
+            declaration && this.context.dynamicBindings.get(declaration);
+        let dataType =
+            declaration && demanded
+                ? demandedStorageType(
+                      this.context,
+                      declaration,
+                      demanded,
+                      undefined,
+                  )
+                : this.context.dataTypes.fromTsType(declaredType, name);
+        // Only an assignment gives this binding a value.
+        if (dataType)
+            dataType = this.reboundBindingStorage(dataType, declaredType);
+        if (declaration) {
+            dataType ??= inferUninitializedStorage(
+                declaration,
+                this.context.checker,
+                this.context.dataTypes,
+            );
+            dataType ??= inferPromiseRejectStorage(
+                declaration,
+                this.context.checker,
+            );
+        }
+        dataType ??= this.context.dataTypes.undefinedOnlyStorage(declaredType);
+        if (
+            !dataType &&
+            declaration?.type?.kind === ts.SyntaxKind.UnknownKeyword
+        ) {
+            // A JSON.parse result is deliberately dynamic until the
+            // source's own guards inspect it. `let json: unknown;` is the
+            // corresponding uninitialized slot in that model; every later
+            // assignment still has to be a JsonValue, so this does not
+            // turn arbitrary unknown values into a permissive catch-all.
+            dataType = { kind: "json" };
+            this.context.reachJson();
+        }
+        if (!dataType) {
+            // `let set;` -- no initializer and no native type: the
+            // value is whatever the first assignment binds, and for a
+            // compile-time record (a node-particle binding built inside
+            // a `try`) nothing native exists to declare here. The
+            // assignment decides; see `bindPendingLet`.
+            this.context.bindings.defineVariable(name, {
+                kind: "pending-let",
+                cpp: "",
+            });
+            return;
+        }
+        if (dataType.kind === "borrowed-platform-event") {
+            this.context.fail(
+                name,
+                `Variable '${name.text}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
+            );
+        }
+        if (
+            dataType.kind !== "number" &&
+            dataType.kind !== "boolean" &&
+            dataType.kind !== "string"
+        ) {
+            this.context.reachJsData();
+        }
+        const cppType = this.context.dataTypes.cppType(dataType);
+        const cell = sharedClosureStorage
+            ? emitSharedCell(this.context, cppName, { type: cppType })
+            : undefined;
+        if (!cell)
+            this.context.emit({
+                kind: "declaration",
+                type: cppType,
+                name: cppName,
+                initializer: "",
+                initialization: "default",
+                attributes: "[[maybe_unused]] ",
+            });
+        const boundCpp = cell?.cpp ?? cppName;
+        if (dataType.kind !== "number" && dataType.kind !== "boolean") {
+            this.context.dataLowerer.registerLocal(boundCpp, "owned");
+        }
+        this.context.bindings.defineVariable(name, {
+            ...this.context.dataLowerer.leafValue(boundCpp, dataType),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
+        });
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Ambient) !==
             0
+        )
+            return;
+        if (
+            this.context.varBindings.hoists(declaration) &&
+            this.context.varBindings.emitDeclaration(declaration)
         )
             return;
         if (
@@ -724,36 +847,6 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
-        // A `var` has one binding per function: storage made where the
-        // declaration sits in a loop body would be one per iteration -- a
-        // cell a stored closure keeps, or a value `var x;` would reset.
-        if (
-            (sharedClosureStorage || !declaration.initializer) &&
-            declaration.parent &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            variableKind(declaration.parent) === "var" &&
-            ts.findAncestor(declaration, (node) =>
-                ts.isFunctionLike(node)
-                    ? "quit"
-                    : ts.isIterationStatement(node, false) &&
-                      declaration.pos >= node.statement.pos &&
-                      declaration.end <= node.statement.end,
-            )
-        )
-            this.context.fail(
-                declaration,
-                sharedClosureStorage
-                    ? "A `var` declared in a loop body and captured by a stored closure is one binding for the whole function; declare it before the loop."
-                    : "A `var` declared without an initializer in a loop body keeps its value across iterations as one binding for the whole function; declare it before the loop.",
-            );
-        if (
-            this.emitAbsenceTaggedDeclaration(
-                declaration,
-                cppName,
-                sharedClosureStorage,
-            )
-        )
-            return;
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -765,108 +858,22 @@ export class DeclarationLowerer {
                     `Constant '${sourceName}' requires an initializer.`,
                 );
             }
-            const resource = this.context.nullableResourceKind(
+            this.declareUnassigned(
                 declaration.name,
-                true,
-            );
-            if (resource) {
-                this.bindOptionalResource(
-                    declaration.name,
-                    cppName,
-                    resource,
-                    sharedClosureStorage,
-                );
-                return;
-            }
-            const declaredType = this.context.checker.getTypeAtLocation(
-                declaration.name,
-            );
-            const demanded = this.context.dynamicBindings.get(declaration);
-            let dataType = demanded
-                ? demandedStorageType(
-                      this.context,
-                      declaration,
-                      demanded,
-                      undefined,
-                  )
-                : this.context.dataTypes.fromTsType(
-                      declaredType,
-                      declaration.name,
-                  );
-            // Only an assignment gives this binding a value.
-            if (dataType)
-                dataType = this.reboundBindingStorage(dataType, declaredType);
-            dataType ??= inferUninitializedStorage(
                 declaration,
-                this.context.checker,
-                this.context.dataTypes,
+                cppName,
+                sharedClosureStorage,
             );
-            dataType ??= inferPromiseRejectStorage(
-                declaration,
-                this.context.checker,
-            );
-            dataType ??=
-                this.context.dataTypes.undefinedOnlyStorage(declaredType);
-            if (
-                !dataType &&
-                declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
-            ) {
-                // A JSON.parse result is deliberately dynamic until the
-                // source's own guards inspect it. `let json: unknown;` is the
-                // corresponding uninitialized slot in that model; every later
-                // assignment still has to be a JsonValue, so this does not
-                // turn arbitrary unknown values into a permissive catch-all.
-                dataType = { kind: "json" };
-                this.context.reachJson();
-            }
-            if (!dataType) {
-                // `let set;` -- no initializer and no native type: the
-                // value is whatever the first assignment binds, and for a
-                // compile-time record (a node-particle binding built inside
-                // a `try`) nothing native exists to declare here. The
-                // assignment decides; see `bindPendingLet`.
-                this.context.bindings.defineVariable(declaration.name, {
-                    kind: "pending-let",
-                    cpp: "",
-                });
-                return;
-            }
-            if (dataType.kind === "borrowed-platform-event") {
-                this.context.fail(
-                    declaration,
-                    `Variable '${sourceName}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
-                );
-            }
-            if (
-                dataType.kind !== "number" &&
-                dataType.kind !== "boolean" &&
-                dataType.kind !== "string"
-            ) {
-                this.context.reachJsData();
-            }
-            const cppType = this.context.dataTypes.cppType(dataType);
-            const cell = sharedClosureStorage
-                ? emitSharedCell(this.context, cppName, { type: cppType })
-                : undefined;
-            if (!cell)
-                this.context.emit({
-                    kind: "declaration",
-                    type: cppType,
-                    name: cppName,
-                    initializer: "",
-                    initialization: "default",
-                    attributes: "[[maybe_unused]] ",
-                });
-            const boundCpp = cell?.cpp ?? cppName;
-            if (dataType.kind !== "number" && dataType.kind !== "boolean") {
-                this.context.dataLowerer.registerLocal(boundCpp, "owned");
-            }
-            this.context.bindings.defineVariable(declaration.name, {
-                ...this.context.dataLowerer.leafValue(boundCpp, dataType),
-                ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
-            });
             return;
         }
+        if (
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+            )
+        )
+            return;
 
         if (
             declaration.parent !== undefined &&
