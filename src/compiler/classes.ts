@@ -1616,8 +1616,9 @@ export class ClassLowerer {
         // member of another record -- is bound once so the instance the
         // method runs on is the one the call named.
         let instanceCpp = value.cpp;
+        let bound: Pick<Value, "nativeCaptures"> = {};
         if (!cppIdentifierPattern.test(instanceCpp)) {
-            const bound = this.context.allocateTemporaryCppName(
+            const name = this.context.allocateTemporaryCppName(
                 `${structName.toLowerCase()}_receiver`,
             );
             const source = this.context.allocateTemporaryCppName(
@@ -1642,14 +1643,21 @@ export class ClassLowerer {
             this.context.emit({
                 kind: "declaration",
                 type: this.context.dataTypes.cppType(value.dataType),
-                name: bound,
+                name,
                 initializer: source,
             });
             this.context.registerNativeBindingType(
-                bound,
+                name,
                 this.context.dataTypes.cppType(value.dataType),
             );
-            instanceCpp = bound;
+            // A closure reading the receiver (a dispatch's tag test) captures
+            // this local, as one reading its fields does.
+            bound = {
+                nativeCaptures: [
+                    this.context.registerNativeBinding(name, false, true),
+                ],
+            };
+            instanceCpp = name;
         }
         // A computed receiver's identity and presence spellings follow the
         // binding, or an optional call would spell the call a second time;
@@ -1663,14 +1671,14 @@ export class ClassLowerer {
                   );
         if (!this.context.dataTypes.classStructTagged(structName)) {
             return this.receiverRecord(
-                { ...receiver, cpp: instanceCpp },
+                { ...receiver, cpp: instanceCpp, ...bound },
                 binding.declaration,
                 undefined,
                 binding.type,
             );
         }
         return this.narrowedReceiver(
-            { ...receiver, cpp: instanceCpp },
+            { ...receiver, cpp: instanceCpp, ...bound },
             this.staticCandidates(binding.declaration, node),
             node ?? binding.declaration,
         );

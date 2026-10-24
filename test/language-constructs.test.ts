@@ -15492,7 +15492,7 @@ check(
     `,
 );
 checkInRealm(
-    "a promise reaction completes with what the method it calls completes with",
+    "a promise reaction completes with what every dispatched method body completes with",
     `
     const played: number[] = [];
     class Voice {
@@ -15504,12 +15504,39 @@ checkInRealm(
             return value.then((settled) => this.start(settled));
         }
     }
+    class Echo extends Voice {
+        override start(value: number): void { played.push(value * 10); }
+    }
     void (async () => {
-        const voices: Voice[] = [new Voice(), new Voice()];
-        const results = [await voices[0]!.play(Promise.resolve(1)), await voices[1]!.play(Promise.resolve(-1))];
-        if (played.join() !== "1" || results.some((result) => result !== undefined)) throw new Error("dispatched completion " + played.join());
+        const voices: Voice[] = [new Voice(), new Echo(), new Voice()];
+        const results = [
+            await voices[0]!.play(Promise.resolve(1)),
+            await voices[1]!.play(Promise.resolve(2)),
+            await voices[2]!.play(Promise.resolve(-1)),
+        ];
+        if (played.join() !== "1,20" || results.some((result) => result !== undefined)) throw new Error("dispatched completion " + played.join());
         globalThis.close();
     })();
+    `,
+);
+check(
+    "an arrow on a run-time receiver dispatches an overridden method on this",
+    `
+    const played: number[] = [];
+    class Voice {
+        start(value: number): void { played.push(value); }
+        play(values: number[]): void {
+            const go = (value: number): void => this.start(value);
+            values.forEach((value) => go(value));
+        }
+    }
+    class Echo extends Voice {
+        override start(value: number): void { played.push(value * 10); }
+    }
+    const voices: Voice[] = [new Voice(), new Echo()];
+    voices[0]!.play([1, 2]);
+    voices[1]!.play([1, 2]);
+    if (played.join() !== "1,2,10,20") throw new Error("receiver dispatch " + played.join());
     `,
 );
 checkInRealm(
