@@ -8,6 +8,7 @@ import { stringConcatPart } from "./expressions.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isUndefinedDataType } from "./data-types.js";
 import type { Value } from "./types.js";
+import { libraryStaticMember } from "./symbols.js";
 
 type SymbolContext = Pick<
     LoweringServices,
@@ -61,11 +62,8 @@ export function compileSymbolCall(
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = context.unwrap(call.expression);
-    const statics =
-        ts.isPropertyAccessExpression(callee) &&
-        context.libraryGlobal(callee.expression) === "Symbol"
-            ? callee.name.text
-            : undefined;
+    const member = libraryStaticMember(context.checker, callee);
+    const statics = member?.owner === "Symbol" ? member.name : undefined;
     if (context.libraryGlobal(callee) !== "Symbol" && !statics)
         return undefined;
     context.reachJsData();

@@ -4,6 +4,8 @@ import {
     isGlobalUndefined,
     libraryGlobal,
     resolvedSymbol,
+    namedMember,
+    type NamedMember,
 } from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
@@ -68,21 +70,20 @@ function identifierIs(
 }
 
 function propertyCall(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
     property: string,
-): ts.CallExpression | undefined {
+): { call: ts.CallExpression; member: NamedMember } | undefined {
     const call = unwrapExpression(expression);
     if (
         !ts.isCallExpression(call) ||
         // Any `?.` in the chain may skip the call (`a?.b.decode()` too).
         ts.isOptionalChain(call) ||
-        (call.typeArguments?.length ?? 0) !== 0 ||
-        !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.name.text !== property
-    ) {
+        (call.typeArguments?.length ?? 0) !== 0
+    )
         return undefined;
-    }
-    return call;
+    const member = namedMember(checker, call.expression);
+    return member?.name === property ? { call, member } : undefined;
 }
 
 function constBinding(
@@ -161,13 +162,12 @@ function isArrayCheck(
     expression: ts.Expression,
     value: string,
 ): boolean {
-    const call = propertyCall(expression, "isArray");
+    const found = propertyCall(checker, expression, "isArray");
     return (
-        !!call &&
-        call.arguments.length === 1 &&
-        ts.isPropertyAccessExpression(call.expression) &&
-        libraryGlobal(checker, call.expression.expression) === "Array" &&
-        identifierIs(call.arguments[0], value)
+        !!found &&
+        found.call.arguments.length === 1 &&
+        libraryGlobal(checker, found.member.expression) === "Array" &&
+        identifierIs(found.call.arguments[0], value)
     );
 }
 
@@ -286,18 +286,16 @@ function isGzipBase64JsonDecoder(
         return false;
     }
 
-    const byteFactory = propertyCall(bytes.initializer, "from");
+    const byteFactory = propertyCall(checker, bytes.initializer, "from");
     if (
         !byteFactory ||
-        byteFactory.arguments.length !== 2 ||
-        !ts.isPropertyAccessExpression(byteFactory.expression) ||
-        libraryGlobal(checker, byteFactory.expression.expression) !==
-            "Uint8Array"
+        byteFactory.call.arguments.length !== 2 ||
+        libraryGlobal(checker, byteFactory.member.expression) !== "Uint8Array"
     ) {
         return false;
     }
-    const decoded = unwrapExpression(argumentAt(byteFactory, 0));
-    const mapper = unwrapExpression(argumentAt(byteFactory, 1));
+    const decoded = unwrapExpression(argumentAt(byteFactory.call, 0));
+    const mapper = unwrapExpression(argumentAt(byteFactory.call, 1));
     if (
         !ts.isCallExpression(decoded) ||
         decoded.questionDotToken ||
@@ -314,40 +312,47 @@ function isGzipBase64JsonDecoder(
         return false;
     }
     const char = mapper.parameters[0].name.text;
-    const charCodeAt = propertyCall(mapper.body, "charCodeAt");
+    const charCodeAt = propertyCall(checker, mapper.body, "charCodeAt");
     if (
         !charCodeAt ||
-        charCodeAt.arguments.length !== 1 ||
-        !ts.isNumericLiteral(unwrapExpression(argumentAt(charCodeAt, 0))) ||
+        charCodeAt.call.arguments.length !== 1 ||
+        !ts.isNumericLiteral(
+            unwrapExpression(argumentAt(charCodeAt.call, 0)),
+        ) ||
         Number(
-            (unwrapExpression(argumentAt(charCodeAt, 0)) as ts.NumericLiteral)
-                .text,
+            (
+                unwrapExpression(
+                    argumentAt(charCodeAt.call, 0),
+                ) as ts.NumericLiteral
+            ).text,
         ) !== 0 ||
-        !ts.isPropertyAccessExpression(charCodeAt.expression) ||
-        !identifierIs(charCodeAt.expression.expression, char)
+        !identifierIs(charCodeAt.member.expression, char)
     ) {
         return false;
     }
 
-    const pipeThrough = propertyCall(stream.initializer, "pipeThrough");
-    if (!pipeThrough || pipeThrough.arguments.length !== 1) return false;
-    const streamCall = ts.isPropertyAccessExpression(pipeThrough.expression)
-        ? propertyCall(pipeThrough.expression.expression, "stream")
-        : undefined;
-    const decompressor = unwrapExpression(argumentAt(pipeThrough, 0));
+    const pipeThrough = propertyCall(
+        checker,
+        stream.initializer,
+        "pipeThrough",
+    );
+    if (!pipeThrough || pipeThrough.call.arguments.length !== 1) return false;
+    const streamCall = propertyCall(
+        checker,
+        pipeThrough.member.expression,
+        "stream",
+    );
+    const decompressor = unwrapExpression(argumentAt(pipeThrough.call, 0));
     if (
         !streamCall ||
-        streamCall.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(streamCall.expression) ||
-        !ts.isNewExpression(
-            unwrapExpression(streamCall.expression.expression),
-        ) ||
+        streamCall.call.arguments.length !== 0 ||
+        !ts.isNewExpression(unwrapExpression(streamCall.member.expression)) ||
         !ts.isNewExpression(decompressor)
     ) {
         return false;
     }
     const blob = unwrapExpression(
-        streamCall.expression.expression,
+        streamCall.member.expression,
     ) as ts.NewExpression;
     if (
         libraryGlobal(checker, blob.expression) !== "Blob" ||
@@ -372,17 +377,16 @@ function isGzipBase64JsonDecoder(
 
     const awaited = unwrapExpression(returned.expression);
     if (!ts.isAwaitExpression(awaited)) return false;
-    const jsonCall = propertyCall(awaited.expression, "json");
+    const jsonCall = propertyCall(checker, awaited.expression, "json");
     if (
         !jsonCall ||
-        jsonCall.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(jsonCall.expression) ||
-        !ts.isNewExpression(unwrapExpression(jsonCall.expression.expression))
+        jsonCall.call.arguments.length !== 0 ||
+        !ts.isNewExpression(unwrapExpression(jsonCall.member.expression))
     ) {
         return false;
     }
     const response = unwrapExpression(
-        jsonCall.expression.expression,
+        jsonCall.member.expression,
     ) as ts.NewExpression;
     return (
         libraryGlobal(checker, response.expression) === "Response" &&
@@ -691,11 +695,11 @@ export function compileCompressedJsonPromiseThen(
     context: CompressedJsonContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const then = call.expression;
+    const then = namedMember(context.checker, call.expression);
     const callback = call.arguments[0];
     if (
-        !ts.isPropertyAccessExpression(then) ||
-        promiseReactionOf(then, context.checker) !== "then" ||
+        !then ||
+        promiseReactionOf(call.expression, context.checker) !== "then" ||
         call.arguments.length !== 1 ||
         !callback ||
         !ts.isIdentifier(callback) ||

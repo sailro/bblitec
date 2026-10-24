@@ -12,6 +12,7 @@ import {
     libraryName,
     calledDeclaration,
     memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
     choosesOperand,
@@ -24,6 +25,7 @@ import {
     writeSiteOf,
     positionalParameter,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     undefinedOnly,
@@ -224,10 +226,7 @@ export function hasOnlyReportingEffects(
                 node.arguments.every((argument) => printable(value(argument)))
             )
                 return "primitive";
-            if (
-                ts.isPropertyAccessExpression(callee) ||
-                ts.isElementAccessExpression(callee)
-            ) {
+            if (isMemberAccess(callee)) {
                 const owner = value(callee.expression),
                     name = property(callee);
                 if (
@@ -559,11 +558,10 @@ function hasOnlyInstrumentationEffects(
     const isFetchBinding = (
         call: ts.CallExpression | ts.NewExpression,
     ): boolean => {
-        const callee = unwrapExpression(call.expression);
+        const callee = namedMember(checker, unwrapExpression(call.expression));
         return (
             ts.isCallExpression(call) &&
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "bind" &&
+            callee?.name === "bind" &&
             isFetch(callee.expression) &&
             call.arguments.length === 1 &&
             ts.isIdentifier(call.arguments[0]!) &&
@@ -611,8 +609,9 @@ function hasOnlyInstrumentationEffects(
                     "Response",
                 ].includes(libraryGlobal(checker, callee) ?? "")
             );
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const receiver = unwrapExpression(callee.expression);
+        const member = namedMember(checker, callee);
+        if (!member) return false;
+        const receiver = unwrapExpression(member.expression);
         if (isBrowserType(receiver) && confined(receiver)) {
             return (call.arguments ?? []).every(
                 (argument) =>

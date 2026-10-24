@@ -1247,6 +1247,91 @@ test("an access's accessors are read through memberAccessors", () => {
         assert.ok(sourceFacts(path).calls.has("memberAccessors"), path);
 });
 
+test("a call's member is read through namedMember", () => {
+    // namedMember reads the member an access names: `o.m`, `o["m"]` and
+    // `o[K]` with `const K = "m"` are one member; a key only the run time
+    // knows, or one that runs code, names none. Every call dispatcher and
+    // every analysis that recognizes a call by its member reads it there (a
+    // library global's static through libraryStaticMember), so none matches
+    // the dotted spelling alone.
+    for (const name of [
+        "NamedMember",
+        "namedMember",
+        "MemberReader",
+        "LibraryStaticMember",
+        "libraryStaticMember",
+        "isLibraryStatic",
+        "arrayMemberName",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/symbols.ts"],
+            name,
+        );
+    for (const name of ["MemberAccess", "isMemberAccess"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("pinnedMember"), [
+        "src/pinned-program.ts",
+    ]);
+    const compilerPaths = sourcePaths.filter(
+        (path) =>
+            path === "src/compiler.ts" || path.startsWith("src/compiler/"),
+    );
+    assert.deepEqual(
+        compilerPaths.filter((path) => sourceFacts(path).dottedCalleeTests > 0),
+        [],
+    );
+    assert.deepEqual(
+        compilerPaths.filter(
+            (path) => sourceFacts(path).dottedCalleeParameters > 0,
+        ),
+        [],
+    );
+    for (const path of [
+        "src/compiler.ts",
+        "src/compiler/browser-erasure.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/data-methods.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/handle-collections.ts",
+        "src/compiler/json-bridge.ts",
+        "src/compiler/kept-values.ts",
+        "src/compiler/math-intrinsics.ts",
+        "src/compiler/number-intrinsics.ts",
+        "src/compiler/object-statics.ts",
+        "src/compiler/parameter-effects.ts",
+        "src/compiler/platform-calls.ts",
+        "src/compiler/program-observations.ts",
+        "src/compiler/promises.ts",
+        "src/compiler/receiver-methods.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/ui-projection.ts",
+    ]) {
+        const calls = sourceFacts(path).calls;
+        assert.ok(
+            calls.has("namedMember") || calls.has("libraryStaticMember"),
+            path,
+        );
+    }
+    // The handle-method surfaces take the member compilePropertyCall read.
+    for (const [path, symbols] of [
+        ["src/compiler/audio-surface.ts", "./symbols.js"],
+        ["src/compiler/classes.ts", "./symbols.js"],
+        ["src/compiler/intrinsics/vat.ts", "../symbols.js"],
+        ["src/compiler/media-streams.ts", "./symbols.js"],
+        ["src/compiler/physics-surface.ts", "./symbols.js"],
+    ] as const)
+        assert.ok(
+            sourceFacts(path).imports.get(symbols)?.has("NamedMember"),
+            path,
+        );
+});
+
 test("undefined as a value is spelled and read by values/model.ts", () => {
     // undefinedValue makes the json-null `undefined`; absenceOf reads which
     // absence a json-null value is. Comparing emitted C++ to "std::nullopt"

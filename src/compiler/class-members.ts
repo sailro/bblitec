@@ -1,9 +1,11 @@
 import ts from "typescript";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
+    accessedPropertySymbol,
     declaredInDefaultLibrary,
     resolvedSymbol,
     staticPropertyKey,
+    type NamedMember,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
 import {
@@ -517,10 +519,13 @@ export function effectiveConstructor(
 export function staticClassMember(
     checker: ts.TypeChecker,
     owner: ts.Expression,
-    name: ts.MemberName,
+    access: NamedMember,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = resolvedSymbol(checker, name)?.declarations?.find(
+    const member = accessedPropertySymbol(
+        checker,
+        access.access,
+    )?.declarations?.find(
         (candidate): candidate is ts.ClassElement =>
             ts.isClassElement(candidate) &&
             ts.isClassLike(candidate.parent) &&
@@ -529,7 +534,7 @@ export function staticClassMember(
     if (!member || !ts.isClassLike(member.parent)) return undefined;
     return {
         table: classMemberTable(checker, member.parent),
-        name: name.text,
+        name: access.name,
     };
 }
 

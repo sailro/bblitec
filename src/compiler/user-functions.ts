@@ -103,6 +103,8 @@ import {
     calledDeclaration,
     calledFunction,
     memberAccessors,
+    namedMember,
+    type MemberReader,
 } from "./symbols.js";
 import {
     isDeclaredInside,
@@ -496,6 +498,7 @@ export function functionUsesDynamicThis(
  */
 function writesThroughRoot(
     node: ts.Node,
+    member: MemberReader,
     isTarget: (
         expression: ts.Expression,
         via: "assignment" | "receiver",
@@ -516,6 +519,7 @@ function writesThroughRoot(
         return false;
     const target = mutatingCallTarget(
         node,
+        member,
         mutatesVia,
         checker && ((call) => libraryWrittenArgument(checker, call)),
     );
@@ -764,7 +768,15 @@ function writesSharedBinding(
     active: Set<SupportedFunction>,
 ): boolean {
     const writes = someAnalysisNode(body, (node) => {
-        if (writesThroughRoot(node, isShared, undefined, checker)) {
+        if (
+            writesThroughRoot(
+                node,
+                (callee) => namedMember(checker, callee),
+                isShared,
+                undefined,
+                checker,
+            )
+        ) {
             return true;
         }
         if (ts.isCallExpression(node)) {
@@ -1086,12 +1098,15 @@ function reassignedRecordFields(
                 }
                 if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
                     return;
-                const callee = unwrapExpression(node.expression);
+                const callee = namedMember(
+                    checker,
+                    unwrapExpression(node.expression),
+                );
                 const called = calledDeclaration(checker, node);
                 if (called && called.getSourceFile().isDeclarationFile) {
                     if (
-                        ts.isPropertyAccessExpression(callee) &&
-                        reflectingObjectMethods.has(callee.name.text) &&
+                        callee &&
+                        reflectingObjectMethods.has(callee.name) &&
                         libraryGlobal(checker, callee.expression) === "Object"
                     )
                         opaque = true;
@@ -1106,11 +1121,7 @@ function reassignedRecordFields(
                     follow(called);
                     return;
                 }
-                if (
-                    !ts.isPropertyAccessExpression(callee) ||
-                    !fieldCallbacks.has(callee.name.text)
-                )
-                    opaque = true;
+                if (!callee || !fieldCallbacks.has(callee.name)) opaque = true;
             },
             { types: "skip" },
         );
@@ -6363,16 +6374,17 @@ export class UserFunctionLowerer {
             owned?.kind === "vector"
                 ? context.dataLowerer.compileArrayFrom(source, owned)
                 : undefined;
+        const method = namedMember(context.checker, source.expression)?.name;
         if (
             mapped ||
             sinkResult?.kind !== "vector" ||
-            !ts.isPropertyAccessExpression(source.expression) ||
+            method === undefined ||
             context.dataTypes.returnsArray(
                 context.dataLowerer.dataTypeAt(source),
             )
         )
             return mapped;
-        return ["map", "flatMap"].includes(source.expression.name.text)
+        return ["map", "flatMap"].includes(method)
             ? context.dataLowerer.compileDataMethodCall(source, sinkResult)
             : context.dataLowerer.compileArrayFrom(source, sinkResult);
     }

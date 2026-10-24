@@ -12,7 +12,7 @@ import {
     mathMemberAccess,
     spelledMathCall,
 } from "../../compiler/math-intrinsics.js";
-import { pinnedLibraryGlobal } from "../../pinned-program.js";
+import { pinnedLibraryGlobal, pinnedMember } from "../../pinned-program.js";
 import { CppExpressionScope, RenderedCpp, refuseNode } from "./shared.js";
 
 const expressionLowerers = new WeakMap<
@@ -88,18 +88,20 @@ function renderCppLeaf(
         return scope.propertyRead(expression);
     }
     if (ts.isCallExpression(expression)) {
-        if (spelledMathCall(expression, pinnedLibraryGlobal)) return undefined;
+        if (spelledMathCall(expression, pinnedLibraryGlobal, pinnedMember))
+            return undefined;
         if (scope.callRead) return scope.callRead(expression);
         const math = mathMemberAccess(
             expression.expression,
             pinnedLibraryGlobal,
+            pinnedMember,
         );
         refuseNode(
             scope.symbol,
             scope.file,
             expression,
             math
-                ? `calls Math.${math.name.text}, which has no lowering`
+                ? `calls Math.${math.name}, which has no lowering`
                 : "calls a function this lowering cannot carry",
         );
     }

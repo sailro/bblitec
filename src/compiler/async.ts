@@ -35,6 +35,8 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
     libraryName,
+    namedMember,
+    type NamedMember,
 } from "./symbols.js";
 import {
     optionalPresentCpp,
@@ -206,15 +208,17 @@ export class AsyncLowerer {
         // this realm path must see the suspension before that happens.
         const node = unwrapExpression(expression);
         if (ts.isTypeOfExpression(node)) {
-            const property = context.unwrap(node.expression);
-            if (this.isPromiseMethod(property)) {
+            const property = this.promiseMethod(
+                context.unwrap(node.expression),
+            );
+            if (property) {
                 const receiver = context.dataLowerer.narrowOptional(
                     context.compileValue(property.expression),
                     property.expression,
                 );
                 if (receiver.kind !== "promise")
                     return context.fail(
-                        property,
+                        property.access,
                         "Promise method inspection requires a present native promise.",
                     );
                 context.emitDiscardedValue(receiver);
@@ -295,9 +299,7 @@ export class AsyncLowerer {
             return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
-        const statics = promiseStatic(node, (expression) =>
-            context.libraryGlobal(expression),
-        );
+        const statics = promiseStatic(context.checker, node);
         if (statics === "resolve") {
             if (node.arguments.length > 1)
                 return context.fail(
@@ -338,7 +340,8 @@ export class AsyncLowerer {
             return this.compileAll(node, statics === "allSettled");
         if (statics === "race" || statics === "any")
             return this.compileRace(node, statics);
-        if (this.isPromiseMethod(callee)) {
+        const reaction = this.promiseMethod(callee);
+        if (reaction) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes
             // the settlement on. `then(absent, onRejected)` is
@@ -353,11 +356,11 @@ export class AsyncLowerer {
                 );
             };
             const absentFulfillment =
-                callee.name.text === "then" &&
+                reaction.name === "then" &&
                 node.arguments.length === 2 &&
                 absent(0);
             const absentRejection =
-                callee.name.text === "then" &&
+                reaction.name === "then" &&
                 node.arguments.length === 2 &&
                 !absentFulfillment &&
                 absent(1);
@@ -365,9 +368,9 @@ export class AsyncLowerer {
                 node.arguments.length === 2 &&
                 !absentFulfillment &&
                 !absentRejection;
-            const rejection = callee.name.text === "catch" || absentFulfillment;
+            const rejection = reaction.name === "catch" || absentFulfillment;
             const reactionIndex = absentFulfillment ? 1 : 0;
-            const cleanup = callee.name.text === "finally";
+            const cleanup = reaction.name === "finally";
             if (cleanup && node.arguments.length > 1)
                 return context.fail(
                     node,
@@ -386,11 +389,11 @@ export class AsyncLowerer {
                 );
             }
             const receiver = this.asPromise(
-                context.compileValue(callee.expression),
+                context.compileValue(reaction.expression),
                 node,
             );
             const promise = this.orderedReceiver(receiver, [
-                callee.expression,
+                reaction.expression,
                 ...node.arguments,
             ]);
             if (cleanup) {
@@ -1916,13 +1919,11 @@ export class AsyncLowerer {
         );
     }
 
-    private isPromiseMethod(
-        expression: ts.Expression,
-    ): expression is ts.PropertyAccessExpression {
-        return (
-            ts.isPropertyAccessExpression(expression) &&
-            promiseReactionOf(expression, this.context.checker) !== undefined
-        );
+    /** The library Promise reaction a callee names ({@link promiseReactionOf}). */
+    private promiseMethod(expression: ts.Expression): NamedMember | undefined {
+        return promiseReactionOf(expression, this.context.checker) !== undefined
+            ? namedMember(this.context.checker, expression)
+            : undefined;
     }
     private cppType(value: Value, node: ts.Node): string {
         if (value.kind === "void" || value.kind === "physics-engine-module")

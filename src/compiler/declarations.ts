@@ -79,10 +79,10 @@ import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
     declaredSymbol,
-    libraryGlobal,
     calledDeclaration,
     calledFunction,
     memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -3278,8 +3278,9 @@ export class DeclarationLowerer {
             declaration.initializer,
         );
         const initializer = this.context.unwrap(
-            objectIdentityCallArgument(unwrappedInitializer, (expression) =>
-                libraryGlobal(this.context.checker, expression),
+            objectIdentityCallArgument(
+                this.context.checker,
+                unwrappedInitializer,
             ) ?? unwrappedInitializer,
         );
         if (
@@ -4366,12 +4367,16 @@ export class DeclarationLowerer {
                         }
                     }
                     if (ts.isCallExpression(node)) {
+                        const callee = namedMember(
+                            this.context.checker,
+                            node.expression,
+                        );
                         if (
-                            ts.isPropertyAccessExpression(node.expression) &&
+                            callee &&
                             scan.namesAlias(
-                                this.context.unwrap(node.expression.expression),
+                                this.context.unwrap(callee.expression),
                             ) &&
-                            mutatingArrayMethods.has(node.expression.name.text)
+                            mutatingArrayMethods.has(callee.name)
                         ) {
                             return true;
                         }

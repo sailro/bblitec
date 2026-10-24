@@ -66,6 +66,7 @@ import {
     labeledBody,
     unwrapExpression,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -88,7 +89,12 @@ import {
     compileBigIntUpdate,
     emitBigIntCompoundAssignment,
 } from "./bigint-values.js";
-import { isNullishLiteral, computedEnumMember } from "./symbols.js";
+import {
+    isNullishLiteral,
+    computedEnumMember,
+    namedMember,
+    type NamedMember,
+} from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
 import {
     emitReachableStatements,
@@ -1892,10 +1898,7 @@ export class StatementLowerer {
             effect.arguments.length === 0 &&
             context.browserErasure.isBrowserOnlyExpression(effect) &&
             (!callee ||
-                !(
-                    ts.isPropertyAccessExpression(callee) ||
-                    ts.isElementAccessExpression(callee)
-                ) ||
+                !isMemberAccess(callee) ||
                 context.browserErasure.isBrowserOwner(callee.expression))
         ) {
             // Pointer-lock and similar zero-argument DOM effects are often
@@ -1998,11 +2001,13 @@ export class StatementLowerer {
         ) {
             return true;
         }
+        const listener = ts.isCallExpression(expression)
+            ? namedMember(context.checker, expression.expression)
+            : undefined;
         if (
             ts.isCallExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression) &&
-            browserLocal(expression.expression.expression) &&
-            expression.expression.name.text === "addEventListener" &&
+            listener?.name === "addEventListener" &&
+            browserLocal(listener.expression) &&
             expression.arguments.length >= 2 &&
             pure(argumentAt(expression, 0)) &&
             (ts.isArrowFunction(argumentAt(expression, 1)) ||
@@ -2019,8 +2024,7 @@ export class StatementLowerer {
         }
         return (
             ts.isCallExpression(expression) &&
-            (ts.isPropertyAccessExpression(expression.expression) ||
-                ts.isElementAccessExpression(expression.expression)) &&
+            isMemberAccess(expression.expression) &&
             browserLocal(expression.expression.expression) &&
             expression.arguments.every(pure)
         );
@@ -3862,6 +3866,7 @@ export class StatementLowerer {
         const iterator = iteratorMethodCall(
             statement.expression,
             (receiver) => context.libraryGlobal(receiver),
+            (node) => namedMember(context.checker, node),
             (node) => context.unwrap(node),
         );
         if (!iterator) {
@@ -5174,18 +5179,16 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         call: ts.CallExpression,
     ): boolean {
-        if (
-            !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "set"
-        ) {
+        const set = namedMember(context.checker, call.expression);
+        if (set?.name !== "set") {
             return false;
         }
-        const owner = call.expression.expression;
-        const cameraAlias = context.resolveRecordValue(owner)?.cameraVector;
+        const vector = set.expression;
+        const cameraAlias = context.resolveRecordValue(vector)?.cameraVector;
         if (cameraAlias)
             return this.emitCameraVectorSet(context, call, cameraAlias);
-        const alias = ts.isIdentifier(owner)
-            ? context.bindings.lookupOptional(owner)?.sceneNodeVector
+        const alias = ts.isIdentifier(vector)
+            ? context.bindings.lookupOptional(vector)?.sceneNodeVector
             : undefined;
         if (alias) {
             return this.emitSceneNodeVectorSet(
@@ -5195,7 +5198,8 @@ export class StatementLowerer {
                 alias.transform,
             );
         }
-        if (!ts.isPropertyAccessExpression(owner)) {
+        const owner = namedMember(context.checker, vector);
+        if (!owner) {
             return false;
         }
         // A handle stored as optional data narrows where the checker proves
@@ -5208,7 +5212,7 @@ export class StatementLowerer {
             ) ?? compiled;
         if (
             target.kind === "camera" &&
-            ["position", "target", "upVector"].includes(owner.name.text)
+            ["position", "target", "upVector"].includes(owner.name)
         ) {
             return this.emitCameraVectorSet(context, call, {
                 owner: {
@@ -5216,9 +5220,9 @@ export class StatementLowerer {
                     engineCpp: context.requireEngine(target, call),
                 },
                 field:
-                    owner.name.text === "upVector"
+                    owner.name === "upVector"
                         ? "up_vector"
-                        : owner.name.text === "position"
+                        : owner.name === "position"
                           ? "position"
                           : "target",
             });
@@ -5226,7 +5230,7 @@ export class StatementLowerer {
         if (target.kind === "light") {
             return this.compileLightVectorSet(context, call, owner, target);
         }
-        const transform = sceneNodeTransformDescriptor(owner.name.text);
+        const transform = sceneNodeTransformDescriptor(owner.name);
         return transform
             ? this.emitSceneNodeVectorSet(context, call, target, transform)
             : false;
@@ -5328,10 +5332,10 @@ export class StatementLowerer {
     private compileLightVectorSet(
         context: StatementLoweringContext,
         call: ts.CallExpression,
-        owner: ts.PropertyAccessExpression,
+        owner: NamedMember,
         target: Value,
     ): boolean {
-        const property = owner.name.text;
+        const property = owner.name;
         if (property !== "position" && property !== "direction") {
             return false;
         }
@@ -5441,17 +5445,15 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         call: ts.CallExpression,
     ): boolean {
-        if (
-            !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(call.expression.expression) ||
-            call.expression.expression.name.text !== "children"
-        ) {
+        const push = namedMember(context.checker, call.expression);
+        const children =
+            push?.name === "push"
+                ? namedMember(context.checker, push.expression)
+                : undefined;
+        if (children?.name !== "children") {
             return false;
         }
-        const node = context.compileValue(
-            call.expression.expression.expression,
-        );
+        const node = context.compileValue(children.expression);
         if (node.kind !== "transform-node" && node.kind !== "mesh") {
             return false;
         }
@@ -5502,12 +5504,10 @@ export class StatementLowerer {
     ): boolean {
         const exported =
             context.symbols.importedName(call.expression) === "addMeshToTask";
-        const member = ts.isPropertyAccessExpression(call.expression)
-            ? call.expression
-            : undefined;
+        const member = namedMember(context.checker, call.expression);
         if (!exported && (!member || !ts.isIdentifier(member.expression)))
             return false;
-        const method = exported ? "addMesh" : member!.name.text;
+        const method = exported ? "addMesh" : member!.name;
         if (
             method !== "addMesh" &&
             method !== "updateUniforms" &&

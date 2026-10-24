@@ -4,7 +4,12 @@ import {
     counterWrite,
     stepsUpByOne,
 } from "./counted-loops.js";
-import { declarationOrigin, resolvedSymbol, sameReference } from "./symbols.js";
+import {
+    declarationOrigin,
+    resolvedSymbol,
+    sameReference,
+    arrayMemberName,
+} from "./symbols.js";
 import {
     outermostWrapper,
     referenceSite,
@@ -15,6 +20,7 @@ import {
     jumpBinding,
     jumpsTo,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -179,7 +185,7 @@ function walkIdentityEscapes(
             node !== declaration.name
         ) {
             const site = referenceSite(node);
-            escapes = site !== undefined && !enclosedReference(site);
+            escapes = site !== undefined && !enclosedReference(checker, site);
             return;
         }
         ts.forEachChild(node, visit);
@@ -189,16 +195,20 @@ function walkIdentityEscapes(
 }
 
 /** A reference that reads or stores through the binding without sharing it. */
-function enclosedReference(site: ts.Expression): boolean {
+function enclosedReference(
+    checker: ts.TypeChecker,
+    site: ts.Expression,
+): boolean {
     const reference = outermostWrapper(site);
     const parent = reference.parent;
-    if (
-        ts.isPropertyAccessExpression(parent) &&
-        parent.expression === reference
-    )
+    const member =
+        isMemberAccess(parent) && parent.expression === reference
+            ? arrayMemberName(checker, parent)
+            : undefined;
+    if (member !== undefined)
         return (
-            parent.name.text === "length" ||
-            (enclosedArrayMethods.has(parent.name.text) &&
+            member === "length" ||
+            (enclosedArrayMethods.has(member) &&
                 ts.isCallExpression(parent.parent) &&
                 parent.parent.expression === parent)
         );

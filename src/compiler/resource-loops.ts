@@ -27,6 +27,8 @@ import {
     libraryName,
     calledDeclaration,
     memberAccessors,
+    namedMember,
+    accessedPropertySymbol,
 } from "./symbols.js";
 import {
     aliasedMutationScan,
@@ -96,14 +98,14 @@ function resolvedLoopFunction(
         (ts.isIdentifier(callee)
             ? context.bindings?.lookupOptional(callee)
             : undefined);
-    const owner = ts.isPropertyAccessExpression(callee)
-        ? context.knownValueWithoutEvaluation?.(callee.expression)
+    const member = namedMember(context.checker, callee);
+    const owner = member
+        ? context.knownValueWithoutEvaluation?.(member.expression)
         : undefined;
     const declaration =
         value?.callbackDeclaration ??
-        (ts.isPropertyAccessExpression(callee) &&
-        !owner?.recordGetters?.[callee.name.text]
-            ? owner?.recordMethods?.[callee.name.text]
+        (member && !owner?.recordGetters?.[member.name]
+            ? owner?.recordMethods?.[member.name]
             : undefined);
     if (declaration) {
         return ts.isIdentifier(declaration)
@@ -226,15 +228,16 @@ function nativeTransformSet(
     context: Pick<ResourceLoopContext, "checker">,
     call: ts.CallExpression,
 ): boolean {
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "set")
-        return false;
-    const owner = unwrapExpression(callee.expression);
-    if (
-        !ts.isPropertyAccessExpression(owner) ||
-        !sceneNodeTransformDescriptor(owner.name.text)
-    )
-        return false;
+    const callee = namedMember(
+        context.checker,
+        unwrapExpression(call.expression),
+    );
+    if (callee?.name !== "set") return false;
+    const owner = namedMember(
+        context.checker,
+        unwrapExpression(callee.expression),
+    );
+    if (!owner || !sceneNodeTransformDescriptor(owner.name)) return false;
     const kind = expressionHandleKind(context, owner.expression);
     return kind === "mesh" || kind === "transform-node";
 }
@@ -628,8 +631,14 @@ function reachesSpecializingEffect(
         // An audio node's wave or filter type is a closed string enum the
         // graph composes at generation, inside runtime control flow too.
         if (
-            writesThroughTrackedRoot(node, (target) =>
-                isComposedAudioEnum(context.checker, unwrapExpression(target)),
+            writesThroughTrackedRoot(
+                node,
+                (callee) => namedMember(context.checker, callee),
+                (target) =>
+                    isComposedAudioEnum(
+                        context.checker,
+                        unwrapExpression(target),
+                    ),
             )
         ) {
             required = true;
@@ -644,13 +653,17 @@ function reachesSpecializingEffect(
                 ts.isCallExpression(node) &&
                 nativePlatformRead(context, unwrapExpression(node.expression))
             ) &&
-            writesThroughTrackedRoot(node, (target) => {
-                const member = unwrapExpression(target);
-                const symbol = ts.isPropertyAccessExpression(member)
-                    ? resolvedSymbol(context.checker, member)
-                    : undefined;
-                return symbol !== undefined && declaredInDomLibrary(symbol);
-            })
+            writesThroughTrackedRoot(
+                node,
+                (callee) => namedMember(context.checker, callee),
+                (target) => {
+                    const member = unwrapExpression(target);
+                    const symbol = ts.isPropertyAccessExpression(member)
+                        ? resolvedSymbol(context.checker, member)
+                        : undefined;
+                    return symbol !== undefined && declaredInDomLibrary(symbol);
+                },
+            )
         ) {
             required = true;
             return false;
@@ -717,16 +730,19 @@ function reachesSpecializingEffect(
         }
         if (ts.isCallExpression(node)) {
             const callee = unwrapExpression(node.expression);
+            const member = namedMember(context.checker, callee);
             // Listener names choose native callback families even in stored
             // bodies. Expand the loop supplying a name, not an enclosing
             // runtime owner loop or a loop registering one constant name.
             if (
                 iteration &&
-                ts.isPropertyAccessExpression(callee) &&
+                member &&
                 ["addEventListener", "removeEventListener"].includes(
-                    callee.name.text,
+                    member.name,
                 ) &&
-                declaredInDomLibrary(resolvedSymbol(context.checker, callee)) &&
+                declaredInDomLibrary(
+                    accessedPropertySymbol(context.checker, member.access),
+                ) &&
                 node.arguments[0] &&
                 readsIteration(node.arguments[0])
             ) {
@@ -948,6 +964,7 @@ export function loopBoundMayChange(
                     return (
                         writesThroughTrackedRoot(
                             node,
+                            (callee) => namedMember(context.checker, callee),
                             namesAlias,
                             arrayLength
                                 ? (method) => resizingArrayMethods.has(method)
@@ -1113,13 +1130,17 @@ export function parameterizedResourceLoop(
         return false;
     };
     walkReachedLoopNodes(context, statement.statement, (node) => {
-        writesThroughTrackedRoot(node, (target) => {
-            if (!ts.isCallExpression(node) && ts.isIdentifier(target)) {
-                const symbol = context.symbols.valueSymbol(target);
-                if (symbol) rebound.add(symbol);
-            }
-            return markMutation(target);
-        });
+        writesThroughTrackedRoot(
+            node,
+            (callee) => namedMember(context.checker, callee),
+            (target) => {
+                if (!ts.isCallExpression(node) && ts.isIdentifier(target)) {
+                    const symbol = context.symbols.valueSymbol(target);
+                    if (symbol) rebound.add(symbol);
+                }
+                return markMutation(target);
+            },
+        );
         if (ts.isCallExpression(node)) {
             const called = resolvedLoopCallee(context, node);
             if (isFunctionWithBody(called)) {
@@ -1149,6 +1170,7 @@ export function parameterizedResourceLoop(
         return current;
     };
     const staticContext: StaticFoldContext = {
+        checker: context.checker,
         resolveStaticExpression: resolve,
         libraryGlobal: (expression) => context.libraryGlobal(expression),
         bindings: {
@@ -1436,6 +1458,7 @@ export function parameterizedResourceLoop(
         if (
             writesThroughTrackedRoot(
                 node,
+                (callee) => namedMember(context.checker, callee),
                 (target) =>
                     ts.isIdentifier(target) &&
                     indices.has(context.symbols.valueSymbol(target)!),

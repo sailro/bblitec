@@ -11,6 +11,7 @@ import {
     staticStringValue,
     type Value,
 } from "./types.js";
+import { libraryStaticMember } from "./symbols.js";
 
 const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
@@ -88,13 +89,12 @@ export function compileNumberPredicate(
     context: ExpressionContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        context.libraryGlobal(callee.expression) !== "Number"
-    )
-        return undefined;
-    const predicate = predicates.get(callee.name.text);
+    const callee = libraryStaticMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (callee?.owner !== "Number") return undefined;
+    const predicate = predicates.get(callee.name);
     if (!predicate) return undefined;
     context.expectArgumentCount(call, 1, 1);
     context.reachJsData();

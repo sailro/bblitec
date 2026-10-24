@@ -6,7 +6,12 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
 import { undefinedValue } from "./values/model.js";
 import { argumentAt } from "./syntax.js";
-import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    namedMember,
+    resolvedSymbol,
+    type NamedMember,
+} from "./symbols.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
 import { isStringValue, type Feature, type Value } from "./types.js";
@@ -430,7 +435,7 @@ function emitAudioNode(context: AudioCallContext, initializer: string): Value {
 function orderedOperands(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
     argument: (expression: ts.Expression, index: number) => string,
 ): { owner: string; args: string[] } {
@@ -451,9 +456,9 @@ function orderedOperands(
 export function compileAudioMethodCall(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
-    if (callee.questionDotToken) {
+    if (callee.access.questionDotToken) {
         const kind = domAudioHandleKind(
             context.checker.getNonNullableType(
                 context.checker.getTypeAtLocation(callee.expression),
@@ -487,8 +492,10 @@ export function compileAudioMethodCall(
     const receiverExpression = context.unwrap(callee.expression);
     const chainedConnect =
         ts.isCallExpression(receiverExpression) &&
-        ts.isPropertyAccessExpression(receiverExpression.expression) &&
-        receiverExpression.expression.name.text === "connect"
+        namedMember(
+            context.checker,
+            context.unwrap(receiverExpression.expression),
+        )?.name === "connect"
             ? context.compileValue(receiverExpression)
             : undefined;
     const receiver =
@@ -512,7 +519,7 @@ export function compileAudioMethodCall(
 function compileAudioListener(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
     event: (type: string) => string | undefined,
     refusals: { type: string; payload: string },
@@ -537,7 +544,7 @@ function compileAudioListener(
     if (type === undefined) return context.fail(call, refusals.type);
     const callback = argumentAt(call, 1);
     context.callbacks.hoistForwardCallbackBindings(callback);
-    const removing = callee.name.text === "removeEventListener";
+    const removing = callee.name === "removeEventListener";
     const callbackType = context.checker.getTypeAtLocation(callback);
     const absent = presentMembers(callbackType).length === 0;
     let identity = "0u",
@@ -606,10 +613,10 @@ function compileAudioListener(
 function compileAudioElementMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     context.reachFeature("audio:media-element", call);
     if (method === "addEventListener" || method === "removeEventListener")
         return compileAudioListener(
@@ -664,10 +671,10 @@ function compileAudioElementMethod(
 function compileAudioReceiverMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     // Stored and deferred-produced handles can reach operations without
     // a context constructor in this translation unit.
     context.reachFeature("audio:engine", call);
@@ -950,10 +957,10 @@ function compileAudioDecode(
 function compileAudioContextMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     const spell = webAudioMemberCall;
     const factory = AUDIO_NODE_FACTORIES.find(([name]) => name === method);
     if (factory) {

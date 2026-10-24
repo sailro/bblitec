@@ -2,7 +2,7 @@ import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
-import { sameReference } from "./symbols.js";
+import { sameReference, namedMember, type NamedMember } from "./symbols.js";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
@@ -241,7 +241,7 @@ export class PlatformCalls {
      */
     private compileScrollIntoView(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
         element: Value,
     ): Value {
         const target = pinDetached(
@@ -319,24 +319,26 @@ export class PlatformCalls {
     private compileSceneBeforeRenderList(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        const hooks =
+            callee && namedMember(this.context.checker, callee.expression);
         if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "_beforeRender" ||
+            !callee ||
+            hooks?.name !== "_beforeRender" ||
             !isPinnedType(
-                this.context.checker.getTypeAtLocation(
-                    callee.expression.expression,
-                ),
+                this.context.checker.getTypeAtLocation(hooks.expression),
                 ["SceneContext"],
             )
         )
             return undefined;
-        const sceneNode = callee.expression.expression;
+        const sceneNode = hooks.expression;
         const scene = this.context.compileValue(sceneNode);
         this.context.expectKind(scene, "scene", sceneNode);
         const list = `${this.context.bindings.pinValueToTemporary(scene, "scene", sceneNode).cpp}.state->before_render`;
-        switch (callee.name.text) {
+        switch (callee.name) {
             case "push": {
                 this.context.expectArgumentCount(call, 1, 1);
                 const delta =
@@ -381,8 +383,8 @@ export class PlatformCalls {
             }
             default:
                 return this.context.fail(
-                    callee.name,
-                    `scene._beforeRender.${callee.name.text} is not lowered natively.`,
+                    callee.key,
+                    `scene._beforeRender.${callee.name} is not lowered natively.`,
                 );
         }
     }
@@ -413,8 +415,9 @@ export class PlatformCalls {
             this.context.reachFeature("ui:rml", call);
             return { ...element, uiComputedStyle: true };
         }
-        const callee = this.context.unwrap(call.expression);
-        if (ts.isPropertyAccessExpression(callee)) {
+        const unwrappedCallee = this.context.unwrap(call.expression);
+        const callee = namedMember(this.context.checker, unwrappedCallee);
+        if (callee) {
             const typeName = this.context.checker
                 .getTypeAtLocation(callee.expression)
                 .getSymbol()
@@ -428,14 +431,13 @@ export class PlatformCalls {
                     this.context,
                     call,
                     owner,
-                    callee.name.text,
+                    callee.name,
                 );
                 if (result) return result;
             }
         }
         if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "addEventListener" &&
+            callee?.name === "addEventListener" &&
             !this.context.browserErasure.isBrowserOnlyExpression(
                 callee.expression,
             )
@@ -485,10 +487,7 @@ export class PlatformCalls {
                 };
             }
         }
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "disable"
-        ) {
+        if (callee?.name === "disable") {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "device-recovery") {
                 this.context.expectArgumentCount(call, 0, 0);
@@ -498,7 +497,7 @@ export class PlatformCalls {
                 };
             }
         }
-        if (ts.isPropertyAccessExpression(callee)) {
+        if (callee) {
             const dispatched =
                 compileSyntheticEventDispatch(this.context, call) ??
                 compileCustomEventDispatch(this.context, call) ??
@@ -509,7 +508,7 @@ export class PlatformCalls {
         }
         // Bare or through the global object (`window.clearTimeout`): the
         // same library function either way.
-        const global = this.context.libraryGlobal(callee);
+        const global = this.context.libraryGlobal(unwrappedCallee);
         if (global !== undefined) {
             if (global === "isFinite" || global === "isNaN") {
                 this.context.expectArgumentCount(call, 1, 1);
@@ -564,17 +563,16 @@ export class PlatformCalls {
                 };
             }
         }
-        if (!ts.isPropertyAccessExpression(callee)) {
+        if (!callee) {
             return undefined;
         }
         const receiver = this.context.unwrap(callee.expression);
-        if (
-            callee.name.text === "destroy" &&
-            call.arguments.length === 0 &&
-            ts.isPropertyAccessExpression(receiver) &&
-            receiver.name.text === "texture"
-        ) {
-            const texture = this.context.compileValue(receiver.expression);
+        const textureOwner =
+            callee.name === "destroy" && call.arguments.length === 0
+                ? namedMember(this.context.checker, receiver)
+                : undefined;
+        if (textureOwner?.name === "texture") {
+            const texture = this.context.compileValue(textureOwner.expression);
             if (texture.kind === "texture") {
                 if (texture.textureStorage !== "render") {
                     // File and pixel textures are immutable engine assets;
@@ -592,7 +590,7 @@ export class PlatformCalls {
             }
         }
         if (
-            callee.name.text === "now" &&
+            callee.name === "now" &&
             call.arguments.length === 0 &&
             this.context.libraryGlobal(receiver) === "performance"
         ) {
@@ -603,17 +601,17 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "parse" &&
+            callee.name === "parse" &&
             this.context.libraryGlobal(receiver) === "Date"
         )
             return compileDateParse(this.context.dataLowerer, call);
         if (
-            callee.name.text === "UTC" &&
+            callee.name === "UTC" &&
             this.context.libraryGlobal(receiver) === "Date"
         )
             return compileDateUtc(this.context.dataLowerer, call);
         if (
-            callee.name.text === "now" &&
+            callee.name === "now" &&
             call.arguments.length === 0 &&
             this.context.libraryGlobal(receiver) === "Date"
         ) {
@@ -624,10 +622,10 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "preventDefault" ||
-            callee.name.text === "stopPropagation" ||
-            callee.name.text === "stopImmediatePropagation" ||
-            callee.name.text === "composedPath"
+            callee.name === "preventDefault" ||
+            callee.name === "stopPropagation" ||
+            callee.name === "stopImmediatePropagation" ||
+            callee.name === "composedPath"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
@@ -636,7 +634,7 @@ export class PlatformCalls {
                   ? this.context.compileValue(receiver)
                   : undefined;
             if (
-                callee.name.text === "composedPath" &&
+                callee.name === "composedPath" &&
                 (platformEvent?.kind === "platform-keyboard-event" ||
                     platformEvent?.kind === "platform-mouse-event" ||
                     platformEvent?.kind === "custom-event" ||
@@ -665,20 +663,20 @@ export class PlatformCalls {
                 if (call.arguments.length)
                     this.context.fail(
                         call,
-                        `Event.${callee.name.text} accepts no arguments.`,
+                        `Event.${callee.name} accepts no arguments.`,
                     );
                 if (
                     platformEvent.nativeErrorEvent &&
-                    callee.name.text !== "preventDefault"
+                    callee.name !== "preventDefault"
                 )
                     this.context.fail(
                         call,
                         "Application error propagation methods are not represented.",
                     );
                 const method =
-                    callee.name.text === "preventDefault"
+                    callee.name === "preventDefault"
                         ? "prevent_default"
-                        : callee.name.text === "stopPropagation"
+                        : callee.name === "stopPropagation"
                           ? "stop_propagation"
                           : "stop_immediate_propagation";
                 return {
@@ -688,7 +686,7 @@ export class PlatformCalls {
             }
         }
         if (
-            callee.name.text === "focus" &&
+            callee.name === "focus" &&
             call.arguments.length === 0 &&
             ts.isIdentifier(receiver) &&
             this.context.isCanvasElement(receiver)
@@ -699,7 +697,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "requestPointerLock" &&
+            callee.name === "requestPointerLock" &&
             call.arguments.length === 0 &&
             ts.isIdentifier(receiver) &&
             this.context.isCanvasElement(receiver)
@@ -710,7 +708,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "exitPointerLock" &&
+            callee.name === "exitPointerLock" &&
             call.arguments.length === 0 &&
             this.context.libraryGlobal(receiver) === "document"
         ) {
@@ -857,11 +855,14 @@ export class PlatformCalls {
         call: ts.CallExpression,
         preparedElement?: Value,
     ): boolean {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
-            (callee.name.text !== "addEventListener" &&
-                callee.name.text !== "removeEventListener")
+            !callee ||
+            (callee.name !== "addEventListener" &&
+                callee.name !== "removeEventListener")
         ) {
             return false;
         }
@@ -870,7 +871,7 @@ export class PlatformCalls {
             deferredCapabilityDescriptor(this.context.checker, call)
         )
             return false;
-        if (!preparedElement && callee.questionDotToken) {
+        if (!preparedElement && callee.access.questionDotToken) {
             const type = this.context.dataLowerer.dataTypeAt(callee.expression);
             if (
                 type?.kind === "optional" &&
@@ -914,7 +915,7 @@ export class PlatformCalls {
                 return true;
             }
         }
-        const removing = callee.name.text === "removeEventListener";
+        const removing = callee.name === "removeEventListener";
         const uiElement =
             preparedElement ??
             this.ui.compileUiElementReceiver(callee.expression);
@@ -1266,10 +1267,10 @@ export class PlatformCalls {
 
     private compileUiCall(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
         preparedElement?: Value,
     ): Value | undefined {
-        if (!preparedElement && callee.questionDotToken) {
+        if (!preparedElement && callee.access.questionDotToken) {
             const stored = this.context.probeEmission(() => {
                 const value = this.context.dataLowerer.compileDataPath(
                     callee.expression,
@@ -1307,21 +1308,20 @@ export class PlatformCalls {
         const retainedStyle = ts.isIdentifier(style)
             ? this.context.bindings.lookupOptional(style)
             : undefined;
+        const styleMember = namedMember(this.context.checker, style);
         if (
-            ((ts.isPropertyAccessExpression(style) &&
-                style.name.text === "style") ||
-                retainedStyle?.uiStyle) &&
+            (styleMember?.name === "style" || retainedStyle?.uiStyle) &&
             ["setProperty", "getPropertyValue", "removeProperty"].includes(
-                callee.name.text,
+                callee.name,
             )
         ) {
             const element = retainedStyle?.uiStyle
                 ? retainedStyle
-                : ts.isPropertyAccessExpression(style)
-                  ? this.ui.compileUiElementReceiver(style.expression)
+                : styleMember
+                  ? this.ui.compileUiElementReceiver(styleMember.expression)
                   : undefined;
             if (element) {
-                const setting = callee.name.text === "setProperty";
+                const setting = callee.name === "setProperty";
                 this.context.expectArgumentCount(
                     call,
                     setting ? 2 : 1,
@@ -1346,7 +1346,7 @@ export class PlatformCalls {
                     );
                     return { kind: "void", cpp: "" };
                 }
-                if (callee.name.text === "removeProperty")
+                if (callee.name === "removeProperty")
                     return this.ui.removeUiStyleProperty(
                         element,
                         name,
@@ -1374,17 +1374,12 @@ export class PlatformCalls {
                 preparedElement,
             );
             // A one-ID-selector query is the same lookup by id.
-            const byId = callee.name.text === "getElementById";
+            const byId = callee.name === "getElementById";
             const id = byId
                 ? this.context.evaluator.staticTextValue(argumentAt(call, 0))
                 : this.ui.lookupElementId(call);
             if (!byId && id === undefined) {
-                return this.compileUiQuery(
-                    call,
-                    callee.name.text,
-                    engine,
-                    "{}",
-                );
+                return this.compileUiQuery(call, callee.name, engine, "{}");
             }
             this.context.reachFeature("ui:rml", call);
             const tag =
@@ -1421,7 +1416,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "createTextNode" &&
+            callee.name === "createTextNode" &&
             isDocumentReceiver(this.context, callee.expression)
         ) {
             this.context.expectArgumentCount(call, 1, 1);
@@ -1445,15 +1440,15 @@ export class PlatformCalls {
             };
         }
         if (
-            (callee.name.text === "createElement" ||
-                callee.name.text === "createElementNS") &&
+            (callee.name === "createElement" ||
+                callee.name === "createElementNS") &&
             isDocumentReceiver(this.context, callee.expression)
         ) {
             const engine = this.ui.documentReceiverEngine(
                 callee.expression,
                 preparedElement,
             );
-            const svg = callee.name.text === "createElementNS";
+            const svg = callee.name === "createElementNS";
             this.context.expectArgumentCount(call, svg ? 2 : 1, svg ? 2 : 1);
             if (
                 svg &&
@@ -1515,23 +1510,24 @@ export class PlatformCalls {
                     : {}),
             };
         }
+        const receiverMember = namedMember(
+            this.context.checker,
+            callee.expression,
+        );
         const classListMutation =
-            ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "classList" &&
-            (callee.name.text === "add" ||
-                callee.name.text === "remove" ||
-                callee.name.text === "toggle" ||
-                callee.name.text === "contains");
+            receiverMember?.name === "classList" &&
+            (callee.name === "add" ||
+                callee.name === "remove" ||
+                callee.name === "toggle" ||
+                callee.name === "contains");
         const rootAppend =
-            (callee.name.text === "append" ||
-                callee.name.text === "appendChild") &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "body" &&
-            this.context.libraryGlobal(callee.expression.expression) ===
+            (callee.name === "append" || callee.name === "appendChild") &&
+            receiverMember?.name === "body" &&
+            this.context.libraryGlobal(receiverMember.expression) ===
                 "document";
         if (
             rootAppend &&
-            callee.name.text === "append" &&
+            callee.name === "append" &&
             call.arguments.length === 0
         )
             return { kind: "void", cpp: "" };
@@ -1552,17 +1548,17 @@ export class PlatformCalls {
                           "querySelectorAll",
                           "matches",
                           "closest",
-                      ].includes(callee.name.text)
+                      ].includes(callee.name)
                     ? this.ui.compileUiElementReceiver(callee.expression)
                     : this.ui.uiElementValue(callee.expression));
-        if (element?.uiTag === "image-bitmap" && callee.name.text === "close") {
+        if (element?.uiTag === "image-bitmap" && callee.name === "close") {
             this.context.expectArgumentCount(call, 0, 0);
             return { kind: "void", cpp: "" };
         }
         if (
             element?.uiCanvas &&
             !element.uiCanvasContext &&
-            callee.name.text === "getContext"
+            callee.name === "getContext"
         ) {
             this.context.expectArgumentCount(call, 1, 1);
             const context = this.context.compileStringLiteral(
@@ -1597,7 +1593,7 @@ export class PlatformCalls {
                         `${call.arguments.map((_argument, index) => number(index)).join(", ")})`,
                 };
             };
-            switch (callee.name.text) {
+            switch (callee.name) {
                 case "scale":
                     this.ui.recordUiCanvasLogicalScale(call);
                     return invocation("scale", 2);
@@ -1808,7 +1804,7 @@ export class PlatformCalls {
             element &&
             compileCanvasCaptureStream(this.context.dataLowerer, call, element);
         if (captured) return captured;
-        if (element && callee.name.text === "decode") {
+        if (element && callee.name === "decode") {
             if (!this.context.options.workers)
                 this.context.fail(
                     call,
@@ -1827,7 +1823,7 @@ export class PlatformCalls {
                 promiseResult: { kind: "void", cpp: "" },
             };
         }
-        if (element && callee.name.text === "focus") {
+        if (element && callee.name === "focus") {
             this.context.expectArgumentCount(call, 0, 1);
             const visible = this.focusVisibleOption(call.arguments[0]);
             const engine = this.context.requireEngine(element, call);
@@ -1839,7 +1835,7 @@ export class PlatformCalls {
         }
         if (
             element &&
-            callee.name.text === "select" &&
+            callee.name === "select" &&
             ["input", "textarea"].includes(
                 this.ui.declaredUiTag(element, callee.expression) ?? "",
             )
@@ -1854,7 +1850,7 @@ export class PlatformCalls {
                 ),
             };
         }
-        if (element && callee.name.text === "blur") {
+        if (element && callee.name === "blur") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             return {
@@ -1867,13 +1863,13 @@ export class PlatformCalls {
         }
         if (
             element &&
-            (callee.name.text === "contains" ||
-                callee.name.text === "hasAttribute" ||
-                callee.name.text === "getAttribute")
+            (callee.name === "contains" ||
+                callee.name === "hasAttribute" ||
+                callee.name === "getAttribute")
         ) {
             this.context.expectArgumentCount(call, 1, 1);
             const engine = this.context.requireEngine(element, call);
-            const method = callee.name.text;
+            const method = callee.name;
             const result =
                 method === "contains"
                     ? this.uiContainsCpp(element, engine, argumentAt(call, 0))
@@ -1896,7 +1892,7 @@ export class PlatformCalls {
             }
             return this.elementBoolean(presenceFlagCpp(element), call, result);
         }
-        if (element && callee.name.text === "getAttributeNames") {
+        if (element && callee.name === "getAttributeNames") {
             this.context.expectArgumentCount(call, 0, 0);
             if (ts.isOptionalChain(call))
                 this.context.fail(
@@ -1911,7 +1907,7 @@ export class PlatformCalls {
                 freshData: true,
             };
         }
-        if (element && callee.name.text === "click") {
+        if (element && callee.name === "click") {
             this.context.expectArgumentCount(call, 0, 0);
             if (element.uiTag === "input") {
                 if (!element.uiFileInput) {
@@ -1938,9 +1934,9 @@ export class PlatformCalls {
                 "querySelectorAll",
                 "matches",
                 "closest",
-            ].includes(callee.name.text) &&
+            ].includes(callee.name) &&
             !(
-                callee.name.text.startsWith("querySelector") &&
+                callee.name.startsWith("querySelector") &&
                 element.uiStaticId !== undefined &&
                 this.ui.uiStaticDescendants(element.uiStaticId).markup.length >
                     0
@@ -1948,14 +1944,14 @@ export class PlatformCalls {
         ) {
             return this.compileUiQuery(
                 call,
-                callee.name.text,
+                callee.name,
                 this.context.requireEngine(element, call),
                 element.cpp,
                 presenceFlagCpp(element),
                 element,
             );
         }
-        if (element && callee.name.text === "querySelector") {
+        if (element && callee.name === "querySelector") {
             this.context.expectArgumentCount(call, 1, 1);
             const selector = this.context.compileStringLiteral(
                 argumentAt(call, 0),
@@ -2045,7 +2041,7 @@ export class PlatformCalls {
                 truthinessCpp: "true",
             };
         }
-        if (element && callee.name.text === "querySelectorAll") {
+        if (element && callee.name === "querySelectorAll") {
             this.context.expectArgumentCount(call, 1, 1);
             const selector = this.context.compileStringLiteral(
                 argumentAt(call, 0),
@@ -2128,7 +2124,7 @@ export class PlatformCalls {
                 },
             };
         }
-        if (element && callee.name.text === "toggleAttribute") {
+        if (element && callee.name === "toggleAttribute") {
             this.context.expectArgumentCount(call, 1, 2);
             const receiver = pinDetached(
                 this.context,
@@ -2153,7 +2149,7 @@ export class PlatformCalls {
                 impure: true,
             };
         }
-        if (element && callee.name.text === "removeAttribute") {
+        if (element && callee.name === "removeAttribute") {
             this.context.expectArgumentCount(call, 1, 1);
             const sourceName = this.context.compileStringLiteral(
                 argumentAt(call, 0),
@@ -2172,7 +2168,7 @@ export class PlatformCalls {
                 cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(sourceName)})`,
             };
         }
-        if (element && callee.name.text === "setAttribute") {
+        if (element && callee.name === "setAttribute") {
             this.context.expectArgumentCount(call, 2, 2);
             const sourceName = this.context.compileStringLiteral(
                 argumentAt(call, 0),
@@ -2228,7 +2224,7 @@ export class PlatformCalls {
                     `${value})`,
             };
         }
-        if (element && callee.name.text === "insertBefore") {
+        if (element && callee.name === "insertBefore") {
             this.context.expectArgumentCount(call, 2, 2);
             const receiver = pinDetached(
                 this.context,
@@ -2270,7 +2266,7 @@ export class PlatformCalls {
                 cpp: `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference.kind === "json-null" ? "bbl::UiElementHandle{}" : optional ? `${reference.cpp}.value_or(bbl::UiElementHandle{})` : reference.cpp})`,
             };
         }
-        if (element && callee.name.text === "replaceWith") {
+        if (element && callee.name === "replaceWith") {
             const node = pinDetached(
                 this.context,
                 element,
@@ -2309,7 +2305,7 @@ export class PlatformCalls {
                 cpp: `bbl::ui_replace_with(${engine}, ${node.cpp}, {${nodes.map((value) => value.cpp).join(", ")}})`,
             };
         }
-        if (element && callee.name.text === "insertAdjacentElement") {
+        if (element && callee.name === "insertAdjacentElement") {
             this.context.expectArgumentCount(call, 2, 2);
             const target = pinDetached(
                 this.context,
@@ -2356,11 +2352,11 @@ export class PlatformCalls {
                 impure: true,
             };
         }
-        if (element && callee.name.text === "scrollIntoView") {
+        if (element && callee.name === "scrollIntoView") {
             this.context.expectArgumentCount(call, 0, 1);
             return this.compileScrollIntoView(call, callee, element);
         }
-        if (element && callee.name.text === "appendChild") {
+        if (element && callee.name === "appendChild") {
             this.context.expectArgumentCount(call, 1, 1);
             const child = this.context.compileValue(argumentAt(call, 0));
             this.context.expectKind(child, "ui-element", argumentAt(call, 0));
@@ -2384,7 +2380,7 @@ export class PlatformCalls {
                 engineCpp: engine,
             };
         }
-        const insertion = callee.name.text;
+        const insertion = callee.name;
         if (
             element &&
             (insertion === "append" ||
@@ -2410,7 +2406,7 @@ export class PlatformCalls {
                     node,
                 );
             };
-            const replace = callee.name.text === "replaceChildren";
+            const replace = callee.name === "replaceChildren";
             const receiver = element.uiRoot
                 ? element
                 : snapshot(element, "append_receiver", callee.expression);
@@ -2513,7 +2509,7 @@ export class PlatformCalls {
             }
             return { kind: "void", cpp: operations.join(", ") };
         }
-        if (element && callee.name.text === "replaceChildren") {
+        if (element && callee.name === "replaceChildren") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             this.ui.recordUiStaticReplaceChildren(element);
@@ -2522,7 +2518,7 @@ export class PlatformCalls {
                 cpp: `bbl::ui_replace_children(${engine}, ${element.cpp})`,
             };
         }
-        if (element && callee.name.text === "remove") {
+        if (element && callee.name === "remove") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             this.ui.recordUiStaticRemoval(element);
@@ -2534,7 +2530,7 @@ export class PlatformCalls {
                 ),
             };
         }
-        if (element && callee.name.text === "getBoundingClientRect") {
+        if (element && callee.name === "getBoundingClientRect") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             const rect = this.context.allocateTemporaryCppName("ui_rect");
@@ -2575,20 +2571,20 @@ export class PlatformCalls {
                 },
             };
         }
-        if (element && callee.name.text === "animate") {
+        if (element && callee.name === "animate") {
             this.context.expectArgumentCount(call, 2, 2);
             // Web Animations remains outside this retained UI slice. The
             // state mutation around it (text/style/removal) is preserved.
             return { kind: "void", cpp: "" };
         }
-        if (element && callee.name.text === "removeEventListener") {
+        if (element && callee.name === "removeEventListener") {
             this.context.fail(
                 call,
                 "Removal of this retained UI event family is not represented.",
             );
         }
-        if (classListMutation) {
-            const classOwner = callee.expression.expression;
+        if (classListMutation && receiverMember) {
+            const classOwner = receiverMember.expression;
             let classElement =
                 preparedElement ?? this.ui.compileUiElementReceiver(classOwner);
             if (classElement) {
@@ -2604,7 +2600,7 @@ export class PlatformCalls {
                     "class_receiver",
                     classOwner,
                 );
-                const method = callee.name.text;
+                const method = callee.name;
                 this.context.expectArgumentCount(
                     call,
                     1,
@@ -2780,9 +2776,7 @@ export class PlatformCalls {
                 this.context,
                 receiver,
                 "query_root",
-                ts.isPropertyAccessExpression(call.expression)
-                    ? call.expression.expression
-                    : undefined,
+                namedMember(this.context.checker, call.expression)?.expression,
             ).cpp;
         }
         const terms = uiQuerySelectorCpp(

@@ -40,6 +40,9 @@ import {
     isBabylonModule,
     libraryGlobal,
     resolvedSymbol,
+    namedMember,
+    libraryStaticMember,
+    isLibraryStatic,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import {
@@ -130,10 +133,11 @@ export function createsElement(
             : undefined;
         return (
             ts.isCallExpression(child) &&
-            ts.isPropertyAccessExpression(child.expression) &&
-            child.expression.name.text === "createElement" &&
-            libraryGlobal(checker, child.expression.expression) ===
-                "document" &&
+            isLibraryStatic(
+                libraryStaticMember(checker, child.expression),
+                "document",
+                "createElement",
+            ) &&
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
             firstArgument.text === tag
@@ -271,6 +275,7 @@ export function sameFileClosure(
             if (
                 writesThroughTrackedRoot(
                     node,
+                    (callee) => namedMember(checker, callee),
                     (target) => {
                         const root = rootIdentifier(target);
                         return (

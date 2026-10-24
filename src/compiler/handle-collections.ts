@@ -28,7 +28,11 @@ import {
 import {
     CompilerSymbols,
     isNullishLiteral,
-    type LibraryGlobal,
+    namedMember,
+    libraryGlobal,
+    type NamedMember,
+    libraryStaticMember,
+    isLibraryStatic,
 } from "./symbols.js";
 import {
     argumentAt,
@@ -188,7 +192,7 @@ interface AssetOwnerMapProof {
 function assetOwnerMapBuilder(
     declaration: ts.FunctionDeclaration,
     resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): AssetOwnerMapProof | undefined {
     const parameters = (
         fn: ts.FunctionDeclaration,
@@ -241,7 +245,7 @@ function assetOwnerMapBuilder(
         !rootLoop ||
         map.name.text === params[0]!.text ||
         !ts.isNewExpression(map.initializer) ||
-        libraryGlobal(map.initializer.expression) !== "Map" ||
+        libraryGlobal(checker, map.initializer.expression) !== "Map" ||
         (map.initializer.arguments?.length ?? 0) !== 0 ||
         !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
         !ts.isReturnStatement(returned!) ||
@@ -256,7 +260,7 @@ function assetOwnerMapBuilder(
     if (
         !rootGuard ||
         !guardedBy(rootGuard.test, rootLoop.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, libraryGlobal),
+            isChildrenPresenceGuard(fn, checker),
         )
     )
         return undefined;
@@ -303,7 +307,7 @@ function assetOwnerMapBuilder(
             isRenderablePresenceGuard,
         ) ||
         !guardedBy(descend.test, children.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, libraryGlobal),
+            isChildrenPresenceGuard(fn, checker),
         )
     )
         return undefined;
@@ -501,8 +505,10 @@ export class HandleCollections {
         };
         const declaration = resolve(identifier);
         if (!declaration || call.arguments.length !== 1) return undefined;
-        const proof = assetOwnerMapBuilder(declaration, resolve, (callee) =>
-            this.context.libraryGlobal(callee),
+        const proof = assetOwnerMapBuilder(
+            declaration,
+            resolve,
+            this.context.checker,
         );
         if (!proof) return undefined;
         const owner = this.context.compileValue(argumentAt(call, 0));
@@ -1021,9 +1027,7 @@ export class HandleCollections {
         const walk = resolve(visit.expression);
         if (
             !walk ||
-            !isRecursiveMeshFlattenVisitor(walk, resolve, (callee) =>
-                this.context.libraryGlobal(callee),
-            )
+            !isRecursiveMeshFlattenVisitor(walk, resolve, this.context.checker)
         ) {
             return undefined;
         }
@@ -1606,16 +1610,14 @@ export class HandleCollections {
      */
     public compileSceneLightPush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "lights"
-        ) {
-            return undefined;
-        }
-        const scene = this.context.compileValue(callee.expression.expression);
+        const lights =
+            callee.name === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (lights?.name !== "lights") return undefined;
+        const scene = this.context.compileValue(lights.expression);
         if (scene.kind !== "scene") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const light = this.context.compileValue(argumentAt(call, 0));
@@ -1647,16 +1649,14 @@ export class HandleCollections {
      */
     public compileParticleSystemsPush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "systems"
-        ) {
-            return undefined;
-        }
-        const set = this.context.compileValue(callee.expression.expression);
+        const systems =
+            callee.name === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (systems?.name !== "systems") return undefined;
+        const set = this.context.compileValue(systems.expression);
         if (set.kind !== "node-particle-set") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const system = this.context.compileValue(argumentAt(call, 0));
@@ -1730,9 +1730,9 @@ export class HandleCollections {
      */
     public compileHandleTuplePush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "push") return undefined;
+        if (callee.name !== "push") return undefined;
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
         const tuple = this.context.bindings.lookupOptional(owner);
@@ -1828,9 +1828,9 @@ export class HandleCollections {
      */
     public compileFind(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "find") {
+        if (callee.name !== "find") {
             return undefined;
         }
         const root = this.findAssetRoot(call, callee.expression);
@@ -1889,9 +1889,9 @@ export class HandleCollections {
      */
     public compileFilter(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "filter") return undefined;
+        if (callee.name !== "filter") return undefined;
         const target = this.iterationTarget(callee.expression);
         const handle = target?.elementKind;
         if (!target || !handle || !isHandleKind(handle)) return undefined;
@@ -2018,14 +2018,12 @@ export class HandleCollections {
           }
         | undefined {
         const mapCall = this.context.unwrap(expression);
-        if (
-            !ts.isCallExpression(mapCall) ||
-            !ts.isPropertyAccessExpression(mapCall.expression) ||
-            mapCall.expression.name.text !== "map"
-        ) {
+        if (!ts.isCallExpression(mapCall)) return undefined;
+        const map = namedMember(this.context.checker, mapCall.expression);
+        if (map?.name !== "map") {
             return undefined;
         }
-        const target = this.iterationTarget(mapCall.expression.expression);
+        const target = this.iterationTarget(map.expression);
         if (!target) return undefined;
         this.context.expectArgumentCount(mapCall, 1, 1);
         const selector = this.context.unwrap(argumentAt(mapCall, 0));
@@ -3920,17 +3918,21 @@ function isNotNullProbe(
 function isChildrenArrayProbe(
     expression: ts.Expression,
     parameter: ts.Identifier,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     const current = unwrapWalkExpression(expression);
     if (!ts.isCallExpression(current) || current.arguments.length !== 1) {
         return false;
     }
-    const callee = unwrapWalkExpression(current.expression);
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "isArray" ||
-        libraryGlobal(callee.expression) !== "Array"
+        !isLibraryStatic(
+            libraryStaticMember(
+                checker,
+                unwrapWalkExpression(current.expression),
+            ),
+            "Array",
+            "isArray",
+        )
     ) {
         return false;
     }
@@ -4020,7 +4022,7 @@ function isRenderablePresenceGuard(
  */
 function isChildrenPresenceGuard(
     declaration: ts.FunctionDeclaration,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     const conjunction = typeGuardConjunction(declaration);
     if (!conjunction) return false;
@@ -4034,7 +4036,7 @@ function isChildrenPresenceGuard(
             children = true;
             continue;
         }
-        if (isChildrenArrayProbe(operand, parameter, libraryGlobal)) {
+        if (isChildrenArrayProbe(operand, parameter, checker)) {
             array = true;
             continue;
         }
@@ -4108,7 +4110,7 @@ function guardedBy(
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,
     resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     if (
         !declaration.name ||
@@ -4172,7 +4174,7 @@ function isRecursiveMeshFlattenVisitor(
     const loop = descend
         ? names.some((name) =>
               guardedBy(descend.test, name, resolve, (candidate) =>
-                  isChildrenPresenceGuard(candidate, libraryGlobal),
+                  isChildrenPresenceGuard(candidate, checker),
               ),
           )
             ? singleStatement(descend.body, ts.isForOfStatement)

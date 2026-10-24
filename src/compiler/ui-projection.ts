@@ -121,6 +121,10 @@ import {
     declaredInDomLibrary,
     declaredSymbol,
     calledDeclaration,
+    namedMember,
+    type NamedMember,
+    libraryStaticMember,
+    isLibraryStatic,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
@@ -830,20 +834,17 @@ export class UiProjection {
             );
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getContext"
-            ) {
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            if (callee?.name === "getContext") {
                 const canvas = this.uiElementValue(callee.expression);
                 if (canvas?.uiCanvas) {
                     return { ...canvas, uiCanvasContext: true };
                 }
             }
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                this.isUiElementLookup(owner, callee)
-            ) {
+            if (callee && this.isUiElementLookup(owner, callee)) {
                 const value = this.context.compilePlatformCall(owner);
                 return asElement(
                     value?.kind === "data" &&
@@ -1042,10 +1043,10 @@ export class UiProjection {
             if (writeSites(node).some(({ target }) => writesKey(target)))
                 return true;
             if (ts.isCallExpression(node)) {
-                const callee = this.context.unwrap(node.expression);
-                const name = ts.isPropertyAccessExpression(callee)
-                    ? callee.name.text
-                    : undefined;
+                const name = namedMember(
+                    this.context.checker,
+                    this.context.unwrap(node.expression),
+                )?.name;
                 const first = node.arguments[0]
                     ? this.context.unwrap(node.arguments[0])
                     : undefined;
@@ -1176,9 +1177,12 @@ export class UiProjection {
                 : undefined;
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            return ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "getContext" ||
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            return callee &&
+                (callee.name === "getContext" ||
                     this.isUiElementLookup(owner, callee))
                 ? "lower"
                 : undefined;
@@ -1189,14 +1193,11 @@ export class UiProjection {
     /** A call `uiElementValue` lowers through the platform call: a query, a closest ancestor, a host lookup. */
     private isUiElementLookup(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): boolean {
         if (isDocumentReceiver(this.context, callee.expression))
             return this.isNativeHostUiLookup(call);
-        return (
-            callee.name.text === "querySelector" ||
-            callee.name.text === "closest"
-        );
+        return callee.name === "querySelector" || callee.name === "closest";
     }
 
     /** `uiElementMetadata` by lowering the expression in a declined probe. */
@@ -1272,8 +1273,8 @@ export class UiProjection {
     ): ts.CallExpression | undefined {
         const initializer = this.context.unwrap(expression);
         return ts.isCallExpression(initializer) &&
-            ts.isPropertyAccessExpression(initializer.expression) &&
-            initializer.expression.name.text === "createElement" &&
+            namedMember(this.context.checker, initializer.expression)?.name ===
+                "createElement" &&
             initializer.arguments.length === 1
             ? initializer
             : undefined;
@@ -1313,12 +1314,15 @@ export class UiProjection {
         if (this.uiElementMetadata(value) !== undefined) {
             return true;
         }
-        const callee = this.context.unwrap(value.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(value.expression),
+        );
         const createsElement =
-            ts.isPropertyAccessExpression(callee) &&
-            (callee.name.text === "createElement" ||
-                callee.name.text === "createElementNS" ||
-                callee.name.text === "createTextNode") &&
+            callee !== undefined &&
+            (callee.name === "createElement" ||
+                callee.name === "createElementNS" ||
+                callee.name === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
             ts.isStringLiteralLike(value.arguments[0]);
@@ -6419,13 +6423,16 @@ export class UiProjection {
 
     /** Checked Document queries reach their retained owner, activating a Window realm when needed. */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
+            !callee ||
             !(
-                callee.name.text === "getElementById" ||
-                callee.name.text === "querySelector" ||
-                callee.name.text === "querySelectorAll"
+                callee.name === "getElementById" ||
+                callee.name === "querySelector" ||
+                callee.name === "querySelectorAll"
             ) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
@@ -6458,15 +6465,18 @@ export class UiProjection {
      * string.
      */
     public lookupElementId(call: ts.CallExpression): string | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         const argument = this.context.unwrap(argumentAt(call, 0));
         const text = ts.isStringLiteralLike(argument)
             ? argument.text
             : ts.isIdentifier(argument)
               ? this.context.bindings.lookupOptional(argument)?.staticString
               : undefined;
-        return ts.isPropertyAccessExpression(callee) && text !== undefined
-            ? documentLookupId(callee.name.text, text)
+        return callee && text !== undefined
+            ? documentLookupId(callee.name, text)
             : undefined;
     }
 
@@ -6496,11 +6506,15 @@ export class UiProjection {
                     reached = true;
                     return;
                 }
-                const callee = this.context.unwrap(node.expression);
                 if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.name.text === "createElement" &&
-                    this.context.libraryGlobal(callee.expression) === "document"
+                    isLibraryStatic(
+                        libraryStaticMember(
+                            this.context.checker,
+                            this.context.unwrap(node.expression),
+                        ),
+                        "document",
+                        "createElement",
+                    )
                 ) {
                     const tag = node.arguments[0];
                     if (

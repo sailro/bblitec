@@ -4,6 +4,7 @@ import ts from "typescript";
 import { isPinnedType, pinnedHandleKind, type DataType } from "./data-types.js";
 import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
 import type { Value } from "./types.js";
+import { libraryStaticMember } from "./symbols.js";
 
 const textureType: DataType = {
     kind: "optional",
@@ -107,16 +108,18 @@ export function compileNodeInputMutation(
     expression: ts.Expression,
 ): Value | undefined {
     const node = context.unwrap(expression);
+    const reflective = ts.isCallExpression(node)
+        ? libraryStaticMember(context.checker, node.expression)
+        : undefined;
     if (
         ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        context.libraryGlobal(node.expression.expression) === "Object" &&
+        reflective?.owner === "Object" &&
         [
             "assign",
             "defineProperty",
             "defineProperties",
             "setPrototypeOf",
-        ].includes(node.expression.name.text) &&
+        ].includes(reflective.name) &&
         node.arguments[0]
     ) {
         const target = node.arguments[0];

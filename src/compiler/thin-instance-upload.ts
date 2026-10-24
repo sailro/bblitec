@@ -2,6 +2,7 @@ import ts from "typescript";
 import { lowerPinnedBody } from "../lowering/pinned-body-lowerer.js";
 import type { PinnedBinding } from "../lowering/pinned-numeric-lowerer.js";
 import { contractError } from "../lowering/context.js";
+import { pinnedMember } from "../pinned-program.js";
 
 /** Preserve the application's complete upload helper; only its queue write is a PAL port. */
 export function lowerThinInstanceUploadBody(
@@ -56,8 +57,7 @@ export function lowerThinInstanceUploadBody(
             expression(node, lowerer) {
                 if (
                     !ts.isCallExpression(node) ||
-                    !ts.isPropertyAccessExpression(node.expression) ||
-                    node.expression.name.text !== "writeBuffer"
+                    pinnedMember(node.expression)?.name !== "writeBuffer"
                 )
                     return undefined;
                 const expected = [

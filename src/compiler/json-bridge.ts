@@ -18,7 +18,7 @@ import ts from "typescript";
 import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { isNullishLiteral } from "./symbols.js";
+import { isNullishLiteral, namedMember } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -343,22 +343,22 @@ export function compileJsonCall(
     context: JsonBridgeContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        !isJsonGlobal(context, context.unwrap(callee.expression))
-    ) {
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || !isJsonGlobal(context, context.unwrap(callee.expression))) {
         return undefined;
     }
-    if (callee.name.text === "stringify") {
+    if (callee.name === "stringify") {
         return compileStringify(context, call);
     }
-    if (callee.name.text === "parse") {
+    if (callee.name === "parse") {
         return compileParse(context, call);
     }
     context.fail(
-        callee.name,
-        `JSON.${callee.name.text} is not lowered; the bridge implements ` +
+        callee.key,
+        `JSON.${callee.name} is not lowered; the bridge implements ` +
             "stringify and parse.",
     );
 }

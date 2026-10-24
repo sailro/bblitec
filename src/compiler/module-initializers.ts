@@ -18,6 +18,7 @@ import {
     declaredSymbol,
     type CompilerSymbols,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import {
     ClassHierarchy,
@@ -32,6 +33,7 @@ import {
     positionalParameter,
     isSupportedFunction,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
@@ -354,6 +356,7 @@ function collectMutatedContainerSymbols(
         } else {
             const target = mutatingCallTarget(
                 node,
+                (callee) => namedMember(checker, callee),
                 (method) => receiverWritingMethods.has(method),
                 (call) => libraryWrittenArgument(checker, call),
             );
@@ -1070,10 +1073,7 @@ class ModuleInitializerPlanner {
                         record(target);
                     if (ts.isCallExpression(current)) {
                         const callee = current.expression;
-                        if (
-                            ts.isPropertyAccessExpression(callee) ||
-                            ts.isElementAccessExpression(callee)
-                        ) {
+                        if (isMemberAccess(callee)) {
                             record(callee.expression, true);
                         }
                         for (const argument of current.arguments)

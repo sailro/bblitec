@@ -12,6 +12,7 @@ import {
 } from "./option-helpers.js";
 import { pinCpp } from "./evaluation-order.js";
 import { valueKindOf, unionMembers } from "./type-facts.js";
+import { namedMember } from "./symbols.js";
 
 type Context = Pick<
     LoweringServices,
@@ -522,12 +523,11 @@ export function emitDomEventListener(
     element: Value | undefined,
     callbackIdentity: (value: Value, node: ts.Node) => string,
 ): boolean {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        call.arguments.length < 2 ||
-        call.arguments.length > 3
-    )
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || call.arguments.length < 2 || call.arguments.length > 3)
         return false;
     const type = context.compileStringLiteral(call.arguments[0]!);
     const pageLifecycle = pageLifecycleNames.has(type);
@@ -648,7 +648,7 @@ export function emitDomEventListener(
     if (custom) context.reachFeature("data:json", call);
     const callback = call.arguments[1]!;
     context.callbacks.hoistForwardCallbackBindings(callback);
-    const removing = callee.name.text === "removeEventListener";
+    const removing = callee.name === "removeEventListener";
     const prefix = `${engine}, ${target}, ${context.cppString(type)}`;
     if (removing) {
         const value = context.compileValue(callback);

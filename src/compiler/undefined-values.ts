@@ -5,6 +5,7 @@ import {
     declaredSymbol,
     libraryGlobal,
     calledDeclaration,
+    libraryStaticMember,
 } from "./symbols.js";
 import {
     unwrapExpression,
@@ -29,8 +30,7 @@ function undefinedLibraryCall(
     const declaration = calledDeclaration(checker, expression);
     const global = libraryGlobal(checker, callee);
     const consoleMethod =
-        ts.isPropertyAccessExpression(callee) &&
-        libraryGlobal(checker, callee.expression) === "console";
+        libraryStaticMember(checker, callee)?.owner === "console";
     return (
         !!signature &&
         !!declaration &&

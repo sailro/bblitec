@@ -29,6 +29,7 @@ import {
     libraryName,
     nullishComparison,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -875,10 +876,9 @@ class EffectWalker {
             owner &&
             (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))
         ) {
-            const callee = unwrapExpression(call.expression);
-            const method = ts.isPropertyAccessExpression(callee)
-                ? callee.name.text
-                : "";
+            const method =
+                namedMember(this.checker, unwrapExpression(call.expression))
+                    ?.name ?? "";
             if (!COLLECTING_CALLBACK_METHODS.has(method)) return;
             // `reduce` hands its accumulator back to the callback.
             const accumulator =
@@ -1071,13 +1071,10 @@ function libraryMayHold(
             })
         );
     }
-    const callee = unwrapExpression(call.expression);
+    const callee = namedMember(checker, unwrapExpression(call.expression));
     // A method of a library object: only the storing ones hand it back.
-    if (
-        ts.isPropertyAccessExpression(callee) &&
-        libraryGlobal(checker, callee.expression) === undefined
-    )
-        return ARGUMENT_HOLDING_METHODS.has(callee.name.text);
+    if (callee && libraryGlobal(checker, callee.expression) === undefined)
+        return ARGUMENT_HOLDING_METHODS.has(callee.name);
     return !(COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math."));
 }
 
@@ -1132,11 +1129,12 @@ function libraryCallName(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): string | undefined {
-    const callee = unwrapExpression(call.expression);
-    if (ts.isIdentifier(callee)) return callee.text;
-    if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const unwrapped = unwrapExpression(call.expression);
+    if (ts.isIdentifier(unwrapped)) return unwrapped.text;
+    const callee = namedMember(checker, unwrapped);
+    if (!callee) return undefined;
     const owner = libraryGlobal(checker, callee.expression);
-    return owner ? `${owner}.${callee.name.text}` : callee.name.text;
+    return owner ? `${owner}.${callee.name}` : callee.name;
 }
 
 /**
@@ -1268,9 +1266,8 @@ export function libraryArgumentEffect(
             ? "writes"
             : "reads";
     }
-    const callee = unwrapExpression(call.expression);
-    return ts.isPropertyAccessExpression(callee) &&
-        libraryGlobal(checker, callee.expression) === undefined
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    return callee && libraryGlobal(checker, callee.expression) === undefined
         ? "reads"
         : "unknown";
 }
@@ -1852,11 +1849,11 @@ function argumentFixedLengthWrites(
 ): number | undefined {
     const target = callTarget(checker, use.call);
     if (target.kind === "library") {
-        const callee = unwrapExpression(use.call.expression);
-        return ts.isPropertyAccessExpression(callee) &&
-            storingDataMethods.has(callee.name.text)
-            ? undefined
-            : 0;
+        const callee = namedMember(
+            checker,
+            unwrapExpression(use.call.expression),
+        );
+        return callee && storingDataMethods.has(callee.name) ? undefined : 0;
     }
     if (target.kind !== "bodies" || target.engine) return undefined;
     let lanes = 0;

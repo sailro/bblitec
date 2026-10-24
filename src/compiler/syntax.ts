@@ -21,7 +21,7 @@ export function regularExpressionParts(
     };
 }
 import { someAnalysisNode } from "./analysis-walk.js";
-import type { LibraryGlobal } from "./symbols.js";
+import type { LibraryGlobal, MemberReader } from "./symbols.js";
 
 /** What may run code or change state when an expression is evaluated now. */
 interface EffectOptions {
@@ -531,25 +531,22 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
  */
 export function mutatingCallTarget(
     node: ts.Node,
+    member: MemberReader,
     mutatesVia: (method: string) => boolean,
     writtenArgument?: (call: ts.CallExpression) => ts.Expression | undefined,
 ): ts.Expression | undefined {
-    if (
-        !ts.isCallExpression(node) ||
-        !ts.isPropertyAccessExpression(node.expression)
-    ) {
-        return undefined;
-    }
-    const callee = node.expression;
+    if (!ts.isCallExpression(node)) return undefined;
+    const callee = member(node.expression);
+    if (!callee) return undefined;
     const written = writtenArgument
         ? writtenArgument(node)
-        : callee.name.text === "assign" &&
+        : callee.name === "assign" &&
             ts.isIdentifier(callee.expression) &&
             callee.expression.text === "Object"
           ? node.arguments[0]
           : undefined;
     if (written) return written;
-    return mutatesVia(callee.name.text) ? callee.expression : undefined;
+    return mutatesVia(callee.name) ? callee.expression : undefined;
 }
 
 /**
@@ -562,6 +559,7 @@ export function mutatingCallTarget(
 export function iteratorMethodCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
 ):
     | {
@@ -571,18 +569,15 @@ export function iteratorMethodCall(
       }
     | undefined {
     const call = unwrap(expression);
-    if (
-        !ts.isCallExpression(call) ||
-        call.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(call.expression)
-    ) {
+    if (!ts.isCallExpression(call) || call.arguments.length !== 0)
         return undefined;
-    }
-    const method = call.expression.name.text;
+    const callee = member(call.expression);
+    if (!callee) return undefined;
+    const method = callee.name;
     if (method !== "entries" && method !== "keys" && method !== "values") {
         return undefined;
     }
-    const receiver = call.expression.expression;
+    const receiver = callee.expression;
     if (
         (ts.isIdentifier(receiver) && libraryGlobal(receiver) !== undefined) ||
         someAnalysisNode(
@@ -1209,15 +1204,16 @@ export function classBaseExpression(
     )?.types[0];
 }
 
-/** A member access a call can name: `o.m`, or `o["m"]` with a literal key. */
+/** A member access, dotted or keyed: `o.m`, `o["m"]`, `o[k]`. */
 export type MemberAccess =
     ts.PropertyAccessExpression | ts.ElementAccessExpression;
 
-/** The node that spells a member access's key, for diagnostics. */
-export function memberKeyNode(access: MemberAccess): ts.Expression {
-    return ts.isPropertyAccessExpression(access)
-        ? access.name
-        : access.argumentExpression;
+/** Whether a node is a member access, whatever its key. */
+export function isMemberAccess(node: ts.Node): node is MemberAccess {
+    return (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+    );
 }
 
 /**

@@ -18,7 +18,7 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { isSymbolPropertyKey } from "./symbols.js";
+import { isSymbolPropertyKey, namedMember } from "./symbols.js";
 import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
@@ -503,21 +503,14 @@ export function compileObjectPrototypeCall(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call")
-        return undefined;
-    const method = context.unwrap(callee.expression);
-    if (
-        !ts.isPropertyAccessExpression(method) ||
-        method.name.text !== "hasOwnProperty"
-    )
-        return undefined;
-    const prototype = context.unwrap(method.expression);
-    if (
-        !ts.isPropertyAccessExpression(prototype) ||
-        prototype.name.text !== "prototype"
-    )
-        return undefined;
+    const member = (node: ts.Expression) =>
+        namedMember(context.checker, context.unwrap(node));
+    const callee = member(call.expression);
+    if (callee?.name !== "call") return undefined;
+    const method = member(callee.expression);
+    if (method?.name !== "hasOwnProperty") return undefined;
+    const prototype = member(method.expression);
+    if (prototype?.name !== "prototype") return undefined;
     const owner = context.unwrap(prototype.expression);
     if (context.libraryGlobal(owner) !== "Object") return undefined;
     return compileObjectHasOwn(context, call);

@@ -32,6 +32,9 @@ import {
     resolvedSymbol,
     calledDeclaration,
     calledFunction,
+    namedMember,
+    libraryStaticMember,
+    isLibraryStatic,
 } from "./symbols.js";
 import {
     dataTypesEqual,
@@ -918,12 +921,11 @@ export class NativeFunctionLowerer {
                 );
             if (
                 ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "parse" &&
-                libraryGlobal(
-                    this.context.checker,
-                    node.expression.expression,
-                ) === "JSON"
+                isLibraryStatic(
+                    libraryStaticMember(this.context.checker, node.expression),
+                    "JSON",
+                    "parse",
+                )
             )
                 return predicate({ kind: "json" });
             return (
@@ -1464,8 +1466,10 @@ export class NativeFunctionLowerer {
         active: Set<SupportedFunction>,
     ): boolean {
         if (allowPureMath) {
-            const math = mathMemberCall(call, (expression) =>
-                libraryGlobal(this.context.checker, expression),
+            const math = mathMemberCall(
+                call,
+                (expression) => libraryGlobal(this.context.checker, expression),
+                (node) => namedMember(this.context.checker, node),
             );
             if (
                 math !== undefined &&
@@ -1486,8 +1490,11 @@ export class NativeFunctionLowerer {
     ): SupportedFunction | undefined {
         const declared = calledDeclaration(this.context.checker, call);
         if (isSupportedFunction(declared)) return declared;
-        const callee = unwrapExpression(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return undefined;
+        const callee = namedMember(
+            this.context.checker,
+            unwrapExpression(call.expression),
+        );
+        if (!callee) return undefined;
         const receiver = unwrapExpression(callee.expression);
         const value = ts.isIdentifier(receiver)
             ? this.context.bindings.lookupOptional(receiver)
@@ -1512,7 +1519,7 @@ export class NativeFunctionLowerer {
             candidates.map((candidate) =>
                 classMethod(
                     classMemberTable(this.context.checker, candidate),
-                    callee.name.text,
+                    callee.name,
                 ),
             ),
         );
@@ -2216,9 +2223,12 @@ export class NativeFunctionLowerer {
                         }
                     }
                     if (ts.isCallExpression(node)) {
-                        const callee = this.context.unwrap(node.expression);
+                        const callee = namedMember(
+                            this.context.checker,
+                            this.context.unwrap(node.expression),
+                        );
                         if (
-                            ts.isPropertyAccessExpression(callee) &&
+                            callee &&
                             callee.expression.kind !== ts.SyntaxKind.ThisKeyword
                         ) {
                             const called = calledDeclaration(
@@ -2434,7 +2444,10 @@ export class NativeFunctionLowerer {
                     return true;
                 }
             }
-            if (ts.isCallExpression(node) && isListenerRegistration(node)) {
+            if (
+                ts.isCallExpression(node) &&
+                isListenerRegistration(this.context.checker, node)
+            ) {
                 return true;
             }
             return false;

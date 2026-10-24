@@ -19,6 +19,8 @@ import {
     declaredSymbol,
     libraryGlobal,
     libraryName,
+    libraryStaticMember,
+    namedMember,
     resolvedSymbol,
 } from "./symbols.js";
 import {
@@ -430,9 +432,11 @@ function summarize(
                 if (engineCallMutatesArgument(checker, node, index))
                     change(argument);
             });
-            const callee = unwrapExpression(node.expression);
-            if (ts.isPropertyAccessExpression(callee))
-                change(callee.expression);
+            const method = namedMember(
+                checker,
+                unwrapExpression(node.expression),
+            );
+            if (method) change(method.expression);
             return;
         }
         if (target.kind === "library") {
@@ -477,6 +481,7 @@ function summarize(
             return;
         const written = mutatingCallTarget(
             node,
+            (expression) => namedMember(checker, expression),
             (method) => receiverWritingMethods.has(method),
             (candidate) => libraryWrittenArgument(checker, candidate),
         );
@@ -486,13 +491,13 @@ function summarize(
         // The page: a global function (a timer, the console's) changes it;
         // a method changes its object and the objects it is handed, unless
         // it only reads the page or creates a node.
-        const callee = unwrapExpression(node.expression);
-        if (!ts.isPropertyAccessExpression(callee)) {
+        const method = namedMember(checker, unwrapExpression(node.expression));
+        if (!method) {
             summary.writes.add("page");
             return;
         }
-        if (pageAccess(callee) !== undefined) return;
-        change(callee.expression);
+        if (PAGE_ACCESSES.has(method.name)) return;
+        change(method.expression);
         for (const argument of node.arguments)
             if (typeCanCarryReference(checker.getTypeAtLocation(argument)))
                 change(argument);
@@ -631,15 +636,11 @@ function sharedLibraryState(
     checker: ts.TypeChecker,
     node: ts.CallExpression | ts.NewExpression,
 ): { readonly reads?: string; readonly writes?: string } | undefined {
-    const callee = unwrapExpression(node.expression);
-    const owner = ts.isPropertyAccessExpression(callee)
-        ? libraryGlobal(checker, callee.expression)
-        : undefined;
-    const name = ts.isIdentifier(callee)
-        ? libraryGlobal(checker, callee)
-        : ts.isPropertyAccessExpression(callee) && owner !== undefined
-          ? `${owner}.${callee.name.text}`
-          : undefined;
+    const target = unwrapExpression(node.expression);
+    const member = libraryStaticMember(checker, target);
+    const name = member
+        ? `${member.owner}.${member.name}`
+        : libraryGlobal(checker, target);
     return name === undefined
         ? undefined
         : SHARED_STATE_LIBRARY_CALLS.get(name);
@@ -658,12 +659,6 @@ const PAGE_ACCESSES: ReadonlyMap<string, "reads" | "creates"> = new Map([
     ["createElementNS", "creates"],
     ["createTextNode", "creates"],
 ]);
-
-function pageAccess(
-    callee: ts.PropertyAccessExpression,
-): "reads" | "creates" | undefined {
-    return PAGE_ACCESSES.get(callee.name.text);
-}
 
 /** Elements no other element sits inside: an event on another never reaches them. */
 const LEAF_ELEMENTS: ReadonlySet<string> = new Set([
@@ -712,11 +707,14 @@ function elementId(
             return undefined;
         node = unwrapExpression(declaration.initializer);
     }
-    const argument = ts.isCallExpression(node) ? node.arguments[0] : undefined;
-    return ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === "getElementById" &&
-        libraryGlobal(checker, node.expression.expression) === "document" &&
+    if (!ts.isCallExpression(node)) return undefined;
+    const lookup = libraryStaticMember(
+        checker,
+        unwrapExpression(node.expression),
+    );
+    const argument = node.arguments[0];
+    return lookup?.owner === "document" &&
+        lookup.name === "getElementById" &&
         argument !== undefined &&
         ts.isStringLiteralLike(argument)
         ? argument.text
@@ -808,28 +806,25 @@ function privateObjects(
             const symbol = declaredSymbol(checker, node.name);
             if (!symbol) return;
             const initializer = unwrapExpression(node.initializer);
-            const callee =
+            const method =
                 ts.isCallExpression(initializer) &&
-                ts.isPropertyAccessExpression(initializer.expression)
-                    ? initializer.expression
+                calledDeclarationOrigin(checker, initializer) === "dom"
+                    ? namedMember(
+                          checker,
+                          unwrapExpression(initializer.expression),
+                      )
                     : undefined;
-            const domCall =
-                callee !== undefined &&
-                ts.isCallExpression(initializer) &&
-                calledDeclarationOrigin(checker, initializer) === "dom";
             if (
                 freshValue(checker, initializer) ||
-                (domCall && pageAccess(callee) === "creates")
+                (method && PAGE_ACCESSES.get(method.name) === "creates")
             ) {
                 candidates.add(symbol);
                 return;
             }
+            const receiver = method && unwrapExpression(method.expression);
             const base =
-                domCall && ts.isIdentifier(unwrapExpression(callee.expression))
-                    ? resolvedSymbol(
-                          checker,
-                          unwrapExpression(callee.expression),
-                      )
+                receiver && ts.isIdentifier(receiver)
+                    ? resolvedSymbol(checker, receiver)
                     : undefined;
             if (base && candidates.has(base)) {
                 candidates.add(symbol);
@@ -1002,8 +997,7 @@ class InterveningCode {
                 continue;
             }
             if (
-                ts.isPropertyAccessExpression(parent) &&
-                parent.expression === node &&
+                namedMember(checker, parent)?.expression === node &&
                 ts.isCallExpression(parent.parent) &&
                 parent.parent.expression === parent &&
                 promiseReactionOf(parent, checker) !== undefined
@@ -1031,9 +1025,7 @@ class InterveningCode {
         return ts.isCallExpression(call) &&
             call.arguments[0] !== undefined &&
             outermostWrapper(call.arguments[0]) === position &&
-            promiseStatic(call, (expression) =>
-                this.context.libraryGlobal(expression),
-            ) !== undefined
+            promiseStatic(this.context.checker, call) !== undefined
             ? call
             : undefined;
     }
@@ -1296,34 +1288,27 @@ function invokerOf(
     if (origin === "babylon") return { kind: "engine" };
     if (origin !== "default-lib" && origin !== "dom")
         return { kind: "unknown" };
-    const callee = unwrapExpression(call.expression);
-    const name = ts.isPropertyAccessExpression(callee)
-        ? callee.name.text
-        : ts.isIdentifier(callee)
-          ? callee.text
-          : undefined;
-    if (name === "addEventListener" && ts.isCallExpression(call))
+    const target = unwrapExpression(call.expression);
+    const method = namedMember(checker, target);
+    if (method?.name === "addEventListener" && ts.isCallExpression(call))
         return {
             kind: "listener",
             type: eventType(call.arguments[0]),
-            target: ts.isPropertyAccessExpression(callee)
-                ? callee.expression
-                : undefined,
+            target: method.expression,
         };
     if (ts.isNewExpression(call))
         return context.libraryGlobal(call.expression) === "Promise"
             ? { kind: "construction" }
             : { kind: "unknown" };
     if (
-        name !== undefined &&
-        ITERATING_METHODS.has(name) &&
-        ts.isPropertyAccessExpression(callee) &&
-        checker.isArrayLikeType(checker.getTypeAtLocation(callee.expression))
+        method !== undefined &&
+        ITERATING_METHODS.has(method.name) &&
+        checker.isArrayLikeType(checker.getTypeAtLocation(method.expression))
     )
         return { kind: "iteration" };
     // A timer or frame callback runs as a task of its own; a microtask
     // runs among others the analysis does not follow.
-    const scheduler = schedulerOf(checker, callee);
+    const scheduler = schedulerOf(checker, target);
     if (scheduler !== undefined && scheduler !== "microtask")
         return { kind: "task" };
     return { kind: "unknown" };
@@ -1412,16 +1397,18 @@ function programIndex(context: OrderContext): ProgramIndex {
                     const declaration = calledDeclaration(checker, node);
                     const origin =
                         declaration && declarationOrigin(declaration);
-                    const callee = unwrapExpression(node.expression);
+                    const method = namedMember(
+                        checker,
+                        unwrapExpression(node.expression),
+                    );
                     if (
                         origin === "dom" &&
-                        ts.isPropertyAccessExpression(callee) &&
-                        callee.name.text === "addEventListener" &&
+                        method?.name === "addEventListener" &&
                         node.arguments[1]
                     ) {
                         listeners.push({
                             type: eventType(node.arguments[0]),
-                            target: callee.expression,
+                            target: method.expression,
                             fn: functionValue(checker, node.arguments[1]),
                         });
                     }
