@@ -7,6 +7,7 @@ import {
     pathsOverlap,
     projectMember,
     slotProjections,
+    type KeyPath,
     type Projection,
 } from "./projections.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
@@ -47,7 +48,11 @@ import {
     functionKind,
     variableKind,
 } from "./syntax.js";
-import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
 import { callResultHoldsArguments } from "./kept-values.js";
 import {
     typeCanCarryReference,
@@ -69,16 +74,13 @@ import {
  * language library's table, or code the program does not hold.
  */
 
-/** Property names from a parameter to an object; `*` is any key. */
-type EffectPath = readonly string[];
-
 interface UseBase {
     readonly node: ts.Node;
     /**
      * The object the use reaches, from the parameter; for a write, the
      * slot written (the written object's path and the key).
      */
-    readonly path: EffectPath;
+    readonly path: KeyPath;
     /**
      * The use may reach any object at or below `path`: a value a call
      * computed from the parameter's objects.
@@ -109,7 +111,7 @@ type ParameterUse = UseBase &
                * argument is the object, a key path inside a container
                * holding it otherwise.
                */
-              readonly at: EffectPath;
+              readonly at: KeyPath;
           }
         | {
               readonly kind:
@@ -1063,11 +1065,10 @@ function libraryMayHold(
         return (
             type === undefined ||
             (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            unionMembers(type).some((member) =>
-                ["ArrayBuffer", "SharedArrayBuffer"].includes(
-                    member.getSymbol()?.name ?? "",
-                ),
-            )
+            unionMembers(type).some((member) => {
+                const name = libraryName(member);
+                return name === "ArrayBuffer" || name === "SharedArrayBuffer";
+            })
         );
     }
     const callee = unwrapExpression(call.expression);
@@ -1260,14 +1261,6 @@ export function libraryArgumentEffect(
         : "unknown";
 }
 
-const BUFFER_SOURCE_NAMES: ReadonlySet<string> = new Set([
-    "ArrayBuffer",
-    "BigInt64Array",
-    "BigUint64Array",
-    "DataView",
-    "SharedArrayBuffer",
-]);
-
 /** A typed array, an ArrayBuffer or a DataView: what Web IDL passes by reference. */
 function isBufferSource(
     checker: ts.TypeChecker,
@@ -1278,7 +1271,10 @@ function isBufferSource(
             const name = libraryName(member);
             return (
                 name !== undefined &&
-                (TYPED_ARRAY_KINDS.has(name) || BUFFER_SOURCE_NAMES.has(name))
+                (TYPED_ARRAY_KINDS.has(name) ||
+                    BIGINT_ARRAY_KINDS.has(name) ||
+                    BUFFER_VIEW_KINDS.has(name) ||
+                    name === "SharedArrayBuffer")
             );
         },
     );
@@ -1510,7 +1506,7 @@ export function parameterMutatedPaths(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
-): readonly EffectPath[] {
+): readonly KeyPath[] {
     return visibleWrites(checker, fn, binding).flatMap((use) => {
         if (use.kind === "rebind") return [[]];
         // A write's path is the slot: the object written holds it.
@@ -1529,7 +1525,7 @@ export function parameterHeldObjectWritten(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
-    at: EffectPath,
+    at: KeyPath,
 ): boolean {
     return heldObjectWritten(checker, fn, binding, at, true);
 }
@@ -1627,7 +1623,7 @@ function heldObjectWritten(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
-    at: EffectPath,
+    at: KeyPath,
     stores: boolean,
 ): boolean {
     const key = `${stores}:${JSON.stringify(at)}`;
@@ -1898,7 +1894,7 @@ function onlyRead(
         );
         // Whether the object at `path` is one a copy duplicates; a derived
         // use reaches the objects below it too, which a copy shares.
-        const copied = (path: EffectPath): boolean =>
+        const copied = (path: KeyPath): boolean =>
             path.length === 0 ||
             (array &&
                 path.length === 1 &&

@@ -38,9 +38,10 @@ import {
     absenceOf,
     absenceOfNull,
     knownCondition,
+    staticKeyOf,
     undefinedValue,
 } from "./values/model.js";
-import { countedLoopShape } from "./counted-loops.js";
+import { countedLoopShape, stepsUpByOne } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import {
@@ -250,7 +251,7 @@ import {
     writeSiteOf,
     accessKey,
     patternSlots,
-    isProtoSetter,
+    refuseProtoSetter,
     equalityOperator,
     containsSuspension,
     isSuspensionPoint,
@@ -2213,11 +2214,7 @@ export class DataLowerer {
         key: Value,
     ): string | undefined {
         return (
-            key.staticString ??
-            (key.staticNumber === undefined
-                ? undefined
-                : String(key.staticNumber)) ??
-            staticAccessKey(this.context.checker, access)
+            staticKeyOf(key) ?? staticAccessKey(this.context.checker, access)
         );
     }
 
@@ -7056,12 +7053,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return undefined;
         }
         if (
-            shape.step?.sign !== 1 ||
-            (shape.step.amount !== undefined &&
-                staticNumberValue(this.context, shape.step.amount) !== 1)
-        ) {
+            !stepsUpByOne(shape, (amount) =>
+                staticNumberValue(this.context, amount),
+            )
+        )
             return undefined;
-        }
         if (
             !this.loopBodyPreservesBounds(
                 loop.statement,
@@ -7130,10 +7126,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** A call through the global `Math` object, pure by declaration. */
     private isGlobalMathCall(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
         return (
-            ts.isPropertyAccessExpression(callee) &&
-            this.context.libraryGlobal(callee.expression) === "Math"
+            mathMemberAccess(this.context.unwrap(call.expression), (owner) =>
+                this.context.libraryGlobal(owner),
+            ) !== undefined
         );
     }
 
@@ -12458,11 +12454,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     property.name && ts.isComputedPropertyName(property.name),
             );
         for (const property of literal.properties) {
-            if (isProtoSetter(property))
-                this.context.fail(
-                    property,
-                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                );
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (!ts.isPropertyAssignment(property)) {
                 this.context.fail(
                     property,
@@ -12554,11 +12548,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         let spread = false;
         for (const property of literal.properties) {
-            if (isProtoSetter(property))
-                this.context.fail(
-                    property,
-                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                );
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (ts.isSpreadAssignment(property)) {
                 this.context.emit({
                     kind: "expression",
@@ -12644,11 +12636,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `${this.context.dataTypes.cppType(dataType)} ${result};`,
             );
             for (const property of literal.properties) {
-                if (isProtoSetter(property))
-                    this.context.fail(
-                        property,
-                        "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                    );
+                refuseProtoSetter(property, (node, message) =>
+                    this.context.fail(node, message),
+                );
                 if (ts.isSpreadAssignment(property)) {
                     const source = this.context.compileValue(
                         property.expression,
@@ -12877,11 +12867,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ts.Expression | ts.MethodDeclaration
         >();
         for (const property of literal.properties) {
-            if (isProtoSetter(property))
-                this.context.fail(
-                    property,
-                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                );
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (ts.isSpreadAssignment(property)) {
                 this.context.fail(
                     property,
@@ -13424,11 +13412,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ),
             );
         for (const [index, property] of literal.properties.entries()) {
-            if (isProtoSetter(property))
-                this.context.fail(
-                    property,
-                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                );
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (ts.isSpreadAssignment(property)) {
                 const replaced = writtenAfter(index);
                 const source =
@@ -16691,12 +16677,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const readItem = (): Value => {
                 if (rest) return this.arrayRestValue(value, index, name);
                 if (value.kind === "tuple")
-                    return (
-                        value.tupleElements?.[index] ?? {
-                            kind: "json-null",
-                            cpp: "std::nullopt",
-                        }
-                    );
+                    return value.tupleElements?.[index] ?? undefinedValue();
                 if (value.dataType?.kind === "vector")
                     return this.readVectorBindingElement(value, index, name);
                 const type = value.dataType;

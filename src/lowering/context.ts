@@ -24,7 +24,7 @@ import {
     registerPinnedSource,
     type PinnedProgram,
 } from "../pinned-program.js";
-import { MATH_CONSTANTS } from "../compiler/math-intrinsics.js";
+import { mathConstantAccess } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
@@ -362,11 +362,7 @@ export function numericValue(
         );
         if (folded !== undefined) return folded;
     }
-    const mathConstant =
-        ts.isPropertyAccessExpression(unwrapped) &&
-        pinnedLibraryGlobal(unwrapped.expression) === "Math"
-            ? MATH_CONSTANTS.get(unwrapped.name.text)
-            : undefined;
+    const mathConstant = mathConstantAccess(unwrapped, pinnedLibraryGlobal);
     if (mathConstant) return mathConstant.value;
     if (ts.isBinaryExpression(unwrapped)) {
         const folded = foldNumericBinary(

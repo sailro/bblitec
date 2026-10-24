@@ -1,6 +1,6 @@
 import ts from "typescript";
-import { countedLoopShape } from "./counted-loops.js";
-import { declarationOrigin, resolvedSymbol } from "./symbols.js";
+import { countedLoopShape, stepsUpByOne } from "./counted-loops.js";
+import { declarationOrigin, resolvedSymbol, sameReference } from "./symbols.js";
 import {
     outermostWrapper,
     referenceSite,
@@ -74,7 +74,7 @@ export function filledLengthGrowth(
         !ts.isElementAccessExpression(write) ||
         stablePathSymbol(checker, unwrapExpression(write.expression)) !==
             arraySymbol ||
-        !samePath(checker, unwrapExpression(write.expression), array) ||
+        !sameReference(checker, write.expression, array) ||
         resolvedSymbol(checker, unwrapExpression(write.argumentExpression)) !==
             counter.symbol
     )
@@ -211,31 +211,6 @@ function stablePathSymbol(
     return undefined;
 }
 
-function samePath(
-    checker: ts.TypeChecker,
-    left: ts.Expression,
-    right: ts.Expression,
-): boolean {
-    if (left.kind === ts.SyntaxKind.ThisKeyword)
-        return right.kind === ts.SyntaxKind.ThisKeyword;
-    if (ts.isIdentifier(left) || ts.isIdentifier(right))
-        return (
-            ts.isIdentifier(left) &&
-            ts.isIdentifier(right) &&
-            resolvedSymbol(checker, left) === resolvedSymbol(checker, right)
-        );
-    return (
-        ts.isPropertyAccessExpression(left) &&
-        ts.isPropertyAccessExpression(right) &&
-        resolvedSymbol(checker, left) === resolvedSymbol(checker, right) &&
-        samePath(
-            checker,
-            unwrapExpression(left.expression),
-            unwrapExpression(right.expression),
-        )
-    );
-}
-
 /** A `const` or never-assigned parameter binding `node` names. */
 function constantBindingSymbol(
     checker: ts.TypeChecker,
@@ -268,7 +243,6 @@ function loopCounter(
         resolvedSymbol(checker, identifier),
     );
     const condition = shape?.condition;
-    const step = shape?.step;
     if (
         !shape ||
         !condition ||
@@ -276,9 +250,7 @@ function loopCounter(
         condition.operator !== "<" ||
         resolvedSymbol(checker, unwrapExpression(condition.bound)) !==
             lengthSymbol ||
-        step?.sign !== 1 ||
-        (step.amount !== undefined &&
-            !(ts.isNumericLiteral(step.amount) && step.amount.text === "1")) ||
+        !stepsUpByOne(shape) ||
         assigns(loop.statement, shape.symbol, checker)
     )
         return undefined;

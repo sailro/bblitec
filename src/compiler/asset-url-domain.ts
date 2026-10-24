@@ -1395,13 +1395,14 @@ export function writtenOnlyInDeadFunctions(
     sourceFiles: readonly ts.SourceFile[],
     symbol: ts.Symbol,
 ): boolean {
-    const graph = sourceGraph(checker, sourceFiles);
     const writes = bindingRebinds(checker, sourceFiles, symbol);
-    return (
-        writes.length > 0 &&
-        writes.every((write) => {
-            const owner = ts.findAncestor(write.node.parent, ts.isFunctionLike);
-            return owner !== undefined && neverRuns(graph, owner);
-        })
-    );
+    const owners = writes.flatMap((write) => {
+        const owner = ts.findAncestor(write.node.parent, ts.isFunctionLike);
+        return owner ? [owner] : [];
+    });
+    // The program's call graph is asked only of writes that all sit in
+    // functions.
+    if (owners.length === 0 || owners.length !== writes.length) return false;
+    const graph = sourceGraph(checker, sourceFiles);
+    return owners.every((owner) => neverRuns(graph, owner));
 }

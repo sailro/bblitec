@@ -15288,6 +15288,8 @@ check(
     `
     const marks = "??= ??( ??) ??< ??> ??! ??' ??- ??/";
     if (marks.length !== 35 || marks[2] !== "=" || !marks.includes("??/")) throw new Error("trigraph text " + marks.length);
+    const run = "a???=b????/";
+    if (run.length !== 11 || run[4] !== "=" || run[10] !== "/") throw new Error("trigraph run " + run.length);
     `,
 );
 check(

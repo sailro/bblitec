@@ -100,6 +100,16 @@ export function undefinedValue(): Value<"json-null"> {
     return { kind: "json-null", cpp: "std::nullopt" };
 }
 
+/** The property key a value folds to: its static text, or its static number's. */
+export function staticKeyOf(value: Value | undefined): string | undefined {
+    return (
+        value?.staticString ??
+        (value?.staticNumber === undefined
+            ? undefined
+            : String(value.staticNumber))
+    );
+}
+
 /** The boolean a value is known to be: its static fact, or a literal spelling. */
 export function staticBooleanOf(value: Value): boolean | undefined {
     return value.staticBoolean ?? knownCondition(value.cpp);

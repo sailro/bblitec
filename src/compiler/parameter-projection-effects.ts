@@ -5,6 +5,7 @@ import {
     pathsOverlap,
     projectMember,
     slotProjections,
+    type KeyPath,
     type Projection,
 } from "./projections.js";
 import { isPinnedSource } from "../pinned-program.js";
@@ -48,8 +49,6 @@ import {
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
 import { callResultCanHoldReceiver } from "./kept-values.js";
 
-type Path = readonly string[];
-
 const results = new EmissionWeakMap<
     ts.TypeChecker,
     WeakMap<ts.FunctionLikeDeclaration, Map<string, boolean>>
@@ -90,7 +89,7 @@ export function callArgumentProjectionIsReadOnly(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
-    path: Path,
+    path: KeyPath,
 ): boolean {
     return callProjection(checker, call, index, path, new Set());
 }
@@ -108,7 +107,7 @@ export function visitMutableArgumentReferences(
     if (!argument) return;
     const concreteIdentities = new Map<
         ts.Expression,
-        readonly Path[] | undefined
+        readonly KeyPath[] | undefined
     >();
     const visit = (
         value: ts.Expression,
@@ -216,7 +215,7 @@ export function parameterProjectionIsReadOnly(
     checker: ts.TypeChecker,
     declaration: ts.Node,
     index: number,
-    path: Path,
+    path: KeyPath,
     independentFields = false,
     argument?: ts.Expression,
     capturedScalarFacts = false,
@@ -264,9 +263,9 @@ function callProjection(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
     index: number,
-    path: Path,
+    path: KeyPath,
     active: Set<ts.FunctionLikeDeclaration>,
-    identityPaths?: readonly Path[],
+    identityPaths?: readonly KeyPath[],
 ): boolean {
     const declaration = calledDeclaration(checker, call);
     if (!declaration) return false;
@@ -304,10 +303,10 @@ function parameterProjection(
     checker: ts.TypeChecker,
     declaration: ts.Node,
     index: number,
-    path: Path,
+    path: KeyPath,
     active: Set<ts.FunctionLikeDeclaration>,
     independentFields = false,
-    identityPaths?: readonly Path[],
+    identityPaths?: readonly KeyPath[],
     ownKeys?: readonly string[],
     freshScalarCapture = false,
 ): boolean {
@@ -333,7 +332,7 @@ function parameterProjection(
     let known = functions?.get(declaration);
     const cached = known?.get(cacheKey);
     if (cached !== undefined) return cached;
-    const typeAt = (selected: Path): ts.Type | undefined => {
+    const typeAt = (selected: KeyPath): ts.Type | undefined => {
         let projectedType: ts.Type | undefined = checker.getTypeAtLocation(
             parameter.name,
         );
@@ -413,7 +412,7 @@ function parameterProjection(
     // Every consumer must keep the same conservative alias relation: a
     // sibling retained here cannot be discarded later by a path-only check.
     const mayAffectSelection = (
-        from: Path,
+        from: KeyPath,
         entry: (typeof selected)[number],
     ): boolean => {
         if (pathsOverlap(from, entry.path)) return true;

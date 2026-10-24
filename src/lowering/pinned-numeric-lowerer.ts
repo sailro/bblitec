@@ -30,7 +30,11 @@ import { findAnalysisNode } from "../compiler/analysis-walk.js";
 import { enclosingLoopControl } from "../compiler/loop-control.js";
 import { pinnedCheckerOf, pinnedLibraryGlobal } from "../pinned-program.js";
 import { declaredSymbol } from "../compiler/symbols.js";
-import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
+import {
+    MATH_MEMBERS,
+    mathCallSpelling,
+    mathMemberAccess,
+} from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -4646,12 +4650,9 @@ export class PinnedNumericLowerer {
             return builtin.spell(args);
         }
         const spelling = this.scope.calls.get(name);
-        if (
-            !spelling &&
-            ts.isPropertyAccessExpression(callee) &&
-            pinnedLibraryGlobal(callee.expression) === "Math"
-        ) {
-            const method = callee.name.text;
+        const math = mathMemberAccess(callee, pinnedLibraryGlobal);
+        if (!spelling && math) {
+            const method = math.name.text;
             const member = MATH_MEMBERS.get(method);
             if (
                 member &&

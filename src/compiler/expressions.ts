@@ -36,6 +36,7 @@ import {
     absenceOf,
     absenceOfNull,
     knownCondition,
+    staticKeyOf,
     undefinedValue,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
@@ -115,7 +116,7 @@ import {
     outermostWrapper,
     regularExpressionParts,
     isTypeAssertion,
-    isProtoSetter,
+    refuseProtoSetter,
     isAsyncFunction,
     containsSuspension,
     restParameterIndex,
@@ -5504,8 +5505,7 @@ export class ExpressionLowerer {
                     )
                 )
                     return {
-                        kind: "json-null",
-                        cpp: "std::nullopt",
+                        ...undefinedValue(),
                         preserveUncheckedLookup: true,
                     };
                 this.context.fail(
@@ -5519,11 +5519,7 @@ export class ExpressionLowerer {
         // undefined (`(42)["format"]`).
         if (owner.kind === "number" || owner.kind === "boolean") {
             const key = this.compileValue(unwrapped.argumentExpression);
-            const name =
-                key.staticString ??
-                (key.staticNumber !== undefined
-                    ? String(key.staticNumber)
-                    : undefined);
+            const name = staticKeyOf(key);
             if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
                 this.context.emitDiscardedValue(owner);
                 this.context.emitDiscardedValue(key);
@@ -5749,11 +5745,11 @@ export class ExpressionLowerer {
         // holding either Float32Array) selects that typed array itself.
         const checkerTyped = (arm: ts.Expression): boolean =>
             TYPED_ARRAY_KINDS.has(
-                this.context.checker
-                    .getNonNullableType(
+                libraryName(
+                    this.context.checker.getNonNullableType(
                         this.context.checker.getTypeAtLocation(arm),
-                    )
-                    .getSymbol()?.name ?? "",
+                    ),
+                ) ?? "",
             );
         if (
             (inferred?.kind === "vector" || inferred?.kind === "span") &&
@@ -6355,11 +6351,9 @@ export class ExpressionLowerer {
             );
         };
         for (const [index, property] of unwrapped.properties.entries()) {
-            if (isProtoSetter(property))
-                this.context.fail(
-                    property,
-                    "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
-                );
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
                 refuseErrorReflection(this.context, spread, property);

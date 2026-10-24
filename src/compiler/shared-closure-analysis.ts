@@ -729,7 +729,6 @@ export class SharedClosureAnalysis {
                 this.context.checker,
                 this.context.program.getSourceFiles(),
                 symbol,
-                { updates: true },
             )
         );
     }

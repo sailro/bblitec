@@ -15,6 +15,7 @@ import {
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { undefinedOnly, holdsOnly } from "./type-facts.js";
+import { undefinedValue } from "./values/model.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -248,8 +249,7 @@ export function undefinedFromVoid(
     node: ts.Node,
 ): Value {
     return {
-        kind: "json-null",
-        cpp: "std::nullopt",
+        ...undefinedValue(),
         ...(provenUndefinedValue(context, node)
             ? {}
             : { erasedVoidCompletion: true as const }),

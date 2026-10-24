@@ -7,7 +7,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { fileRebinds, isRebound } from "../src/compiler/binding-rebinds.js";
+import {
+    bindingRebinds,
+    fileRebinds,
+    isRebound,
+} from "../src/compiler/binding-rebinds.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 
 import {
@@ -327,9 +331,11 @@ const reboundNames = (
     const { checker, sourceFile } = createCompilerProgram(source, "input.ts");
     return [...fileRebinds(checker, sourceFile).keys()]
         .filter((symbol) =>
-            isRebound(checker, [sourceFile], symbol, {
-                updates: countUpdateOperators,
-            }),
+            countUpdateOperators
+                ? isRebound(checker, [sourceFile], symbol)
+                : bindingRebinds(checker, [sourceFile], symbol).some(
+                      (site) => site.kind !== "update",
+                  ),
         )
         .map((symbol) => symbol.name)
         .sort();

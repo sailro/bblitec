@@ -95,21 +95,29 @@ export function valueKinds(type: ts.Type): ReadonlySet<ValueKind> {
 
 /** Whether every value of a type is of one of `kinds`. */
 export function holdsOnly(type: ts.Type, kinds: readonly ValueKind[]): boolean {
-    return [...valueKinds(type)].every((kind) => kinds.includes(kind));
+    return (
+        (type.flags & ts.TypeFlags.Never) !== 0 ||
+        unionMembers(type).every((member) =>
+            kinds.includes(valueKindOf(member)),
+        )
+    );
 }
+
+/** The kinds of value no callee shares: each copies into it. */
+const SCALAR_KINDS: readonly ValueKind[] = [
+    "number",
+    "string",
+    "boolean",
+    "bigint",
+    "symbol",
+    "null",
+    "undefined",
+    "void",
+];
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
 export function typeCanCarryReference(type: ts.Type): boolean {
-    return !holdsOnly(type, [
-        "number",
-        "string",
-        "boolean",
-        "bigint",
-        "symbol",
-        "null",
-        "undefined",
-        "void",
-    ]);
+    return !holdsOnly(type, SCALAR_KINDS);
 }
 
 const ABSENT = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;

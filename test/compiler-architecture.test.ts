@@ -621,13 +621,12 @@ test("a void result reads as undefined through one rule", () => {
 
 test("a type's absent members are read through type-facts.ts", () => {
     // undefinedOnly, isVoid, holdsNoPayload, nullability, presentMembers
-    // and isNullable read `void`; symbols.ts compares against a nullish
-    // literal.
+    // and isNullable read `void`.
     assert.deepEqual(
         sourcePaths
             .filter((path) => sourceFacts(path).members.has("Void"))
             .sort(),
-        ["src/compiler/symbols.ts", "src/compiler/type-facts.ts"],
+        ["src/compiler/type-facts.ts"],
     );
 });
 
@@ -1095,12 +1094,15 @@ test("Math is folded, spelled and resolved through math-intrinsics.ts", () => {
         "src/compiler/native-functions.ts",
     ])
         assert.ok(sourceFacts(path).calls.has("mathMemberIsImpure"), path);
-    for (const path of [
-        "src/lowering/context.ts",
-        "src/lowering/gltf/cpp-expression.ts",
-        "src/lowering/pinned-numeric-lowerer.ts",
-    ])
-        assert.ok(sourceFacts(path).calls.has("pinnedLibraryGlobal"), path);
+    // A pinned body's `Math` is read through the table's recognizers, handed
+    // pinnedLibraryGlobal.
+    for (const [path, recognizer] of [
+        ["src/lowering/context.ts", "mathConstantAccess"],
+        ["src/lowering/gltf/cpp-expression.ts", "mathMemberAccess"],
+        ["src/lowering/pinned-numeric-lowerer.ts", "mathMemberAccess"],
+        ["src/lowering/pinned-record-lowerer.ts", "mathExtremeCpp"],
+    ] as const)
+        assert.ok(sourceFacts(path).calls.has(recognizer), path);
     for (const path of [
         "src/lowering/gltf/cpp-expression.ts",
         "src/lowering/navigation-build-plan.ts",

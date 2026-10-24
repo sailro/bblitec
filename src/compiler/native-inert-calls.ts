@@ -5,6 +5,7 @@ import {
     restParameterIndex,
     unwrapExpression,
     writeSites,
+    isDeclaredInside,
     isSuspensionPoint,
     variableKind,
 } from "./syntax.js";
@@ -13,7 +14,7 @@ import {
     type CompilerSymbols,
     memberAccessors,
 } from "./symbols.js";
-import { unionMembers } from "./type-facts.js";
+import { arrayShape, unionMembers } from "./type-facts.js";
 
 /**
  * Pinned exports whose only effect the native realm does not represent.
@@ -213,7 +214,7 @@ class InertWalk {
             );
             return (
                 closure !== undefined &&
-                this.isInsideRoot(closure) &&
+                isDeclaredInside(closure, this.root) &&
                 this.body(closure)
             );
         }
@@ -247,7 +248,7 @@ class InertWalk {
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
-            !this.isInsideRoot(declaration) ||
+            !isDeclaredInside(declaration, this.root) ||
             !declaration.initializer ||
             variableKind(declaration) !== "const"
         ) {
@@ -268,18 +269,14 @@ class InertWalk {
             declaration !== undefined &&
             (ts.isVariableDeclaration(declaration) ||
                 ts.isParameter(declaration)) &&
-            this.isInsideRoot(declaration)
+            isDeclaredInside(declaration, this.root)
         );
     }
 
     private isArray(expression: ts.Expression): boolean {
-        const type = this.context.checker.getTypeAtLocation(expression);
-        const parts = unionMembers(type);
-        return parts.every(
-            (part) =>
-                this.context.checker.isArrayType(part) ||
-                this.context.checker.isTupleType(part),
-        );
+        return unionMembers(
+            this.context.checker.getTypeAtLocation(expression),
+        ).every((part) => arrayShape(this.context.checker, part) !== undefined);
     }
 
     private readsAccessor(
@@ -294,16 +291,5 @@ class InertWalk {
         identifier: ts.Identifier,
     ): ts.Declaration | undefined {
         return this.context.symbols.valueSymbol(identifier)?.valueDeclaration;
-    }
-
-    private isInsideRoot(node: ts.Node): boolean {
-        for (
-            let current: ts.Node | undefined = node;
-            current;
-            current = current.parent
-        ) {
-            if (current === this.root) return true;
-        }
-        return false;
     }
 }

@@ -28,7 +28,7 @@ import {
     compileEntryCollection,
 } from "./collection-methods.js";
 import { callSignatures } from "./type-facts.js";
-import { absenceOfNull, jsonAbsenceCpp } from "./values/model.js";
+import { absenceOfNull, jsonAbsenceCpp, staticKeyOf } from "./values/model.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -689,11 +689,7 @@ function compileObjectFromEntries(
             if (entry.kind !== "tuple" || entry.tupleElements?.length !== 2)
                 return undefined;
             const [key, value] = entry.tupleElements;
-            const name =
-                key?.staticString ??
-                (key?.staticNumber !== undefined
-                    ? String(key.staticNumber)
-                    : undefined);
+            const name = staticKeyOf(key);
             if (name === undefined) return undefined;
             if (properties[name]) context.emitDiscardedValue(properties[name]);
             properties[name] = value!;
@@ -1090,7 +1086,7 @@ function compileObjectAssign(
             ),
         );
         sources.forEach((source, index) => {
-            for (const [key, value] of sourcePairs(source, values[index]!))
+            for (const [key, value] of sourcePairs(source, values[index]))
                 context.emit({
                     kind: "expression",
                     code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,

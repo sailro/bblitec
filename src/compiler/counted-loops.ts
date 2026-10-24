@@ -29,6 +29,22 @@ export interface CountedLoopShape {
     readonly step?: { readonly sign: 1 | -1; readonly amount?: ts.Expression };
 }
 
+/**
+ * Whether a loop counts up by one: `i++`, `++i` or `i += 1`. `valueOf` reads
+ * a step amount's number: its literal's, unless the caller folds more.
+ */
+export function stepsUpByOne(
+    shape: CountedLoopShape,
+    valueOf: (amount: ts.Expression) => number | undefined = (amount) =>
+        ts.isNumericLiteral(amount) ? Number(amount.text) : undefined,
+): boolean {
+    const step = shape.step;
+    return (
+        step?.sign === 1 &&
+        (step.amount === undefined || valueOf(step.amount) === 1)
+    );
+}
+
 const operators = new Map<ts.SyntaxKind, LoopComparison>([
     [ts.SyntaxKind.LessThanToken, "<"],
     [ts.SyntaxKind.LessThanEqualsToken, "<="],

@@ -31,19 +31,61 @@ export function moduleImportKind(
         : "runtime";
 }
 
-/** Whether an identifier stands in a type: a type node, `implements`, an interface's `extends`. */
-function inTypePosition(identifier: ts.Identifier): boolean {
-    for (let node: ts.Node = identifier.parent; ; node = node.parent) {
-        if (ts.isSourceFile(node)) return false;
-        // A class's `extends` names its base class, a value.
-        if (ts.isExpressionWithTypeArguments(node))
-            return !(
+/** What a file reads, as values, of the aliases its imports bind. */
+interface AliasReads {
+    readonly aliases: ReadonlySet<ts.Symbol>;
+    readonly exports: readonly ts.ExportSpecifier[];
+}
+
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const aliasReads = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.SourceFile, AliasReads>
+>();
+
+/**
+ * One walk of a file for the aliases it reads as values: a type node
+ * (`implements`, an interface's `extends`, `typeof` in a type) reads none,
+ * a class's `extends` names its base class, a value; and its export
+ * specifiers, whose local alias a re-export reads.
+ */
+function fileAliasReads(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+): AliasReads {
+    let files = aliasReads.get(checker);
+    if (!files) aliasReads.set(checker, (files = new WeakMap()));
+    const known = files.get(file);
+    if (known) return known;
+    const aliases = new Set<ts.Symbol>();
+    const exports: ts.ExportSpecifier[] = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node)) return;
+        if (ts.isExportSpecifier(node)) {
+            exports.push(node);
+            return;
+        }
+        if (ts.isExpressionWithTypeArguments(node)) {
+            if (
                 ts.isHeritageClause(node.parent) &&
                 node.parent.token === ts.SyntaxKind.ExtendsKeyword &&
                 ts.isClassLike(node.parent.parent)
-            );
-        if (ts.isTypeNode(node)) return true;
-    }
+            )
+                visit(node.expression);
+            return;
+        }
+        if (ts.isTypeNode(node)) return;
+        if (ts.isIdentifier(node)) {
+            const symbol = declaredSymbol(checker, node);
+            if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+                aliases.add(symbol);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const reads = { aliases, exports };
+    files.set(file, reads);
+    return reads;
 }
 
 /**
@@ -86,20 +128,17 @@ export function isRuntimeImport(
     else if (named)
         for (const element of named.elements)
             if (!element.isTypeOnly) bind(element.name);
-    const file = statement.getSourceFile();
-    const readsValue = (node: ts.Node): boolean => {
-        if (ts.isImportDeclaration(node)) return false;
-        if (ts.isExportSpecifier(node)) {
-            const local = checker.getExportSpecifierLocalTargetSymbol(node);
+    const reads = fileAliasReads(checker, statement.getSourceFile());
+    return (
+        [...bindings].some((binding) => reads.aliases.has(binding)) ||
+        reads.exports.some((specifier) => {
+            const local =
+                checker.getExportSpecifierLocalTargetSymbol(specifier);
             return (
-                local !== undefined && bindings.has(local) && exportsValue(node)
+                local !== undefined &&
+                bindings.has(local) &&
+                exportsValue(specifier)
             );
-        }
-        if (ts.isIdentifier(node) && !inTypePosition(node)) {
-            const symbol = declaredSymbol(checker, node);
-            if (symbol && bindings.has(symbol)) return true;
-        }
-        return ts.forEachChild(node, readsValue) ?? false;
-    };
-    return readsValue(file);
+        })
+    );
 }

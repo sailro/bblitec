@@ -1095,6 +1095,12 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
 }
 
 /**
+ * @unjournaled Pure functions of the checked source: the keys a `const`
+ * Map's lookups take, or none when it is used any other way.
+ */
+const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
+
+/**
  * Maps checker types onto native data types and owns the generated struct,
  * enum, and static-table definitions emitted ahead of `main`.
  */
@@ -2823,40 +2829,45 @@ export class DataTypeRegistry {
             !ts.isNewExpression(unwrapExpression(declaration.initializer))
         )
             return undefined;
-        const keys: ts.Expression[] = [];
-        let closed = true;
-        const visit = (child: ts.Node): void => {
-            if (!closed) return;
-            if (
-                ts.isIdentifier(child) &&
-                child !== declaration.name &&
-                resolvedSymbol(this.checker, child) === symbol
-            ) {
-                const access = child.parent;
-                const call = access.parent;
+        let keys = erasedMapKeys.get(symbol);
+        if (keys === undefined) {
+            const found: ts.Expression[] = [];
+            let closed = true;
+            const visit = (child: ts.Node): void => {
+                if (!closed) return;
                 if (
-                    ts.isPropertyAccessExpression(access) &&
-                    access.expression === child &&
-                    ["get", "set", "has", "delete"].includes(
-                        access.name.text,
-                    ) &&
-                    ts.isCallExpression(call) &&
-                    call.expression === access &&
-                    call.arguments[0]
-                )
-                    keys.push(call.arguments[0]);
-                else if (
-                    !ts.isPropertyAccessExpression(access) ||
-                    access.expression !== child ||
-                    !["size", "clear"].includes(access.name.text)
-                )
-                    closed = false;
-                return;
-            }
-            ts.forEachChild(child, visit);
-        };
-        visit(declaration.parent.parent.parent);
-        if (!closed || keys.length === 0) return undefined;
+                    ts.isIdentifier(child) &&
+                    child !== declaration.name &&
+                    resolvedSymbol(this.checker, child) === symbol
+                ) {
+                    const access = child.parent;
+                    const call = access.parent;
+                    if (
+                        ts.isPropertyAccessExpression(access) &&
+                        access.expression === child &&
+                        ["get", "set", "has", "delete"].includes(
+                            access.name.text,
+                        ) &&
+                        ts.isCallExpression(call) &&
+                        call.expression === access &&
+                        call.arguments[0]
+                    )
+                        found.push(call.arguments[0]);
+                    else if (
+                        !ts.isPropertyAccessExpression(access) ||
+                        access.expression !== child ||
+                        !["size", "clear"].includes(access.name.text)
+                    )
+                        closed = false;
+                    return;
+                }
+                ts.forEachChild(child, visit);
+            };
+            visit(declaration.parent.parent.parent);
+            keys = closed ? found : [];
+            erasedMapKeys.set(symbol, keys);
+        }
+        if (keys.length === 0) return undefined;
         const present = (type: DataType | undefined): DataType | undefined =>
             type?.kind === "optional" ? type.inner : type;
         const types = keys.map((key) =>

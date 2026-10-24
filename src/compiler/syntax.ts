@@ -1274,6 +1274,18 @@ export function isProtoSetter(member: ts.ObjectLiteralElementLike): boolean {
     );
 }
 
+/** A literal setting its prototype refuses: the supported subset sets none. */
+export function refuseProtoSetter(
+    member: ts.ObjectLiteralElementLike,
+    fail: (node: ts.Node, message: string) => never,
+): void {
+    if (isProtoSetter(member))
+        fail(
+            member,
+            "Setting a literal's prototype (`__proto__: v`) is outside the supported subset.",
+        );
+}
+
 /**
  * The members of an object literal (or of its properties, spreads already
  * expanded), in evaluation order. `keyOf` reads a key: the syntax's by
@@ -1938,17 +1950,31 @@ export function containsSuspension(
     );
 }
 
+/** @unjournaled Parsed syntax is immutable: a queried node's fingerprint, kept. */
+const sourceFingerprints = new WeakMap<ts.Node, string>();
+
 /**
  * A node's syntax as text: its kind with its children's, names and literals
  * by value, seen through expression wrappers. Layout, comments, commas and
  * semicolons do not count.
  */
-export function sourceFingerprint(node: ts.Node): string {
-    if (isExpressionWrapper(node)) return sourceFingerprint(node.expression);
+function sourceFingerprint(node: ts.Node): string {
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    const known = parsed ? sourceFingerprints.get(node) : undefined;
+    if (known !== undefined) return known;
+    const fingerprint = fingerprintIn(node, node.getSourceFile());
+    if (parsed) sourceFingerprints.set(node, fingerprint);
+    return fingerprint;
+}
+
+/** {@link sourceFingerprint}, walking the children `file` holds. */
+function fingerprintIn(node: ts.Node, file: ts.SourceFile): string {
+    if (isExpressionWrapper(node)) return fingerprintIn(node.expression, file);
     const leaf = fingerprintLeaf(node);
     if (leaf !== undefined) return leaf;
     const children = node
-        .getChildren(node.getSourceFile())
+        .getChildren(file)
         .filter(
             (child) =>
                 !ts.isJSDoc(child) &&
@@ -1957,7 +1983,7 @@ export function sourceFingerprint(node: ts.Node): string {
         );
     if (children.length === 0) return ts.SyntaxKind[node.kind];
     return `${ts.SyntaxKind[node.kind]}(${children
-        .map(sourceFingerprint)
+        .map((child) => fingerprintIn(child, file))
         .join(",")})`;
 }
 
@@ -2037,6 +2063,34 @@ function shapeFingerprint(
 }
 
 /**
+ * The first of `shapes` that `node` is, parsed as `context` (`strict`: an
+ * expression shape that does not parse is the caller's mistake). Most
+ * candidates are not even the shape's node kind: the head is compared
+ * first, so `node` is fingerprinted only against a shape it may be.
+ */
+function matchingShape(
+    node: ts.Node,
+    shapes: Iterable<string>,
+    context: ShapeKind,
+    strict: boolean,
+): string | undefined {
+    const head = fingerprintHead(node);
+    let fingerprint: string | undefined;
+    for (const shape of shapes) {
+        const expected = shapeFingerprint(shape, context, strict);
+        if (
+            head !== undefined &&
+            expected !== head &&
+            !expected.startsWith(`${head}(`)
+        )
+            continue;
+        fingerprint ??= sourceFingerprint(node);
+        if (expected === fingerprint) return shape;
+    }
+    return undefined;
+}
+
+/**
  * Whether `node` is the source `shape`: the same syntax, read through
  * parentheses and other expression wrappers and ignoring layout and
  * comments. How a lowering recognizes a fixed piece of source (a pinned
@@ -2050,17 +2104,10 @@ export function sameSource(
     kind?: ShapeKind,
 ): boolean {
     if (node === undefined || shape === undefined) return false;
-    const expected = shapeFingerprint(shape, kind ?? shapeKindOf(node));
-    // Most candidates a counting walk offers are not even the expected
-    // node kind; the head is free where the walk is not.
-    const head = fingerprintHead(node);
-    if (
-        head !== undefined &&
-        expected !== head &&
-        !expected.startsWith(`${head}(`)
-    )
-        return false;
-    return sourceFingerprint(node) === expected;
+    return (
+        matchingShape(node, [shape], kind ?? shapeKindOf(node), true) !==
+        undefined
+    );
 }
 
 /**
@@ -2070,35 +2117,34 @@ export function sameSource(
 export function sourceEntry<T>(
     table: ReadonlyMap<string, T> | undefined,
     node: ts.Node | undefined,
-    kind?: ShapeKind,
 ): T | undefined {
     if (table === undefined || node === undefined) return undefined;
-    const fingerprint = sourceFingerprint(node);
-    const context = kind ?? shapeKindOf(node);
-    for (const [shape, value] of table)
-        if (shapeFingerprint(shape, context, false) === fingerprint)
-            return value;
-    return undefined;
+    const shape = matchingShape(node, table.keys(), shapeKindOf(node), false);
+    return shape === undefined ? undefined : table.get(shape);
 }
 
 /** Whether `node` is one of the source shapes `shapes`. */
 export function isOneOfSources(
     node: ts.Node | undefined,
     shapes: Iterable<string>,
-    kind?: ShapeKind,
 ): boolean {
-    if (node === undefined) return false;
-    const fingerprint = sourceFingerprint(node);
-    const context = kind ?? shapeKindOf(node);
-    for (const shape of shapes)
-        if (shapeFingerprint(shape, context, false) === fingerprint)
-            return true;
-    return false;
+    return (
+        node !== undefined &&
+        matchingShape(node, shapes, shapeKindOf(node), false) !== undefined
+    );
 }
 
 /** Whether two nodes, perhaps of different files, are the same syntax. */
 export function sameSyntax(left: ts.Node, right: ts.Node): boolean {
-    return sourceFingerprint(left) === sourceFingerprint(right);
+    // A wrapper has no head: the fingerprint sees through it.
+    const leftHead = fingerprintHead(left);
+    const rightHead = fingerprintHead(right);
+    return (
+        (leftHead === undefined ||
+            rightHead === undefined ||
+            leftHead === rightHead) &&
+        sourceFingerprint(left) === sourceFingerprint(right)
+    );
 }
 
 /**

@@ -20,7 +20,7 @@ import {
     receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import { knownCondition, undefinedValue } from "./values/model.js";
+import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -3754,11 +3754,7 @@ function compileMapDataMethod(
             }
             slotFoundCpp = `${narrowed.cpp}.has(${key})`;
         }
-        const staticKey =
-            keyValue.staticString ??
-            (keyValue.staticNumber !== undefined
-                ? String(keyValue.staticNumber)
-                : undefined);
+        const staticKey = staticKeyOf(keyValue);
         if (method === "has") {
             return {
                 kind: "boolean",
@@ -3878,11 +3874,7 @@ function compileMapDataMethod(
             dataType.value,
             argumentAt(call, 1),
         );
-        const staticKey =
-            keyValue.staticString ??
-            (keyValue.staticNumber !== undefined
-                ? String(keyValue.staticNumber)
-                : undefined);
+        const staticKey = staticKeyOf(keyValue);
         if (lowerer.context.isInRuntimeControlFlow()) {
             lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (staticKey !== undefined && narrowed.recordProperties) {

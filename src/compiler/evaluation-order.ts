@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { mathMemberIsImpure } from "./math-intrinsics.js";
+import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import {
     classChain,
     localClassOfSymbol,
@@ -401,7 +401,7 @@ export class EvaluationOrder {
                             ts.isCallExpression(current) ||
                             ts.isNewExpression(current)
                         ) {
-                            const callees = this.callees(current);
+                            const callees = this.callUnits(current);
                             if (
                                 !callees ||
                                 (callees === "library" &&
@@ -691,7 +691,7 @@ export class EvaluationOrder {
             if (!answers) return "skip";
             if (!ts.isCallExpression(current) && !ts.isNewExpression(current))
                 return;
-            const callees = this.callees(current);
+            const callees = this.callUnits(current);
             answers =
                 callees === "library"
                     ? this.libraryAnswersFromArguments(current)
@@ -1100,7 +1100,7 @@ export class EvaluationOrder {
             merge(access.writes, engine.writes);
             return;
         }
-        const units = this.callees(call);
+        const units = this.callUnits(call);
         if (units === "library") {
             this.libraryCall(access, call, unit);
             return;
@@ -1267,7 +1267,7 @@ export class EvaluationOrder {
     public callBodies(
         call: ts.CallExpression,
     ): readonly ts.FunctionLikeDeclaration[] | "library" | undefined {
-        const units = this.callees(call);
+        const units = this.callUnits(call);
         if (units === "library" || units === undefined) return units;
         return units.every(
             (unit): unit is ts.FunctionLikeDeclaration =>
@@ -1278,23 +1278,13 @@ export class EvaluationOrder {
     }
 
     /**
-     * The code a call runs: the function bodies it can reach -- every
-     * implementation an overridden method can dispatch to, a constructor
-     * chain with its field initializers -- "library" for a declaration
-     * file's function, or undefined when it cannot be named.
-     */
-    /**
-     * The repository code a call or construction runs: function bodies, a
-     * class chain's constructors and field initializers. "library" for a
-     * declaration file's function; undefined when the target is unknown.
+     * The code a call or construction runs: the function bodies it can
+     * reach -- every implementation an overridden method can dispatch to, a
+     * class chain's constructors with its field initializers -- "library"
+     * for a declaration file's function, or undefined when it cannot be
+     * named.
      */
     public callUnits(
-        call: ts.CallExpression | ts.NewExpression,
-    ): readonly Unit[] | "library" | undefined {
-        return this.callees(call);
-    }
-
-    private callees(
         call: ts.CallExpression | ts.NewExpression,
     ): readonly Unit[] | "library" | undefined {
         if (call.expression.kind === ts.SyntaxKind.SuperKeyword) {
@@ -1332,12 +1322,10 @@ export class EvaluationOrder {
 
     /** Whether an expression is the language's `Math.random`. */
     private isRandom(expression: ts.Expression): boolean {
-        const node = unwrapExpression(expression);
-        return (
-            ts.isPropertyAccessExpression(node) &&
-            libraryGlobal(this.checker, node.expression) === "Math" &&
-            node.name.text === "random"
+        const access = mathMemberAccess(unwrapExpression(expression), (owner) =>
+            libraryGlobal(this.checker, owner),
         );
+        return access !== undefined && mathMemberIsImpure(access.name.text);
     }
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
@@ -1459,10 +1447,7 @@ export class EvaluationOrder {
     private isWrittenVariable(symbol: ts.Symbol): boolean {
         if ((symbol.flags & ts.SymbolFlags.Variable) === 0) return false;
         const file = symbol.valueDeclaration?.getSourceFile();
-        return (
-            file !== undefined &&
-            isRebound(this.checker, [file], symbol, { updates: true })
-        );
+        return file !== undefined && isRebound(this.checker, [file], symbol);
     }
 }
 

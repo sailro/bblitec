@@ -17,7 +17,8 @@ import {
     variableKind,
     writeSites,
 } from "./syntax.js";
-import { callSignatures, unionMembers } from "./type-facts.js";
+import { admitsUndefined, callSignatures, nullability } from "./type-facts.js";
+import { numberFormatOf } from "./number-intrinsics.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -136,10 +137,8 @@ export function resolvedDomApi(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): string | undefined {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration &&
-        !ts.isJSDocSignature(declaration) &&
-        declarationOrigin(declaration) === "dom"
+    const declaration = calledDeclaration(checker, call);
+    return declaration && declarationOrigin(declaration) === "dom"
         ? declarationApi(declaration)
         : undefined;
 }
@@ -268,8 +267,6 @@ export function declaredInDefaultLibrary(
     return declaredIn(symbol, "default-lib", "dom");
 }
 
-const NUMBER_FORMATTERS = new Set(["toFixed", "toPrecision", "toExponential"]);
-
 /**
  * Whether a call is a library number formatter (`n.toFixed(2)`,
  * `toPrecision`, `toExponential`): it reads one number and runs nothing of
@@ -280,10 +277,10 @@ export function isLibraryNumberFormatter(
     call: ts.CallExpression,
 ): boolean {
     const callee = unwrapExpression(call.expression);
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     return (
         ts.isPropertyAccessExpression(callee) &&
-        NUMBER_FORMATTERS.has(callee.name.text) &&
+        numberFormatOf(callee.name.text) !== undefined &&
         declaration !== undefined &&
         declarationInDefaultLibrary(declaration) &&
         ts.isInterfaceDeclaration(declaration.parent) &&
@@ -854,17 +851,10 @@ export function typeMayHoldNullish(
     literal: "null" | "undefined",
 ): boolean {
     const type = checker.getTypeAtLocation(expression);
-    const flag =
-        literal === "null" ? ts.TypeFlags.Null : ts.TypeFlags.Undefined;
-    return unionMembers(type).some(
-        (member) =>
-            (member.flags &
-                (flag |
-                    ts.TypeFlags.Any |
-                    ts.TypeFlags.Unknown |
-                    (literal === "undefined" ? ts.TypeFlags.Void : 0))) !==
-            0,
-    );
+    return literal === "undefined"
+        ? admitsUndefined(type)
+        : nullability(type).null ||
+              (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
 }
 
 export function nullishComparison(
@@ -982,13 +972,6 @@ export class CompilerSymbols {
     /** See {@link isGlobalUndefined}. */
     public isGlobalUndefined(expression: ts.Expression): boolean {
         return isGlobalUndefined(this.checker, expression);
-    }
-
-    /** See {@link isNullishLiteral}. */
-    public nullishLiteral(
-        expression: ts.Expression,
-    ): "null" | "undefined" | undefined {
-        return nullishLiteral(this.checker, expression);
     }
 
     public isNullishLiteral(expression: ts.Expression): boolean {

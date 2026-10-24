@@ -554,11 +554,9 @@ class ModuleInitializerPlanner {
         retainedDeclarations: Iterable<ts.VariableDeclaration>,
     ): readonly ts.Statement[] {
         const retained = new Set(retainedDeclarations);
-        // `true`: at module scope an incremented name is storage too.
+        // At module scope an incremented name is storage too.
         const rebound = (symbol: ts.Symbol): boolean =>
-            isRebound(this.checker, this.program.getSourceFiles(), symbol, {
-                updates: true,
-            });
+            isRebound(this.checker, this.program.getSourceFiles(), symbol);
         const mutated = collectMutatedContainerSymbols(
             this.sourceFile,
             this.checker,

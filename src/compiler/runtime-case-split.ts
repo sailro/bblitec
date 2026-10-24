@@ -6,7 +6,12 @@ import { isStorageDemand } from "./storage-demand-planner.js";
 import { typeCanCarryReference, isVoid } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
-import { writeSites, isValueReference, isSuspensionPoint } from "./syntax.js";
+import {
+    functionOfDeclaration,
+    isSuspensionPoint,
+    isValueReference,
+    writeSites,
+} from "./syntax.js";
 import { knownCondition } from "./values/model.js";
 
 type CaseSplitContext = Pick<
@@ -160,9 +165,7 @@ function moduleLevelCallee(
         return ts.isSourceFile(declaration.parent);
     return (
         ts.isVariableDeclaration(declaration) &&
-        !!declaration.initializer &&
-        (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer)) &&
+        functionOfDeclaration(declaration) !== undefined &&
         ts.isVariableStatement(declaration.parent.parent) &&
         ts.isSourceFile(declaration.parent.parent.parent)
     );

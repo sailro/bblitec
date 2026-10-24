@@ -2,7 +2,7 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { countedLoopShape } from "./counted-loops.js";
+import { countedLoopShape, stepsUpByOne } from "./counted-loops.js";
 import { classChain, classMemberTable } from "./class-members.js";
 import {
     isPinnedType,
@@ -1002,7 +1002,6 @@ export function staticIndexLoopShape(
         symbols.valueSymbol(identifier),
     );
     const condition = shape?.condition;
-    const step = shape?.step;
     // A literal start, an upward bound and a step of one.
     if (
         !shape ||
@@ -1010,9 +1009,7 @@ export function staticIndexLoopShape(
         !condition ||
         condition.mirrored ||
         (condition.operator !== "<" && condition.operator !== "<=") ||
-        step?.sign !== 1 ||
-        (step.amount !== undefined &&
-            !(ts.isNumericLiteral(step.amount) && step.amount.text === "1"))
+        !stepsUpByOne(shape)
     )
         return undefined;
     const start = Number(shape.start.text);

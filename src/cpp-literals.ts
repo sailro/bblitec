@@ -305,7 +305,8 @@ export function stringLiteral(value: string): string {
         .join("\\u2028")
         .split("\u2029")
         .join("\\u2029")
-        .replaceAll("??", "?\\?");
+        // No `??` survives to spell a trigraph: each `?` after a `?` escapes.
+        .replace(/(?<=\?)\?/g, "\\?");
     return value.includes("\u0000")
         ? `std::string(${literal}, sizeof(${literal}) - 1)`
         : literal;

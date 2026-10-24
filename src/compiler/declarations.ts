@@ -1291,10 +1291,10 @@ export class DeclarationLowerer {
                 !readsErasedVoid(this.context, value, declaration.initializer)
             ) {
                 this.context.emitDiscardedValue(value);
-                this.context.bindings.defineVariable(declaration.name, {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                });
+                this.context.bindings.defineVariable(
+                    declaration.name,
+                    undefinedValue(),
+                );
                 return;
             }
             this.context.fail(
@@ -2942,6 +2942,10 @@ export class DeclarationLowerer {
     ): boolean {
         const name = declaration.name;
         if (!ts.isIdentifier(name)) return false;
+        // One alias scan answers each storage question below.
+        let mutated: boolean | undefined;
+        const objectIsMutated = (): boolean =>
+            (mutated ??= this.inferredObjectIsMutated(name));
 
         if (!declaration.initializer) {
             return false;
@@ -3291,7 +3295,7 @@ export class DeclarationLowerer {
             ts.isIdentifier(name);
         if (
             annotatedOpenRecordLiteral &&
-            !this.inferredObjectIsMutated(name) &&
+            !objectIsMutated() &&
             !this.context.moduleContainerIsMutated(name) &&
             !this.context.sharedClosures.identifierIsRebound(name)
         ) {
@@ -3322,7 +3326,7 @@ export class DeclarationLowerer {
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer) ||
             isOperandSelection(initializer)
-                ? this.inferredObjectIsMutated(name) ||
+                ? objectIsMutated() ||
                   this.context.moduleContainerIsMutated(name)
                 : this.context.sharedClosures.identifierIsRebound(name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
@@ -3856,7 +3860,7 @@ export class DeclarationLowerer {
             initializerSnapshot?.kind === "record" &&
             ts.isIdentifier(name) &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
-            !this.inferredObjectIsMutated(name)
+            !objectIsMutated()
         )
             for (const [key, member] of Object.entries(
                 initializerSnapshot.recordProperties ?? {},
@@ -4459,11 +4463,13 @@ export class DeclarationLowerer {
                     ts.isSpreadAssignment(property) &&
                     names(property.expression),
             ) &&
+            // Any other property reading the object (`extra: it.inner`)
+            // may hand the callee one of its members under another key.
             node.properties.every(
                 (property) =>
-                    !ts.isSpreadAssignment(property) ||
-                    names(property.expression) ||
-                    !someAnalysisNode(property.expression, (child) =>
+                    (ts.isSpreadAssignment(property) &&
+                        names(property.expression)) ||
+                    !someAnalysisNode(property, (child) =>
                         ts.isIdentifier(child) ? names(child) : false,
                     ),
             );

@@ -63,6 +63,7 @@ import {
     absenceOf,
     knownCondition,
     staticBooleanOf,
+    staticKeyOf,
     undefinedValue,
 } from "./compiler/values/model.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
@@ -312,6 +313,7 @@ import {
     functionKind,
     isSupportedFunction,
     variableKind,
+    rootExpression,
     unwrapExpression,
     keysMayMatch,
 } from "./compiler/syntax.js";
@@ -3174,12 +3176,7 @@ class Compiler implements LoweringServices {
         };
         const names = (node: ts.Node): boolean => {
             // A member chain rooted at a call reads that call's result.
-            let root: ts.Node = node;
-            while (
-                ts.isPropertyAccessExpression(root) ||
-                ts.isElementAccessExpression(root)
-            )
-                root = unwrapExpression(root.expression);
+            const root = ts.isExpression(node) ? rootExpression(node) : node;
             if (ts.isCallExpression(root) && returnsConstant(root)) return true;
             const named =
                 ts.isIdentifier(node) ||
@@ -4293,12 +4290,7 @@ class Compiler implements LoweringServices {
             () => this.compileValue(name.expression),
             () => false,
         );
-        return (
-            value.staticString ??
-            (value.staticNumber === undefined
-                ? undefined
-                : String(value.staticNumber))
-        );
+        return staticKeyOf(value);
     }
 
     /**
@@ -4314,12 +4306,7 @@ class Compiler implements LoweringServices {
         )
             return this.propertyName(name);
         const value = this.compileValue(name.expression);
-        const key =
-            staticPropertyKey(this.checker, name) ??
-            value.staticString ??
-            (value.staticNumber === undefined
-                ? undefined
-                : String(value.staticNumber));
+        const key = staticPropertyKey(this.checker, name) ?? staticKeyOf(value);
         if (key !== undefined) this.emitDiscardedValue(value);
         return key;
     }
@@ -5190,12 +5177,7 @@ class Compiler implements LoweringServices {
                 value = this.compileValue(expression);
             });
             if (!value || (!pure && effects.length > 0)) return undefined;
-            return (
-                value.staticString ??
-                (value.staticNumber === undefined
-                    ? undefined
-                    : String(value.staticNumber))
-            );
+            return staticKeyOf(value);
         });
         if (carried !== undefined) return carried;
         if (

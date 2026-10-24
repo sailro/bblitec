@@ -1,7 +1,12 @@
 import ts from "typescript";
-import { bindingElementKey } from "./syntax.js";
+import {
+    isAssignmentExpression,
+    patternSlots,
+    unwrapExpression,
+} from "./syntax.js";
 import { libraryGlobal, staticAccessKey } from "./symbols.js";
 import { unionMembers } from "./type-facts.js";
+import type { PatternRead } from "./syntax.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -43,6 +48,30 @@ export function propertyNeverObserved(
                     0 || part.getProperty(name) !== undefined,
         );
     };
+    // A destructuring reads the keys it names; a rest or a run-time key, any.
+    const readsName = (slots: readonly { read: PatternRead }[]): boolean =>
+        slots.some(
+            ({ read }) =>
+                read.kind !== "member" ||
+                read.key === undefined ||
+                read.key === name,
+        );
+    const assignmentPatternReads = (pattern: ts.Expression): boolean => {
+        const target = unwrapExpression(pattern);
+        if (ts.isObjectLiteralExpression(target)) {
+            const slots = patternSlots(target);
+            return (
+                readsName(slots) ||
+                slots.some((slot) => assignmentPatternReads(slot.target))
+            );
+        }
+        return (
+            ts.isArrayLiteralExpression(target) &&
+            patternSlots(target).some((slot) =>
+                assignmentPatternReads(slot.target),
+            )
+        );
+    };
     const observes = (node: ts.Node): boolean => {
         if (ts.isPropertyAccessExpression(node) && node.name.text === name)
             return true;
@@ -52,18 +81,17 @@ export function propertyNeverObserved(
             if ((key === undefined || key === name) && carries(node.expression))
                 return true;
         }
+        if (ts.isObjectBindingPattern(node) && readsName(patternSlots(node)))
+            return true;
         if (
-            ts.isBindingElement(node) &&
-            ts.isObjectBindingPattern(node.parent)
-        ) {
-            const key = bindingElementKey(node);
-            if (
-                node.dotDotDotToken !== undefined ||
-                key === undefined ||
-                key === name
-            )
-                return true;
-        }
+            (isAssignmentExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                assignmentPatternReads(node.left)) ||
+            ((ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                !ts.isVariableDeclarationList(node.initializer) &&
+                assignmentPatternReads(node.initializer))
+        )
+            return true;
         if (
             (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) &&
             carries(node.expression)

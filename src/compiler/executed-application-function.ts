@@ -48,6 +48,7 @@ import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
@@ -493,8 +494,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         const member = node.name.text;
         if (
-            member === "random" &&
-            libraryGlobal(checker, node.expression) === "Math"
+            mathMemberIsImpure(member) &&
+            mathMemberAccess(node, (owner) => libraryGlobal(checker, owner))
         ) {
             return "'Math.random'";
         }

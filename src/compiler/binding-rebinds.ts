@@ -70,16 +70,13 @@ export function bindingRebinds(
     );
 }
 
-/** Whether anything rebinds a binding; `updates: false` leaves `++` and `--` out. */
+/** Whether anything rebinds a binding, `++` and `--` included. */
 export function isRebound(
     checker: ts.TypeChecker,
     sourceFiles: readonly ts.SourceFile[],
     symbol: ts.Symbol,
-    options: { readonly updates: boolean },
 ): boolean {
-    return bindingRebinds(checker, sourceFiles, symbol).some(
-        (site) => options.updates || site.kind !== "update",
-    );
+    return bindingRebinds(checker, sourceFiles, symbol).length > 0;
 }
 
 const directCallBindingCache = new EmissionWeakMap<

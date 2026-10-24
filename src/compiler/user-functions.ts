@@ -2559,10 +2559,7 @@ export class UserFunctionLowerer {
             const evaluated =
                 evaluatedArguments?.[index] ??
                 (!argument && parameter.questionToken
-                    ? ({
-                          kind: "json-null",
-                          cpp: "std::nullopt",
-                      } satisfies Value)
+                    ? undefinedValue()
                     : undefined);
             if (!argument && !evaluated) {
                 context.fail(
@@ -2699,8 +2696,8 @@ export class UserFunctionLowerer {
             if (
                 existing &&
                 !evaluatedArguments &&
-                !this.passesOwnParameter(declaration, parameter, argument) &&
-                !this.sameCapturedValue(existing, value)
+                !this.sameCapturedValue(existing, value) &&
+                !this.passesOwnParameter(declaration, parameter, argument)
             ) {
                 context.fail(
                     argument ?? parameter,
@@ -3545,10 +3542,7 @@ export class UserFunctionLowerer {
                 // evaluated once, as the recursive calls pass theirs, when it
                 // reads nothing of the callee. A captured parameter that the
                 // recursion only hands on captures that one evaluation.
-                const absent = argument ?? {
-                    kind: "json-null",
-                    cpp: "std::nullopt",
-                };
+                const absent = argument ?? undefinedValue();
                 const independent =
                     recursive &&
                     this.callerIndependentDefault(
@@ -3753,10 +3747,7 @@ export class UserFunctionLowerer {
             const value =
                 argument ??
                 (parameter.declaration.questionToken
-                    ? ({
-                          kind: "json-null",
-                          cpp: "std::nullopt",
-                      } satisfies Value)
+                    ? undefinedValue()
                     : context.fail(
                           parameter.declaration,
                           `Recursive function requires argument '${parameter.name.getText()}'.`,
