@@ -270,7 +270,7 @@ Unchanged pinned applications.
 | --- | :---: | ---: | ---: | --- |
 | Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.221/0.219 | 0.221/0.219 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
 | Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | 0.309/0.424 | 0.309/0.424 | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
-| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.183/0.208 | 0.183/0.208 | Thin-instance game; audio; retained UI. UI residual; canvas-only MAD: 0.080/0.086 on both backends, the demo's doubled `devicePixelRatio` supersample (the port renders at the window's size). |
+| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.123/0.125 | 0.123/0.125 | Thin-instance game; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.024/0.023 | 0.024/0.023 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | pixel‑perfect | pixel‑perfect | Frame graph; offscreen effects; bloom. |
