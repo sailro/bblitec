@@ -40,7 +40,9 @@ import {
     functionOfDeclaration,
     type SupportedFunction,
     variableKind,
+    ANY_KEY,
 } from "./syntax.js";
+import { pathStartsWith, type KeyPath } from "./projections.js";
 import { valueKindOf } from "./type-facts.js";
 import { bindingRebinds, fileRebinds } from "./binding-rebinds.js";
 
@@ -55,11 +57,9 @@ type Context = Pick<
     | "propertyName"
     | "fail"
 >;
-const element = Symbol("array element");
-type Projection = readonly (string | typeof element)[];
 interface Origin {
     expression: ts.Expression;
-    projection: Projection;
+    projection: KeyPath;
     environment: Environment;
 }
 type Environment = ReadonlyMap<ts.Symbol, Origin>;
@@ -107,23 +107,23 @@ interface SourceGraph {
 }
 
 interface MemberWrite {
-    readonly path: Projection;
+    readonly path: KeyPath;
     readonly value: ts.Expression;
 }
 
 /** The step an access takes: its key, or any element for an index or a run-time key. */
 function memberStep(
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-): string | typeof element {
+): string {
     const key = accessKey(access);
-    return key === undefined || keyIndex(key) !== undefined ? element : key;
+    return key === undefined || keyIndex(key) !== undefined ? ANY_KEY : key;
 }
 
 /** The path `target` writes below its root binding, when every key is plain. */
 function memberWritePath(
     target: ts.Expression,
-): { root: ts.Identifier; path: Projection } | undefined {
-    const path: (string | typeof element)[] = [];
+): { root: ts.Identifier; path: KeyPath } | undefined {
+    const path: string[] = [];
     let node = unwrapExpression(target);
     while (
         ts.isPropertyAccessExpression(node) ||
@@ -476,7 +476,7 @@ function sourceGraph(
                             : undefined;
                     const stored = receiver
                         ? ts.isIdentifier(receiver)
-                            ? { root: receiver, path: [] as Projection }
+                            ? { root: receiver, path: [] }
                             : memberWritePath(receiver)
                         : undefined;
                     const storedSymbol =
@@ -493,7 +493,7 @@ function sourceGraph(
                         const list = memberWrites.get(storedSymbol) ?? [];
                         for (const value of node.arguments)
                             list.push({
-                                path: [...stored.path, element],
+                                path: [...stored.path, ANY_KEY],
                                 value,
                             });
                         memberWrites.set(storedSymbol, list);
@@ -668,7 +668,7 @@ class AssetUrlDomain {
 
     public read(
         expression: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         if (--this.remaining < 0)
@@ -697,7 +697,7 @@ class AssetUrlDomain {
     /** Reads an operand that builds a string: its nullish values are not replaced. */
     private operand(
         expression: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const nullish = this.nullish;
@@ -712,7 +712,7 @@ class AssetUrlDomain {
     /** Reads `expression` where its nullish values are replaced (`??`). */
     private replaced(
         expression: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const nullish = this.nullish;
@@ -729,7 +729,7 @@ class AssetUrlDomain {
 
     private value(
         node: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         if (
@@ -792,7 +792,7 @@ class AssetUrlDomain {
     private identifier(
         node: ts.Identifier,
         symbol: ts.Symbol,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const memberWrites = this.graph.memberWrites.get(symbol);
@@ -803,14 +803,8 @@ class AssetUrlDomain {
         ) {
             // Plain member writes: the value read is the binding's own,
             // or one a write stored on the path the read reaches.
-            const reaches = (path: Projection): boolean =>
-                path.length <= projection.length &&
-                path.every(
-                    (key, index) =>
-                        key === projection[index] ||
-                        key === element ||
-                        projection[index] === element,
-                );
+            const reaches = (path: KeyPath): boolean =>
+                pathStartsWith(projection, path);
             return this.union([
                 this.unwrittenIdentifier(node, symbol, projection, environment),
                 ...memberWrites
@@ -837,7 +831,7 @@ class AssetUrlDomain {
     private unwrittenIdentifier(
         node: ts.Identifier,
         symbol: ts.Symbol,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const origin = environment.get(symbol);
@@ -866,7 +860,7 @@ class AssetUrlDomain {
             if (ts.isForOfStatement(loop))
                 return this.read(
                     loop.expression,
-                    [element, ...projection],
+                    [ANY_KEY, ...projection],
                     environment,
                 );
         }
@@ -903,7 +897,7 @@ class AssetUrlDomain {
                 )
                     return this.read(
                         method.expression,
-                        [element, ...projection],
+                        [ANY_KEY, ...projection],
                         environment,
                     );
             }
@@ -936,7 +930,7 @@ class AssetUrlDomain {
 
     private member(
         node: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         if (ts.isPropertyAccessExpression(node)) {
@@ -978,7 +972,7 @@ class AssetUrlDomain {
                 : undefined;
         }
         // A record read by a runtime key selects one of its member values.
-        if (ts.isObjectLiteralExpression(node) && projection[0] === element)
+        if (ts.isObjectLiteralExpression(node) && projection[0] === ANY_KEY)
             return this.union(
                 node.properties.map((property) =>
                     ts.isPropertyAssignment(property)
@@ -996,7 +990,7 @@ class AssetUrlDomain {
                           : undefined,
                 ),
             );
-        if (ts.isArrayLiteralExpression(node) && projection[0] === element)
+        if (ts.isArrayLiteralExpression(node) && projection[0] === ANY_KEY)
             return node.elements.length === 0
                 ? nothing
                 : this.union(
@@ -1062,7 +1056,7 @@ class AssetUrlDomain {
 
     private returned(
         declaration: SupportedFunction,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         if (!declaration.body) return undefined;
@@ -1081,7 +1075,7 @@ class AssetUrlDomain {
 
     private call(
         call: ts.CallExpression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const declaration = calledFunction(this.context.checker, call);
@@ -1144,7 +1138,7 @@ class AssetUrlDomain {
         if (array && ["find", "at"].includes(method))
             return this.read(
                 callee.expression,
-                [element, ...projection],
+                [ANY_KEY, ...projection],
                 environment,
             );
         if (array && ["slice", "filter"].includes(method))
@@ -1154,7 +1148,7 @@ class AssetUrlDomain {
             this.context.libraryGlobal(callee.expression) === "Array";
         if (
             (from || (array && method === "map")) &&
-            projection[0] === element
+            projection[0] === ANY_KEY
         ) {
             const callback = call.arguments[from ? 1 : 0];
             const iterable = from ? call.arguments[0] : callee.expression;
@@ -1182,7 +1176,7 @@ class AssetUrlDomain {
                 if (symbol)
                     nested.set(symbol, {
                         expression: iterable,
-                        projection: [element],
+                        projection: [ANY_KEY],
                         environment,
                     });
             }
@@ -1229,7 +1223,7 @@ class AssetUrlDomain {
      */
     private registryValue(
         receiver: ts.Expression,
-        projection: Projection,
+        projection: KeyPath,
         environment: Environment,
     ): Domain {
         const root = unwrapExpression(receiver);
@@ -1242,7 +1236,7 @@ class AssetUrlDomain {
             this.read(value, projection, environment),
         );
         if (registry.pushed.length) {
-            if (projection[0] !== element) return undefined;
+            if (projection[0] !== ANY_KEY) return undefined;
             domains.push(
                 ...registry.pushed.map((value) =>
                     this.read(value, projection.slice(1), environment),
