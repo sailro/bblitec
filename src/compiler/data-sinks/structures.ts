@@ -385,6 +385,9 @@ function valueStruct(
         lowerer.context.dataTypes.isClassStruct(dataType.name) &&
         value.kind === "record"
     ) {
+        // A probe declines on the refusal; a committed store replays shared.
+        if (!lowerer.context.speculating)
+            lowerer.context.dataTypes.requireSharedClass(dataType.name);
         lowerer.context.fail(
             node,
             `An instance of '${dataType.name}' constructed before ` +
@@ -520,6 +523,15 @@ function valueStruct(
                     }
                 }
                 const property = value.recordProperties?.[field.sourceName];
+                if (
+                    field.type.kind === "handle" &&
+                    field.type.handle === "engine"
+                )
+                    lowerer.context.noteEngineSlot(
+                        `${dataType.name}.${field.name}`,
+                        property?.engineIdentity,
+                        node,
+                    );
                 if (property?.callbackDeclaration)
                     lowerer.context.recordProxies.requireIndependentFunction(
                         field,
@@ -583,6 +595,18 @@ function valueStruct(
             node,
             "accessors",
         );
+        // A copied engine field holds whatever the source held.
+        for (const field of fields)
+            if (
+                sourceType.name !== dataType.name &&
+                field.type.kind === "handle" &&
+                field.type.handle === "engine"
+            )
+                lowerer.context.noteEngineSlot(
+                    `${dataType.name}.${field.name}`,
+                    undefined,
+                    node,
+                );
         // Receiver-aware slots retain presence independently of their payload.
         // Fresh plain literals can move their data into new owner cells;
         // authored accessors and aliased records must share one layout.

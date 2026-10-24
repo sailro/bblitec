@@ -103,20 +103,49 @@ interface StoredClassField extends DataStructField {
 
 /** Store `source` into a class field slot the shared object layout allocated. */
 export function storeClassField(
-    context: Pick<LoweringServices, "emit" | "fail" | "compileForDataSink">,
+    context: Pick<
+        LoweringServices,
+        | "emit"
+        | "fail"
+        | "compileForDataSink"
+        | "compileValue"
+        | "dataLowerer"
+        | "noteEngineSlot"
+    >,
     field: Value,
     source: ts.Expression,
     node: ts.Node,
 ): void {
     const storage = representedStorage(field);
-    if (!storage || !field.dataType)
+    const type = field.dataType;
+    if (!storage || !type)
         return context.fail(
             node,
             "Stored class field requires represented storage.",
         );
+    let stored: string;
+    if (
+        type.kind === "handle" &&
+        type.handle === "engine" &&
+        field.classStoredField
+    ) {
+        // An engine slot keeps which engine its constructions stored.
+        const engine = context.compileValue(source);
+        context.noteEngineSlot(
+            field.classStoredField,
+            engine.engineIdentity,
+            node,
+        );
+        stored = context.dataLowerer.compileKnownValueForSink(
+            engine,
+            type,
+            source,
+        );
+    } else stored = context.compileForDataSink(source, type);
+    // An engine value reads through its stored wrapper, which is the slot.
     context.emit({
         kind: "expression",
-        code: `${storage.cpp} = ${context.compileForDataSink(source, field.dataType)};`,
+        code: `${field.storedEngineCpp ?? storage.cpp} = ${stored};`,
     });
 }
 
@@ -343,6 +372,7 @@ interface ClassLoweringContext
             | "endNativeFunctionBody"
             | "dataValue"
             | "compileForDataSink"
+            | "noteEngineSlot"
             | "assignOptionalResourceValue"
             | "defineThis"
             | "activeThis"
@@ -1054,7 +1084,11 @@ export class ClassLowerer {
             writable(instance).cpp = cpp;
             writable(instance).dataType = structType;
             for (const field of layout) {
-                fields[field.source] = this.storedFieldValue(cpp, field);
+                fields[field.source] = this.storedFieldValue(
+                    cpp,
+                    structName,
+                    field,
+                );
             }
             // What the layout left out has to come from somewhere every
             // instance shares. The one shape that can: a constructor
@@ -1467,6 +1501,7 @@ export class ClassLowerer {
     /** The lvalue one stored field of a shared instance names. */
     public storedFieldValue(
         instanceCpp: string,
+        structName: string,
         field: DataStructField,
     ): Value {
         const value = this.context.dataValue(
@@ -1475,7 +1510,7 @@ export class ClassLowerer {
         );
         writable(value).nativeLvalue = true;
         writable(value).borrowedData = true;
-        writable(value).classStoredField = true;
+        writable(value).classStoredField = `${structName}.${field.name}`;
         writable(value).nativeCaptures = [
             this.context.registerNativeBinding(instanceCpp, false, true),
         ];
@@ -1716,7 +1751,7 @@ export class ClassLowerer {
                 source,
             );
             const bound = stored
-                ? this.storedFieldValue(receiver.cpp, stored)
+                ? this.storedFieldValue(receiver.cpp, structName, stored)
                 : hoisted?.get(source);
             if (bound) {
                 fields[source] = bound;

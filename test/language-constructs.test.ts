@@ -15492,6 +15492,74 @@ check(
     `,
 );
 checkInRealm(
+    "a promise reaction completes with what the method it calls completes with",
+    `
+    const played: number[] = [];
+    class Voice {
+        start(value: number): void {
+            if (value < 0) return;
+            played.push(value);
+        }
+        play(value: Promise<number>): Promise<void> {
+            return value.then((settled) => this.start(settled));
+        }
+    }
+    void (async () => {
+        const voices: Voice[] = [new Voice(), new Voice()];
+        const results = [await voices[0]!.play(Promise.resolve(1)), await voices[1]!.play(Promise.resolve(-1))];
+        if (played.join() !== "1" || results.some((result) => result !== undefined)) throw new Error("dispatched completion " + played.join());
+        globalThis.close();
+    })();
+    `,
+);
+checkInRealm(
+    "a class a later store shares is one object from its first construction",
+    `
+    class Physics {
+        x = 1;
+        step(): void { this.x++; }
+    }
+    interface Items { physics: Physics; count: number; }
+    async function spawn(items: Items): Promise<number> {
+        await Promise.resolve();
+        items.physics.step();
+        return items.count;
+    }
+    class Monsters {
+        constructor(private readonly physics: Physics) {}
+        async load(): Promise<void> {
+            await Promise.resolve();
+            this.physics.step();
+        }
+    }
+    void (async () => {
+        const physics = new Physics();
+        physics.step();
+        const count = await spawn({ physics, count: 2 });
+        await new Monsters(physics).load();
+        if (physics.x !== 4 || count !== 2) throw new Error("shared instance " + physics.x);
+        globalThis.close();
+    })();
+    `,
+);
+test("a promise reaction refuses a dispatched method override that completes with a value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            class Voice {
+                start(value: number): void { if (value < 0) return; }
+                play(value: Promise<number>): Promise<void> { return value.then((settled) => this.start(settled)); }
+            }
+            class Echo extends Voice {
+                start(value: number): number { return value; }
+            }
+            const voices: Voice[] = [new Voice(), new Echo()];
+            void (async () => { await voices[1]!.play(Promise.resolve(2)); globalThis.close(); })();
+        `),
+        /Promise reaction with a void result requires a proven undefined completion/,
+    );
+});
+checkInRealm(
     "Promise.all settles to a new array",
     `
     const arr = [1, 2];

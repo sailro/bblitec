@@ -17,6 +17,7 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 import { undefinedValue } from "./values/model.js";
+import type { ClassHierarchy } from "./class-members.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -128,7 +129,10 @@ interface UndefinedContext {
         isImmutableVariable(node: ts.Node | undefined): boolean;
     };
     sharedClosures: { identifierIsRebound(identifier: ts.Identifier): boolean };
-    dataTypes: { resolveTypeParameter(type: ts.Type): ts.Type };
+    dataTypes: {
+        resolveTypeParameter(type: ts.Type): ts.Type;
+        classHierarchy: Pick<ClassHierarchy, "dispatchBodies">;
+    };
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
@@ -209,6 +213,20 @@ export function provenUndefinedValue(
                     literal,
                     awaited,
                 );
+        } else if (
+            declaration &&
+            ts.isMethodDeclaration(declaration) &&
+            ts.isClassLike(declaration.parent)
+        ) {
+            // A class method call runs one of the bodies its dispatch reaches.
+            const bodies =
+                context.dataTypes.classHierarchy.dispatchBodies(declaration);
+            return (
+                !!bodies &&
+                bodies.every((body) =>
+                    hasUndefinedCompletion(context.checker, body, awaited),
+                )
+            );
         } else if (
             !ts.isArrowFunction(callee) &&
             !ts.isFunctionExpression(callee)

@@ -125,6 +125,7 @@ import {
     type NamedMember,
     libraryStaticMember,
     isLibraryStatic,
+    libraryName,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
@@ -709,14 +710,15 @@ export class UiProjection {
                         ? tracked.staticId
                         : undefined;
                 const lookupId = element.uiHostId ?? element.uiLookupId;
-                const canvas =
-                    lookupId !== undefined && !element.uiCanvas
-                        ? this.hostCanvas(
-                              lookupId,
-                              element.uiTag ?? uiTag,
-                              expression,
-                          )
-                        : {};
+                const canvas = element.uiCanvas
+                    ? {}
+                    : lookupId !== undefined
+                      ? this.hostCanvas(
+                            lookupId,
+                            element.uiTag ?? uiTag,
+                            expression,
+                        )
+                      : this.storedCanvasRole(element, expression);
                 return uiTag === undefined &&
                     uiStaticId === undefined &&
                     !canvas.uiCanvas
@@ -1212,6 +1214,29 @@ export class UiProjection {
             return undefined;
         });
         return metadata;
+    }
+
+    /**
+     * Storage keeps an element handle, not its canvas role: a 2D context is
+     * its canvas's handle, and a stored canvas is a retained one, as the
+     * declared interface says.
+     */
+    private storedCanvasRole(
+        element: Value<"ui-element">,
+        expression: ts.Expression,
+    ): Pick<Value, "uiCanvas" | "uiCanvasContext"> {
+        const type = element.dataType;
+        if (type?.kind !== "handle" || type.handle !== "ui-element") return {};
+        const declared = libraryName(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression),
+            ),
+        );
+        if (declared === "CanvasRenderingContext2D")
+            return { uiCanvas: true, uiCanvasContext: true };
+        return declared === "HTMLCanvasElement" && type.ownedEngine
+            ? { uiCanvas: true }
+            : {};
     }
 
     /** A browser value naming the primary canvas, which a presentation host lowers to its element. */

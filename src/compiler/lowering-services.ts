@@ -380,6 +380,12 @@ export interface LoweringServices {
     leaveRuntimeIteration(): void;
     isInRuntimeIteration(): boolean;
     isInNativeFunctionBody(): boolean;
+    isFunctionEvaluationRepeated(lexicalThis: Value | undefined): boolean;
+    noteEngineSlot(
+        slot: string,
+        identity: symbol | undefined,
+        node: ts.Node,
+    ): void;
     isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
     enterStaticIteration(statement: ts.IterationStatement): void;
     leaveStaticIteration(): void;

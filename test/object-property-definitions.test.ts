@@ -6,6 +6,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
+    windowApplicationHost,
 } from "./native-fixture.js";
 
 test("property definitions collect values before applying and retain the evaluated target", (t) => {
@@ -268,4 +269,67 @@ test("property definitions refuse descriptor attributes and layouts without nati
         `),
         /accessor property that is always own/,
     );
+});
+
+test("a Window realm's devicePixelRatio definition replaces what every read observes", (t) => {
+    const source = `
+        const before = devicePixelRatio;
+        const seen: number[] = [];
+        Object.defineProperty(globalThis, "devicePixelRatio", {configurable: true, get: () => before * 2});
+        seen.push(devicePixelRatio, globalThis.devicePixelRatio, window.devicePixelRatio);
+        Object.defineProperties(window, {devicePixelRatio: {configurable: false, enumerable: true, get: () => 3}});
+        seen.push(devicePixelRatio);
+        let refused = false;
+        try {
+            Object.defineProperty(globalThis, "devicePixelRatio", {configurable: true, get: () => 4});
+        } catch (error) {
+            refused = error instanceof TypeError;
+        }
+        if (seen.join() !== "2,2,2,3" || !refused || devicePixelRatio !== 3) throw new Error(seen.join());
+        globalThis.close();
+    `;
+    let closed = false;
+    const realm: Record<string, unknown> = { close: () => (closed = true) };
+    Object.defineProperty(realm, "devicePixelRatio", {
+        configurable: true,
+        enumerable: true,
+        get: () => 1,
+    });
+    realm.window = realm;
+    runInNewContext(ts.transpile(source), realm);
+    assert.equal(closed, true);
+    const result = compileSource(source);
+    assert.match(result.cpp, /define_device_pixel_ratio\(/);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "object-definition-device-pixel-ratio",
+        result.cpp + windowApplicationHost({ devicePixelRatio: 1 }),
+        { flags: ["/DBBLITE_WORKERS=1"], expectedOutput: "" },
+    );
+});
+
+test("the global object defines only its represented host properties", () => {
+    for (const [definition, message] of [
+        [
+            `Object.defineProperty(globalThis, "innerWidth", {configurable: true, get: () => 1});`,
+            /represents only 'devicePixelRatio', not 'innerWidth'/,
+        ],
+        [
+            `Object.defineProperty(globalThis, "devicePixelRatio", {configurable: true, enumerable: true, writable: true, value: 2});`,
+            /only with a getter/,
+        ],
+        [
+            `Object.defineProperty(globalThis, "devicePixelRatio", {get: () => 2});`,
+            /explicit boolean configurable attribute for accessors/,
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `${definition} void Promise.resolve().then(() => globalThis.close());`,
+                ),
+            message,
+        );
 });

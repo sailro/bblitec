@@ -51,14 +51,14 @@ export function lowerSurfaceResize(
             "canvas.clientHeight",
             { cpp: "engine.canvas_client_height", type: "scalar" },
         ],
-        // The realm global's own value: a Window host provides it, a
-        // realm without one (a worker global) reads undefined.
+        // The realm global's own value, read once (a defined getter runs per
+        // read): a Window host provides it, a worker global reads undefined,
+        // which the pin's only test (`|| 1`) treats as it treats NaN.
         [
             "globalThis.devicePixelRatio",
             {
-                cpp: "static_cast<double>(*bbl::pal::realm_device_pixel_ratio())",
+                cpp: "bbl::pal::realm_device_pixel_ratio().value_or(std::numeric_limits<double>::quiet_NaN())",
                 type: "scalar",
-                nullish: "!bbl::pal::realm_device_pixel_ratio().has_value()",
             },
         ],
         [

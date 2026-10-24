@@ -139,3 +139,58 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
         );
     });
 }
+
+test("a shared class stores its canvas and 2D context and registers a listener per instance", () => {
+    const result = compileSource(`
+        class Overlay {
+            private readonly canvas: HTMLCanvasElement;
+            private readonly ctx: CanvasRenderingContext2D;
+            private constructor() {
+                const canvas = document.createElement("canvas");
+                document.body.appendChild(canvas);
+                this.canvas = canvas;
+                this.ctx = canvas.getContext("2d")!;
+                this.resize();
+                window.addEventListener("resize", () => this.resize());
+            }
+            static async create(): Promise<Overlay> {
+                await Promise.resolve();
+                return new Overlay();
+            }
+            resize(): void {
+                this.canvas.width = window.innerWidth;
+                const { ctx, canvas } = this;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillRect(0, 0, 1, 1);
+            }
+        }
+        void (async () => {
+            const overlay = await Overlay.create();
+            overlay.resize();
+            globalThis.close();
+        })();
+    `);
+    const slot = (field: string): string =>
+        `\\(\\*\\(\\w+->${field}\\)\\.first\\), \\(\\w+->${field}\\)\\.second`;
+    assert.match(
+        result.cpp,
+        /->canvas = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
+    );
+    assert.match(
+        result.cpp,
+        /->ctx = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`bbl::ui_canvas_set_width\\(${slot("canvas")}, `),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`bbl::ui_canvas_fill_rect\\(${slot("ctx")}, `),
+    );
+    assert.match(result.cpp, /bbl::ui_canvas_clear_rect\(/);
+    assert.match(
+        result.cpp,
+        /bbl::on_dom_pointer\([^;]*"resize", bbl::js::next_callback_identity\(\)/,
+    );
+});

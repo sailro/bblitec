@@ -125,7 +125,8 @@ Rules:
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
 - An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
-  pixel ratio, `maxDevicePixelRatio` option or write) at `createEngine`, `resizeEngine` and each frame head, on every
+  pixel ratio or a getter the program defines for it on the global object, `maxDevicePixelRatio` option or write) at
+  `createEngine`, `resizeEngine` and each frame head, on every
   platform; windows keep native density and composite it scaled. Without a realm the window is the only surface: a
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene

@@ -555,6 +555,7 @@ export interface AssignmentContext
             | "compileValue"
             | "probeEmission"
             | "compileForDataSink"
+            | "noteEngineSlot"
             | "bindClassDataField"
             | "bindClassField"
             | "emitOptionalResourceAssignment"
@@ -1317,7 +1318,13 @@ export function emitPropertyAssignment(
     ) {
         const instance = context.compileValue(left.expression);
         const fields = instance.recordProperties;
-        if (!fields || fields[left.name.text]) {
+        const existing = fields?.[left.name.text];
+        // A shared instance stores the element in its slot like any value.
+        if (existing?.classStoredField && existing.dataType) {
+            storeClassField(context, existing, expression.right, left);
+            return;
+        }
+        if (!fields || existing) {
             context.fail(
                 left,
                 `Native UI field '${left.name.text}' must be wired exactly once.`,

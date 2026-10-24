@@ -71,6 +71,7 @@ import {
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
 import { EnumRecordStorageRequired } from "./enum-record-storage.js";
+import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import {
     numericSlotRead,
     numericSlotStorage,
@@ -7801,12 +7802,19 @@ export class DataTypeRegistry {
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
                 : this.checker.getTypeAtLocation(member.name);
+            // A shared object keeps a retained 2D context as its canvas's handle.
+            const canvasContext: DataType | undefined =
+                libraryName(propertyType) === "CanvasRenderingContext2D"
+                    ? { kind: "handle", handle: "ui-element" }
+                    : undefined;
             const declared =
                 this.fromFunctionType(
                     this.checker.getNonNullableType(propertyType),
                     member.name,
                     true,
-                ) ?? this.fromClassFieldType(propertyType, member.name);
+                ) ??
+                this.fromClassFieldType(propertyType, member.name) ??
+                canvasContext;
             const mapped =
                 declared &&
                 this.withDemandedNumericSlot(member, propertyType, declared);
@@ -7952,7 +7960,41 @@ export class DataTypeRegistry {
      * keeps the compile-time record the subset started with.
      */
     public existingClassStruct(type: ts.Type): string | undefined {
-        return this.classStructNames.get(this.structIdentity(type));
+        const existing = this.classStructNames.get(this.structIdentity(type));
+        if (existing) return existing;
+        // A replay shares a class a late store demanded from its first construction.
+        const declaration = (type.symbol?.declarations ?? []).find(
+            ts.isClassLike,
+        );
+        if (
+            !declaration ||
+            !this.storage.sharedClasses.has(this.sharedClassKey(declaration))
+        )
+            return undefined;
+        const minted = this.withClassDemand(true, () =>
+            this.fromLocalClassType(type, declaration),
+        );
+        return minted?.kind === "struct" ? minted.name : undefined;
+    }
+
+    /**
+     * A compile-time instance reached a store of its class, which something
+     * demanded after that instance was built: replay with the class shared
+     * from its first construction. Returns when the replay already does.
+     */
+    public requireSharedClass(name: string): void {
+        const declaration = this.classStruct(name)?.declaration;
+        if (declaration && !this.storage.sharedClasses.has(declaration))
+            throw new SharedClassStorageRequired(declaration);
+    }
+
+    /** A hierarchy shares one struct, named by its root. */
+    private sharedClassKey(
+        declaration: ts.ClassLikeDeclaration,
+    ): ts.ClassLikeDeclaration {
+        return this.classHierarchy.inHierarchy(declaration)
+            ? this.classHierarchy.root(declaration)
+            : declaration;
     }
 
     /** Whether a struct name stands for a local class rather than a record. */

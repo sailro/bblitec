@@ -53,7 +53,8 @@ export type StorageRequest =
     | { kind: "parameter-object"; declaration: ts.ParameterDeclaration }
     | { kind: "enum-array"; unions: readonly string[] }
     | { kind: "enum-record"; schema: string }
-    | { kind: "thrown-value"; valueKind: "string" };
+    | { kind: "thrown-value"; valueKind: "string" }
+    | { kind: "shared-class"; declaration: ts.ClassLikeDeclaration };
 
 /**
  * The storage demands a compile replays with, keyed by the source each
@@ -96,6 +97,8 @@ export class ReplayStorage {
     readonly orderedRecordSchemas = new Set<string>();
     /** @unjournaled Reached primitive throws require dynamic catch storage across call boundaries. */
     readonly thrownValueKinds = new Set<"string">();
+    /** @unjournaled Classes shared from their first construction. */
+    readonly sharedClasses = new Set<ts.ClassLikeDeclaration>();
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -182,6 +185,8 @@ export class ReplayStorage {
                 return addNew(this.orderedRecordSchemas, request.schema);
             case "thrown-value":
                 return addNew(this.thrownValueKinds, request.valueKind);
+            case "shared-class":
+                return addNew(this.sharedClasses, request.declaration);
         }
     }
 

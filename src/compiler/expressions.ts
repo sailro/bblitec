@@ -362,6 +362,7 @@ export interface ExpressionContext
             | "leaveRuntimeControlFlow"
             | "isInRuntimeIteration"
             | "isInNativeFunctionBody"
+            | "isFunctionEvaluationRepeated"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
         > {
@@ -727,8 +728,7 @@ export class ExpressionLowerer {
                         cpp: "",
                     }),
                     ...this.context.captureRecordScopes(),
-                    ...(this.context.isInRuntimeIteration() ||
-                    this.context.isInNativeFunctionBody()
+                    ...(this.context.isFunctionEvaluationRepeated(lexicalThis)
                         ? { repeatedCallbackEvaluation: true }
                         : {}),
                     ...(evaluationIdentity
