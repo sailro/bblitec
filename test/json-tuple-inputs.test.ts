@@ -81,3 +81,48 @@ test("JSON tuple input still refuses unrepresented function members", () => {
         /JSON|json|document|function/,
     );
 });
+
+test("JSON number arrays build and fill typed arrays element by element", (t) => {
+    const source = `
+        interface Mesh { positions: number[]; indices: number[]; colors?: number[] }
+        const mesh = JSON.parse('{"positions":[0.5,1,2.25],"indices":[0,1,4294967297]}') as Mesh;
+        const positions = new Float32Array(mesh.positions);
+        const indices = new Uint32Array(mesh.indices);
+        const target = new Float32Array(4);
+        target.set(mesh.positions, 1);
+        if (positions.length !== 3 || positions[2] !== 2.25) throw new Error('positions');
+        if (indices.length !== 3 || indices[2] !== 1) throw new Error('indices');
+        if (target[0] !== 0 || target[3] !== 2.25) throw new Error('set');
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    assert.match(
+        result.cpp,
+        /bbl::js::f32_array_from\(bbl::js::json_number_array\(v_mesh\.read_property\("positions"\)\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::u32_array_from\(bbl::js::json_number_array\(v_mesh\.read_property\("indices"\)\)\)/,
+    );
+    assert.doesNotMatch(result.cpp, /_array_sized\([^;]*read_property/);
+    assert.throws(
+        () =>
+            compileSource(
+                `const like = { length: 2 } as ArrayLike<number>; console.log(new Float32Array(like).length);`,
+            ),
+        /new Float32Array expects a length or a numeric sequence/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(native, "json-tuple-inputs/typed-arrays", result.cpp);
+});

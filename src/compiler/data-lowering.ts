@@ -10742,6 +10742,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
         }
+        // An object argument is a sequence, never the length overload.
+        if (
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+            "object"
+        )
+            this.context.fail(
+                argument,
+                `new ${name} expects a length or a numeric sequence: a typed array, a number array or a numeric tuple.`,
+            );
         return {
             kind: "data",
             cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
@@ -10853,6 +10862,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined,
                 unwrapped,
             );
+        }
+        // A parsed document converts as the numeric sequence the source
+        // asserts it is, through that assertion's sink.
+        if (isJsonValue(staticSource)) {
+            const asserted = this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(unwrapped),
+                unwrapped,
+            );
+            return asserted && isNumericSequenceType(asserted)
+                ? `bbl::js::${prefix}_array_from(${this.compileKnownValueForSink(staticSource, asserted, unwrapped)})`
+                : undefined;
         }
         // A single argument that is itself an array is never the length
         // overload, so this precedes the sized fallback in the caller. Every

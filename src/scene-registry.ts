@@ -4863,10 +4863,7 @@ const sceneInputs: readonly SceneInput[] = [
             // the published measurement.
             maxFullMad: 1.3,
             maxForegroundMad: 1.1,
-            // Canvas-only lane: 0.080 / 0.086 on both backends
-            // (docs/status.md row note): the demo reports a doubled
-            // `devicePixelRatio` so the browser renders 2x and scales the
-            // canvas down. The gate is the exact pair the
+            // Canvas-only lane: the gate is the exact pair the
             // canvas-golden era enforced before the full-page promotion,
             // so a 3D regression cannot hide under the UI font residual
             // the composite thresholds above must absorb.
