@@ -2,7 +2,10 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 /** Project source registration/recording onto native graph task handles. */
 export function lowerComputeFrameGraph(
@@ -136,28 +139,13 @@ export function lowerComputeFrameGraph(
                     "task.execute",
                     { cpp: "static_cast<bool>(task->execute)", type: "bool" },
                 ],
+                ["fg._tasks", collectionBinding("tasks")],
+                ["task._passes", collectionBinding("task->passes")],
             ]),
             calls: new Map([
                 ["pass._execute", () => "pass->execute()"],
                 ["task.execute", () => "task->execute()"],
             ]),
-            forOf(iterated, element) {
-                const range = context.expressionMatchesShape(
-                    iterated,
-                    "fg._tasks",
-                )
-                    ? "tasks"
-                    : context.expressionMatchesShape(iterated, "task._passes")
-                      ? "task->passes"
-                      : undefined;
-                if (!range) return undefined;
-                return {
-                    range,
-                    bindings: new Map([
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
             returnValue: (value, lowerer) =>
                 value ? lowerer.expression(value) : "",
         },

@@ -67,7 +67,6 @@ function bodyScope(
         "states",
         "engine",
         "encoder",
-        "batch",
         "completions",
         "resolve",
         "reject",
@@ -76,6 +75,18 @@ function bodyScope(
     ])
         bind(name, name);
     bind("generation", "generation", "scalar");
+    // A completion batch holds `[oneShot, generation]` pairs.
+    bindings.set("batch", {
+        cpp: "batch",
+        type: "opaque",
+        elements: {
+            range: "*batch",
+            tuple: [
+                (name) => ({ cpp: name, type: "opaque" }),
+                (name) => ({ cpp: name, type: "scalar" }),
+            ],
+        },
+    });
     for (const [source, cpp, type] of [
         ["oneShot._generation", "oneShot->generation", "scalar"],
         ["oneShot._armed", "oneShot->armed", "bool"],
@@ -180,20 +191,6 @@ function bodyScope(
         calls,
 
         foldConditions: false,
-        forOf(iterated, element) {
-            if (
-                !context.expressionMatchesShape(iterated, "batch") ||
-                element !== "[oneShot, generation]"
-            )
-                return undefined;
-            return {
-                range: "*batch",
-                bindings: new Map([
-                    ["oneShot", { cpp: "oneShot", type: "opaque" }],
-                    ["generation", { cpp: "generation", type: "scalar" }],
-                ]),
-            };
-        },
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node))
                 return `std::string{${stringLiteral(node.text)}}`;
