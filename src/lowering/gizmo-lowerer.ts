@@ -75,7 +75,7 @@ import {
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource, propertyPath } from "../compiler/syntax.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -3899,9 +3899,21 @@ std::array<float, 16> bbox_mat4_from_quat(
                     "faceBoxSize",
                     { cpp: "record.face_box_size", type: "scalar" },
                 ],
-                ["xs", { cpp: "xs", type: "scalar" }],
-                ["ys", { cpp: "ys", type: "scalar" }],
-                ["zs", { cpp: "zs", type: "scalar" }],
+                // One axis's two bounds, the native array the edge and
+                // anchor sweeps walk bound by bound.
+                ...["xs", "ys", "zs"].map((axis): [string, PinnedBinding] => [
+                    axis,
+                    {
+                        cpp: axis,
+                        type: "scalar",
+                        elements: {
+                            element: (bound) =>
+                                new Map([
+                                    [bound, { cpp: bound, type: "scalar" }],
+                                ]),
+                        },
+                    },
+                ]),
                 ...placementBindings,
             ]),
         );
@@ -3917,12 +3929,6 @@ std::array<float, 16> bbox_mat4_from_quat(
             ...(layoutScope.recordCalls ?? []),
             ["toWorld", ["x", "y", "z"]],
         ]);
-        layoutScope.forOf = (iterated, element) => ({
-            range: propertyPath(iterated)?.join(".") ?? "",
-            bindings: new Map<string, PinnedBinding>([
-                [element, { cpp: element, type: "scalar" }],
-            ]),
-        });
         layoutScope.methods = new Map([
             ...(layoutScope.methods ?? []),
             [
