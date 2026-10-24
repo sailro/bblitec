@@ -43,7 +43,7 @@ import {
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import { valueKindOf } from "./type-facts.js";
 import { bindingRebinds, fileRebinds } from "./binding-rebinds.js";
-import { literalHeldValues } from "./kept-values.js";
+import { heldReferenceBases } from "./kept-values.js";
 import { aliasSites } from "./user-functions.js";
 
 type Context = Pick<
@@ -364,11 +364,9 @@ function sourceGraph(
         if (!from) return;
         // Every binding the source's value can come from: a selection's
         // operands, and what a literal holds.
-        const roots = (value: ts.Expression): ts.Identifier[] => [
-            ...referenceBases(value).filter(ts.isIdentifier),
-            ...literalHeldValues(value).flatMap(roots),
-        ];
-        for (const root of roots(source)) {
+        for (const root of heldReferenceBases(checker, source).filter(
+            ts.isIdentifier,
+        )) {
             const to = resolvedSymbol(checker, root);
             if (!to) continue;
             const targets = aliases.get(from) ?? new Set<ts.Symbol>();

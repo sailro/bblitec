@@ -9,7 +9,11 @@ import {
     libraryName,
     namedMember,
 } from "./symbols.js";
-import { unwrapExpression, objectLiteralMembers } from "./syntax.js";
+import {
+    objectLiteralMembers,
+    referenceBases,
+    unwrapExpression,
+} from "./syntax.js";
 import {
     arrayShape,
     typeCanCarryReference,
@@ -38,6 +42,21 @@ export function literalHeldValues(
             )
           : [];
     return values.flatMap((value) => [value, ...literalHeldValues(value)]);
+}
+
+/**
+ * The expressions whose objects a value may be or hold: its reference bases
+ * (through selections) and those of every reference a literal holds.
+ */
+export function heldReferenceBases(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): readonly ts.Expression[] {
+    return [expression, ...literalHeldValues(expression)].flatMap((value) =>
+        typeCanCarryReference(checker.getTypeAtLocation(value))
+            ? referenceBases(value)
+            : [],
+    );
 }
 
 /**

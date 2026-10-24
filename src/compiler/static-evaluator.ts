@@ -23,6 +23,9 @@ export function isObjectIdentityFunction(
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
+/** `isWrittenThrough` answers: a function of the checked program. */
+const writtenLiteralBags = new WeakMap<ts.VariableDeclaration, boolean>();
+
 export function objectIdentityCallArgument(
     checker: ts.TypeChecker,
     expression: ts.Expression,
@@ -74,14 +77,13 @@ import {
     resolveFunctionDeclaration,
     type AliasedMutationScan,
 } from "./user-functions.js";
-import { literalHeldValues } from "./kept-values.js";
+import { heldReferenceBases } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
     excludesObjectColour,
     isNullable,
     stringPlusOperands,
-    typeCanCarryReference,
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -1669,6 +1671,16 @@ export class StaticEvaluator {
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
     public isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
+        let written = writtenLiteralBags.get(declaration);
+        if (written === undefined)
+            writtenLiteralBags.set(
+                declaration,
+                (written = this.scanWritesThrough(declaration)),
+            );
+        return written;
+    }
+
+    private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
         if (!ts.isIdentifier(declaration.name)) return true;
         // A name holding the object or a member of it: the binding, an
         // alias, a destructured or iterated leaf, a literal holding one.
@@ -1676,11 +1688,7 @@ export class StaticEvaluator {
             expression: ts.Expression,
             scan: AliasedMutationScan,
         ): boolean =>
-            typeCanCarryReference(this.checker.getTypeAtLocation(expression)) &&
-            (referenceBases(expression).some(scan.namesAlias) ||
-                literalHeldValues(expression).some((value) =>
-                    holds(value, scan),
-                ));
+            heldReferenceBases(this.checker, expression).some(scan.namesAlias);
         // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
         const throughAlias = (
             expression: ts.Expression,
