@@ -990,18 +990,26 @@ test("a runtime index reads static storage through runtimeIndexedOwner", () => {
 });
 
 test("a library call's effect on an argument is read from one table", () => {
-    // libraryArgumentEffect owns the language library's writers and readers
-    // and the Web IDL rule; every argument-effect question asks it.
-    const source = sourceText("src/compiler/parameter-effects.ts");
-    for (const table of ["WRITING_LIBRARY_CALLS", "READING_LIBRARY_CALLS"])
-        assert.equal(
-            [...source.matchAll(new RegExp(`${table}[.]has[(]`, "g"))].length,
-            1,
-            table,
-        );
+    // libraryArgumentEffect reads the language library's writers and readers
+    // from LIBRARY_CALL_FACTS and owns the Web IDL rule; every argument-effect
+    // question asks it.
     assert.deepEqual(declarationOwners("libraryArgumentEffect"), [
         "src/compiler/parameter-effects.ts",
     ]);
+});
+
+test("the language library's call facts are one table", () => {
+    // LIBRARY_CALL_FACTS answers argument effects, what a result holds and
+    // which answers only convert their arguments; no other file lists them.
+    assert.deepEqual(declarationOwners("LIBRARY_CALL_FACTS"), [
+        "src/compiler/library-call-facts.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes('"Object.getOwnPropertyNames"'),
+        ),
+        ["src/compiler/library-call-facts.ts"],
+    );
 });
 
 test("library schedulers are named in schedulers.ts", () => {
@@ -1866,12 +1874,11 @@ test("a Math member is one row of MATH_MEMBERS", () => {
 
 test("what a library call's result holds is one table in kept-values.ts", () => {
     // libraryResultMayHold answers for an argument, callResultHoldsArguments
-    // for any of them; the computing statics and the holding methods are
-    // listed once, and an unlisted static may hold.
+    // for any of them; the holding methods are listed once, the computing
+    // statics are LIBRARY_CALL_FACTS rows, and an unlisted static may hold.
     for (const name of [
         "libraryResultMayHold",
         "callResultHoldsArguments",
-        "COMPUTING_LIBRARY_CALLS",
         "ARGUMENT_HOLDING_METHODS",
     ])
         assert.deepEqual(

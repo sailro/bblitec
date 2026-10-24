@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import {
@@ -170,17 +171,6 @@ function unitRoots(unit: Unit): readonly ts.Node[] {
 
 /** The generator `Math.random` advances: each call reads and writes it. */
 const randomState = Symbol("Math.random");
-
-/** The global library functions whose answer is a conversion of their arguments. */
-const argumentAnsweringGlobals = new Set([
-    "String",
-    "Number",
-    "Boolean",
-    "parseInt",
-    "parseFloat",
-    "isNaN",
-    "isFinite",
-]);
 
 function emptyStorage(): Storage {
     return { any: false, heap: false, arrays: false, variables: new Set() };
@@ -736,7 +726,7 @@ export class EvaluationOrder {
         if (ts.isIdentifier(callee))
             return (
                 libraryGlobal(this.checker, callee) !== undefined &&
-                argumentAnsweringGlobals.has(callee.text)
+                LIBRARY_CALL_FACTS.get(callee.text)?.converts === true
             );
         const member = namedMember(this.checker, callee);
         if (!member) return false;

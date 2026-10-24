@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
 import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
 import {
     calledDeclaration,
@@ -111,25 +112,6 @@ const ARGUMENT_HOLDING_METHODS: ReadonlySet<string> = new Set([
     "with",
 ]);
 
-/** Library statics and globals whose result is computed, holding no argument. */
-const COMPUTING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Array.isArray",
-    "Boolean",
-    "Number",
-    "String",
-    "isFinite",
-    "isNaN",
-    "parseFloat",
-    "parseInt",
-    "JSON.parse",
-    "JSON.stringify",
-    "Object.getOwnPropertyNames",
-    "Object.hasOwn",
-    "Object.is",
-    "Object.keys",
-    "structuredClone",
-]);
-
 /**
  * Which of its arguments a default-library call's result may be, or hold:
  * the one table every reader shares. A view holds the buffer it is over and
@@ -150,7 +132,8 @@ function libraryHeldArguments(
     // A method of a library object: only the storing ones hand it back.
     if (callee && libraryGlobal(checker, callee.expression) === undefined)
         return ARGUMENT_HOLDING_METHODS.has(callee.name) ? "any" : "none";
-    return COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math.")
+    return LIBRARY_CALL_FACTS.get(name)?.result === "computed" ||
+        name.startsWith("Math.")
         ? "none"
         : "any";
 }

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
 import {
     boundedKeyPath,
     derive,
@@ -1076,88 +1077,12 @@ export function libraryWrittenArgument(
     );
 }
 
-/** Default-library calls that write their first argument and read the rest. */
-const WRITING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Atomics.add",
-    "Atomics.and",
-    "Atomics.compareExchange",
-    "Atomics.exchange",
-    "Atomics.or",
-    "Atomics.store",
-    "Atomics.sub",
-    "Atomics.xor",
-    "Object.assign",
-    "Object.defineProperties",
-    "Object.defineProperty",
-    "Object.freeze",
-    "Object.preventExtensions",
-    "Object.seal",
-    "Object.setPrototypeOf",
-    "Reflect.defineProperty",
-    "Reflect.deleteProperty",
-    "Reflect.set",
-    "Reflect.setPrototypeOf",
-]);
-
-/** Default-library functions that only read what they are handed. */
-const READING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Array.from",
-    "Array.isArray",
-    "Array.of",
-    "ArrayBuffer.isView",
-    "Atomics.load",
-    "BigInt",
-    "Boolean",
-    "JSON.stringify",
-    "Number",
-    "Number.isFinite",
-    "Number.isInteger",
-    "Number.isNaN",
-    "Number.isSafeInteger",
-    "Number.parseFloat",
-    "Number.parseInt",
-    "Object.create",
-    "Object.entries",
-    "Object.fromEntries",
-    "Object.getOwnPropertyDescriptor",
-    "Object.getOwnPropertyDescriptors",
-    "Object.getOwnPropertyNames",
-    "Object.getOwnPropertySymbols",
-    "Object.getPrototypeOf",
-    "Object.hasOwn",
-    "Object.is",
-    "Object.isExtensible",
-    "Object.isFrozen",
-    "Object.isSealed",
-    "Object.keys",
-    "Object.values",
-    "Promise.all",
-    "Promise.allSettled",
-    "Promise.any",
-    "Promise.race",
-    "Promise.resolve",
-    "Reflect.get",
-    "Reflect.getOwnPropertyDescriptor",
-    "Reflect.getPrototypeOf",
-    "Reflect.has",
-    "Reflect.isExtensible",
-    "Reflect.ownKeys",
-    "String",
-    "isFinite",
-    "isNaN",
-    "parseFloat",
-    "parseInt",
-    "reject",
-    "resolve",
-    "structuredClone",
-]);
-
 /** What a default-library call does to the object handed to it. */
 export type LibraryArgumentEffect = "reads" | "writes" | "unknown";
 
 /**
- * What a default-library call does to the object at argument `index`: the
- * tables above for the language library; a Web IDL function converts every
+ * What a default-library call does to the object at argument `index`:
+ * `LIBRARY_CALL_FACTS` for the language library; a Web IDL function converts every
  * argument at the call except a buffer source, which it receives by
  * reference and may fill (`crypto.getRandomValues(bytes)`); a library method
  * writes no argument (its receiver is the caller's concern). Anything else
@@ -1172,9 +1097,10 @@ export function libraryArgumentEffect(
     // a buffer holds it, which is what another owner keeps, not a write.
     if (ts.isNewExpression(call)) return "reads";
     const name = libraryCallName(checker, call);
-    if (name !== undefined && WRITING_LIBRARY_CALLS.has(name))
+    const facts = name === undefined ? undefined : LIBRARY_CALL_FACTS.get(name);
+    if (facts?.arguments === "writes-first")
         return index === 0 ? "writes" : "reads";
-    if (name !== undefined && READING_LIBRARY_CALLS.has(name)) return "reads";
+    if (facts?.arguments === "reads") return "reads";
     // Math's functions take numbers; a typed array's `from` / `of` copy.
     const [owner, member] = name?.split(".") ?? [];
     if (
