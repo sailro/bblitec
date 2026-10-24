@@ -1469,7 +1469,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         ~Reset() { document = nullptr; }
                     } reset;
                     WorkerRealm realm(loop, {}, services);
-                    realm.provide_device_pixel_ratio(window_device_pixel_ratio);
+                    realm.provide_host_accessor(HostAccessor::device_pixel_ratio,
+                                                window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     loop.on_rendering_update(render_window_document);

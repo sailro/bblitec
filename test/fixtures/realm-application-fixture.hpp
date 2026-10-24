@@ -28,7 +28,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     EventLoop loop;
     WorkerRealm realm(loop);
 #ifdef FIXTURE_DEVICE_PIXEL_RATIO
-    realm.provide_device_pixel_ratio([] { return double{FIXTURE_DEVICE_PIXEL_RATIO}; });
+    realm.provide_host_accessor(HostAccessor::device_pixel_ratio,
+                                [] { return double{FIXTURE_DEVICE_PIXEL_RATIO}; });
 #endif
 #ifdef FIXTURE_APPLICATION_ERRORS
     ApplicationErrors handlers(loop);

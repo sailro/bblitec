@@ -299,7 +299,10 @@ test("a Window realm's devicePixelRatio definition replaces what every read obse
     runInNewContext(ts.transpile(source), realm);
     assert.equal(closed, true);
     const result = compileSource(source);
-    assert.match(result.cpp, /define_device_pixel_ratio\(/);
+    assert.match(
+        result.cpp,
+        /define_host_accessor\(bbl::pal::HostAccessor::device_pixel_ratio, /,
+    );
     const native = optionalNativeFixtureTools(false);
     if (!native) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(
@@ -314,7 +317,11 @@ test("the global object defines only its represented host properties", () => {
     for (const [definition, message] of [
         [
             `Object.defineProperty(globalThis, "innerWidth", {configurable: true, get: () => 1});`,
-            /represents only 'devicePixelRatio', not 'innerWidth'/,
+            /defines only the host accessors 'devicePixelRatio', not 'innerWidth'/,
+        ],
+        [
+            `Object.defineProperty(window, "fetch", {configurable: true, get: () => fetch});`,
+            /defines only the host accessors 'devicePixelRatio', not 'fetch'/,
         ],
         [
             `Object.defineProperty(globalThis, "devicePixelRatio", {configurable: true, enumerable: true, writable: true, value: 2});`,
@@ -332,4 +339,31 @@ test("the global object defines only its represented host properties", () => {
                 ),
             message,
         );
+});
+
+test("a Window realm writes only the host properties its global represents", () => {
+    // Closing the global takes the realm before the body lowers.
+    const realm = (body: string) =>
+        compileSource(
+            `void Promise.resolve().then(() => globalThis.close()); ${body}`,
+        );
+    for (const [body, name] of [
+        ["window.devicePixelRatio = 2;", "devicePixelRatio"],
+        ['globalThis.status = "x";', "status"],
+        ['if (devicePixelRatio > 0) { window.name = "x"; }', "name"],
+    ] as const)
+        assert.throws(
+            () => realm(body),
+            new RegExp(
+                `does not represent writing its global's host property '${name}'`,
+            ),
+        );
+    // A fetch replacement is loading instrumentation, erased with its restore.
+    const erased = realm(`
+        const original = globalThis.fetch;
+        globalThis.fetch = original;
+        if (globalThis.fetch !== original) globalThis.fetch = original;
+    `);
+    assert.match(erased.cpp, /bbl::pal::WorkerRealm realm\(/);
+    assert.doesNotMatch(erased.cpp, /original|fetch/);
 });

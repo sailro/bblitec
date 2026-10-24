@@ -204,7 +204,7 @@ assert(extent(1920,1080)&&bbl::surface_max_device_pixel_ratio(engine)==0.5);
 engine.dom_canvas=true;
 // A realm with no Window host has no devicePixelRatio: the pin's \`|| 1\`.
 bbl::set_surface_max_device_pixel_ratio(engine,2,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1280,720));
-realm.provide_device_pixel_ratio(window_ratio);
+realm.provide_host_accessor(bbl::pal::HostAccessor::device_pixel_ratio,window_ratio);
 bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);
 assert(extent(640,360)&&engine.options.width==640&&engine.options.height==360);
 bbl::set_surface_max_device_pixel_ratio(engine,2,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1920,1080));

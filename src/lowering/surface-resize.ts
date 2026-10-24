@@ -3,6 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { sameSource } from "../compiler/syntax.js";
+import { realmHostAccessorCpp } from "../compiler/host-globals.js";
 
 /**
  * The pin's `resizeSurface` and `setSurfaceSize` over a Window realm canvas:
@@ -57,7 +58,7 @@ export function lowerSurfaceResize(
         [
             "globalThis.devicePixelRatio",
             {
-                cpp: "bbl::pal::realm_device_pixel_ratio().value_or(std::numeric_limits<double>::quiet_NaN())",
+                cpp: `${realmHostAccessorCpp("devicePixelRatio")}.value_or(std::numeric_limits<double>::quiet_NaN())`,
                 type: "scalar",
             },
         ],

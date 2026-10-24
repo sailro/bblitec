@@ -3,7 +3,7 @@ import {
     deferredPropertyDescriptor,
 } from "./deferred-capabilities.js";
 import { hasDomLowering } from "./dom-lowerings.js";
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import { gpuValue } from "./gpu-value.js";
 import {
     emissionArray,
@@ -1308,7 +1308,7 @@ export class BrowserErasure {
             deferredPropertyDescriptor(this.context.checker, unwrapped)
         )
             return false;
-        if (devicePixelRatioValue(this.context, unwrapped)) return false;
+        if (hostAccessorValue(this.context, unwrapped)) return false;
         const calledMember = ts.isCallExpression(unwrapped)
             ? namedMember(this.context.checker, unwrapped.expression)
             : undefined;
@@ -1802,11 +1802,11 @@ export class BrowserErasure {
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
-        const ratio = devicePixelRatioValue(this.context, unwrapped);
-        if (ratio)
-            return ratio.staticNumber === undefined
+        const accessor = hostAccessorValue(this.context, unwrapped);
+        if (accessor)
+            return accessor.staticNumber === undefined
                 ? undefined
-                : { kind: "number", value: ratio.staticNumber };
+                : { kind: "number", value: accessor.staticNumber };
         const deployed = browserDeploymentValue(this.context, unwrapped);
         if (
             ts.isPropertyAccessExpression(unwrapped) &&

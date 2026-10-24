@@ -1,4 +1,4 @@
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
@@ -146,10 +146,10 @@ export function compileCanvasValue(
             "return bbl::pal::create_media_query(argument_0);",
         );
     }
-    const ratio = devicePixelRatioValue(context, node);
-    if (ratio) {
+    const accessor = hostAccessorValue(context, node);
+    if (accessor) {
         requireWindowHost(context, node);
-        return ratio;
+        return accessor;
     }
     if (
         ts.isPropertyAccessExpression(node) &&

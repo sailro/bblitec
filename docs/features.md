@@ -129,6 +129,8 @@ Rules:
   `createEngine`, `resizeEngine` and each frame head, on every
   platform; windows keep native density and composite it scaled. Without a realm the window is the only surface: a
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
+- A Window realm's global: `Object.defineProperty` getters redefine its host accessor `devicePixelRatio`; a `fetch`
+  replacement is erased loading instrumentation. Writing or defining another host property refuses.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
