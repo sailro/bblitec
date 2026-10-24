@@ -4993,6 +4993,8 @@ class Compiler implements LoweringServices {
             kind: "engine",
             cpp: engineCpp,
             engineCpp,
+            // The default-engine spelling and every alias are one engine.
+            engineIdentity: Symbol(),
             ...(this.options.workers ? { ownedEngineCpp: cppName } : {}),
             msaaSamples,
             ...(surfaceCanvas ? { surfaceCanvas: true as const } : {}),

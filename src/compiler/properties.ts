@@ -2068,6 +2068,7 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
+            | "browserErasure"
             | "moduleNamespaces"
             | "classLowerer"
             | "defaultEngine"
@@ -2257,6 +2258,9 @@ export class PropertyAccessLowerer {
             owner.dataType?.kind === "event-target" &&
             isAbsentWindowMember(property)
         ) {
+            // The global object, known at generation, reads it as undefined.
+            if (this.context.browserErasure.isAbsentGlobalMember(expression))
+                return undefinedValue();
             this.context.emit({
                 kind: "expression",
                 code: `static_cast<void>(bbl::dom_window_owner(${owner.cpp}));`,
