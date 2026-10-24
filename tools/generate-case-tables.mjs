@@ -24,12 +24,12 @@ function mappings(map) {
         const text = String.fromCodePoint(point);
         const mapped = map(text);
         if (mapped === text) continue;
-        const points = [...mapped];
-        if (points.length === 1)
-            singles.push([point, points[0].codePointAt(0)]);
+        const target = mapped.codePointAt(0);
+        if ([...mapped].length === 1 && target !== undefined)
+            singles.push([point, target]);
         else specials.push([point, mapped]);
     }
-    /** @type {Array<{first: number, last: number, delta: number, stride: number}>} */
+    /** @type {CaseRun[]} */
     const runs = [];
     for (const [point, target] of singles) {
         const delta = target - point;
@@ -73,11 +73,17 @@ const lower = mappings((text) => text.toLowerCase());
 const cased = ranges(/\p{Cased}/u);
 const ignorable = ranges(/\p{Case_Ignorable}/u);
 
+/** @typedef {{first: number, last: number, delta: number, stride: number}} CaseRun */
+
 /** @param {number} value */
 const hex = (value) => `0x${value.toString(16)}`;
 /** @param {string} text */
 const utf8 = (text) =>
     `"${[...Buffer.from(text, "utf8")].map((byte) => `\\x${byte.toString(16).padStart(2, "0")}`).join("")}"`;
+/**
+ * @param {string} name
+ * @param {CaseRun[]} runs
+ */
 const runTable = (name, runs) =>
     `inline constexpr std::array<CaseRun, ${runs.length}> ${name}{{\n${runs
         .map(
@@ -85,10 +91,18 @@ const runTable = (name, runs) =>
                 `    {${hex(run.first)}, ${hex(run.last)}, ${run.delta}, ${run.stride}},`,
         )
         .join("\n")}\n}};`;
+/**
+ * @param {string} name
+ * @param {Array<[number, string]>} specials
+ */
 const specialTable = (name, specials) =>
     `inline constexpr std::array<CaseSpecial, ${specials.length}> ${name}{{\n${specials
         .map(([point, text]) => `    {${hex(point)}, ${utf8(text)}},`)
         .join("\n")}\n}};`;
+/**
+ * @param {string} name
+ * @param {Array<[number, number]>} entries
+ */
 const rangeTable = (name, entries) =>
     `inline constexpr std::array<std::pair<char32_t, char32_t>, ${entries.length}> ${name}{{\n${entries
         .map(([first, last]) => `    {${hex(first)}, ${hex(last)}},`)

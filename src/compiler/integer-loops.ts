@@ -6,10 +6,7 @@ import {
 } from "./analysis-walk.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { Value } from "./types.js";
-import {
-    isSuspensionPoint,
-    variableKind,
-} from "./syntax.js";
+import { isSuspensionPoint, variableKind } from "./syntax.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
