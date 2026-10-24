@@ -19,6 +19,7 @@ import {
     declaredSymbol,
     calledDeclaration,
     memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -62,6 +63,7 @@ const optionalCallNames = new WeakMap<
 >();
 
 function optionalCalls(
+    checker: ts.TypeChecker,
     declaration: ts.FunctionLikeDeclaration,
 ): ReadonlySet<string> {
     const cached = optionalCallNames.get(declaration);
@@ -71,9 +73,11 @@ function optionalCalls(
         declaration,
         (node) => {
             if (!ts.isCallExpression(node) || !node.questionDotToken) return;
-            const callee = unwrapExpression(node.expression);
-            if (ts.isPropertyAccessExpression(callee))
-                names.add(callee.name.text);
+            const callee = namedMember(
+                checker,
+                unwrapExpression(node.expression),
+            );
+            if (callee) names.add(callee.name);
         },
         { types: "skip" },
     );
@@ -362,7 +366,7 @@ function parameterProjection(
     // Only absence used to prune an optional call is a dependency. Other
     // missing reference fields do not alias the scalar projection being proved.
     const optionalCallAbsence = absent.length
-        ? absent.filter((key) => optionalCalls(declaration).has(key))
+        ? absent.filter((key) => optionalCalls(checker, declaration).has(key))
         : [];
     const selected = (
         identityPaths ?? [path, ...optionalCallAbsence.map((key) => [key])]
@@ -437,10 +441,8 @@ function parameterProjection(
             selected.some((entry) => mayAffectSelection(value.from, entry)),
         );
     const receiver = (node: ts.CallExpression): ts.Expression | undefined => {
-        const callee = unwrapExpression(node.expression);
-        return ts.isPropertyAccessExpression(callee)
-            ? callee.expression
-            : undefined;
+        return namedMember(checker, unwrapExpression(node.expression))
+            ?.expression;
     };
     const arrayMethod = (node: ts.CallExpression): string | undefined => {
         const called = calledDeclaration(checker, node);
@@ -449,10 +451,8 @@ function parameterProjection(
             declarationInDefaultLibrary(called) &&
             owner &&
             ts.isInterfaceDeclaration(owner) &&
-            (owner.name.text === "Array" ||
-                owner.name.text === "ReadonlyArray") &&
-            ts.isPropertyAccessExpression(node.expression)
-            ? node.expression.name.text
+            (owner.name.text === "Array" || owner.name.text === "ReadonlyArray")
+            ? namedMember(checker, node.expression)?.name
             : undefined;
     };
     const carries = (node: ts.Expression): boolean =>
@@ -685,11 +685,11 @@ function parameterProjection(
     };
     const absentOptionalCall = (node: ts.Node): boolean => {
         if (!ts.isCallExpression(node) || !node.questionDotToken) return false;
-        const callee = unwrapExpression(node.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(checker, unwrapExpression(node.expression));
+        if (!callee) return false;
         const owners = flow(callee.expression);
         return (
-            absent.includes(callee.name.text) &&
+            absent.includes(callee.name) &&
             owners.length > 0 &&
             owners.every(
                 (owner) => owner.at.length === 0 && owner.from.length === 0,

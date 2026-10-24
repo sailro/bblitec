@@ -28,7 +28,11 @@ import ts from "typescript";
 import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
 import { enclosingLoopControl } from "../compiler/loop-control.js";
-import { pinnedCheckerOf, pinnedLibraryGlobal } from "../pinned-program.js";
+import {
+    pinnedCheckerOf,
+    pinnedLibraryGlobal,
+    pinnedMember,
+} from "../pinned-program.js";
 import { declaredSymbol } from "../compiler/symbols.js";
 import {
     MATH_MEMBERS,
@@ -4650,9 +4654,13 @@ export class PinnedNumericLowerer {
             return builtin.spell(args);
         }
         const spelling = this.scope.calls.get(name);
-        const math = mathMemberAccess(callee, pinnedLibraryGlobal);
+        const math = mathMemberAccess(
+            callee,
+            pinnedLibraryGlobal,
+            pinnedMember,
+        );
         if (!spelling && math) {
-            const method = math.name.text;
+            const method = math.name;
             const member = MATH_MEMBERS.get(method);
             if (
                 member &&

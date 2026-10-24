@@ -11,6 +11,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { expressionMayRunCode, isUpdateExpression } from "./syntax.js";
 import { isStringValue, type Value } from "./types.js";
 import { valueKinds } from "./type-facts.js";
+import { libraryStaticMember } from "./symbols.js";
 
 type BigIntContext = Pick<
     LoweringServices,
@@ -192,11 +193,8 @@ function compileBigIntCall(
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = context.unwrap(call.expression);
-    const method =
-        ts.isPropertyAccessExpression(callee) &&
-        context.libraryGlobal(callee.expression) === "BigInt"
-            ? callee.name.text
-            : undefined;
+    const member = libraryStaticMember(context.checker, callee);
+    const method = member?.owner === "BigInt" ? member.name : undefined;
     if (context.libraryGlobal(callee) !== "BigInt" && method === undefined)
         return undefined;
     context.reachJsData();

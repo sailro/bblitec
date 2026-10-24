@@ -8,6 +8,7 @@ import {
     compileBooleanOptions,
     optionalOptionMember,
 } from "./option-helpers.js";
+import { namedMember } from "./symbols.js";
 
 /** Metadata for the host's selected device, exposed without admitting raw device operations. */
 export function compileGpuAdapterCall(
@@ -16,14 +17,14 @@ export function compileGpuAdapterCall(
     hostFunction?: Value["hostFunction"],
 ): Value | undefined {
     const context = lowerer.context;
-    const target = context.unwrap(call.expression);
+    const callee = context.unwrap(call.expression);
+    const target = namedMember(context.checker, callee);
     if (
         hostFunction !== "gpu-request-adapter" &&
-        (!ts.isPropertyAccessExpression(target) ||
-            target.name.text !== "requestAdapter")
+        target?.name !== "requestAdapter"
     )
         return undefined;
-    const receiver = ts.isPropertyAccessExpression(target)
+    const receiver = target
         ? context.probeEmission(() => {
               const value = context.compileValue(target.expression);
               const type =
@@ -41,7 +42,7 @@ export function compileGpuAdapterCall(
             call.expression,
             "GPU.requestAdapter requires its native GPU receiver; detached or transplanted methods are unsupported.",
         );
-    if (ts.isOptionalChain(target) && !ts.isOptionalChain(call))
+    if (ts.isOptionalChain(callee) && !ts.isOptionalChain(call))
         return context.fail(
             call,
             "An optional GPU method reference requires a continuous optional call.",
@@ -55,7 +56,7 @@ export function compileGpuAdapterCall(
         receiver.dataType?.kind === "optional"
             ? `${held.cpp}.has_value() && *${held.cpp} != nullptr`
             : `${held.cpp} != nullptr`;
-    if (ts.isOptionalChain(call) && ts.isOptionalChain(target)) {
+    if (ts.isOptionalChain(call) && ts.isOptionalChain(callee)) {
         // Normalize both nullable storage and a null native pointer into the
         // shared optional-call presence contract. The receiver is already held.
         const owner = lowerer.leafValue(

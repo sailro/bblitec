@@ -17,6 +17,9 @@ import {
     staticPropertyKey,
     calledDeclaration,
     memberAccessors,
+    accessedPropertySymbol,
+    namedMember,
+    type NamedMember,
 } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -45,6 +48,7 @@ import {
     writeSites,
     isAsyncFunction,
     isGeneratorFunction,
+    type MemberAccess,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import {
@@ -461,12 +465,14 @@ export class ClassLowerer {
 
     /** The class a static member access reads, through a class name or a static `this`. */
     private staticMember(
-        access: ts.PropertyAccessExpression,
+        access: MemberAccess,
     ): { table: ClassMemberTable; name: string } | undefined {
+        const named = namedMember(this.context.checker, access);
+        if (!named) return undefined;
         const owner = this.context.unwrap(access.expression);
         if (owner.kind === ts.SyntaxKind.ThisKeyword) {
             if (!this.context.activeThis()?.classStatics) return undefined;
-            const member = resolvedSymbol(
+            const member = accessedPropertySymbol(
                 this.context.checker,
                 access,
             )?.declarations?.find(
@@ -476,17 +482,17 @@ export class ClassLowerer {
                     ts.isClassLike(candidate.parent),
             );
             return member && ts.isClassLike(member.parent)
-                ? { table: this.table(member.parent), name: access.name.text }
+                ? { table: this.table(member.parent), name: named.name }
                 : undefined;
         }
-        return staticClassMember(this.context.checker, owner, access.name);
+        return staticClassMember(this.context.checker, owner, named);
     }
 
     /** Resolve `ClassName.staticFactory(...)` to its local method body. */
     public resolveStaticMethod(
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): ts.MethodDeclaration | undefined {
-        const found = this.staticMember(callee);
+        const found = this.staticMember(callee.access);
         return found?.table.staticMethods.get(found.name);
     }
 
@@ -503,10 +509,7 @@ export class ClassLowerer {
      * called through: `Derived.create()` runs an inherited `create` with
      * `this` naming `Derived`, as JavaScript does.
      */
-    public withStaticReceiver<T>(
-        callee: ts.PropertyAccessExpression,
-        work: () => T,
-    ): T {
+    public withStaticReceiver<T>(callee: NamedMember, work: () => T): T {
         const owner = this.context.unwrap(callee.expression);
         const receiver =
             owner.kind === ts.SyntaxKind.ThisKeyword
@@ -2065,14 +2068,14 @@ export class ClassLowerer {
      */
     public compileSuperMethodCall(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value {
         const instance = this.superReceiver(call);
-        const method = classMethod(instance.base, callee.name.text);
+        const method = classMethod(instance.base, callee.name);
         return this.compileResolvedMethodCall(
             instance.receiver,
             method,
-            callee.name.text,
+            callee.name,
             call,
             this.context.classOf(instance.receiver) ??
                 instance.base.declaration,
@@ -2912,26 +2915,18 @@ export class ClassLowerer {
             if (explored.has(candidate) || !candidate.body) return false;
             explored.add(candidate);
             return someAnalysisNode(candidate.body, (node) => {
-                if (
-                    !ts.isCallExpression(node) ||
-                    !ts.isPropertyAccessExpression(node.expression)
-                )
-                    return false;
-                if (
-                    node.expression.expression.kind ===
-                    ts.SyntaxKind.ThisKeyword
-                ) {
-                    const called = classMethod(
-                        table,
-                        node.expression.name.text,
-                    );
+                if (!ts.isCallExpression(node)) return false;
+                const callee = namedMember(
+                    this.context.checker,
+                    node.expression,
+                );
+                if (!callee) return false;
+                if (callee.expression.kind === ts.SyntaxKind.ThisKeyword) {
+                    const called = classMethod(table, callee.name);
                     return called !== undefined && reaches(called);
                 }
                 const called = calledDeclaration(this.context.checker, node);
-                if (
-                    node.expression.expression.kind ===
-                    ts.SyntaxKind.SuperKeyword
-                )
+                if (callee.expression.kind === ts.SyntaxKind.SuperKeyword)
                     return (
                         called !== undefined &&
                         ts.isMethodDeclaration(called) &&
@@ -3063,17 +3058,12 @@ export class ClassLowerer {
             const found = new EmissionSet<ts.MethodDeclaration>();
             const visit = (node: ts.Node): void => {
                 if (node !== candidate && ts.isFunctionLike(node)) return;
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    node.expression.expression.kind ===
-                        ts.SyntaxKind.ThisKeyword
-                ) {
+                const callee = ts.isCallExpression(node)
+                    ? namedMember(this.context.checker, node.expression)
+                    : undefined;
+                if (callee?.expression.kind === ts.SyntaxKind.ThisKeyword) {
                     for (const table of tables) {
-                        const called = classMethod(
-                            table,
-                            node.expression.name.text,
-                        );
+                        const called = classMethod(table, callee.name);
                         if (called?.body) found.add(called);
                     }
                 }

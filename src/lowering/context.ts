@@ -23,6 +23,7 @@ import {
     pinnedNamesOf,
     registerPinnedSource,
     type PinnedProgram,
+    pinnedMember,
 } from "../pinned-program.js";
 import { mathConstantAccess } from "../compiler/math-intrinsics.js";
 import {
@@ -362,7 +363,11 @@ export function numericValue(
         );
         if (folded !== undefined) return folded;
     }
-    const mathConstant = mathConstantAccess(unwrapped, pinnedLibraryGlobal);
+    const mathConstant = mathConstantAccess(
+        unwrapped,
+        pinnedLibraryGlobal,
+        pinnedMember,
+    );
     if (mathConstant) return mathConstant.value;
     if (ts.isBinaryExpression(unwrapped)) {
         const folded = foldNumericBinary(

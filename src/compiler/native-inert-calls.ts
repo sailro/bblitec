@@ -13,6 +13,7 @@ import {
     libraryGlobal,
     type CompilerSymbols,
     memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import { arrayShape, unionMembers } from "./type-facts.js";
 
@@ -218,16 +219,17 @@ class InertWalk {
                 this.body(closure)
             );
         }
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const owner = unwrapExpression(callee.expression);
+        const member = namedMember(this.context.checker, callee);
+        if (!member) return false;
+        const owner = unwrapExpression(member.expression);
         if (
             libraryGlobal(this.context.checker, owner) === "Object" &&
-            ["entries", "keys", "values"].includes(callee.name.text)
+            ["entries", "keys", "values"].includes(member.name)
         ) {
             return true;
         }
         return (
-            localCollectionMethods.has(callee.name.text) &&
+            localCollectionMethods.has(member.name) &&
             this.isLocalCollection(owner)
         );
     }

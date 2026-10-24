@@ -2,7 +2,7 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
-import { memberAccessors } from "./symbols.js";
+import { memberAccessors, namedMember } from "./symbols.js";
 import {
     propertyKey,
     rootIdentifier,
@@ -134,6 +134,7 @@ export function requireStableRetainedDescriptor(
                     if (
                         writesThroughTrackedRoot(
                             node,
+                            (callee) => namedMember(checker, callee),
                             namesRoot,
                             undefined,
                             checker,

@@ -23,6 +23,7 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { evaluateInSharedPage } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { unwrapExpression, plainDataMembers } from "./syntax.js";
+import { namedMember } from "./symbols.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -91,7 +92,7 @@ export function browserGeneratedString(
     // sent to Chromium, where it returned an object), while a body-scoped
     // one would still be a source-text decision, which generated behaviour
     // does not make.
-    if (!readsCanvasDataUrl(declaration.body)) return undefined;
+    if (!readsCanvasDataUrl(checker, declaration.body)) return undefined;
     const source = declaration.getSourceFile();
 
     const functionName = declaration.name?.text;
@@ -213,14 +214,13 @@ function runCanvasHelperInChromium(
  * property name in the AST -- a `.toDataURL(` in a comment or a string is
  * not a call, and generated behaviour is never decided by source text.
  */
-function readsCanvasDataUrl(body: ts.Node): boolean {
+function readsCanvasDataUrl(checker: ts.TypeChecker, body: ts.Node): boolean {
     let reads = false;
     const visit = (node: ts.Node): void => {
         if (reads) return;
         if (
             ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "toDataURL"
+            namedMember(checker, node.expression)?.name === "toDataURL"
         ) {
             reads = true;
             return;

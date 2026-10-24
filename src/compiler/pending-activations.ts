@@ -7,7 +7,12 @@
 // not have; reaching one compiles the program in the application realm.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { libraryGlobal, resolvedSymbol, calledDeclaration } from "./symbols.js";
+import {
+    libraryGlobal,
+    resolvedSymbol,
+    calledDeclaration,
+    namedMember,
+} from "./symbols.js";
 import { outermostWrapper, referenceSite, unwrapExpression } from "./syntax.js";
 import { promiseReactionOf } from "./promises.js";
 
@@ -27,7 +32,8 @@ function promiseUse(node: ts.Expression, checker: ts.TypeChecker): PromiseUse {
         current = outermostWrapper(current);
         const parent = current.parent;
         if (
-            ts.isPropertyAccessExpression(parent) &&
+            (ts.isPropertyAccessExpression(parent) ||
+                ts.isElementAccessExpression(parent)) &&
             parent.expression === current &&
             promiseReactionOf(parent, checker) !== undefined &&
             ts.isCallExpression(parent.parent) &&
@@ -74,11 +80,8 @@ function chainedCall(
     let node = unwrapExpression(expression);
     if (ts.isVoidExpression(node)) node = unwrapExpression(node.expression);
     while (ts.isCallExpression(node)) {
-        const callee = unwrapExpression(node.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            promiseReactionOf(callee, checker) === undefined
-        )
+        const callee = namedMember(checker, unwrapExpression(node.expression));
+        if (!callee || promiseReactionOf(callee.access, checker) === undefined)
             return node;
         const receiver = unwrapExpression(callee.expression);
         if (!ts.isCallExpression(receiver)) return undefined;

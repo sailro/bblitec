@@ -39,7 +39,7 @@ import {
  */
 import ts from "typescript";
 import { declaredSymbol } from "../compiler/symbols.js";
-import { pinnedCheckerOf } from "../pinned-program.js";
+import { pinnedCheckerOf, pinnedMember } from "../pinned-program.js";
 import {
     contractError,
     findNodes,
@@ -187,7 +187,7 @@ function callsOutside(
         statement,
         (node) =>
             ts.isCallExpression(node) &&
-            !spelledMathCall(node, pinnedLibraryGlobal) &&
+            !spelledMathCall(node, pinnedLibraryGlobal, pinnedMember) &&
             !isOneOfSources(node.expression, allowed),
     );
 }

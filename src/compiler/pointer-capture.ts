@@ -2,7 +2,7 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { pinDetached } from "./dom-listeners.js";
 import { POINTER_CAPTURE_OPERATIONS } from "./dom-lowerings.js";
-import { resolvedDomApi } from "./symbols.js";
+import { resolvedDomApi, namedMember } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
@@ -82,8 +82,11 @@ export function compilePointerCapture(
     ui: UiProjection,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee) return undefined;
     const operation = POINTER_CAPTURE_OPERATIONS.get(
         resolvedDomApi(context.checker, call) ?? "",
     );
@@ -101,15 +104,15 @@ export function compilePointerCapture(
         if (!target)
             return context.fail(
                 callee.expression,
-                `'${callee.name.text}' requires a retained element, a stored event target or the engine canvas.`,
+                `'${callee.name}' requires a retained element, a stored event target or the engine canvas.`,
             );
         const pointerId = context.compileNumber(argumentAt(call, 0), "double");
         const cpp = `${operation}(${target}, ${pointerId})`;
-        return callee.name.text === "hasPointerCapture"
+        return callee.name === "hasPointerCapture"
             ? { kind: "boolean", cpp, impure: true }
             : { kind: "void", cpp };
     };
-    if (!callee.questionDotToken) return lower();
+    if (!callee.access.questionDotToken) return lower();
     return context.dataLowerer.optionalAccess(
         context.compileValue(callee.expression),
         call,

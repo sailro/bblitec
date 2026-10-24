@@ -15,6 +15,7 @@ import {
     libraryName,
     calledDeclaration,
     calledFunction,
+    namedMember,
 } from "./symbols.js";
 import {
     isObjectIdentityFunction,
@@ -468,11 +469,10 @@ function sourceGraph(
                     if (named && named !== declaration) escaped.add(named);
                     // `xs.push(v)` / `xs.unshift(v)` store elements: plain
                     // writes at the array's element path.
+                    const method = namedMember(checker, callee);
                     const receiver =
-                        ts.isPropertyAccessExpression(callee) &&
-                        (callee.name.text === "push" ||
-                            callee.name.text === "unshift")
-                            ? unwrapExpression(callee.expression)
+                        method?.name === "push" || method?.name === "unshift"
+                            ? unwrapExpression(method.expression)
                             : undefined;
                     const stored = receiver
                         ? ts.isIdentifier(receiver)
@@ -498,10 +498,10 @@ function sourceGraph(
                             });
                         memberWrites.set(storedSymbol, list);
                     } else if (
-                        ts.isPropertyAccessExpression(callee) &&
-                        receiverWritingMethods.has(callee.name.text)
+                        method &&
+                        receiverWritingMethods.has(method.name)
                     )
-                        mutate(callee.expression);
+                        mutate(method.expression);
                 }
                 for (const { target, kind, stored } of writeSites(node)) {
                     // A name's own rebinds come from fileRebinds below.
@@ -887,22 +887,22 @@ class AssetUrlDomain {
                 iteration.arguments[0] === owner
                     ? unwrapExpression(iteration.expression)
                     : undefined;
+            const method = callee && namedMember(this.context.checker, callee);
             if (
                 index === 0 &&
                 (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
-                callee &&
-                ts.isPropertyAccessExpression(callee)
+                method
             ) {
                 const receiverType = this.context.checker.getTypeAtLocation(
-                    callee.expression,
+                    method.expression,
                 );
                 if (
                     (this.context.checker.isArrayType(receiverType) ||
                         this.context.checker.isTupleType(receiverType)) &&
-                    arrayIterationMethods.has(callee.name.text)
+                    arrayIterationMethods.has(method.name)
                 )
                     return this.read(
-                        callee.expression,
+                        method.expression,
                         [element, ...projection],
                         environment,
                     );
@@ -1114,9 +1114,12 @@ class AssetUrlDomain {
             }
             return this.returned(declaration, projection, nested);
         }
-        const callee = unwrapExpression(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return undefined;
-        const method = callee.name.text;
+        const callee = namedMember(
+            this.context.checker,
+            unwrapExpression(call.expression),
+        );
+        if (!callee) return undefined;
+        const method = callee.name;
         if (
             method === "get" &&
             isLibraryMap(this.context.checker, callee.expression)
@@ -1129,9 +1132,7 @@ class AssetUrlDomain {
         // Object.freeze returns its argument.
         const frozen =
             method === "freeze"
-                ? objectIdentityCallArgument(call, (node) =>
-                      this.context.libraryGlobal(node),
-                  )
+                ? objectIdentityCallArgument(this.context.checker, call)
                 : undefined;
         if (frozen) return this.read(frozen, projection, environment);
         const receiverType = this.context.checker.getTypeAtLocation(
@@ -1160,9 +1161,7 @@ class AssetUrlDomain {
             if (
                 callback &&
                 iterable &&
-                isObjectIdentityFunction(callback, (node) =>
-                    this.context.libraryGlobal(node),
-                )
+                isObjectIdentityFunction(this.context.checker, callback)
             )
                 return this.read(iterable, projection, environment);
             if (

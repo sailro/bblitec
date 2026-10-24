@@ -109,8 +109,8 @@ function ownedDocument(
     let expression = lowerer.convertedExpression(node);
     while (expression) {
         const argument = objectIdentityCallArgument(
+            lowerer.context.checker,
             unwrapExpression(expression),
-            (value) => lowerer.context.libraryGlobal(value),
         );
         if (!argument) break;
         expression = argument;

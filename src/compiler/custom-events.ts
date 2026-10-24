@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { libraryName } from "./symbols.js";
+import { libraryName, namedMember } from "./symbols.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { isCustomDomEventName, pinDetached } from "./dom-listeners.js";
 import { jsonAbsenceCpp } from "./values/model.js";
@@ -67,12 +67,11 @@ export function customEventDispatchTarget(
     context: Pick<Context, "unwrap" | "libraryGlobal" | "checker">,
     call: ts.CallExpression,
 ): "document" | "window" | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "dispatchEvent"
-    )
-        return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || callee.name !== "dispatchEvent") return undefined;
     let target = context.libraryGlobal(callee.expression);
     if (!target) {
         const symbol = context.checker
@@ -95,12 +94,11 @@ export function compileCustomEventDispatch(
     context: Context,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "dispatchEvent"
-    )
-        return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || callee.name !== "dispatchEvent") return undefined;
     if (call.arguments.length !== 1)
         context.fail(call, "dispatchEvent requires one event.");
     const type = context.dataLowerer.dataTypeAt(call.arguments[0]!);

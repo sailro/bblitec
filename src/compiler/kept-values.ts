@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
-import { libraryGlobal } from "./symbols.js";
+import { libraryGlobal, namedMember } from "./symbols.js";
 import { unwrapExpression, objectLiteralMembers } from "./syntax.js";
 import { arrayShape, typeCanCarryReference } from "./type-facts.js";
 
@@ -67,8 +67,8 @@ export function callResultCanHoldReceiver(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): boolean {
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return true;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee) return true;
     const shape = arrayShape(
         checker,
         checker.getTypeAtLocation(callee.expression),
@@ -76,7 +76,7 @@ export function callResultCanHoldReceiver(
     return (
         shape === undefined ||
         typeCanCarryReference(shape.element) ||
-        mutatingArrayMethods.has(callee.name.text)
+        mutatingArrayMethods.has(callee.name)
     );
 }
 
@@ -103,11 +103,11 @@ export function callResultHoldsArguments(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): boolean {
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee) return false;
     const owner = libraryGlobal(checker, callee.expression);
     return (
         owner !== undefined &&
-        HOLDING_LIBRARY_CALLS.has(`${owner}.${callee.name.text}`)
+        HOLDING_LIBRARY_CALLS.has(`${owner}.${callee.name}`)
     );
 }

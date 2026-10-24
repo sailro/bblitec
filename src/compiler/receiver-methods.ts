@@ -4,6 +4,7 @@ import {
     declarationInDefaultLibrary,
     libraryGlobal,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import { callSignatures } from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
@@ -147,10 +148,10 @@ export function callsArgumentInPlace(
         return (
             index === 0 && libraryGlobal(checker, call.expression) === "Promise"
         );
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee) return false;
     if (
-        callee.name.text === "from" &&
+        callee.name === "from" &&
         libraryGlobal(checker, callee.expression) === "Array"
     )
         return index === 1;
@@ -158,17 +159,18 @@ export function callsArgumentInPlace(
     return (
         declaration !== undefined &&
         declarationInDefaultLibrary(declaration) &&
-        synchronousCallbackMethods.has(callee.name.text)
+        synchronousCallbackMethods.has(callee.name)
     );
 }
 
 /** `target.addEventListener(type, listener)`: it keeps the listener. */
-export function isListenerRegistration(call: ts.CallExpression): boolean {
-    const callee = unwrapExpression(call.expression);
+export function isListenerRegistration(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
     return (
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "addEventListener" &&
-        call.arguments.length >= 2
+        namedMember(checker, unwrapExpression(call.expression))?.name ===
+            "addEventListener" && call.arguments.length >= 2
     );
 }
 
@@ -213,8 +215,9 @@ export function isStoringDataCall(
     }
     return (
         (ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            storingDataMethods.has(node.expression.name.text)) ||
+            storingDataMethods.has(
+                namedMember(checker, node.expression)?.name ?? "",
+            )) ||
         (ts.isNewExpression(node) &&
             ["Map", "Set"].includes(
                 libraryGlobal(checker, node.expression) ?? "",

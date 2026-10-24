@@ -15597,3 +15597,38 @@ check(
     if (fns.map((f) => f()).join() !== "10,20" || make({ n: 1 })() !== 5) throw new Error("late write " + fns.map((f) => f()).join());
     `,
 );
+check(
+    "a library method called by a static key is the dotted call",
+    `
+    const xs = [3, 1, 2];
+    const push = "push";
+    xs["sort"]((a, b) => a - b);
+    xs[push](4);
+    const fns: Array<(x: number) => number> = [(x) => x + 1];
+    if (xs.join() !== "1,2,3,4" || xs.length !== 4 || xs["indexOf"](3) !== 2 || fns[0](1) !== 2)
+        throw new Error("array " + xs.join());
+    const m = new Map<string, number>();
+    m["set"]("a", 1);
+    const s = "a,b";
+    if (m["get"]("a") !== 1 || m.size !== 1 || s["split"](",").length !== 2 || s["toUpperCase"]() !== "A,B")
+        throw new Error("map and string");
+    const n = 3.14159;
+    if (Math["max"](1, 2) !== 2 || JSON["stringify"]({ a: 1 }) !== '{"a":1}' || n["toFixed"](2) !== "3.14" ||
+        !Array["isArray"](xs) || Number["parseFloat"]("1.5") !== 1.5 || globalThis["parseInt"]("12", 10) !== 12)
+        throw new Error("statics");
+    class C { static f(x: number): number { return x * 3; } }
+    function g(this: { n: number }, x: number): number { return this.n + x; }
+    const o: number[] | undefined = Math.random() < 2 ? [5] : undefined;
+    if (C["f"](2) !== 6 || g["call"]({ n: 1 }, 2) !== 3 || o?.["indexOf"](5) !== 0) throw new Error("static, call, optional");
+    `,
+);
+
+test("a method key that runs code refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'class K { m(): number { return 1; } } const k = new K(); const key = (): "m" => "m"; const unused = k[key()]();',
+            ),
+        /A method key that runs code/,
+    );
+});

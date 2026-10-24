@@ -18,7 +18,12 @@
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { LibraryGlobal } from "./symbols.js";
+import {
+    namedMember,
+    type LibraryGlobal,
+    type MemberReader,
+    type NamedMember,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
@@ -269,9 +274,10 @@ export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> =
 export function mathConstantAccess(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): MathConstant | undefined {
-    const access = mathMemberAccess(expression, libraryGlobal);
-    return access && MATH_CONSTANTS.get(access.name.text);
+    const access = mathMemberAccess(expression, libraryGlobal, member);
+    return access && MATH_CONSTANTS.get(access.name);
 }
 
 /**
@@ -295,12 +301,13 @@ const FORMATTED_MATH_FOLDS: ReadonlyMap<
  * `Math` is not this, however it is spelled.
  */
 export function mathMemberAccess(
-    expression: ts.Expression,
+    expression: ts.Node,
     libraryGlobal: LibraryGlobal,
-): ts.PropertyAccessExpression | undefined {
-    return ts.isPropertyAccessExpression(expression) &&
-        libraryGlobal(expression.expression) === "Math"
-        ? expression
+    member: MemberReader,
+): NamedMember | undefined {
+    const access = member(expression);
+    return access && libraryGlobal(access.expression) === "Math"
+        ? access
         : undefined;
 }
 
@@ -308,18 +315,24 @@ export function mathMemberAccess(
 export function mathMemberCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): { readonly name: string; readonly call: ts.CallExpression } | undefined {
     if (!ts.isCallExpression(expression)) return undefined;
-    const access = mathMemberAccess(expression.expression, libraryGlobal);
-    return access ? { name: access.name.text, call: expression } : undefined;
+    const access = mathMemberAccess(
+        expression.expression,
+        libraryGlobal,
+        member,
+    );
+    return access ? { name: access.name, call: expression } : undefined;
 }
 
 /** A call of a member the table spells (max and min included), with its name. */
 export function spelledMathCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): ReturnType<typeof mathMemberCall> {
-    const math = mathMemberCall(expression, libraryGlobal);
+    const math = mathMemberCall(expression, libraryGlobal, member);
     return math && mathCallSpelling(math.name) ? math : undefined;
 }
 
@@ -338,12 +351,14 @@ export function mathFunctionValue(
     >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, (candidate) =>
-        context.libraryGlobal(candidate),
+    const access = mathMemberAccess(
+        expression,
+        (candidate) => context.libraryGlobal(candidate),
+        (node) => namedMember(context.checker, node),
     );
     if (!access) return undefined;
-    const member = MATH_MEMBERS.get(access.name.text);
-    const extreme = access.name.text === "max" || access.name.text === "min";
+    const member = MATH_MEMBERS.get(access.name);
+    const extreme = access.name === "max" || access.name === "min";
     if (!member && !extreme) return undefined;
     const variadic = extreme || member?.variadic;
     const type: DataType<"function"> = {
@@ -358,9 +373,9 @@ export function mathFunctionValue(
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
     if (member?.reach === "js-random") context.reachJsRandom();
     const body = extreme
-        ? mathExtremeCpp(access.name.text, "argument_0")
+        ? mathExtremeCpp(access.name, "argument_0")
         : variadic
           ? member!.rangeCpp!("argument_0")
           : member!.cpp(parameters);
-    return nativeFunctionValue(context, access, type, `return ${body};`);
+    return nativeFunctionValue(context, access.access, type, `return ${body};`);
 }

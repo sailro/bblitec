@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
+import { isMemberAccess } from "./syntax.js";
 
 /** Reached mutable query state invalidates earlier deployment-query folds. */
 export class RuntimeSearchParamsRequired extends Error {
@@ -81,7 +82,7 @@ export function compileSearchParamsMethod(
     context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
     const callee = context.unwrap(call.expression);
     const pins = context.evaluationOrder.operandsToPin([
-        ts.isPropertyAccessExpression(callee) ? callee.expression : callee,
+        isMemberAccess(callee) ? callee.expression : callee,
         ...call.arguments,
     ]);
     const receiver = pins[0]

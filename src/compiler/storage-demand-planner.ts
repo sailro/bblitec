@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol } from "./symbols.js";
+import { declaredSymbol, namedMember } from "./symbols.js";
 import {
     bindingNameIdentifiers,
     expressionMayRunCode,
@@ -172,13 +172,10 @@ function independentGenericCall(
         unwrapExpression(expression) !== error.call
     )
         return false;
-    const callee = unwrapExpression(error.call.expression);
-    if (!ts.isIdentifier(callee)) {
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression)
-        )
-            return false;
+    const unwrapped = unwrapExpression(error.call.expression);
+    if (!ts.isIdentifier(unwrapped)) {
+        const callee = namedMember(context.checker, unwrapped);
+        if (!callee || !ts.isIdentifier(callee.expression)) return false;
         const owner = context.bindings.lookupOptional(callee.expression);
         const type =
             owner?.dataType?.kind === "optional"
@@ -187,8 +184,8 @@ function independentGenericCall(
         if (type?.kind !== "struct") return false;
         const field = context.dataTypes.findStructField(
             type.name,
-            callee.name.text,
             callee.name,
+            callee.key,
         );
         if (!field || field.accessor || field.type.kind !== "function")
             return false;

@@ -33,6 +33,7 @@ import {
     declarationOrigin,
     declaredSymbol,
     libraryGlobal,
+    namedMember,
 } from "./symbols.js";
 import {
     rootIdentifier,
@@ -448,6 +449,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 if (
                     writesThroughTrackedRoot(
                         node,
+                        (callee) => namedMember(this.context.checker, callee),
                         (expression) => {
                             const identifier = rootIdentifier(expression);
                             return (
@@ -491,11 +493,16 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 ? "the clock ('Date')"
                 : undefined;
         }
-        if (!ts.isPropertyAccessExpression(node)) return undefined;
-        const member = node.name.text;
+        const access = namedMember(checker, node);
+        if (!access) return undefined;
+        const member = access.name;
         if (
             mathMemberIsImpure(member) &&
-            mathMemberAccess(node, (owner) => libraryGlobal(checker, owner))
+            mathMemberAccess(
+                node,
+                (owner) => libraryGlobal(checker, owner),
+                (read) => namedMember(checker, read),
+            )
         ) {
             return "'Math.random'";
         }

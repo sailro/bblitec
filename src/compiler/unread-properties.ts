@@ -4,7 +4,7 @@ import {
     patternSlots,
     unwrapExpression,
 } from "./syntax.js";
-import { libraryGlobal, staticAccessKey } from "./symbols.js";
+import { staticAccessKey, libraryStaticMember } from "./symbols.js";
 import { unionMembers } from "./type-facts.js";
 import type { PatternRead } from "./syntax.js";
 
@@ -99,16 +99,13 @@ export function propertyNeverObserved(
             return true;
         if (ts.isForInStatement(node) && carries(node.expression)) return true;
         if (ts.isCallExpression(node)) {
-            const callee = node.expression;
-            const global =
-                ts.isPropertyAccessExpression(callee) &&
-                libraryGlobal(checker, callee.expression);
+            const callee = libraryStaticMember(checker, node.expression);
             const reflective =
-                ts.isPropertyAccessExpression(callee) &&
-                ((global === "Object" &&
-                    reflectiveObjectMethods.has(callee.name.text)) ||
-                    (global === "JSON" && callee.name.text === "stringify") ||
-                    (global === "Reflect" && callee.name.text !== "apply"));
+                callee !== undefined &&
+                ((callee.owner === "Object" &&
+                    reflectiveObjectMethods.has(callee.name)) ||
+                    (callee.owner === "JSON" && callee.name === "stringify") ||
+                    (callee.owner === "Reflect" && callee.name !== "apply"));
             if (reflective && node.arguments.some(carries)) return true;
         }
         return (

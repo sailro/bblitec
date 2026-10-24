@@ -3,17 +3,22 @@ import { EmissionMap } from "./emission-transaction.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isStringValue, type Value } from "./types.js";
 import { compileDateLocaleString } from "./locale.js";
+import { libraryStaticMember, isLibraryStatic } from "./symbols.js";
 
 /** The default Intl formatter captures its host time zone at construction. */
 export function compileDateTimeFormat(
     lowerer: DataLowerer,
     expression: ts.CallExpression | ts.NewExpression,
 ): Value | undefined {
-    const callee = lowerer.context.unwrap(expression.expression);
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "DateTimeFormat" ||
-        lowerer.context.libraryGlobal(callee.expression) !== "Intl"
+        !isLibraryStatic(
+            libraryStaticMember(
+                lowerer.context.checker,
+                lowerer.context.unwrap(expression.expression),
+            ),
+            "Intl",
+            "DateTimeFormat",
+        )
     )
         return undefined;
     if (expression.arguments?.length)

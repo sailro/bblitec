@@ -5,6 +5,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { PropertyContext } from "./properties.js";
 import { argumentAt } from "./syntax.js";
 import { valueForKind, type Value } from "./types.js";
+import type { NamedMember } from "./symbols.js";
 
 interface PhysicsCallContext
     extends
@@ -158,9 +159,9 @@ const rawCalls = new Map<
 export function compilePhysicsMethodCall(
     context: PhysicsCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     if (
         !rawCalls.has(method) &&
         ![
@@ -185,7 +186,7 @@ export function compilePhysicsMethodCall(
         ].includes(kind)
     )
         return;
-    if (callee.questionDotToken && value.dataType?.kind === "optional")
+    if (callee.access.questionDotToken && value.dataType?.kind === "optional")
         return context.dataLowerer.optionalAccess(value, call, (receiver) => {
             const result = compileReceiverCall(context, call, callee, receiver);
             if (result && result.dataType?.kind !== "optional")
@@ -211,10 +212,10 @@ export function compilePhysicsMethodCall(
 function compileReceiverCall(
     context: PhysicsCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     context.reachJsData();
     if (receiver.kind === "physics-body-list" && method === "includes") {
         context.expectArgumentCount(call, 1, 1);

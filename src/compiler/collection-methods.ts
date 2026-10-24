@@ -3,6 +3,7 @@ import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { compileJsonPropertyKey, isJsonValue } from "./json-bridge.js";
+import { namedMember } from "./symbols.js";
 
 /** Construct from a present iterable; both absent values create an empty owner. */
 export function compileCollectionIterable(
@@ -200,12 +201,12 @@ export function compileCollectionEntries(
 ): Value {
     const input = lowerer.context.unwrap(expression);
     const callee = ts.isCallExpression(input)
-        ? lowerer.context.unwrap(input.expression)
+        ? namedMember(
+              lowerer.context.checker,
+              lowerer.context.unwrap(input.expression),
+          )
         : undefined;
-    const owner =
-        callee && ts.isPropertyAccessExpression(callee)
-            ? lowerer.context.unwrap(callee.expression)
-            : undefined;
+    const owner = callee && lowerer.context.unwrap(callee.expression);
     const staticOwner =
         owner &&
         (ts.isArrayLiteralExpression(owner) ||
@@ -216,9 +217,7 @@ export function compileCollectionEntries(
         (type &&
         !type.dictionary &&
         ts.isCallExpression(input) &&
-        callee &&
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "map" &&
+        callee?.name === "map" &&
         !staticOwner
             ? lowerer.compileDataMethodCall(input, {
                   kind: "vector",

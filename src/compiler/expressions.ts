@@ -77,6 +77,9 @@ import {
     isLibraryNumberFormatter,
     calledDeclaration,
     memberAccessors,
+    namedMember,
+    type NamedMember,
+    libraryStaticMember,
     staticAccessKey,
 } from "./symbols.js";
 import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
@@ -121,8 +124,7 @@ import {
     containsSuspension,
     restParameterIndex,
     variableKind,
-    memberKeyNode,
-    type MemberAccess,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -1056,8 +1058,10 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathConstantAccess(unwrapped, (expression) =>
-                    this.context.libraryGlobal(expression),
+                mathConstantAccess(
+                    unwrapped,
+                    (expression) => this.context.libraryGlobal(expression),
+                    (node) => namedMember(this.context.checker, node),
                 )
             ) {
                 const staticNumber = staticNumberValue(this.context, unwrapped);
@@ -1280,15 +1284,16 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (ts.isCallExpression(unwrapped)) {
-            const joined = ts.isPropertyAccessExpression(unwrapped.expression)
-                ? this.context.unwrap(unwrapped.expression.expression)
-                : undefined;
+            const join = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
+            const joined = join && this.context.unwrap(join.expression);
             // A literal of generation-known elements joins at generation; one
             // with spreads or run-time elements joins the array it builds at
             // run time.
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "join" &&
+                join?.name === "join" &&
                 unwrapped.arguments.length <= 1 &&
                 joined &&
                 ts.isArrayLiteralExpression(joined) &&
@@ -2044,8 +2049,10 @@ export class ExpressionLowerer {
             const resolved = this.generationTimeNumber(node);
             if (resolved !== undefined) return resolved;
         }
-        const mathCall = mathMemberCall(node, (expression) =>
-            this.context.libraryGlobal(expression),
+        const mathCall = mathMemberCall(
+            node,
+            (expression) => this.context.libraryGlobal(expression),
+            (read) => namedMember(this.context.checker, read),
         );
         if (!mathCall) return undefined;
         const values = mathCall.call.arguments.map((argument) =>
@@ -2298,8 +2305,7 @@ export class ExpressionLowerer {
             // state; an unclassified one would drop its effect silently.
             const callee = this.context.unwrap(unwrapped.expression);
             if (
-                (ts.isPropertyAccessExpression(callee) ||
-                    ts.isElementAccessExpression(callee)) &&
+                isMemberAccess(callee) &&
                 !this.context.browserErasure.isBrowserOwner(callee.expression)
             )
                 this.context.fail(
@@ -3559,8 +3565,7 @@ export class ExpressionLowerer {
             if (
                 ts.isCallExpression(link) &&
                 link.questionDotToken &&
-                (ts.isPropertyAccessExpression(link.expression) ||
-                    ts.isElementAccessExpression(link.expression))
+                isMemberAccess(link.expression)
             ) {
                 link = link.expression;
                 continue;
@@ -3595,19 +3600,14 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         target: ts.Expression,
     ): Value | undefined {
-        if (
-            !ts.isPropertyAccessExpression(target) ||
-            target.name.text !== "bind" ||
-            call.arguments.length !== 1
-        )
+        const bind = namedMember(this.context.checker, target);
+        if (bind?.name !== "bind" || call.arguments.length !== 1)
             return undefined;
-        const method = this.context.unwrap(target.expression);
-        if (
-            !ts.isPropertyAccessExpression(method) ||
-            !isEffectTaskMethodName(method.name.text)
-        )
+        const method = this.context.unwrap(bind.expression);
+        const methodName = namedMember(this.context.checker, method);
+        if (!methodName || !isEffectTaskMethodName(methodName.name))
             return undefined;
-        const owner = this.context.unwrap(method.expression);
+        const owner = this.context.unwrap(methodName.expression);
         const receiver = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(owner) ||
@@ -3636,13 +3636,11 @@ export class ExpressionLowerer {
                     "class constructor.",
             );
         }
-        if (
-            ts.isPropertyAccessExpression(target) &&
-            target.expression.kind === ts.SyntaxKind.SuperKeyword
-        ) {
+        const targetMember = namedMember(this.context.checker, target);
+        if (targetMember?.expression.kind === ts.SyntaxKind.SuperKeyword) {
             return this.context.classLowerer.compileSuperMethodCall(
                 call,
-                target,
+                targetMember,
             );
         }
         const boundTaskMethod = this.boundEffectTaskMethod(call, target);
@@ -3706,10 +3704,11 @@ export class ExpressionLowerer {
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
-            const callee = this.context.unwrap(call.expression);
             if (
-                !ts.isPropertyAccessExpression(callee) ||
-                this.context.libraryGlobal(callee.expression) !== "navigator"
+                libraryStaticMember(
+                    this.context.checker,
+                    this.context.unwrap(call.expression),
+                )?.owner !== "navigator"
             )
                 return this.context.fail(
                     call,
@@ -3831,17 +3830,120 @@ export class ExpressionLowerer {
             const animationFrame = this.context.compileAnimationFrameCall(call);
             if (animationFrame) return animationFrame;
         }
-        // `o.m(...)` and `o["m"](...)` are one named call; a keyed call
-        // in an optional chain keeps the chain lowering below.
-        if (
-            ts.isPropertyAccessExpression(callee) ||
-            (ts.isElementAccessExpression(callee) &&
-                !ts.isOptionalChain(call) &&
-                staticAccessKey(this.context.checker, callee) !== undefined)
-        ) {
-            const value = this.compilePropertyCall(callee, call);
+        // `o.m(...)` and `o["m"](...)` are one named call.
+        const member = namedMember(this.context.checker, callee);
+        if (member) {
+            const value = this.compilePropertyCall(member, call);
             if (value) return value;
+        } else if (
+            ts.isElementAccessExpression(callee) &&
+            staticAccessKey(this.context.checker, callee) !== undefined
+        )
+            // The checker names the member, but its key runs code first.
+            this.context.fail(
+                callee.argumentExpression,
+                "A method key that runs code (a call or a getter) is not lowered; read it into a const first.",
+            );
+        const uriFunction = URI_FUNCTIONS.get(
+            this.context.libraryGlobal(callee) ?? "",
+        );
+        if (uriFunction) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const argument = argumentAt(call, 0);
+            const value = this.compileValue(argument);
+            this.context.reachJsData();
+            return {
+                kind: "string",
+                dataType: { kind: "string" },
+                cpp: `bbl::js::${uriFunction}(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
+            };
         }
+        // `parseFloat(<query text>)`: the same value browser-erasure already
+        // settles for a guard beside it. It travels through the one path
+        // that turns a settled browser primitive into a value, so what a
+        // scene reads through its own pose is the number generation KNOWS
+        // -- which is what lets a helper's guard on it fold. Above the
+        // identifier gate because `Number.parseFloat` is the same function
+        // under a property access, and the two spellings must not diverge.
+        if (
+            isParseFloatCallee(callee, this.context) &&
+            call.arguments.length === 1
+        ) {
+            const settled =
+                this.context.browserErasure.evaluateBrowserValue(call);
+            if (settled?.kind === "number" && Number.isFinite(settled.value)) {
+                // The value is returned already settled rather than through
+                // `materializeBrowserPrimitive`: that helper renders its cpp
+                // with `compileNumber(expression)`, which for THIS
+                // expression re-enters the arm it was reached from.
+                return {
+                    kind: "number",
+                    cpp: doubleLiteral(settled.value),
+                    staticNumber: settled.value,
+                };
+            }
+        }
+
+        if (isParseFloatCallee(callee, this.context)) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const value = this.compileValue(argumentAt(call, 0));
+            if (!isStringValue(value)) {
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "Reached parseFloat requires a string value.",
+                );
+            }
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                dataType: { kind: "number" },
+                cpp: `bbl::js::parse_float(${value.cpp})`,
+            };
+        }
+        if (isNumberParserCallee(callee, this.context, "parseInt")) {
+            this.context.expectArgumentCount(call, 1, 2);
+            const value = this.compileValue(argumentAt(call, 0));
+            if (!isStringValue(value)) {
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "Reached parseInt currently requires a string value.",
+                );
+            }
+            const radix = call.arguments[1]
+                ? this.compileValue(call.arguments[1])
+                : undefined;
+            if (
+                radix &&
+                (radix.kind !== "number" ||
+                    radix.staticNumber === undefined ||
+                    radix.parameterBinding ||
+                    !Number.isInteger(radix.staticNumber) ||
+                    (radix.staticNumber !== 0 &&
+                        (radix.staticNumber < 2 || radix.staticNumber > 36)))
+            ) {
+                this.context.fail(
+                    argumentAt(call, 1),
+                    "Reached parseInt requires a literal radix 0 or 2 through 36.",
+                );
+            }
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                dataType: { kind: "number" },
+                cpp:
+                    radix?.staticNumber === 10
+                        ? `bbl::js::parse_int_decimal(${value.cpp})`
+                        : `bbl::js::parse_int(${value.cpp}, ${radix?.staticNumber ?? 0})`,
+            };
+        }
+
+        // A library static read through the owner, dotted or keyed, ahead
+        // of the run-time element call below.
+        const predicate = compileArrayPredicateOverData(
+            this.context.dataLowerer,
+            call,
+        );
+        if (predicate) return predicate;
         if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
             return this.context.userFunctions.compileCallbackCall(
                 this.context,
@@ -3941,118 +4043,15 @@ export class ExpressionLowerer {
                     `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
             );
         }
-        const uriFunction = URI_FUNCTIONS.get(
-            this.context.libraryGlobal(callee) ?? "",
-        );
-        if (uriFunction) {
-            this.context.expectArgumentCount(call, 1, 1);
-            const argument = argumentAt(call, 0);
-            const value = this.compileValue(argument);
-            this.context.reachJsData();
-            return {
-                kind: "string",
-                dataType: { kind: "string" },
-                cpp: `bbl::js::${uriFunction}(bbl::js::concat(${stringConcatPart(this.context, value, argument)}))`,
-            };
-        }
-        // `parseFloat(<query text>)`: the same value browser-erasure already
-        // settles for a guard beside it. It travels through the one path
-        // that turns a settled browser primitive into a value, so what a
-        // scene reads through its own pose is the number generation KNOWS
-        // -- which is what lets a helper's guard on it fold. Above the
-        // identifier gate because `Number.parseFloat` is the same function
-        // under a property access, and the two spellings must not diverge.
-        if (
-            isParseFloatCallee(callee, this.context) &&
-            call.arguments.length === 1
-        ) {
-            const settled =
-                this.context.browserErasure.evaluateBrowserValue(call);
-            if (settled?.kind === "number" && Number.isFinite(settled.value)) {
-                // The value is returned already settled rather than through
-                // `materializeBrowserPrimitive`: that helper renders its cpp
-                // with `compileNumber(expression)`, which for THIS
-                // expression re-enters the arm it was reached from.
-                return {
-                    kind: "number",
-                    cpp: doubleLiteral(settled.value),
-                    staticNumber: settled.value,
-                };
-            }
-        }
-
-        if (isParseFloatCallee(callee, this.context)) {
-            this.context.expectArgumentCount(call, 1, 1);
-            const value = this.compileValue(argumentAt(call, 0));
-            if (!isStringValue(value)) {
-                this.context.fail(
-                    argumentAt(call, 0),
-                    "Reached parseFloat requires a string value.",
-                );
-            }
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                dataType: { kind: "number" },
-                cpp: `bbl::js::parse_float(${value.cpp})`,
-            };
-        }
-        if (isNumberParserCallee(callee, this.context, "parseInt")) {
-            this.context.expectArgumentCount(call, 1, 2);
-            const value = this.compileValue(argumentAt(call, 0));
-            if (!isStringValue(value)) {
-                this.context.fail(
-                    argumentAt(call, 0),
-                    "Reached parseInt currently requires a string value.",
-                );
-            }
-            const radix = call.arguments[1]
-                ? this.compileValue(call.arguments[1])
-                : undefined;
-            if (
-                radix &&
-                (radix.kind !== "number" ||
-                    radix.staticNumber === undefined ||
-                    radix.parameterBinding ||
-                    !Number.isInteger(radix.staticNumber) ||
-                    (radix.staticNumber !== 0 &&
-                        (radix.staticNumber < 2 || radix.staticNumber > 36)))
-            ) {
-                this.context.fail(
-                    argumentAt(call, 1),
-                    "Reached parseInt requires a literal radix 0 or 2 through 36.",
-                );
-            }
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                dataType: { kind: "number" },
-                cpp:
-                    radix?.staticNumber === 10
-                        ? `bbl::js::parse_int_decimal(${value.cpp})`
-                        : `bbl::js::parse_int(${value.cpp}, ${radix?.staticNumber ?? 0})`,
-            };
-        }
-
         if (!ts.isIdentifier(callee)) {
-            const predicate = compileArrayPredicateOverData(
-                this.context.dataLowerer,
-                call,
-            );
-            if (predicate) {
-                return predicate;
-            }
+            const member = namedMember(this.context.checker, callee);
+            const field =
+                member && namedMember(this.context.checker, member.expression);
             const receiver =
-                ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression)
-                    ? this.context.bindings.lookupOptional(callee.expression)
-                    : ts.isPropertyAccessExpression(callee) &&
-                        ts.isPropertyAccessExpression(callee.expression) &&
-                        callee.expression.expression.kind ===
-                            ts.SyntaxKind.ThisKeyword
-                      ? this.context.resolveThisField(
-                            callee.expression.name.text,
-                        )
+                member && ts.isIdentifier(member.expression)
+                    ? this.context.bindings.lookupOptional(member.expression)
+                    : field?.expression.kind === ts.SyntaxKind.ThisKeyword
+                      ? this.context.resolveThisField(field.name)
                       : undefined;
             this.context.fail(
                 callee,
@@ -4701,9 +4700,12 @@ export class ExpressionLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            callee &&
             this.context.dataLowerer.prefersRuntimeTupleIteration(
                 callee.expression,
                 callback,
@@ -6715,7 +6717,7 @@ export class ExpressionLowerer {
      */
     private compileReceiverCall(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
         const target = this.context.unwrap(callee.expression);
         if (
@@ -6876,17 +6878,11 @@ export class ExpressionLowerer {
     }
 
     private compilePropertyCall(
-        callee: MemberAccess,
+        member: NamedMember,
         call: ts.CallExpression,
     ): Value | undefined {
-        const memberName =
-            staticAccessKey(this.context.checker, callee) ??
-            this.context.fail(callee, "A member call needs a static key.");
-        // The library and engine intrinsics below dispatch on a dotted
-        // name; `o["m"](...)` reaches the program's own methods and records.
-        const dotted = ts.isPropertyAccessExpression(callee)
-            ? callee
-            : undefined;
+        const callee = member.access;
+        const memberName = member.name;
         if (
             memberName === "bind" &&
             callSignatures(
@@ -6973,17 +6969,15 @@ export class ExpressionLowerer {
         // layers. It is a renderer-owned list rather than the scene's,
         // so the push is recognized here rather than through an
         // intrinsic name.
-        if (
-            memberName === "push" &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "_beforeUpdate"
-        ) {
-            const renderer = this.context.compileValue(
-                callee.expression.expression,
-            );
+        const hooks =
+            memberName === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (hooks?.name === "_beforeUpdate") {
+            const renderer = this.context.compileValue(hooks.expression);
             if (renderer.kind !== "sprite-renderer") {
                 this.context.fail(
-                    callee.expression.expression,
+                    hooks.expression,
                     "'_beforeUpdate' is the SpriteRenderer's own " +
                         `per-frame hook list; received ${renderer.kind}.`,
                 );
@@ -7000,8 +6994,7 @@ export class ExpressionLowerer {
             };
         }
         if (memberName === "call") {
-            const receiverCall =
-                dotted && this.compileReceiverCall(call, dotted);
+            const receiverCall = this.compileReceiverCall(call, member);
             if (receiverCall) return receiverCall;
         }
         if (memberName === "call" || memberName === "apply") {
@@ -7299,7 +7292,7 @@ export class ExpressionLowerer {
         if (regexpOwner?.dataType?.kind === "regexp") {
             if (memberName !== "exec" && memberName !== "test") {
                 this.context.fail(
-                    memberKeyNode(callee),
+                    member.key,
                     `RegExp method '${memberName}' is not supported.`,
                 );
             }
@@ -7357,10 +7350,9 @@ export class ExpressionLowerer {
         // three dispatch positions stay exactly where the arms sat so
         // the resolution order a call site observes is unchanged.
         const pushed =
-            dotted &&
             this.context.handleCollections.compileParticleSystemsPush(
                 call,
-                dotted,
+                member,
             );
         if (pushed) return pushed;
         const math = this.context.dataLowerer.compileMathCall(call);
@@ -7377,24 +7369,20 @@ export class ExpressionLowerer {
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
         const found =
-            dotted &&
-            (this.context.handleCollections.compileFind(call, dotted) ??
-                this.context.handleCollections.compileFilter(call, dotted));
+            this.context.handleCollections.compileFind(call, member) ??
+            this.context.handleCollections.compileFilter(call, member);
         if (found) {
             return found;
         }
-        const physics =
-            dotted &&
-            this.context.probeEmission(() =>
-                compilePhysicsMethodCall(this.context, call, dotted),
-            );
+        const physics = this.context.probeEmission(() =>
+            compilePhysicsMethodCall(this.context, call, member),
+        );
         if (physics) return physics;
-        const method =
-            dotted && mayCompileDataMethodCall(this.context.checker, dotted)
-                ? this.context.probeEmission(() =>
-                      this.context.dataLowerer.compileDataMethodCall(call),
-                  )
-                : undefined;
+        const method = mayCompileDataMethodCall(this.context.checker, member)
+            ? this.context.probeEmission(() =>
+                  this.context.dataLowerer.compileDataMethodCall(call),
+              )
+            : undefined;
         if (method) {
             return method;
         }
@@ -7402,28 +7390,26 @@ export class ExpressionLowerer {
         // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
         // Lite is function-shaped and the browser API is not, so the
         // audio family is the one place a handle carries methods.
-        const media =
-            dotted &&
-            compileMediaStreamMethodCall(
-                this.context.dataLowerer,
-                call,
-                dotted,
-            );
+        const media = compileMediaStreamMethodCall(
+            this.context.dataLowerer,
+            call,
+            member,
+        );
         if (media) return media;
-        const audio =
-            dotted && compileAudioMethodCall(this.context, call, dotted);
+        const audio = compileAudioMethodCall(this.context, call, member);
         if (audio) {
             return audio;
         }
         // The second such surface: a VatHandle is a closure bundle
         // upstream, so its playback methods ride the handle too.
-        const vat = dotted && compileVatMethodCall(this.context, call, dotted);
+        const vat = compileVatMethodCall(this.context, call, member);
         if (vat) {
             return vat;
         }
-        const lightPush =
-            dotted &&
-            this.context.handleCollections.compileSceneLightPush(call, dotted);
+        const lightPush = this.context.handleCollections.compileSceneLightPush(
+            call,
+            member,
+        );
         if (lightPush) {
             return lightPush;
         }
@@ -7431,21 +7417,20 @@ export class ExpressionLowerer {
         // grows through its own `push_back`; this one owns the case that
         // arm declines, a compile-time tuple of engine handles.
         const handlePush =
-            dotted &&
-            this.context.handleCollections.compileHandleTuplePush(call, dotted);
+            this.context.handleCollections.compileHandleTuplePush(call, member);
         if (handlePush) {
             return handlePush;
         }
         const staticMethod =
-            dotted && this.context.classLowerer.resolveStaticMethod(dotted);
-        if (staticMethod && dotted) {
+            this.context.classLowerer.resolveStaticMethod(member);
+        if (staticMethod) {
             const factory =
                 this.context.classLowerer.compileNullableResourceFactory(
                     call,
                     staticMethod,
                 );
             if (factory) return factory;
-            return this.context.classLowerer.withStaticReceiver(dotted, () =>
+            return this.context.classLowerer.withStaticReceiver(member, () =>
                 this.context.userFunctions.compileCallbackCall(
                     this.context,
                     call,

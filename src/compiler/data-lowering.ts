@@ -64,6 +64,10 @@ import {
     nullishLiteral,
     libraryName,
     memberAccessors,
+    namedMember,
+    libraryStaticMember,
+    isLibraryStatic,
+    arrayMemberName,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -256,6 +260,8 @@ import {
     isSuspensionPoint,
     variableKind,
     objectLiteralMembers,
+    type MemberAccess,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -390,11 +396,15 @@ function referenceLengthExtent(
     for (;;) {
         value = outermostWrapper(value, { branches: "objects" });
         const parent: ts.Node = value.parent;
+        const method =
+            isMemberAccess(parent) && parent.expression === value
+                ? arrayMemberName(checker, parent)
+                : undefined;
         if (
-            ts.isPropertyAccessExpression(parent) &&
+            method !== undefined &&
             ts.isCallExpression(parent.parent) &&
             parent.parent.expression === parent &&
-            lengthPreservingArrayMethods.has(parent.name.text)
+            lengthPreservingArrayMethods.has(method)
         ) {
             value = parent.parent;
             continue;
@@ -416,8 +426,11 @@ function referenceLengthExtent(
             ? 0
             : Infinity;
     }
-    if (ts.isPropertyAccessExpression(parent) && parent.expression === value) {
-        const method = parent.name.text;
+    const method =
+        isMemberAccess(parent) && parent.expression === value
+            ? arrayMemberName(checker, parent)
+            : undefined;
+    if (method !== undefined && isMemberAccess(parent)) {
         if (method === "length") return isWriteTarget(parent) ? Infinity : 0;
         const call = parent.parent;
         if (!ts.isCallExpression(call) || call.expression !== parent) return 0;
@@ -4263,7 +4276,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public chainReceiverCall(
         owner: Value,
-        callee: ts.PropertyAccessExpression,
+        callee: MemberAccess,
         call: ts.CallExpression,
         run: (present: Value) => Value | undefined,
     ): Value | undefined {
@@ -7156,8 +7169,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** A call through the global `Math` object, pure by declaration. */
     private isGlobalMathCall(call: ts.CallExpression): boolean {
         return (
-            mathMemberAccess(this.context.unwrap(call.expression), (owner) =>
-                this.context.libraryGlobal(owner),
+            mathMemberAccess(
+                this.context.unwrap(call.expression),
+                (owner) => this.context.libraryGlobal(owner),
+                (node) => namedMember(this.context.checker, node),
             ) !== undefined
         );
     }
@@ -8404,15 +8419,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         call: ts.CallExpression,
         expectedResult?: DataType<"vector">,
     ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
+            !callee ||
             this.context.libraryGlobal(callee.expression) !== "Array" ||
-            (callee.name.text !== "from" && callee.name.text !== "of")
+            (callee.name !== "from" && callee.name !== "of")
         ) {
             return undefined;
         }
-        if (callee.name.text === "of") {
+        if (callee.name === "of") {
             const type = this.dataTypeAt(call);
             if (type?.kind !== "vector")
                 this.context.fail(
@@ -8552,11 +8570,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileTypedArrayFactory(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            (callee.name.text !== "from" && callee.name.text !== "of")
-        )
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (!callee || (callee.name !== "from" && callee.name !== "of"))
             return undefined;
         const name = this.typedArrayClass(callee.expression);
         const kind =
@@ -8564,7 +8582,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!kind) return undefined;
         const dataType: DataType = { kind };
         this.context.reachJsData();
-        if (callee.name.text === "of") {
+        if (callee.name === "of") {
             const spread = call.arguments.find(ts.isSpreadElement);
             if (spread)
                 this.context.fail(
@@ -8612,11 +8630,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const callee = mathMemberAccess(
             this.context.unwrap(target),
             (expression) => this.context.libraryGlobal(expression),
+            (node) => namedMember(this.context.checker, node),
         );
         if (!callee) {
             return undefined;
         }
-        const method = callee.name.text;
+        const method = callee.name;
         const numbers = (): string[] =>
             call.arguments.map((argument) =>
                 this.context.compileNumber(argument, "double"),
@@ -8776,7 +8795,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType: { kind: "number" },
             };
         }
-        this.context.fail(callee.name, `Math.${method} is not supported.`);
+        this.context.fail(callee.key, `Math.${method} is not supported.`);
     }
 
     /**
@@ -9263,8 +9282,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        const identity = isObjectIdentityFunction(callback, (expression) =>
-            this.context.libraryGlobal(expression),
+        const identity = isObjectIdentityFunction(
+            this.context.checker,
+            callback,
         );
         const local =
             ts.isIdentifier(callback) ||
@@ -9856,8 +9876,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             call.questionDotToken ||
-            (ts.isPropertyAccessExpression(call.expression) &&
-                call.expression.questionDotToken) ||
+            namedMember(this.context.checker, call.expression)?.access
+                .questionDotToken ||
             (receiver !== undefined && this.chainShortCircuitsCall(call))
         ) {
             return this.compileOptionalStoredCall(
@@ -9926,14 +9946,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * neither `null` nor `undefined`, so the call is skipped, not refused.
      */
     private chainShortCircuitsCall(call: ts.CallExpression): boolean {
-        if (
-            !ts.isOptionalChain(call) ||
-            !ts.isPropertyAccessExpression(call.expression)
-        )
-            return false;
-        const owner = unwrapExpression(call.expression.expression);
-        if (!ts.isPropertyAccessExpression(owner)) return false;
-        const member = resolvedSymbol(this.context.checker, owner);
+        const callee = namedMember(this.context.checker, call.expression);
+        if (!ts.isOptionalChain(call) || !callee) return false;
+        const owner = namedMember(
+            this.context.checker,
+            unwrapExpression(callee.expression),
+        );
+        if (!owner) return false;
+        const member = accessedPropertySymbol(
+            this.context.checker,
+            owner.access,
+        );
         if (!member || (member.flags & ts.SymbolFlags.Optional) !== 0)
             return false;
         return !isNullable(this.context.checker.getTypeOfSymbol(member));
@@ -10001,8 +10024,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 call.questionDotToken ||
                 (argumentOffset !== 0 &&
-                    ts.isPropertyAccessExpression(call.expression) &&
-                    call.expression.questionDotToken)
+                    namedMember(this.context.checker, call.expression)?.access
+                        .questionDotToken)
             )
                 this.context.emit(`if (!${callback}) ${missing}`);
             if (called) this.context.emit(`${called} = true;`);
@@ -10107,10 +10130,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             let matchedField: string | undefined;
             someAnalysisNode(statement.statement, (node) => {
                 if (!ts.isCallExpression(node)) return false;
-                const target = node.expression;
+                const target = namedMember(
+                    this.context.checker,
+                    node.expression,
+                );
                 if (
-                    !ts.isPropertyAccessExpression(target) ||
-                    target.name.text !== "set" ||
+                    target?.name !== "set" ||
                     !ts.isIdentifier(target.expression) ||
                     declaredSymbol(this.context.checker, target.expression) !==
                         ownerSymbol ||
@@ -10616,25 +10641,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const unwrapped = unwrapExpression(argument);
         if (name === "Uint8Array") {
-            if (
-                ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "slice" &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.name.text === "buffer" &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression.expression.expression,
-                ) &&
-                unwrapped.expression.expression.expression.name.text ===
-                    "data" &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression.expression.expression,
-                )
-            ) {
+            const member = (node: ts.Node) =>
+                namedMember(this.context.checker, node);
+            const slice = ts.isCallExpression(unwrapped)
+                ? member(unwrapped.expression)
+                : undefined;
+            const buffer =
+                slice?.name === "slice" ? member(slice.expression) : undefined;
+            const data =
+                buffer?.name === "buffer"
+                    ? member(buffer.expression)
+                    : undefined;
+            if (data?.name === "data" && ts.isIdentifier(data.expression)) {
                 const imageData = this.context.bindings.lookupOptional(
-                    unwrapped.expression.expression.expression.expression,
+                    data.expression,
                 );
                 const pixels = imageData?.recordProperties?.data;
                 if (
@@ -18309,11 +18329,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node: ts.Expression,
         ): ts.Expression | undefined =>
             ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "getPrototypeOf" &&
-            this.context.libraryGlobal(node.expression.expression) ===
-                "Object" &&
-            node.arguments.length === 1
+            node.arguments.length === 1 &&
+            isLibraryStatic(
+                libraryStaticMember(this.context.checker, node.expression),
+                "Object",
+                "getPrototypeOf",
+            )
                 ? node.arguments[0]
                 : undefined;
         const [call, prototype] = prototypeArgument(left)
@@ -19617,6 +19638,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const iterator = iteratorMethodCall(
             expression,
             (receiver) => this.context.libraryGlobal(receiver),
+            (node) => namedMember(this.context.checker, node),
             (node) => this.context.unwrap(node),
         );
         if (!iterator) {
@@ -20243,10 +20265,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             );
         }
+        const method = ts.isCallExpression(expression)
+            ? namedMember(this.context.checker, expression.expression)?.name
+            : undefined;
         const projected =
-            ts.isCallExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression)
-                ? ["map", "flatMap"].includes(expression.expression.name.text)
+            ts.isCallExpression(expression) && method !== undefined
+                ? ["map", "flatMap"].includes(method)
                     ? this.compileDataMethodCall(expression, dataType)
                     : expression.arguments.length === 2
                       ? this.compileArrayFrom(expression, dataType)
@@ -20608,10 +20632,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (ts.isCallExpression(unwrapped)) {
+            const fill = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
             const candidateOwner =
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "fill"
-                    ? this.context.unwrap(unwrapped.expression.expression)
+                fill?.name === "fill"
+                    ? this.context.unwrap(fill.expression)
                     : undefined;
             const fillOwner =
                 candidateOwner &&

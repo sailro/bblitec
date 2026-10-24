@@ -248,6 +248,9 @@ import {
     isLibraryNumberFormatter,
     calledDeclaration,
     calledFunction,
+    namedMember,
+    libraryStaticMember,
+    isLibraryStatic,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -1856,7 +1859,6 @@ class Compiler implements LoweringServices {
             expression = this.unwrap(expression.expression);
         if (
             ts.isCallExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression) &&
             promiseReactionOf(expression.expression, this.checker) === "catch"
         ) {
             const promise = this.entryReporterPromise(expression, true);
@@ -1943,13 +1945,14 @@ class Compiler implements LoweringServices {
         const call = this.unwrap(expression);
         if (
             !ts.isCallExpression(call) ||
-            !ts.isPropertyAccessExpression(call.expression) ||
             promiseReactionOf(call.expression, this.checker) !== "catch" ||
             call.arguments.length !== 1
         ) {
             return undefined;
         }
-        const promise = this.unwrap(call.expression.expression);
+        const catcher = namedMember(this.checker, call.expression);
+        if (!catcher) return undefined;
+        const promise = this.unwrap(catcher.expression);
         if (
             !ts.isCallExpression(promise) ||
             this.checker.getAwaitedType(
@@ -3355,6 +3358,7 @@ class Compiler implements LoweringServices {
                             this.evaluationOrder.writesStorage(node)) ||
                         writesThroughTrackedRoot(
                             node,
+                            (callee) => namedMember(this.checker, callee),
                             // Assigning an alias name rebinds the name; the
                             // object it held is unchanged.
                             (target, via) => {
@@ -3417,8 +3421,11 @@ class Compiler implements LoweringServices {
             );
         };
         if (
-            writesThroughTrackedRoot(node, isTarget, (method) =>
-                mutatingArrayMethods.has(method),
+            writesThroughTrackedRoot(
+                node,
+                (callee) => namedMember(this.checker, callee),
+                isTarget,
+                (method) => mutatingArrayMethods.has(method),
             )
         ) {
             return true;
@@ -3729,14 +3736,12 @@ class Compiler implements LoweringServices {
     public compilePixelsTextureUpload(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "writeTexture" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "queue" ||
-            !ts.isIdentifier(callee.expression.expression)
-        ) {
+        const callee = namedMember(this.checker, this.unwrap(call.expression));
+        const queue =
+            callee?.name === "writeTexture"
+                ? namedMember(this.checker, callee.expression)
+                : undefined;
+        if (queue?.name !== "queue" || !ts.isIdentifier(queue.expression)) {
             return undefined;
         }
         // A reached upload commonly captures `const device = engine._device`
@@ -3744,7 +3749,7 @@ class Compiler implements LoweringServices {
         // compilation so the outer lexical binding remains visible here;
         // lookupOptional only describes bindings installed in this immediate
         // compiler scope.
-        const device = this.compileValue(callee.expression.expression);
+        const device = this.compileValue(queue.expression);
         if (device.kind !== "gpu-device") return undefined;
         this.expectArgumentCount(call, 4, 4);
         const destination = this.unwrap(argumentAt(call, 0));
@@ -3821,8 +3826,8 @@ class Compiler implements LoweringServices {
                 }
                 if (
                     ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    node.expression.name.text === "writeBuffer" &&
+                    namedMember(this.checker, node.expression)?.name ===
+                        "writeBuffer" &&
                     node.arguments.length === 5
                 ) {
                     const source = argumentAt(node, 2);
@@ -3898,13 +3903,10 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
     ): ts.Expression[] | undefined {
         const call = this.unwrap(expression);
-        if (
-            !ts.isCallExpression(call) ||
-            call.arguments.length !== 1 ||
-            !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "map"
-        )
+        if (!ts.isCallExpression(call) || call.arguments.length !== 1)
             return undefined;
+        const map = namedMember(this.checker, call.expression);
+        if (map?.name !== "map") return undefined;
         const callback = this.unwrap(argumentAt(call, 0));
         if (
             !ts.isArrowFunction(callback) ||
@@ -3912,7 +3914,7 @@ class Compiler implements LoweringServices {
             ts.isBlock(callback.body)
         )
             return undefined;
-        const source = call.expression.expression;
+        const source = map.expression;
         const receiver = this.probeEmission(
             () => this.expectStaticArrayElements(source),
             () => false,
@@ -4674,20 +4676,24 @@ class Compiler implements LoweringServices {
                 return undefined;
             }
             const assignment = statement.expression;
-            const left = assignment.left;
+            const left = namedMember(this.checker, assignment.left);
             const call = assignment.right;
+            const replace = ts.isCallExpression(call)
+                ? namedMember(this.checker, call.expression)
+                : undefined;
+            const read =
+                replace && namedMember(this.checker, replace.expression);
             if (
-                !ts.isPropertyAccessExpression(left) ||
+                !left ||
                 !ts.isIdentifier(left.expression) ||
                 left.expression.text !== urlVariable ||
-                left.name.text !== "pathname" ||
+                left.name !== "pathname" ||
                 !ts.isCallExpression(call) ||
-                !ts.isPropertyAccessExpression(call.expression) ||
-                call.expression.name.text !== "replace" ||
-                !ts.isPropertyAccessExpression(call.expression.expression) ||
-                !ts.isIdentifier(call.expression.expression.expression) ||
-                call.expression.expression.expression.text !== urlVariable ||
-                call.expression.expression.name.text !== "pathname" ||
+                replace?.name !== "replace" ||
+                !read ||
+                !ts.isIdentifier(read.expression) ||
+                read.expression.text !== urlVariable ||
+                read.name !== "pathname" ||
                 call.arguments.length !== 2
             ) {
                 return undefined;
@@ -5093,18 +5099,21 @@ class Compiler implements LoweringServices {
         }
         const span = template.templateSpans[0]!;
         const formatted = this.unwrap(span.expression);
+        const formatter = ts.isCallExpression(formatted)
+            ? namedMember(this.checker, formatted.expression)
+            : undefined;
         if (
             !ts.isCallExpression(formatted) ||
-            !ts.isPropertyAccessExpression(formatted.expression) ||
+            !formatter ||
             !isLibraryNumberFormatter(this.checker, formatted) ||
-            !ts.isIdentifier(formatted.expression.expression)
+            !ts.isIdentifier(formatter.expression)
         ) {
             return {
                 source: this.compileStaticString(expression),
                 dynamicUniforms: [],
             };
         }
-        const formatterTarget = formatted.expression.expression;
+        const formatterTarget = formatter.expression;
         const parameterIndex = declaration.parameters.findIndex(
             ({ name }) =>
                 ts.isIdentifier(name) &&
@@ -5467,11 +5476,8 @@ class Compiler implements LoweringServices {
         call: ts.CallExpression,
     ): { value: unknown; label: string } | undefined {
         const callee = this.unwrap(call.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            !callee.questionDotToken &&
-            this.libraryGlobal(callee.expression) !== undefined
-        ) {
+        const member = libraryStaticMember(this.checker, callee);
+        if (member && !member.access.questionDotToken) {
             const label = `Static call '${callee.getText()}'`;
             return {
                 value: this.runGenerationFunction(call, [], label),
@@ -8898,15 +8904,14 @@ class Compiler implements LoweringServices {
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
-        const callee = this.unwrap(call.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "addEventListener"
-        ) {
-            const device = this.unwrap(callee.expression);
+        const callee = namedMember(this.checker, this.unwrap(call.expression));
+        if (callee?.name === "addEventListener") {
+            const device = namedMember(
+                this.checker,
+                this.unwrap(callee.expression),
+            );
             if (
-                ts.isPropertyAccessExpression(device) &&
-                device.name.text === "_device" &&
+                device?.name === "_device" &&
                 ts.isIdentifier(device.expression) &&
                 this.bindings.lookupOptional(device.expression)?.kind ===
                     "engine"
@@ -8914,9 +8919,11 @@ class Compiler implements LoweringServices {
                 return false;
         }
         if (
-            ts.isPropertyAccessExpression(call.expression) &&
-            call.expression.name.text === "assign" &&
-            this.libraryGlobal(call.expression.expression) === "Object"
+            isLibraryStatic(
+                libraryStaticMember(this.checker, call.expression),
+                "Object",
+                "assign",
+            )
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.

@@ -19,6 +19,8 @@ import {
     resolvedSymbol,
     calledDeclaration,
     memberAccessors,
+    namedMember,
+    accessedPropertySymbol,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -462,18 +464,21 @@ export class EvaluationOrder {
         if (!declaration || declarationOrigin(declaration) !== "default-lib")
             return false;
         if (this.libraryAnswersFromArguments(call)) {
-            const callee = unwrapExpression(call.expression);
+            const callee = namedMember(
+                this.checker,
+                unwrapExpression(call.expression),
+            );
             // These conversions can throw for a source-provided precision or
             // radix even though their answer otherwise depends only on it.
             return !(
                 (call.arguments?.length ?? 0) > 0 &&
-                ts.isPropertyAccessExpression(callee) &&
+                callee !== undefined &&
                 [
                     "toFixed",
                     "toExponential",
                     "toPrecision",
                     "toString",
-                ].includes(callee.name.text)
+                ].includes(callee.name)
             );
         }
         const owner = declaration.parent;
@@ -571,8 +576,11 @@ export class EvaluationOrder {
             );
         }
         if (owner.name.text.startsWith("Weak")) return false;
-        const callee = unwrapExpression(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(
+            this.checker,
+            unwrapExpression(call.expression),
+        );
+        if (!callee) return false;
         const receiver = this.checker.getTypeAtLocation(
             unwrapExpression(callee.expression),
         );
@@ -623,7 +631,7 @@ export class EvaluationOrder {
                 "keys",
                 "values",
                 "entries",
-            ].includes(callee.name.text)
+            ].includes(callee.name)
         )
             return false;
         // Reducing an empty sequence without an initial value throws.
@@ -730,13 +738,14 @@ export class EvaluationOrder {
                 libraryGlobal(this.checker, callee) !== undefined &&
                 argumentAnsweringGlobals.has(callee.text)
             );
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        if (libraryGlobal(this.checker, callee.expression) === "Math")
-            return !mathMemberIsImpure(callee.name.text);
+        const member = namedMember(this.checker, callee);
+        if (!member) return false;
+        if (libraryGlobal(this.checker, member.expression) === "Math")
+            return !mathMemberIsImpure(member.name);
         return (
-            this.isPrimitive(callee.expression) &&
-            !callee.name.text.startsWith("toLocale") &&
-            callee.name.text !== "localeCompare"
+            this.isPrimitive(member.expression) &&
+            !member.name.startsWith("toLocale") &&
+            member.name !== "localeCompare"
         );
     }
 
@@ -1200,9 +1209,12 @@ export class EvaluationOrder {
         call: ts.CallExpression | ts.NewExpression,
         unit: Unit | undefined,
     ): void {
-        const callee = unwrapExpression(call.expression);
+        const callee = namedMember(
+            this.checker,
+            unwrapExpression(call.expression),
+        );
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            callee &&
             libraryGlobal(this.checker, callee.expression) === undefined &&
             !this.isPrimitive(callee.expression) &&
             !this.isFresh(callee.expression, unit)
@@ -1210,7 +1222,7 @@ export class EvaluationOrder {
             access.reads.heap = true;
             const platform = platformMethodEffect(
                 this.checker.getTypeAtLocation(callee.expression),
-                callee.name.text,
+                callee.name,
             );
             // Aborting runs the signal's listeners: any program code.
             if (platform === "runs-code") {
@@ -1218,7 +1230,7 @@ export class EvaluationOrder {
                 access.writes.any = true;
             } else if (platform === "writes-receiver")
                 access.writes.heap = true;
-            if (receiverWritingMethods.has(callee.name.text)) {
+            if (receiverWritingMethods.has(callee.name)) {
                 access.writes.heap = true;
                 if (
                     this.mayHoldArray(
@@ -1325,7 +1337,7 @@ export class EvaluationOrder {
             return this.declarationUnits(declaration);
         // A function reached through a variable or a property is that
         // function only while nothing stores another one there.
-        if (ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)) {
+        if (ts.isIdentifier(callee) || namedMember(this.checker, callee)) {
             const named = this.namedFunction(callee);
             return named ? [named] : undefined;
         }
@@ -1336,10 +1348,12 @@ export class EvaluationOrder {
 
     /** Whether an expression is the language's `Math.random`. */
     private isRandom(expression: ts.Expression): boolean {
-        const access = mathMemberAccess(unwrapExpression(expression), (owner) =>
-            libraryGlobal(this.checker, owner),
+        const access = mathMemberAccess(
+            unwrapExpression(expression),
+            (owner) => libraryGlobal(this.checker, owner),
+            (node) => namedMember(this.checker, node),
         );
-        return access !== undefined && mathMemberIsImpure(access.name.text);
+        return access !== undefined && mathMemberIsImpure(access.name);
     }
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
@@ -1354,10 +1368,11 @@ export class EvaluationOrder {
     private namedFunction(
         expression: ts.Expression,
     ): ts.FunctionLikeDeclaration | undefined {
-        const symbol = resolvedSymbol(
-            this.checker,
-            unwrapExpression(expression),
-        );
+        const unwrapped = unwrapExpression(expression);
+        const member = namedMember(this.checker, unwrapped);
+        const symbol = member
+            ? accessedPropertySymbol(this.checker, member.access)
+            : resolvedSymbol(this.checker, unwrapped);
         const declaration = symbol?.valueDeclaration;
         if (!symbol || !declaration) return undefined;
         if (ts.isFunctionDeclaration(declaration)) {

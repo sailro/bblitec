@@ -10,6 +10,7 @@ import {
 } from "./types.js";
 import { isNullable } from "./type-facts.js";
 import { argumentAt, expressionMayRunCode } from "./syntax.js";
+import { libraryStaticMember } from "./symbols.js";
 
 const collationOptionNames = [
     "numeric",
@@ -538,13 +539,12 @@ export function compileIntlConstruction(
     expression: ts.CallExpression | ts.NewExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    const callee = context.unwrap(expression.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        context.libraryGlobal(callee.expression) !== "Intl"
-    )
-        return undefined;
-    const name = callee.name.text;
+    const callee = libraryStaticMember(
+        context.checker,
+        context.unwrap(expression.expression),
+    );
+    if (callee?.owner !== "Intl") return undefined;
+    const name = callee.name;
     const constructor = Object.hasOwn(INTL_CONSTRUCTORS, name)
         ? INTL_CONSTRUCTORS[name]
         : undefined;

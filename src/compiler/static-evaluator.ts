@@ -15,26 +15,22 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 
 /** The checked Object identity functions also retain their input as callbacks. */
 export function isObjectIdentityFunction(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isPropertyAccessExpression(node) &&
-        OBJECT_IDENTITY_CALLS.has(node.name.text) &&
-        libraryGlobal(node.expression) === "Object"
-    );
+    const member = libraryStaticMember(checker, unwrapExpression(expression));
+    return member?.owner === "Object" && OBJECT_IDENTITY_CALLS.has(member.name);
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
 export function objectIdentityCallArgument(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
-        !isObjectIdentityFunction(expression.expression, libraryGlobal)
+        !isObjectIdentityFunction(checker, expression.expression)
     ) {
         return undefined;
     }
@@ -56,6 +52,9 @@ import {
     libraryGlobal,
     type LibraryGlobal,
     calledDeclaration,
+    namedMember,
+    type MemberReader,
+    libraryStaticMember,
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
@@ -359,6 +358,10 @@ export class StaticEvaluator {
     /** See `libraryGlobal` (symbols.ts). */
     private readonly libraryGlobal: LibraryGlobal = (expression) =>
         libraryGlobal(this.checker, expression);
+
+    /** See `namedMember` (symbols.ts). */
+    private readonly member: MemberReader = (node) =>
+        namedMember(this.checker, node);
 
     /**
      * `precision` selects the native vector the components land in. The
@@ -1024,13 +1027,21 @@ export class StaticEvaluator {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant = mathConstantAccess(unwrapped, this.libraryGlobal);
+        const constant = mathConstantAccess(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         if (constant) {
             return precision === "float"
                 ? (constant.floatCpp ?? cppFloatLiteral(constant.value))
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -1215,7 +1226,11 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         return (
             ts.isNumericLiteral(unwrapped) ||
             ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||
@@ -1244,7 +1259,8 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            mathConstantAccess(unwrapped, this.libraryGlobal) !== undefined ||
+            mathConstantAccess(unwrapped, this.libraryGlobal, this.member) !==
+                undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }
@@ -1409,15 +1425,15 @@ export class StaticEvaluator {
             }
             return result;
         }
+        const join = ts.isCallExpression(unwrapped)
+            ? this.member(unwrapped.expression)
+            : undefined;
         if (
             ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.expression.name.text === "join" &&
+            join?.name === "join" &&
             unwrapped.arguments.length <= 1
         ) {
-            const owner = this.resolveStaticExpression(
-                unwrapped.expression.expression,
-            );
+            const owner = this.resolveStaticExpression(join.expression);
             if (ts.isArrayLiteralExpression(owner)) {
                 const separator = unwrapped.arguments[0]
                     ? this.compileStringLiteral(unwrapped.arguments[0])
@@ -2040,6 +2056,7 @@ export class StaticEvaluator {
 
     private staticFoldContext(): StaticFoldContext {
         return {
+            checker: this.checker,
             libraryGlobal: this.libraryGlobal,
             resolveStaticExpression: (value: ts.Expression) =>
                 this.resolveStaticExpression(value),
@@ -2089,20 +2106,13 @@ export class StaticEvaluator {
         }
         const numeric = this.staticNumberThroughRecords(unwrapped);
         if (numeric !== undefined) return String(numeric);
-        const format =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.arguments.length <= 1
-                ? numberFormatOf(unwrapped.expression.name.text)
+        const formatter =
+            ts.isCallExpression(unwrapped) && unwrapped.arguments.length <= 1
+                ? this.member(unwrapped.expression)
                 : undefined;
-        if (
-            format &&
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression)
-        ) {
-            const number = this.staticNumberValue(
-                unwrapped.expression.expression,
-            );
+        const format = formatter && numberFormatOf(formatter.name);
+        if (format && formatter && ts.isCallExpression(unwrapped)) {
+            const number = this.staticNumberValue(formatter.expression);
             const digits = unwrapped.arguments[0]
                 ? this.staticNumberValue(unwrapped.arguments[0])
                 : undefined;
@@ -2266,10 +2276,7 @@ export class StaticEvaluator {
             // it adds is the checker's `Readonly<T>`, which every reader
             // already honours, so the call is the identity over its
             // argument exactly as the tag above is over its template.
-            const frozen = objectIdentityCallArgument(
-                current,
-                this.libraryGlobal,
-            );
+            const frozen = objectIdentityCallArgument(this.checker, current);
             if (frozen) {
                 current = frozen;
                 continue;

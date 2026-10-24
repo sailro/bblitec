@@ -4,9 +4,10 @@ import { forEachReturn } from "./loop-control.js";
 import {
     declaredInDefaultLibrary,
     libraryGlobal,
-    resolvedSymbol,
     isNullishLiteral,
     calledFunction,
+    namedMember,
+    accessedPropertySymbol,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -48,8 +49,7 @@ export function yieldsFreshRecordElements(
         );
     if (
         ts.isCallExpression(expression) &&
-        ts.isPropertyAccessExpression(expression.expression) &&
-        expression.expression.name.text === "map"
+        namedMember(checker, expression.expression)?.name === "map"
     ) {
         const callback = expression.arguments[0];
         return (
@@ -72,13 +72,11 @@ export function mappedElement(
     node: ts.Expression,
 ): ts.Expression | undefined {
     const call = unwrapExpression(node);
+    if (!ts.isCallExpression(call)) return undefined;
+    const map = namedMember(checker, call.expression);
     if (
-        !ts.isCallExpression(call) ||
-        !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.name.text !== "map" ||
-        !checker.isArrayLikeType(
-            checker.getTypeAtLocation(call.expression.expression),
-        )
+        map?.name !== "map" ||
+        !checker.isArrayLikeType(checker.getTypeAtLocation(map.expression))
     )
         return undefined;
     const callback = call.arguments[0] && unwrapExpression(call.arguments[0]);
@@ -204,14 +202,14 @@ export function callsFreshArrayBuiltin(
 ): boolean {
     const call = unwrapExpression(expression);
     if (!ts.isCallExpression(call)) return false;
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return false;
-    const name = callee.name.text;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee) return false;
+    const name = callee.name;
     const statics = FRESH_ARRAY_STATICS.get(
         libraryGlobal(checker, callee.expression) ?? "",
     );
     if (statics) return statics.has(name);
-    const symbol = resolvedSymbol(checker, callee);
+    const symbol = accessedPropertySymbol(checker, callee.access);
     return (
         FRESH_ARRAY_METHODS.has(name) &&
         declaredInDefaultLibrary(symbol) &&

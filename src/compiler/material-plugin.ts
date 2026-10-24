@@ -1,6 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
 /** Fold source plugin declarations and retain their live textures and UBO callbacks.
  * Shader injection, binding layout and enabled-plugin ordering execute the pin's
  * composers. The fold proves that bindTextures/getActiveTextures refer to the
@@ -1258,12 +1258,14 @@ function foldTexturePushes(
                 );
             }
             const call = context.unwrap(statement.expression);
+            const push = ts.isCallExpression(call)
+                ? namedMember(context.checker, call.expression)
+                : undefined;
             if (
                 !ts.isCallExpression(call) ||
-                !ts.isPropertyAccessExpression(call.expression) ||
-                call.expression.name.text !== "push" ||
-                !ts.isIdentifier(call.expression.expression) ||
-                call.expression.expression.text !== outName
+                push?.name !== "push" ||
+                !ts.isIdentifier(push.expression) ||
+                push.expression.text !== outName
             ) {
                 context.fail(
                     statement,

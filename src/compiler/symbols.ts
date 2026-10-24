@@ -16,7 +16,10 @@ import {
     type FunctionWithBody,
     variableKind,
     writeSites,
+    isMemberAccess,
+    type MemberAccess,
 } from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import { admitsUndefined, callSignatures, nullability } from "./type-facts.js";
 import { numberFormatOf } from "./number-intrinsics.js";
 
@@ -276,11 +279,11 @@ export function isLibraryNumberFormatter(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): boolean {
-    const callee = unwrapExpression(call.expression);
+    const callee = namedMember(checker, unwrapExpression(call.expression));
     const declaration = calledDeclaration(checker, call);
     return (
-        ts.isPropertyAccessExpression(callee) &&
-        numberFormatOf(callee.name.text) !== undefined &&
+        callee !== undefined &&
+        numberFormatOf(callee.name) !== undefined &&
         declaration !== undefined &&
         declarationInDefaultLibrary(declaration) &&
         ts.isInterfaceDeclaration(declaration.parent) &&
@@ -722,6 +725,117 @@ export function staticAccessKey(
 }
 
 /**
+ * A member an access names by a key the checker knows. `o.m`, `o["m"]` and
+ * `o[K]` with `const K = "m"` are one member, `name` "m"; `o[0]` and
+ * `o["0"]` are member "0". A key that only the run time knows, or whose
+ * expression runs code (a call, a write, a user getter), names none: the
+ * access keeps its run-time key.
+ */
+export interface NamedMember {
+    /** The access itself, `o.m` or `o["m"]`. */
+    readonly access: MemberAccess;
+    /** The receiver, `o`. */
+    readonly expression: ts.Expression;
+    /** The member's key ({@link staticAccessKey}). */
+    readonly name: string;
+    /** The node that spells the key, for diagnostics. */
+    readonly key: ts.Node;
+}
+
+/**
+ * The one reader of the member a call or read names: every name-keyed
+ * dispatcher asks it, so the dotted and the static-keyed spelling are one
+ * member everywhere.
+ */
+export function namedMember(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): NamedMember | undefined {
+    if (ts.isPropertyAccessExpression(node))
+        return {
+            access: node,
+            expression: node.expression,
+            name: node.name.text,
+            key: node.name,
+        };
+    if (
+        !ts.isElementAccessExpression(node) ||
+        keyMayRunCode(checker, node.argumentExpression)
+    )
+        return undefined;
+    const name = staticAccessKey(checker, node);
+    return name === undefined
+        ? undefined
+        : {
+              access: node,
+              expression: node.expression,
+              name,
+              key: node.argumentExpression,
+          };
+}
+
+/** A static member of a library global: `Object.keys`, `Math["max"]`. */
+export interface LibraryStaticMember extends NamedMember {
+    /** The global ({@link libraryGlobal}): "Object", "Math". */
+    readonly owner: string;
+}
+
+/**
+ * The library global's static member a callee names ({@link namedMember}
+ * on a {@link libraryGlobal} receiver), or undefined.
+ */
+export function libraryStaticMember(
+    checker: ts.TypeChecker,
+    callee: ts.Node,
+): LibraryStaticMember | undefined {
+    const member = namedMember(checker, callee);
+    if (!member) return undefined;
+    const owner = libraryGlobal(checker, member.expression);
+    return owner === undefined ? undefined : { ...member, owner };
+}
+
+/** Whether a library static member is `owner.name`. */
+export function isLibraryStatic(
+    member: LibraryStaticMember | undefined,
+    owner: string,
+    name: string,
+): boolean {
+    return member?.owner === owner && member.name === name;
+}
+
+/**
+ * The member an access names on an array-like receiver: an index key
+ * (`xs[0]`, `xs["0"]`) reads an element and names none.
+ */
+export function arrayMemberName(
+    checker: ts.TypeChecker,
+    access: MemberAccess,
+): string | undefined {
+    const name = namedMember(checker, access)?.name;
+    return name === undefined ||
+        (ts.isElementAccessExpression(access) && String(Number(name)) === name)
+        ? undefined
+        : name;
+}
+
+/** A reader's view of {@link namedMember}, bound to its program. */
+export type MemberReader = (node: ts.Node) => NamedMember | undefined;
+
+/** Whether a key expression's evaluation runs code: an effect or a user getter. */
+function keyMayRunCode(checker: ts.TypeChecker, key: ts.Expression): boolean {
+    return (
+        expressionHasEffects(key) ||
+        someAnalysisNode(
+            key,
+            (node) =>
+                isMemberAccess(node) &&
+                memberAccessors(checker, node, "get").length > 0,
+            { functions: "skip", types: "skip" },
+        )
+    );
+}
+
+/**
  * Whether a value can carry `key` as its type knows it: a declared property,
  * an index signature, or a type that names no members (`any`, `unknown`).
  */
@@ -918,13 +1032,14 @@ export function libraryGlobal(
             ? node.text
             : undefined;
     }
-    if (!ts.isPropertyAccessExpression(node)) return undefined;
-    const owner = unwrapExpression(node.expression);
+    const member = namedMember(checker, node);
+    if (!member) return undefined;
+    const owner = unwrapExpression(member.expression);
     return ts.isIdentifier(owner) &&
         GLOBAL_OBJECT_NAMES.has(owner.text) &&
         libraryGlobal(checker, owner) === owner.text &&
-        declaredInDefaultLibrary(resolvedSymbol(checker, node))
-        ? node.name.text
+        declaredInDefaultLibrary(accessedPropertySymbol(checker, member.access))
+        ? member.name
         : undefined;
 }
 
@@ -1142,11 +1257,9 @@ export class CompilerSymbols {
         active?: Set<ts.Symbol>,
     ): string | undefined {
         const identifier = unwrapExpression(expression);
-        if (
-            ts.isPropertyAccessExpression(identifier) ||
-            ts.isElementAccessExpression(identifier)
-        ) {
-            const owner = unwrapExpression(identifier.expression);
+        const member = namedMember(this.checker, identifier);
+        if (member) {
+            const owner = unwrapExpression(member.expression);
             if (!ts.isIdentifier(owner)) return undefined;
             const imported = this.importModuleSpecifier(owner);
             if (
@@ -1155,7 +1268,7 @@ export class CompilerSymbols {
                 !isBabylonModule(imported.specifier)
             )
                 return undefined;
-            const name = accessKey(identifier);
+            const name = member.name;
             return name &&
                 this.checker.getPropertyOfType(
                     this.checker.getTypeAtLocation(owner),

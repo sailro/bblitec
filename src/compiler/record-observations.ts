@@ -21,6 +21,7 @@ import {
     resolvedSymbol,
     nullishLiteral,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import {
     expressionMayRunCode,
@@ -1103,17 +1104,15 @@ function newArrayExpression(
             newArrayExpression(checker, operand),
         );
     // These methods return their receiver.
+    const method = ts.isCallExpression(unwrapped)
+        ? namedMember(checker, unwrapped.expression)
+        : undefined;
     if (
-        ts.isCallExpression(unwrapped) &&
-        ts.isPropertyAccessExpression(unwrapped.expression) &&
-        ["fill", "copyWithin", "reverse", "sort"].includes(
-            unwrapped.expression.name.text,
-        ) &&
-        checker.isArrayLikeType(
-            checker.getTypeAtLocation(unwrapped.expression.expression),
-        )
+        method &&
+        ["fill", "copyWithin", "reverse", "sort"].includes(method.name) &&
+        checker.isArrayLikeType(checker.getTypeAtLocation(method.expression))
     )
-        return newArrayExpression(checker, unwrapped.expression.expression);
+        return newArrayExpression(checker, method.expression);
     return yieldsNewArray(checker, unwrapped);
 }
 
