@@ -27,6 +27,7 @@ import {
 import {
     forEachAnalysisNode,
     someAnalysisNode,
+    sourceFileNodes,
 } from "./compiler/analysis-walk.js";
 import {
     emissionArray,
@@ -3279,7 +3280,7 @@ class Compiler implements LoweringServices {
         while (changed) {
             changed = false;
             for (const file of files) {
-                const written = someAnalysisNode(file, (node) => {
+                const written = sourceFileNodes(file).some((node) => {
                     if (
                         ts.isReturnStatement(node) &&
                         node.expression &&

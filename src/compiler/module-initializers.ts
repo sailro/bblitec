@@ -2,7 +2,11 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { typeCanCarryReference, callSignatures } from "./type-facts.js";
 import { isRuntimeImport } from "../module-imports.js";
-import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
+import {
+    findAnalysisNode,
+    forEachAnalysisNode,
+    sourceFileNodes,
+} from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import { receiverWritingMethods } from "./receiver-methods.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
@@ -101,7 +105,7 @@ export function moduleContainerReferenceFiles(
         for (const file of program.getSourceFiles()) {
             if (file.isDeclarationFile) continue;
             const referenced = new Set<ts.Symbol>();
-            forEachAnalysisNode(file, (node) => {
+            sourceFileNodes(file).forEach((node) => {
                 if (
                     !ts.isIdentifier(node) &&
                     !ts.isPropertyAccessExpression(node) &&
@@ -314,7 +318,7 @@ function collectMutatedContainerSymbols(
         )
             record(current.expression);
     };
-    forEachAnalysisNode(sourceFile, (node) => {
+    sourceFileNodes(sourceFile).forEach((node) => {
         if (
             ts.isVariableDeclaration(node) &&
             ts.isIdentifier(node.name) &&
