@@ -15,6 +15,7 @@ import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
     findAnalysisNode,
+    sourceFileNodes,
 } from "./analysis-walk.js";
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -617,7 +618,7 @@ export function aliasedMutationScan(
     };
     while (changed) {
         changed = false;
-        const mutated = someAnalysisNode(source, (node) => {
+        const mutated = sourceFileNodes(source).some((node) => {
             if (walk.mutates(node, scan)) return true;
             if (ts.isVariableDeclaration(node) && node.initializer) {
                 if (ts.isIdentifier(node.name)) {

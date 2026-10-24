@@ -801,8 +801,24 @@ function inDestructuringPattern(node: ts.Node): boolean {
     );
 }
 
+/** @unjournaled Parsed syntax is immutable: a node's write sites, kept. */
+const parsedWriteSites = new WeakMap<ts.Node, readonly WriteSite[]>();
+
 /** The places `node` itself writes; writes nested in its operands are their own sites. */
 export function writeSites(node: ts.Node): readonly WriteSite[] {
+    // Factory nodes may acquire another parent, which a pattern's role reads.
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    if (!parsed) return nodeWriteSites(node);
+    let sites = parsedWriteSites.get(node);
+    if (!sites) {
+        sites = nodeWriteSites(node);
+        parsedWriteSites.set(node, sites);
+    }
+    return sites;
+}
+
+function nodeWriteSites(node: ts.Node): readonly WriteSite[] {
     // `[a = 1] = values`: a pattern's default is read, not assigned.
     if (isAssignmentExpression(node) && inDestructuringPattern(node)) return [];
     if (isAssignmentExpression(node)) {
