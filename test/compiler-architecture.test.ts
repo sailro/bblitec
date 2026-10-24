@@ -286,7 +286,6 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/declarations.ts",
         "src/compiler/expressions.ts",
         "src/compiler/handle-collections.ts",
-        "src/compiler/intrinsics/asset.ts",
         "src/compiler/intrinsics/engine.ts",
         "src/compiler/intrinsics/material.ts",
         "src/compiler/intrinsics/particle.ts",
@@ -1196,12 +1195,13 @@ test("string concatenation operands and number formats are read once", () => {
 test("an intrinsic's conditional arms are selected by one rule", () => {
     // selectArms tests the condition by truthiness and runs each arm's
     // preparation only on its own branch; intrinsics that spell `c ? a : b`
-    // over their own arm spellings use it.
+    // over their own arm spellings use it, as table-options.ts does for a
+    // table option's arms.
     for (const path of [
         "src/compiler/assignments.ts",
-        "src/compiler/intrinsics/asset.ts",
         "src/compiler/intrinsics/physics.ts",
         "src/compiler/intrinsics/sprite.ts",
+        "src/compiler/table-options.ts",
     ])
         assert.ok(sourceFacts(path).members.has("selectArms"), path);
 });
@@ -1651,6 +1651,33 @@ test("a var's definite assignment is a syntactic analysis, and its frame the eva
     assert.deepEqual(declarationOwners("definitelyAssignedAt"), [
         "src/compiler/definite-assignment.ts",
     ]);
+});
+
+test("an enum-like intrinsic option reads its string through table-options.ts", () => {
+    // A string looked up in a pin table, a `?:` over its arms and a run-time
+    // literal union matched against each member's spelling are
+    // table-options.ts's; no intrinsic matches a union's members itself.
+    for (const name of [
+        "compileTableOption",
+        "staticTableOption",
+        "staticTableEntry",
+        "staticTableValue",
+        "tableOptionValue",
+        "tableEntry",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/table-options.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/compiler/intrinsics/") &&
+                sourceFacts(path).members.has("enumMemberCpp"),
+        ),
+        [],
+    );
 });
 
 test("a value is written to an assignment target through one owner", () => {

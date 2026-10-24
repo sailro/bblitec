@@ -20,6 +20,18 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 import { renderClosure } from "./closure-captures.js";
 import { knownCondition } from "./values/model.js";
+import { staticTableEntry, type TableOption } from "./table-options.js";
+
+const trackInterpolation: TableOption = {
+    table: {
+        linear: "bbl::PropertyAnimationInterpolation::linear",
+        step: "bbl::PropertyAnimationInterpolation::step",
+    },
+    refusal: (interpolation) =>
+        `Unsupported property animation interpolation '${interpolation}'.`,
+    name: "property animation interpolation",
+    label: "interpolation",
+};
 
 export interface PropertyAnimationContext extends Pick<
     LoweringServices,
@@ -31,6 +43,7 @@ export interface PropertyAnimationContext extends Pick<
     | "compileNumber"
     | "compileBoolean"
     | "compileStaticString"
+    | "compileStringLiteral"
     | "cppString"
     | "fail"
 > {}
@@ -564,14 +577,12 @@ export function compilePropertyAnimationClip(
             "interpolation",
         );
         const interpolation = interpolationExpression
-            ? context.compileStaticString(interpolationExpression)
-            : "linear";
-        if (!["linear", "step"].includes(interpolation)) {
-            context.fail(
-                interpolationExpression!,
-                `Unsupported property animation interpolation '${interpolation}'.`,
-            );
-        }
+            ? staticTableEntry(
+                  context,
+                  trackInterpolation,
+                  interpolationExpression,
+              )
+            : trackInterpolation.table.linear!;
         const trackFrameRateExpression = context.objectProperty(
             track,
             "frameRate",
@@ -616,7 +627,7 @@ export function compilePropertyAnimationClip(
             );
             return `bbl::PropertyAnimationKey{${time}, ${value}}`;
         });
-        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, bbl::PropertyAnimationInterpolation::${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
+        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, ${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
     });
     const name = context.compileStaticString(nameExpression);
     return {

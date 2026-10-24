@@ -247,6 +247,14 @@ export function operandYield(
     }
 }
 
+/** The `c ? a : b` an expression is, past its wrappers. */
+export function conditionalExpression(
+    expression: ts.Expression,
+): ts.ConditionalExpression | undefined {
+    const node = unwrapExpression(expression);
+    return ts.isConditionalExpression(node) ? node : undefined;
+}
+
 /** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
 export function isOperandSelection(node: ts.Node): boolean {
     return (

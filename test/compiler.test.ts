@@ -14891,6 +14891,52 @@ test("a realm's module texture URLs take a union suffix and its address modes at
     );
 });
 
+test("an enum-like intrinsic option reads its string through one pin table", () => {
+    const result = compileSource(`
+        import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(smooth: boolean): Promise<void> {
+            const engine = await createEngine({});
+            const sampling: "linear" | "nearest" = smooth ? "linear" : "nearest";
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1], sampling });
+            createSprite2DLayer(atlas, { capacity: 1, depth: "test-write" });
+            await loadTexture2D(engine, "a.png", { addressModeU: smooth ? "repeat" : "mirror-repeat" });
+        }
+        void main(Math.random() > 0.5);
+    `);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_sampling == bblscene::\w+::linear \? bbl::TextureFilter::linear : bbl::TextureFilter::nearest\)/,
+    );
+    assert.match(result.cpp, /bbl::Sprite2DDepthMode::test_write/);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_smooth \? bbl::TextureAddressMode::repeat : bbl::TextureAddressMode::mirror\)/,
+    );
+    // An option a generation-time decision reads takes a known string.
+    const engine = `import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});`;
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const mode: "nearest" | "linear" = Math.random() > 0.5 ? "nearest" : "linear";
+            await loadTexture2D(engine, "a.png", { minFilter: mode });
+        }
+        void main();`),
+        /A texture filter must be a generation-known string/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1] });
+            const mode: "none" | "test" = Math.random() > 0.5 ? "none" : "test";
+            createSprite2DLayer(atlas, { capacity: 1, depth: mode });
+        }
+        void main();`),
+        /A sprite layer depth mode must be a generation-known string/,
+    );
+});
+
 test("preserves numeric tuple identity except through array spread", () => {
     const result = compileSource(`
         type V3 = [number, number, number];
