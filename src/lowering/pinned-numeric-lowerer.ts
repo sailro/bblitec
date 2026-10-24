@@ -34,11 +34,7 @@ import {
     pinnedMember,
 } from "../pinned-program.js";
 import { declaredSymbol } from "../compiler/symbols.js";
-import {
-    MATH_MEMBERS,
-    mathCallSpelling,
-    mathMemberAccess,
-} from "../compiler/math-intrinsics.js";
+import { MATH_MEMBERS, mathMemberAccess } from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -4712,7 +4708,7 @@ export class PinnedNumericLowerer {
             const arguments_ = this.scope.mathValue
                 ? args.map(this.scope.mathValue.argument)
                 : args;
-            const result = mathCallSpelling(method)?.(
+            const result = MATH_MEMBERS.get(method)?.cpp(
                 arguments_,
                 node.arguments.map((argument) => this.staticNumberOf(argument)),
             );

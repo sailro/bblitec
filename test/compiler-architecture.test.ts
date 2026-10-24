@@ -1101,7 +1101,6 @@ test("Math is folded, spelled and resolved through math-intrinsics.ts", () => {
         ["src/lowering/context.ts", "mathConstantAccess"],
         ["src/lowering/gltf/cpp-expression.ts", "mathMemberAccess"],
         ["src/lowering/pinned-numeric-lowerer.ts", "mathMemberAccess"],
-        ["src/lowering/pinned-record-lowerer.ts", "mathExtremeCpp"],
     ] as const)
         assert.ok(sourceFacts(path).calls.has(recognizer), path);
     for (const path of [
@@ -1848,4 +1847,19 @@ test("a pinned for-of reads what it walks off the collection's binding", () => {
         .split(/\r?\n {4}\}\r?\n/);
     assert.ok(iteration.includes("this.binding(statement.expression)"));
     assert.ok(!/sameSource|Shape\(|sourceEntry/.test(iteration), iteration);
+});
+
+test("a Math member is one row of MATH_MEMBERS", () => {
+    // max and min are variadic rows like hypot: one fold, one spelling and
+    // one spread path every reader shares.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path !== "src/compiler/math-intrinsics.ts" &&
+                /\b(?:mathExtremeCall|mathExtremeCpp|mathCallSpelling)\b/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
 });

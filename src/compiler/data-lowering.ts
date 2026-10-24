@@ -166,8 +166,6 @@ import {
     describeMathArity,
     foldMathCall,
     MATH_MEMBERS,
-    mathExtremeCall,
-    mathExtremeCpp,
     mathMemberAccess,
 } from "./math-intrinsics.js";
 import {
@@ -8641,15 +8639,83 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             call.arguments.map((argument) =>
                 this.context.compileNumber(argument, "double"),
             );
+        const member = MATH_MEMBERS.get(method);
+        if (!member)
+            return this.context.fail(
+                callee.key,
+                `Math.${method} is not supported.`,
+            );
+        const count = call.arguments.length;
+        if (member.variadic ? count < member.arity : count !== member.arity)
+            this.context.fail(
+                call,
+                `Math.${method} expects ${describeMathArity(member)}.`,
+            );
+        const only = count === 1 ? argumentAt(call, 0) : undefined;
+        if (member.rangeCpp && only && ts.isSpreadElement(only)) {
+            // One spread: the iterated range itself, no rest array; an
+            // exact member folds over static lanes.
+            const spread = this.context.compileValue(only.expression);
+            const iterated = this.iteratedElements(spread);
+            let range: string | undefined;
+            if (iterated && "lanes" in iterated) {
+                const parts = iterated.lanes.map(
+                    (element) => element.staticNumber,
+                );
+                const folded = parts.every(
+                    (part): part is number => part !== undefined,
+                )
+                    ? foldMathCall(method, parts)
+                    : undefined;
+                if (folded !== undefined) {
+                    this.context.emitDiscardedValue(spread);
+                    return numberConstantValue(folded);
+                }
+                range = this.compileKnownValueForSink(
+                    spread,
+                    { kind: "vector", element: { kind: "number" } },
+                    only.expression,
+                );
+            } else if (iterated?.element.kind === "number")
+                range = iterated.range.cpp;
+            if (range === undefined)
+                return this.context.fail(
+                    only,
+                    `Math.${method} spread requires an array of numbers.`,
+                );
+            const source = this.context.allocateTemporaryCppName(
+                `math_${method}_source`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: source,
+                initializer: range,
+            });
+            this.context.reachJsData();
+            const result = this.context.allocateTemporaryCppName(
+                `math_${method}_result`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: result,
+                initializer: member.rangeCpp(source),
+            });
+            return {
+                kind: "number",
+                cpp: result,
+                dataType: { kind: "number" },
+            };
+        }
         // An exact member folds over static arguments (foldMathCall says
         // which), so a scene that hands one to generation-time state (a
         // particle column) gets the value rather than the expression.
-        const member = MATH_MEMBERS.get(method);
-        if (member?.fold) {
-            // Folded from the SOURCE, never from a compiled value: this arm
-            // runs before the runtime path compiles the arguments, and
-            // compiling one speculatively would emit an inlined body twice
-            // when the fold misses.
+        // Folded from the SOURCE, never from a compiled value: this arm runs
+        // before the runtime path compiles the arguments, and compiling one
+        // speculatively would emit an inlined body twice when the fold
+        // misses.
+        if (member.fold && !call.arguments.some(ts.isSpreadElement)) {
             const values = call.arguments.map((argument) =>
                 staticNumberValue(this.context, argument),
             );
@@ -8660,143 +8726,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : undefined;
             if (folded !== undefined) return numberConstantValue(folded);
         }
-        if (member) {
-            const count = call.arguments.length;
-            if (
-                member.variadic ? count < member.arity : count !== member.arity
-            ) {
-                this.context.fail(
-                    call,
-                    `Math.${method} expects ${describeMathArity(member)}.`,
-                );
-            }
-            if (method === "pow") {
-                const [base, exponent] = numbers();
-                const power = exponentiationCall(
-                    base!,
-                    exponent!,
-                    staticNumberValue(this.context, argumentAt(call, 1)),
-                );
-                if (power.jsData) this.context.reachJsData();
-                return {
-                    kind: "number",
-                    cpp: power.cpp,
-                    dataType: { kind: "number" },
-                };
-            }
-            const cpp =
-                member.variadic &&
-                member.rangeCpp &&
-                call.arguments.some(ts.isSpreadElement)
-                    ? member.rangeCpp(
-                          this.compileFunctionArguments(call, {
-                              kind: "function",
-                              restParameter: 0,
-                              parameters: [
-                                  {
-                                      kind: "vector",
-                                      element: { kind: "number" },
-                                  },
-                              ],
-                          })[0]!,
-                      )
-                    : member.cpp(numbers());
-            if (member.reach !== undefined) this.context.reachJsData();
-            if (member.reach === "js-random") this.context.reachJsRandom();
-            return {
-                kind: "number",
-                cpp,
-                dataType: { kind: "number" },
-                ...(member.impure ? { impure: true } : {}),
-            };
-        }
-        if (method === "max" || method === "min") {
-            const only =
-                call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
-            if (only && ts.isSpreadElement(only)) {
-                const spread = this.context.compileValue(only.expression);
-                const iterated = this.iteratedElements(spread);
-                let range: string | undefined;
-                if (iterated && "lanes" in iterated) {
-                    const parts = iterated.lanes.map(
-                        (element) => element.staticNumber,
-                    );
-                    if (
-                        parts.every(
-                            (part): part is number => part !== undefined,
-                        )
-                    ) {
-                        this.context.emitDiscardedValue(spread);
-                        return numberConstantValue(
-                            foldMathCall(method, parts)!,
-                        );
-                    }
-                    range = this.compileKnownValueForSink(
-                        spread,
-                        { kind: "vector", element: { kind: "number" } },
-                        only.expression,
-                    );
-                } else if (iterated?.element.kind === "number")
-                    range = iterated.range.cpp;
-                if (range === undefined)
-                    return this.context.fail(
-                        argumentAt(call, 0),
-                        `Math.${method} spread requires an array of numbers.`,
-                    );
-                const source = this.context.allocateTemporaryCppName(
-                    `math_${method}_source`,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto&&",
-                    name: source,
-                    initializer: range,
-                });
-                this.context.reachJsData();
-                const result = this.context.allocateTemporaryCppName(
-                    `math_${method}_result`,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name: result,
-                    initializer: mathExtremeCpp(method, source),
-                });
-                return {
-                    kind: "number",
-                    cpp: result,
-                    dataType: { kind: "number" },
-                };
-            }
-            if (call.arguments.some(ts.isSpreadElement)) {
-                const packed = this.compileFunctionArguments(call, {
-                    kind: "function",
-                    restParameter: 0,
-                    parameters: [
-                        { kind: "vector", element: { kind: "number" } },
-                    ],
-                })[0]!;
-                this.context.reachJsData();
-                return this.leafValue(mathExtremeCpp(method, packed), {
-                    kind: "number",
-                });
-            }
-            const staticParts = call.arguments.map((argument) =>
-                this.context.evaluator.staticNumberThroughRecords(argument),
+        if (method === "pow") {
+            const [base, exponent] = numbers();
+            const power = exponentiationCall(
+                base!,
+                exponent!,
+                staticNumberValue(this.context, argumentAt(call, 1)),
             );
-            if (staticParts.every((part): part is number => part !== undefined))
-                return numberConstantValue(foldMathCall(method, staticParts)!);
-            // The list evaluates left to right without a rest-array allocation;
-            // stored and direct calls share NaN and signed-zero behavior.
-            const parts = numbers();
-            this.context.reachJsData();
+            if (power.jsData) this.context.reachJsData();
             return {
                 kind: "number",
-                cpp: mathExtremeCall(method, parts),
+                cpp: power.cpp,
                 dataType: { kind: "number" },
             };
         }
-        this.context.fail(callee.key, `Math.${method} is not supported.`);
+        // A list evaluates left to right without a rest-array allocation;
+        // a spread among other arguments packs one.
+        const cpp =
+            member.rangeCpp && call.arguments.some(ts.isSpreadElement)
+                ? member.rangeCpp(
+                      this.compileFunctionArguments(call, {
+                          kind: "function",
+                          restParameter: 0,
+                          parameters: [
+                              {
+                                  kind: "vector",
+                                  element: { kind: "number" },
+                              },
+                          ],
+                      })[0]!,
+                  )
+                : member.cpp(numbers());
+        if (member.reach !== undefined) this.context.reachJsData();
+        if (member.reach === "js-random") this.context.reachJsRandom();
+        return {
+            kind: "number",
+            cpp,
+            dataType: { kind: "number" },
+            ...(member.impure ? { impure: true } : {}),
+        };
     }
 
     /**

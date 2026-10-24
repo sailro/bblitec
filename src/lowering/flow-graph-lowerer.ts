@@ -31,7 +31,7 @@
  * name rather than approximating.
  */
 import ts from "typescript";
-import { foldMathCall, mathCallSpelling } from "../compiler/math-intrinsics.js";
+import { foldMathCall, MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral,
     sanitizeCppIdentifier,
@@ -1840,7 +1840,7 @@ class Interpreter implements ValueModel<Val, Binding> {
             ? foldMathCall(method, numbers)
             : undefined;
         if (folded !== undefined) return staticNumber(folded);
-        const spell = mathCallSpelling(method);
+        const spell = MATH_MEMBERS.get(method)?.cpp;
         if (!spell) this.fail(node, `Math.${method}`);
         return {
             k: "residual",
