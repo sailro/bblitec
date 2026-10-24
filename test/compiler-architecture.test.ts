@@ -1619,6 +1619,19 @@ test("a `var` binds through var-bindings.ts", () => {
         );
 });
 
+test("an await suspends through one co_await and one void settlement", () => {
+    // AsyncLowerer.suspend spells every await's co_await; asPromise spells
+    // the void promise an erased await and a void operand settle.
+    const source = sourceText("src/compiler/async.ts");
+    assert.equal(source.split("co_await ${").length - 1, 1);
+    assert.equal(
+        source.split(
+            "bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+        ).length - 1,
+        1,
+    );
+});
+
 test("a value is written to an assignment target through one owner", () => {
     // emitAssignmentTargetWrite writes a computed value as `target = value`
     // would (a variable, a member, an array or object pattern): the
