@@ -539,9 +539,9 @@ export function memberElement(
     members: ReadonlyMap<string, PinnedBinding>,
 ): (name: string) => Map<string, PinnedBinding> {
     return (name) =>
-        new Map<string, PinnedBinding>([
+        new Map([
             ...[...members].filter(([port]) => port.startsWith(`${name}.`)),
-            [name, { cpp: name, type: "opaque" }],
+            ...opaqueElement(name),
         ]);
 }
 

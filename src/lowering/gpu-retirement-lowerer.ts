@@ -1,10 +1,9 @@
 import ts from "typescript";
 import { type LoweredSource, type LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import {
-    opaqueElement,
-    type PinnedBinding,
-    type PinnedNumericLowerer,
+import type {
+    PinnedBinding,
+    PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { isExpressionWrapper } from "../compiler/syntax.js";
 
@@ -132,10 +131,10 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
                           ...(value.kind === "batch"
                               ? { range: `*${value.cpp}` }
                               : {}),
-                          element: (name) => {
-                              bind(name, { kind, cpp: name });
-                              return opaqueElement(name);
-                          },
+                          element: (name) =>
+                              new Map([
+                                  [name, bind(name, { kind, cpp: name })],
+                              ]),
                       },
                   }
                 : {};
