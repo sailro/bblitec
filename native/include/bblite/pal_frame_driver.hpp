@@ -73,8 +73,11 @@ public:
         std::suspend_always initial_suspend() const noexcept { return {}; }
         std::suspend_never final_suspend() const noexcept { return {}; }
         std::suspend_always yield_value(bool rendered) {
-            if (rendered)
+            if (rendered) {
                 state->ready.resolve(js::PromiseVoid{});
+                // The capture clock starts with the first rendered frame.
+                state->loop->start_fixed_animation_time();
+            }
             // Keep the final GPU frame and suspended renderer alive until the
             // Window has captured every engine and tears down the realm.
             if (rendered && state->capture_remaining) {
@@ -86,12 +89,17 @@ public:
             state->schedule();
             return {};
         }
-        void return_value(bool ran) { state->finished.resolve(ran); }
+        // A renderer that ends without a frame releases the capture clock.
+        void return_value(bool ran) {
+            state->loop->start_fixed_animation_time();
+            state->finished.resolve(ran);
+        }
         void unhandled_exception() {
             try {
                 throw;
             } catch (const WorkerTerminated&) {
             } catch (...) {
+                state->loop->start_fixed_animation_time();
                 state->ready.reject(std::current_exception());
                 state->finished.reject(std::current_exception());
             }

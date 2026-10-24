@@ -112,6 +112,9 @@ buffer; SDL delays draw encoding until final writes exist. Resize recreates targ
 - `close` finishes the active callback and microtasks; `terminate` stops at compiled cancellation points only.
 - Window pacing: compositor-clock heartbeat on Windows (mailbox, FIFO fallback), presentation completion elsewhere.
   A three-image mailbox keeps the latest frame; captures use readback.
+- Fixed capture clock (`BBLITE_FRAME_DELTA_MS`): an engine realm's clock holds at zero until the engine's first
+  rendered frame. Each animation frame ends with the Window applying the document at that frame's time, which also
+  times its CSS animations, and each repaint presents only its completed animation frame.
 - Native jobs (`pal_native_job.hpp`) settle on the realm in start order, one task each, on the shared bounded workers
   (`pal_native_workers.hpp`); native work never waits on native work. Jobs: `loadTexture2D` decode, `loadGltf`
   reads/parsing/decoding, IBL BRDF reads, packaged `fetch` reads, audio device opens and decodes.

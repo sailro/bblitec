@@ -17,6 +17,11 @@ namespace pal {
 void advance_performance_milliseconds(double) {
     throw std::logic_error("Unexpected fixture frame clock");
 }
+/** The latest realm timeline time the Window display's clock followed. */
+inline double fixture_followed_milliseconds = 0;
+void advance_performance_milliseconds_to(double milliseconds) {
+    fixture_followed_milliseconds = std::max(fixture_followed_milliseconds, milliseconds);
+}
 std::size_t process_working_set_bytes() {
     throw std::logic_error("Unexpected fixture memory profile");
 }

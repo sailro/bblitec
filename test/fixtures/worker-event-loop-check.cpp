@@ -177,6 +177,49 @@ void fixed_animation_clock() {
     loop.close();
 }
 
+void held_fixed_animation_clock() {
+    // An engine's capture clock holds at zero through its setup frames, starts
+    // with its first rendered frame, and every frame ends with the rendering update.
+    bbl::pal::AnimationFrameSource display;
+    const auto origin = EventLoop::Clock::now();
+    EventLoop loop(std::make_shared<EventLoop::Inbox>(), origin);
+    display.subscribe(loop.inbox());
+    std::vector<std::string> order;
+    const auto stamp = [](const char* name, double time) {
+        return std::string(name) + ":" + std::to_string(static_cast<int>(time));
+    };
+    int setup_frames = 2;
+    std::function<void(double)> frame = [&](double time) {
+        if (setup_frames > 0) {
+            --setup_frames;
+            order.push_back(stamp("setup", time));
+        } else {
+            order.push_back(stamp("frame", time));
+            loop.start_fixed_animation_time();
+        }
+        loop.request_animation_frame(frame);
+    };
+    loop.post([&] {
+        loop.use_fixed_animation_time(10, /*held=*/true);
+        loop.set_timeout([&] { order.push_back(stamp("timeout", loop.now())); }, 10);
+        loop.on_rendering_update(
+            [&] { order.push_back(stamp("render", loop.fixed_animation_time().value_or(-1))); });
+        loop.request_animation_frame(frame);
+    });
+    while (loop.poll()) {
+    }
+    for (int tick = 0; tick < 5; ++tick) {
+        display.tick(origin + std::chrono::milliseconds(1000 + tick * 3));
+        while (loop.poll()) {
+        }
+    }
+    require(order == std::vector<std::string>{"setup:0", "render:0", "setup:0", "render:0",
+                                              "frame:0", "render:0", "frame:10", "timeout:10",
+                                              "render:10", "frame:20", "render:20"},
+            "A held fixed clock must start with the first rendered frame and render each frame");
+    loop.close();
+}
+
 void animation_receipt_next_batch() {
     using Batch = bbl::pal::AnimationFrameSource::Batch;
     bbl::pal::AnimationFrameSource display;
@@ -672,6 +715,7 @@ int main(int argc, char** argv) {
         ordering_and_cancellation();
         display_animation_frames();
         fixed_animation_clock();
+        held_fixed_animation_clock();
         animation_receipt_next_batch();
         animation_receipt_cancellation();
         computation_without_graphics();

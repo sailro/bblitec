@@ -183,6 +183,7 @@ int main() {
             capture_ui = false;
             frame_times.clear();
             timer_time = -1;
+            fixture_followed_milliseconds = 0;
             assert(run_window_application(
                        [](WorkerRealm& realm) {
                            auto& loop = EventLoop::current();
@@ -197,6 +198,9 @@ int main() {
                 assert(entry_time == 0 && timer_time == 30);
                 for (std::size_t index = 0; index < frame_times.size(); ++index)
                     assert(frame_times[index] == static_cast<double>(index) * step);
+                // The display's CSS clock followed the realm's frames.
+                assert(fixture_followed_milliseconds > 0 &&
+                       fixture_followed_milliseconds <= frame_times.back());
             } else {
                 assert(entry_time > 0 && frame_times.front() > 0);
                 for (std::size_t index = 1; index < frame_times.size(); ++index)

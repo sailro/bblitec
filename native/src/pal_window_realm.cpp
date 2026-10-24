@@ -296,6 +296,8 @@ struct WindowServices final : CanvasProvider {
     /** When `capture_ready` last became true, and how long the active settles hold it. */
     std::atomic<double> capture_ready_since = 0;
     std::atomic<double> capture_settle_milliseconds = 0;
+    /** The application realm's fixed capture clock at its latest publication. */
+    std::atomic<double> document_time = 0;
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
@@ -1069,9 +1071,18 @@ bool window_on_application_error(bool rejection, std::uint64_t identity,
 void window_off_application_error(bool rejection, std::uint64_t identity) {
     current_document().errors->remove(rejection, identity);
 }
-void update_window_document(bool wait) {
+namespace {
+/**
+ * Publish the document's changes. `render` also has the display update the
+ * document when nothing changed, so its CSS animations reach the published
+ * time; it requires `wait`.
+ */
+void publish_window_document(bool wait, bool render) {
     auto& doc = current_document();
     auto& host = *doc.host;
+    // The display's CSS animations follow this realm's fixed capture clock.
+    if (const auto time = EventLoop::current().fixed_animation_time())
+        host.document_time.store(*time);
     const auto await_display = [&host](std::unique_lock<std::mutex>& lock, std::uint64_t revision) {
         host.wake.wait(lock, [&] { return host.stopping || host.completed >= revision; });
         if (host.stopping)
@@ -1113,16 +1124,18 @@ void update_window_document(bool wait) {
     std::unique_lock lock(host.mutex);
     if (host.stopping)
         throw WorkerTerminated{};
-    if (snapshot) {
-        snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
-        host.pending = std::move(snapshot);
+    if (snapshot || render) {
+        if (snapshot) {
+            snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
+            host.pending = std::move(snapshot);
+            doc.published_revision = doc.engine.ui_revision;
+            doc.published_text_revision = doc.engine.ui_text_revision;
+            doc.published_canvas_revision = doc.engine.ui_canvas_revision;
+            doc.published_focus_revision = doc.engine.ui_focus_revision;
+            doc.published_text_selection_revision = doc.engine.ui_text_selection_revision;
+            doc.published_input_revision = input_revision;
+        }
         const auto revision = ++host.requested;
-        doc.published_revision = doc.engine.ui_revision;
-        doc.published_text_revision = doc.engine.ui_text_revision;
-        doc.published_canvas_revision = doc.engine.ui_canvas_revision;
-        doc.published_focus_revision = doc.engine.ui_focus_revision;
-        doc.published_text_selection_revision = doc.engine.ui_text_selection_revision;
-        doc.published_input_revision = input_revision;
         host.wake.notify_all();
         if (wait)
             await_display(lock, revision);
@@ -1158,6 +1171,19 @@ void update_window_document(bool wait) {
         }
     }
 }
+
+/**
+ * Under the fixed capture clock an animation frame ends, as the browser's
+ * rendering update does, with the display updating the document and its CSS
+ * animations at the frame's time before the frame's canvases present.
+ */
+void render_window_document() {
+    if (EventLoop::current().fixed_animation_time())
+        publish_window_document(true, true);
+}
+} // namespace
+
+void update_window_document(bool wait) { publish_window_document(wait, false); }
 namespace {
 std::shared_ptr<const LayoutSnapshot> window_host_layout() {
     auto& doc = current_document();
@@ -1404,6 +1430,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
         WindowFrameClock compositor_clock(cpu_profile, capture_frame_count != 0 ||
                                                            frame_options.frame_budget() > 0);
         presenter->set_display_paced(compositor_clock.available());
+        // Under the fixed capture clock each repaint waits for its animation
+        // frame, as the browser capture's turns do, paced or not.
+        const bool fixed_clock = frame_options.frame_delta_ms > 0;
+        const bool batched_repaints = compositor_clock.available() || fixed_clock;
         // Reload replaces realm-owned state while keeping the native window and device.
         const auto location = std::make_shared<WindowLocation>();
         for (;;) {
@@ -1442,6 +1472,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     realm.provide_device_pixel_ratio(window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
+                    loop.on_rendering_update(render_window_document);
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
                         if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
                             EventLoop::current().dispatch_callback(
@@ -1599,6 +1630,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     snapshot = std::move(services->pending);
                     revision = services->requested;
                 }
+                // Under the fixed capture clock CSS animations run on the
+                // application realm's timeline.
+                advance_performance_milliseconds_to(services->document_time.load());
                 if (snapshot)
                     apply_document(display, std::move(*snapshot),
                                    [services](std::unique_ptr<ExternalEvent> event) {
@@ -1676,7 +1710,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     std::unique_lock lock(services->mutex);
                     services->wake.wait(lock, [&] {
                         return services->input_handled == services->input_posted || finished ||
-                               services->pending || services->message_box;
+                               services->completed < services->requested || services->message_box;
                     });
                     if (services->input_handled == services->input_posted || finished)
                         return;
@@ -1877,18 +1911,28 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 const double layout_finished = cpu_profile ? monotonic_milliseconds() : 0;
                 // Release completed image leases before waking their producers.
                 const bool presenter_ready = presenter->can_present();
-                if (compositor_clock.available()) {
-                    if (const auto timestamp = compositor_clock.take_latest())
+                if (batched_repaints) {
+                    if (!compositor_clock.available()) {
+                        if (!repaint_batch)
+                            next_repaint = EventLoop::Clock::now();
+                    } else if (const auto timestamp = compositor_clock.take_latest()) {
                         next_repaint = timestamp;
+                    }
                     if (!repaint_batch && next_repaint) {
                         repaint_batch = services->animation_frames->tick(*next_repaint);
                         next_repaint.reset();
                     }
                     // RAF callbacks can synchronously request layout. Keep pumping
                     // the host until their submissions finish, or the next display
-                    // heartbeat bounds the wait for a slow realm.
-                    if (!repaint_batch || (!repaint_batch->ready() && !next_repaint)) {
-                        compositor_clock.wait_for(std::chrono::milliseconds(1));
+                    // heartbeat bounds the wait for a slow realm. Under the fixed
+                    // capture clock every frame presents its whole animation
+                    // frame: canvases and the document rendered at its time.
+                    if (!repaint_batch ||
+                        (!repaint_batch->ready() && (fixed_clock || !next_repaint))) {
+                        if (compositor_clock.available())
+                            compositor_clock.wait_for(std::chrono::milliseconds(1));
+                        else
+                            SDL_Delay(1);
                         continue;
                     }
                 }
@@ -1984,7 +2028,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         final_screenshot_saved = true;
                 }
                 if (did_present) {
-                    if (compositor_clock.available()) {
+                    if (batched_repaints) {
                         repaint_batch.reset();
                     } else {
                         services->animation_frames->tick(EventLoop::Clock::now());
