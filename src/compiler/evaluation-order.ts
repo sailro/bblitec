@@ -27,6 +27,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
+    evaluationContainer,
     unwrapExpression,
     rootExpression,
     writeSites,
@@ -219,16 +220,6 @@ function conflicts(earlier: Access, later: Access): boolean {
         touches(earlier.reads, later.writes) ||
         touches(earlier.writes, later.writes)
     );
-}
-
-/** The function (or file) whose frame a declaration's variable lives in. */
-function evaluationContainer(node: ts.Node): ts.Node {
-    for (let current = node.parent; current; current = current.parent) {
-        if (ts.isFunctionLike(current) || ts.isSourceFile(current))
-            return current;
-        if (ts.isClassStaticBlockDeclaration(current)) return current;
-    }
-    return node.getSourceFile();
 }
 
 /** Whether `outer` lexically contains `inner`. */

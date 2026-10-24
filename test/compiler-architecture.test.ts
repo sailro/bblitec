@@ -1632,6 +1632,27 @@ test("an await suspends through one co_await and one void settlement", () => {
     );
 });
 
+test("a var's definite assignment is a syntactic analysis, and its frame the evaluation container", () => {
+    // var-bindings reads definite-assignment.ts, never the checker's
+    // diagnostics (a type check of the whole file); its scope is
+    // syntax.ts's evaluationContainer, which evaluation-order shares.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                sourceText(path).includes("getSemanticDiagnostics"),
+        ),
+        [],
+    );
+    assert.deepEqual(declarationOwners("evaluationContainer"), [
+        "src/compiler/syntax.ts",
+    ]);
+    assert.deepEqual(declarationOwners("definitelyAssignedAt"), [
+        "src/compiler/definite-assignment.ts",
+    ]);
+});
+
 test("a value is written to an assignment target through one owner", () => {
     // emitAssignmentTargetWrite writes a computed value as `target = value`
     // would (a variable, a member, an array or object pattern): the

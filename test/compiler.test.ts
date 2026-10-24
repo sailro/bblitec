@@ -9726,8 +9726,7 @@ test("shares one cell between the closures that capture and write a by-value bin
 });
 
 test("refuses a hoisted var read while it can be undefined its type cannot hold", () => {
-    // The scope's own read TypeScript reports used before assigned (TS2454),
-    // and one `!` asserts.
+    // The scope's own read some path reaches unassigned, `!` or not.
     for (const read of ["y", "y!"])
         assert.throws(
             () =>
@@ -9736,6 +9735,14 @@ test("refuses a hoisted var read while it can be undefined its type cannot hold"
                 ),
             /The `var` 'y' can be read here before it is assigned/,
         );
+    // A read inside a class the definite-assignment walk does not follow.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(c: boolean): number { if (c) { var y = 3; } class K { static v = y; } return K.v; } console.log(f(true));",
+            ),
+        /The `var` 'y' is read where its assignment runs through a ClassDeclaration, which the definite-assignment analysis does not follow/,
+    );
     // A function lowered before the walk reached an assignment.
     assert.throws(
         () =>

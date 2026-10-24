@@ -1688,6 +1688,36 @@ export function bindingNameIdentifiers(name: ts.BindingName): ts.Identifier[] {
     );
 }
 
+/**
+ * What owns a frame a function-scoped binding lives in: a function, a class
+ * static block, a namespace body (a function of its own at run time) or
+ * the file.
+ */
+export type EvaluationContainer =
+    | ts.SignatureDeclaration
+    | ts.ClassStaticBlockDeclaration
+    | ts.ModuleBlock
+    | ts.SourceFile;
+
+export function isEvaluationContainer(
+    node: ts.Node,
+): node is EvaluationContainer {
+    return (
+        ts.isFunctionLike(node) ||
+        ts.isClassStaticBlockDeclaration(node) ||
+        ts.isModuleBlock(node) ||
+        ts.isSourceFile(node)
+    );
+}
+
+/** The container whose frame a declaration's variable lives in. */
+export function evaluationContainer(node: ts.Node): EvaluationContainer {
+    return (
+        ts.findAncestor(node.parent, isEvaluationContainer) ??
+        node.getSourceFile()
+    );
+}
+
 /** Whether a node is written inside another. */
 export function isDeclaredInside(
     node: ts.Node,

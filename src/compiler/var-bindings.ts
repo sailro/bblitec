@@ -5,29 +5,27 @@
 // declaration assigns it where it sits (`var x = e` is `x = e`, `var x;`
 // nothing; a pattern or a for-in/of head assigns each name it binds).
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { sourceFileNodes } from "./analysis-walk.js";
+import { definitelyAssignedAt } from "./definite-assignment.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueSymbolOf } from "./symbols.js";
 import {
     bindingNameIdentifiers,
     declarationNamed,
-    hasNonNullAssertion,
+    evaluationContainer,
     isDeclaredInside,
+    isEvaluationContainer,
     isValueReference,
-    outermostWrapper,
     variableKind,
     writeSiteOf,
+    type EvaluationContainer,
     type WriteSite,
 } from "./syntax.js";
 import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
 
-/** What owns a `var`'s one binding. */
-type VarScope =
-    | ts.SignatureDeclaration
-    | ts.ClassStaticBlockDeclaration
-    | ts.SourceFile
-    | ts.ModuleBlock;
+/** What owns a `var`'s one binding: the frame it lives in. */
+type VarScope = EvaluationContainer;
 
 /** A `var` declaration: a declaration list's member or a pattern leaf of one. */
 type VarDeclaration = ts.VariableDeclaration | ts.BindingElement;
@@ -38,19 +36,10 @@ type VarDeclaration = ts.VariableDeclaration | ts.BindingElement;
  */
 type VarPlacement = "in-place" | "hoisted" | "shared";
 
-function isVarScope(node: ts.Node): node is VarScope {
-    return (
-        ts.isFunctionLike(node) ||
-        ts.isClassStaticBlockDeclaration(node) ||
-        ts.isSourceFile(node) ||
-        ts.isModuleBlock(node)
-    );
-}
+const isVarScope = isEvaluationContainer;
 
 /** The scope whose binding a `var` declared at `node` would be. */
-function varScopeOf(node: ts.Node): VarScope | undefined {
-    return ts.findAncestor(node.parent, isVarScope);
-}
+const varScopeOf = evaluationContainer;
 
 function isAmbient(node: ts.Declaration): boolean {
     return (
@@ -73,56 +62,88 @@ function varDeclarationNamed(
         : undefined;
 }
 
-/** Each scope's `var` names by symbol, with how each lowers. */
-const placements = new WeakMap<
+/** A scope's `var` names by symbol, with how each lowers, and its hoisted ones. */
+interface ScopeVars {
+    readonly placements: ReadonlyMap<ts.Symbol, VarPlacement>;
+    readonly hoisted: readonly ts.Symbol[];
+}
+
+const noVars: ScopeVars = { placements: new Map(), hoisted: [] };
+
+/** Each file's `var` scopes, decided once per checker. */
+const fileVars = new WeakMap<
     ts.TypeChecker,
-    WeakMap<VarScope, ReadonlyMap<ts.Symbol, VarPlacement>>
+    WeakMap<ts.SourceFile, ReadonlyMap<VarScope, ScopeVars>>
 >();
+
+function scopeVars(checker: ts.TypeChecker, scope: VarScope): ScopeVars {
+    const file = scope.getSourceFile();
+    let files = fileVars.get(checker);
+    if (!files) fileVars.set(checker, (files = new WeakMap()));
+    let scopes = files.get(file);
+    if (!scopes) files.set(file, (scopes = varScopes(checker, file)));
+    return scopes.get(scope) ?? noVars;
+}
 
 function scopePlacements(
     checker: ts.TypeChecker,
     scope: VarScope,
 ): ReadonlyMap<ts.Symbol, VarPlacement> {
-    let scopes = placements.get(checker);
-    if (!scopes) placements.set(checker, (scopes = new WeakMap()));
-    const cached = scopes.get(scope);
-    if (cached) return cached;
+    return scopeVars(checker, scope).placements;
+}
+
+/**
+ * One walk of a file: each `var` declaration under its scope, and the
+ * references to a name some `var` declares, resolved only then.
+ */
+function varScopes(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+): ReadonlyMap<VarScope, ScopeVars> {
     const declared = new Map<ts.Symbol, VarDeclaration[]>();
-    forEachAnalysisNode(
-        scope,
-        (node) => {
-            if (node !== scope && isVarScope(node)) return "skip";
-            if (!ts.isIdentifier(node)) return;
-            const declaration = varDeclarationNamed(node);
-            const symbol = declaration && valueSymbolOf(checker, node);
-            if (!declaration || !symbol) return;
-            const list = declared.get(symbol);
-            if (list) list.push(declaration);
-            else declared.set(symbol, [declaration]);
-        },
-        { types: "skip" },
-    );
+    const scopeOf = new Map<ts.Symbol, VarScope>();
+    const names = new Set<string>();
+    const candidates: ts.Identifier[] = [];
+    for (const node of sourceFileNodes(file)) {
+        if (!ts.isIdentifier(node)) continue;
+        const declaration = varDeclarationNamed(node);
+        if (!declaration) {
+            candidates.push(node);
+            continue;
+        }
+        const symbol = valueSymbolOf(checker, node);
+        if (!symbol) continue;
+        const list = declared.get(symbol);
+        if (list) list.push(declaration);
+        else {
+            declared.set(symbol, [declaration]);
+            scopeOf.set(symbol, varScopeOf(declaration));
+            names.add(node.text);
+        }
+    }
     const references = new Map<ts.Symbol, ts.Identifier[]>();
-    if (declared.size > 0)
-        forEachAnalysisNode(
-            scope,
-            (node) => {
-                if (!ts.isIdentifier(node)) return;
-                const symbol = valueSymbolOf(checker, node);
-                if (!symbol || !declared.has(symbol)) return;
-                const list = references.get(symbol);
-                if (list) list.push(node);
-                else references.set(symbol, [node]);
-            },
-            { types: "skip", names: "references" },
-        );
-    const result = new Map<ts.Symbol, VarPlacement>();
+    for (const candidate of candidates) {
+        if (!names.has(candidate.text) || !isValueReference(candidate))
+            continue;
+        const symbol = valueSymbolOf(checker, candidate);
+        if (!symbol || !declared.has(symbol)) continue;
+        const list = references.get(symbol);
+        if (list) list.push(candidate);
+        else references.set(symbol, [candidate]);
+    }
+    const scopes = new Map<
+        VarScope,
+        { placements: Map<ts.Symbol, VarPlacement>; hoisted: ts.Symbol[] }
+    >();
     for (const [symbol, declarations] of declared) {
+        const scope = scopeOf.get(symbol)!;
+        let vars = scopes.get(scope);
+        if (!vars)
+            scopes.set(scope, (vars = { placements: new Map(), hoisted: [] }));
         const others = (symbol.declarations ?? []).filter(
             (declaration) => !isAmbient(declaration),
         );
-        result.set(
-            symbol,
+        const placement: VarPlacement =
             others.length !== declarations.length
                 ? "shared"
                 : declarations.length === 1 &&
@@ -132,11 +153,11 @@ function scopePlacements(
                         references.get(symbol) ?? [],
                     )
                   ? "in-place"
-                  : "hoisted",
-        );
+                  : "hoisted";
+        vars.placements.set(symbol, placement);
+        if (placement === "hoisted") vars.hoisted.push(symbol);
     }
-    scopes.set(scope, result);
-    return result;
+    return scopes;
 }
 
 /**
@@ -229,9 +250,6 @@ export function hoistedVarWrites(
         );
 }
 
-/** TypeScript's "Variable is used before being assigned." */
-const usedBeforeAssigned = 2454;
-
 /** What `var` lowering reads of the compiler. */
 type VarBindingsContext = Pick<
     LoweringServices,
@@ -242,7 +260,6 @@ type VarBindingsContext = Pick<
     | "dataLowerer"
     | "declarations"
     | "fail"
-    | "program"
     | "sharedClosures"
     | "symbols"
 >;
@@ -251,11 +268,6 @@ type VarBindingsContext = Pick<
 export class VarBindings {
     /** @unjournaled Set only while one hoisted storage is declared. */
     private declaring: ts.Symbol | undefined;
-    /** @unjournaled The reads TypeScript reports used before assigned, by file. */
-    private readonly unassignedReads = new WeakMap<
-        ts.SourceFile,
-        ReadonlySet<number>
-    >();
 
     constructor(private readonly context: VarBindingsContext) {}
 
@@ -293,14 +305,15 @@ export class VarBindings {
                   ? body.parent
                   : undefined;
         if (!scope) return;
-        for (const [symbol, placement] of scopePlacements(
-            this.context.checker,
-            scope,
-        ))
-            if (
-                placement === "hoisted" &&
-                !this.context.bindings.peekBinding(symbol)
-            )
+        // The body's first lowered statement declares them all at once.
+        const { hoisted } = scopeVars(this.context.checker, scope);
+        if (
+            hoisted.length === 0 ||
+            this.context.bindings.peekBinding(hoisted[0]!)
+        )
+            return;
+        for (const symbol of hoisted)
+            if (!this.context.bindings.peekBinding(symbol))
                 this.declare(symbol);
     }
 
@@ -388,8 +401,8 @@ export class VarBindings {
 
     /**
      * A read of a hoisted `var` that can still be undefined, which its type
-     * does not admit, refuses: one of its own scope where TypeScript reports
-     * it used before assigned (or `!` asserts it is), and one of a nested
+     * does not admit, refuses: one of its own scope that some path reaches
+     * unassigned ({@link definitelyAssignedAt}), and one of a nested
      * function lowered before the walk reached an assignment.
      */
     public refuseUnassignedRead(identifier: ts.MemberName): void {
@@ -397,41 +410,30 @@ export class VarBindings {
             return;
         const write = writeSiteOf(identifier)?.kind;
         if (write === "assign" || write === "loop") return;
-        const declaration =
-            this.context.symbols.valueSymbol(identifier)?.valueDeclaration;
-        if (!declaration) return;
-        const own = varScopeOf(identifier) === varScopeOf(declaration);
-        // TypeScript assumes `x!` assigned and reports nothing there.
-        if (
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        const declaration = symbol?.valueDeclaration;
+        if (!symbol || !declaration) return;
+        const scope = varScopeOf(declaration);
+        const own = varScopeOf(identifier) === scope;
+        const assigned =
             own &&
-            !hasNonNullAssertion(outermostWrapper(identifier)) &&
-            !this.readsUnassigned(identifier)
-        )
-            return;
+            definitelyAssignedAt(
+                this.context.checker,
+                scope,
+                symbol,
+                identifier,
+            );
+        if (assigned === true) return;
+        if (typeof assigned === "object")
+            this.context.fail(
+                identifier,
+                `The \`var\` '${identifier.text}' is read where its assignment runs through a ${ts.SyntaxKind[assigned.unsupported.kind]}, which the definite-assignment analysis does not follow. Assign it before, or declare it with \`| undefined\`.`,
+            );
         this.context.fail(
             identifier,
             own
                 ? `The \`var\` '${identifier.text}' can be read here before it is assigned, while it holds undefined, which its type does not admit. Assign it on every path, or declare it with \`| undefined\`.`
                 : `A function reads the \`var\` '${identifier.text}' where it can still be undefined, which its type does not admit. Assign it before the function is created or called, or declare it with \`| undefined\`.`,
         );
-    }
-
-    private readsUnassigned(identifier: ts.Identifier): boolean {
-        const file = identifier.getSourceFile();
-        let starts = this.unassignedReads.get(file);
-        if (!starts) {
-            starts = new Set(
-                this.context.program
-                    .getSemanticDiagnostics(file)
-                    .flatMap((diagnostic) =>
-                        diagnostic.code === usedBeforeAssigned &&
-                        diagnostic.start !== undefined
-                            ? [diagnostic.start]
-                            : [],
-                    ),
-            );
-            this.unassignedReads.set(file, starts);
-        }
-        return starts.has(identifier.getStart());
     }
 }
