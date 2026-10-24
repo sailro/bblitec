@@ -3,6 +3,7 @@ import { stringLiteral } from "../cpp-literals.js";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
+    collectionBinding,
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
@@ -128,6 +129,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             type: "scalar",
         });
         bindings.set("error", { cpp: "error", type: "opaque" });
+        bindings.set("pending.records", collectionBinding("pending.records"));
         const expression = (
             node: ts.Expression,
             lowerer: PinnedNumericLowerer,
@@ -296,18 +298,6 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             foldConditions: false,
 
             expression,
-            forOf: (source, element) =>
-                sameSource(source, "pending.records")
-                    ? {
-                          range: "pending.records",
-                          bindings: new Map([
-                              [
-                                  element,
-                                  { cpp: element, type: "opaque" as const },
-                              ],
-                          ]),
-                      }
-                    : undefined,
             returnValue: (value, lowerer) => {
                 if (phase !== "pass")
                     return value ? lowerer.expression(value) : "";

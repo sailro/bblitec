@@ -1,12 +1,12 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedNumericLowerer,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/texture/rtt-surface.ts";
 
@@ -102,7 +102,24 @@ export function lowerRenderTargetLifecycle(context: LoweringContext): string {
             ["rt._disposed", { cpp: "state->disposed", type: "scalar" }],
             ["this._disposed", { cpp: "state->disposed", type: "scalar" }],
             ["result.rt._disposed", { cpp: "state->disposed", type: "scalar" }],
-            ["callbacks", { cpp: "state->callbacks", type: "opaque" }],
+            [
+                "callbacks",
+                collectionBinding(
+                    "state->callbacks",
+                    (element) =>
+                        new Map<string, PinnedBinding>([
+                            [element, { cpp: element, type: "opaque" }],
+                            [
+                                `${element}.pending`,
+                                { cpp: `${element}->pending`, type: "scalar" },
+                            ],
+                            [
+                                `${element}.callback`,
+                                { cpp: `${element}->callback`, type: "opaque" },
+                            ],
+                        ]),
+                ),
+            ],
             ["retiredAttachments", { cpp: "state->retired", type: "opaque" }],
             [
                 "retiredAttachments.length",
@@ -159,29 +176,6 @@ export function lowerRenderTargetLifecycle(context: LoweringContext): string {
                 expression: ts.Expression | undefined,
                 numeric: PinnedNumericLowerer,
             ) => (expression ? numeric.expression(expression) : ""),
-            forOf: (source: ts.Expression, element: string) =>
-                sameSource(source, "callbacks")
-                    ? {
-                          range: "state->callbacks",
-                          bindings: new Map<string, PinnedBinding>([
-                              [element, { cpp: element, type: "opaque" }],
-                              [
-                                  `${element}.pending`,
-                                  {
-                                      cpp: `${element}->pending`,
-                                      type: "scalar",
-                                  },
-                              ],
-                              [
-                                  `${element}.callback`,
-                                  {
-                                      cpp: `${element}->callback`,
-                                      type: "opaque",
-                                  },
-                              ],
-                          ]),
-                      }
-                    : undefined,
             expression: (
                 node: ts.Expression,
                 numeric: PinnedNumericLowerer,

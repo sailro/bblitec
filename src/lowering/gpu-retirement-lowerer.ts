@@ -1,11 +1,12 @@
 import ts from "typescript";
 import { type LoweredSource, type LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedNumericLowerer,
+import {
+    opaqueElement,
+    type PinnedBinding,
+    type PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { isExpressionWrapper, sourceEntry } from "../compiler/syntax.js";
+import { isExpressionWrapper } from "../compiler/syntax.js";
 
 type Kind =
     | "engine"
@@ -116,9 +117,38 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
             );
         const values = new Map<string, Value>();
         const bindings = new Map<string, PinnedBinding>();
-        const bind = (name: string, value: Value): void => {
+        // A batch holds callbacks behind its pointer, and a batch list holds
+        // batches; each element joins the values the evaluator reads.
+        const elements = (value: Value): Pick<PinnedBinding, "elements"> => {
+            const kind =
+                value.kind === "batch"
+                    ? "callback"
+                    : value.kind === "batches"
+                      ? "batch"
+                      : undefined;
+            return kind
+                ? {
+                      elements: {
+                          ...(value.kind === "batch"
+                              ? { range: `*${value.cpp}` }
+                              : {}),
+                          element: (name) => {
+                              bind(name, { kind, cpp: name });
+                              return opaqueElement(name);
+                          },
+                      },
+                  }
+                : {};
+        };
+        const bind = (name: string, value: Value): PinnedBinding => {
+            const binding: PinnedBinding = {
+                cpp: value.cpp,
+                type: "opaque",
+                ...elements(value),
+            };
             values.set(name, value);
-            bindings.set(name, { cpp: value.cpp, type: "opaque" });
+            bindings.set(name, binding);
+            return binding;
         };
         const fail = (node: ts.Node): never =>
             context.contractError(
@@ -180,34 +210,12 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
                                       : value.kind === "string"
                                         ? "string"
                                         : "opaque",
+                            ...elements(value),
                         });
                         return value.cpp;
                     },
                     statement: (node, lowerer, indent) =>
                         statement(node, lowerer, indent),
-                    forOf: (source, element) => {
-                        const value = sourceEntry(values, source);
-                        const kind =
-                            value?.kind === "batch"
-                                ? "callback"
-                                : value?.kind === "batches"
-                                  ? "batch"
-                                  : undefined;
-                        if (!value || !kind) return undefined;
-                        bind(element, { kind, cpp: element });
-                        return {
-                            range:
-                                value.kind === "batch"
-                                    ? `*${value.cpp}`
-                                    : value.cpp,
-                            bindings: new Map([
-                                [
-                                    element,
-                                    { cpp: element, type: "opaque" as const },
-                                ],
-                            ]),
-                        };
-                    },
                 },
                 indent,
             );
@@ -500,10 +508,13 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
                         return fail(local);
                     const value = expression(local.initializer);
                     if (!cppTypes[value.kind]) return fail(local);
-                    bind(local.name.text, {
-                        kind: value.kind,
-                        cpp: local.name.text,
-                    });
+                    lowerer.bindLocal(
+                        local.name,
+                        bind(local.name.text, {
+                            kind: value.kind,
+                            cpp: local.name.text,
+                        }),
+                    );
                     return `${indent}const auto ${local.name.text} = ${value.cpp};`;
                 });
             if (ts.isExpressionStatement(node))
