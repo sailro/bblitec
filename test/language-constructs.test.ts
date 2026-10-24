@@ -5621,20 +5621,23 @@ check(
     "promise-rejection-parameters",
     `
     let seen = "";
+    let marked = "";
     let calm = 0;
     let armed = true;
     async function risky(): Promise<void> {
         if (armed) throw new Error("boom");
         calm++;
     }
+    // Each reaction touches state no later statement does, so running it
+    // at once keeps JavaScript's order.
     void risky().catch((error) => {
         if (!(error instanceof Error) || error.message !== "boom") throw new Error("catch binding");
         seen = error.message;
     });
-    void risky().then(() => { if (calm >= 0) throw new Error("fulfilled"); }, (error) => {
+    void risky().then(() => { throw new Error("fulfilled"); }, (error) => {
         if (error.message !== "boom") throw new Error("rejection binding");
     });
-    void risky().catch((error) => { if (error.message.length !== 4) return; seen += "!"; });
+    void risky().catch((error) => { if (error.message.length !== 4) return; marked = "!"; });
     armed = false;
     void risky().catch((error) => { throw new Error("unexpected " + error.message); });
 `,
@@ -8819,6 +8822,55 @@ checkInRealm(
         if (seen.join(",") !== "loaded,cancelled,invalid,cancelled,loaded") throw new Error(seen.join(","));
         globalThis.close();
     })();
+`,
+);
+
+checkInRealm(
+    "suspended-activations-resume-after-the-code-that-follows-them",
+    `
+    const gathered: string[] = [];
+    const returned: string[] = [];
+    const discarded: string[] = [];
+    const reacted: string[] = [];
+    async function a(into: string[]): Promise<void> { into.push("a1"); await null; into.push("a2"); }
+    async function b(into: string[]): Promise<void> { into.push("b1"); await Promise.resolve(); into.push("b2"); }
+    async function passes(into: string[]): Promise<void> { return a(into); }
+    async function one(): Promise<number> { return 1; }
+    async function main(): Promise<void> {
+        await Promise.all([a(gathered), b(gathered)]);
+        if (gathered.join() !== "a1,b1,a2,b2") throw new Error("gathered " + gathered.join());
+        await Promise.all([passes(returned), b(returned)]);
+        if (returned.join() !== "a1,b1,a2,b2") throw new Error("returned " + returned.join());
+        void a(discarded);
+        discarded.push("after");
+        await null;
+        if (discarded.join() !== "a1,after,a2") throw new Error("discarded " + discarded.join());
+        void one().then(() => { reacted.push("then"); });
+        reacted.push("after");
+        await null;
+        if (reacted.join() !== "after,then") throw new Error("reacted " + reacted.join());
+        globalThis.close();
+    }
+    void main();
+`,
+);
+
+check(
+    "gathered-activations-on-fresh-objects-run-where-they-start",
+    `
+    interface Level { lit: boolean; level: number }
+    async function make(level: number): Promise<Level> {
+        const made: Level = { lit: false, level: 0 };
+        made.lit = true;
+        await null;
+        made.level = level;
+        return made;
+    }
+    async function main(): Promise<void> {
+        const [first, second] = await Promise.all([make(1), make(2)]);
+        if (!first.lit || first.level !== 1 || second.level !== 2) throw new Error("fresh results");
+    }
+    void main();
 `,
 );
 

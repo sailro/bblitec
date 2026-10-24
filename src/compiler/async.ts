@@ -240,12 +240,18 @@ export class AsyncLowerer {
                 ) &&
                 awaitedType !== undefined &&
                 isVoid(awaitedType);
-            const awaited = this.asPromise(
-                erasedVoid
-                    ? { kind: "void", cpp: "" }
-                    : context.compileValue(node.expression),
-                node,
-            );
+            let operand: Value = erasedVoid
+                ? { kind: "void", cpp: "" }
+                : context.compileValue(node.expression);
+            // `await null;` yields like any await; nothing reads its null.
+            if (
+                operand.kind === "json-null" &&
+                ts.isExpressionStatement(outermostWrapper(node).parent)
+            ) {
+                context.emitDiscardedValue(operand);
+                operand = { kind: "void", cpp: "" };
+            }
+            const awaited = this.asPromise(operand, node);
             const temporary = context.allocateTemporaryCppName("await_result");
             context.emit({
                 kind: "declaration",

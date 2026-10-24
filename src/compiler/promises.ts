@@ -3,6 +3,7 @@ import ts from "typescript";
 import { absenceOf } from "./values/model.js";
 import { caughtErrorValue } from "./error-values.js";
 import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
+import { reactionOrderIsUnobservable } from "./continuation-order.js";
 import { libraryName } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
@@ -30,6 +31,9 @@ export interface PromiseLoweringContext extends Pick<
     | "dataValue"
     | "dataTypes"
     | "checker"
+    | "sourceFile"
+    | "sourceFiles"
+    | "emitDiscardedValue"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -191,7 +195,7 @@ export function compileImmediatePromise(
         // question is whether their values have to outlive the call.
         if (!isPromiseResultUsed(call)) {
             for (const element of argument.elements) {
-                emitValue(context, context.compileValue(element));
+                context.emitDiscardedValue(context.compileValue(element));
             }
             return { kind: "void", cpp: "" };
         }
@@ -227,6 +231,10 @@ export function compileImmediatePromise(
     if (!ts.isPropertyAccessExpression(call.expression)) return undefined;
     const method = promiseReactionOf(call.expression, context.checker);
     if (!method) return undefined;
+    // A reaction runs after the code that registers it; here it runs at
+    // once, ahead of that code.
+    if (!context.options.workers && !reactionOrderIsUnobservable(context, call))
+        throw new ApplicationRealmRequired();
     if (method === "catch") {
         return compileImmediateCatch(context, call);
     }
@@ -313,7 +321,7 @@ export function compileImmediatePromise(
             nativeBinding: true,
         };
     } else if (value.kind === "void") {
-        emitValue(context, value);
+        context.emitDiscardedValue(value);
     }
     if (fulfilled) {
         context.emit({ kind: "expression", code: `${fulfilled} = true;` });
@@ -381,7 +389,7 @@ function compileImmediateCatch(
             "Immediate promise catch currently supports Promise<void> work.",
         );
     }
-    emitValue(context, value);
+    context.emitDiscardedValue(value);
     context.decreaseIndent();
     const clause = rejectionClause(context, callback);
     context.emit(clause.header);
@@ -432,12 +440,6 @@ export function isPromiseResultUsed(call: ts.CallExpression): boolean {
         ts.isExpressionStatement(node.parent) ||
         ts.isVoidExpression(node.parent)
     );
-}
-
-function emitValue(context: PromiseLoweringContext, value: Value): void {
-    if (value.kind !== "engine" && value.cpp.length > 0) {
-        context.emit({ kind: "expression", code: `${value.cpp};` });
-    }
 }
 
 /**

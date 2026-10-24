@@ -1089,7 +1089,7 @@ function libraryMayHold(
  * code the program does not hold -- an ambient declaration, a function
  * value, an interface member -- otherwise.
  */
-type CallTarget =
+export type CallTarget =
     | {
           readonly kind: "bodies";
           readonly checker: ts.TypeChecker;
@@ -1099,7 +1099,7 @@ type CallTarget =
     | { readonly kind: "library"; readonly name: string | undefined }
     | { readonly kind: "unknown" };
 
-function callTarget(
+export function callTarget(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): CallTarget {

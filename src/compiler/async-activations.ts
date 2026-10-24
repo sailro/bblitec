@@ -7,11 +7,15 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { DataType } from "./data-types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
-    unwrapExpression,
-    outermostWrapper,
     isAsyncFunction,
+    outermostWrapper,
+    unwrapExpression,
     type SupportedFunction,
 } from "./syntax.js";
+import {
+    activationMaySuspend,
+    activationOrderIsUnobservable,
+} from "./continuation-order.js";
 import type { Value } from "./types.js";
 import type {
     LoweringServices,
@@ -41,6 +45,7 @@ interface AsyncActivationContext extends Pick<
     | "isRuntimeResourceConstruction"
     | "libraryGlobal"
     | "options"
+    | "sourceFile"
     | "sourceFiles"
     | "symbols"
     | "unwrap"
@@ -79,13 +84,20 @@ export class AsyncActivations {
         arguments_: readonly Value[],
         node: ts.Node,
     ): Value | undefined {
-        return this.context.options.workers
-            ? this.context.asyncLowerer.compileCall(
-                  declaration,
-                  arguments_,
-                  node,
-              )
-            : undefined;
+        if (this.context.options.workers)
+            return this.context.asyncLowerer.compileCall(
+                declaration,
+                arguments_,
+                node,
+            );
+        // Outside the realm an activation runs to its end where it starts,
+        // ahead of the code JavaScript runs before its continuation.
+        if (
+            activationMaySuspend(this.context.checker, declaration) &&
+            !activationOrderIsUnobservable(this.context, node, declaration)
+        )
+            throw new ApplicationRealmRequired();
+        return undefined;
     }
 
     public compileSynchronousPromise(node: ts.NewExpression): Value {

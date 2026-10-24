@@ -1626,3 +1626,29 @@ test("a stored record keeps its binding's object through one owner", () => {
         ],
     );
 });
+
+test("the order deferred code runs in has one owner", () => {
+    // Outside the application realm an activation runs to its end and a
+    // reaction at once; continuation-order.ts alone decides when JavaScript's
+    // later run is unobservable, for the two lowerings that start them.
+    for (const name of [
+        "activationMaySuspend",
+        "activationOrderIsUnobservable",
+        "reactionOrderIsUnobservable",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/continuation-order.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/continuation-order.ts" &&
+                    /OrderIsUnobservable\(/.test(sourceText(path)),
+            )
+            .sort(),
+        ["src/compiler/async-activations.ts", "src/compiler/promises.ts"],
+    );
+});
