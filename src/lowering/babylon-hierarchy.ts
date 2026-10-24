@@ -1,11 +1,11 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedNumericLowerer,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
 
 /** Parent assignment, child traversal entries and root ordering follow loadBabylon. */
 export function lowerBabylonHierarchy(context: LoweringContext): string {
@@ -75,6 +75,8 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
             },
         ],
         ["childMeshes.length", { cpp: "child_meshes.size()", type: "index" }],
+        ["data.meshes", collectionBinding("mesh_sources")],
+        ["childMeshes", collectionBinding("child_meshes")],
     ]);
     const expression = (
         node: ts.Expression,
@@ -112,21 +114,6 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
         calls: new Map(),
 
         expression,
-        forOf(iterated, element) {
-            const range = sameSource(iterated, "data.meshes")
-                ? "mesh_sources"
-                : sameSource(iterated, "childMeshes")
-                  ? "child_meshes"
-                  : undefined;
-            return range
-                ? {
-                      range,
-                      bindings: new Map([
-                          [element, { cpp: element, type: "opaque" }],
-                      ]),
-                  }
-                : undefined;
-        },
         statement(statement, lowerer, indent) {
             if (
                 ts.isVariableStatement(statement) &&
