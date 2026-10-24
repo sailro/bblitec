@@ -5264,6 +5264,11 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
+/** `key in array` for a number key: an integral index below the length (`-0` is index 0). */
+[[nodiscard]] inline bool array_has_index(double length, double key) {
+    return key >= 0.0 && key < length && std::trunc(key) == key;
+}
+
 [[nodiscard]] inline std::size_t array_length_value(double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
         throw NamedError("RangeError", "Invalid array length");

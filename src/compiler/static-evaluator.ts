@@ -95,6 +95,7 @@ import {
     wrappersUnder,
     rootExpression,
     writeSites,
+    expressionHasEffects,
     functionKind,
     type SupportedFunction,
     variableKind,
@@ -938,10 +939,16 @@ export class StaticEvaluator {
                     `'||' in a numeric position must select a number, received ${value.kind}.`,
                 );
             }
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
-                // Numeric `a || b`: JavaScript falls through on 0 and NaN,
-                // and evaluates the right operand only then. An element
-                // past the end is undefined, so the left reads guarded.
+            const logical = unwrapped.operatorToken.kind;
+            if (
+                logical === ts.SyntaxKind.BarBarToken ||
+                logical === ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                // Numeric `a || b` and `a && b`: 0 and NaN are falsy, and
+                // JavaScript evaluates the right operand only when the left
+                // is falsy (`||`) or truthy (`&&`). An element past the end
+                // is undefined, so the left reads guarded.
+                const or = logical === ts.SyntaxKind.BarBarToken;
                 const leftNode = this.unwrap(unwrapped.left);
                 const tested = ts.isElementAccessExpression(leftNode)
                     ? this.testedElement(leftNode)
@@ -954,13 +961,15 @@ export class StaticEvaluator {
                     this.compileNumber(unwrapped.right, "double"),
                 );
                 const compiled =
-                    right.lines.length === 0
+                    or &&
+                    right.lines.length === 0 &&
+                    !expressionHasEffects(unwrapped.right)
                         ? `bbl::js::or_number(${left}, ${right.value})`
                         : this.arms.armExpression(
                               unwrapped.right,
                               [
                                   `const double left = ${left};`,
-                                  "if (bbl::js::number_truthy(left)) return left;",
+                                  `if (${or ? "" : "!"}bbl::js::number_truthy(left)) return left;`,
                                   ...right.lines,
                               ],
                               right.value,

@@ -2415,6 +2415,8 @@ export interface ValueFields {
     };
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
+    /** The receiver `bind` fixed for a dynamic-`this` function. */
+    callbackThis?: Value;
     /** The function/object expression is re-evaluated by emitted native code. */
     repeatedCallbackEvaluation?: true;
     /** Distinguishes one statically emitted evaluation of a function expression. */
@@ -3371,6 +3373,7 @@ export type Feature =
     | "data:bigint"
     /** Symbol values: brings js_symbol.hpp. */
     | "data:symbol"
+    | "data:crypto"
     /** Tagged template string arrays: brings js_template.hpp. */
     | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */

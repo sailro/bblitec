@@ -7074,9 +7074,15 @@ export class UserFunctionLowerer {
                 return;
             }
             const resolvedParameter = resolved?.getParameters()[index];
-            const parameterType = resolvedParameter
-                ? this.checker.getTypeOfSymbol(resolvedParameter)
-                : parameter.type;
+            const resolvedType =
+                resolvedParameter &&
+                this.checker.getTypeOfSymbol(resolvedParameter);
+            // A rest tuple (`OmitThisParameter`'s `...args` of a bound
+            // function) types the parameters the declaration spells.
+            const parameterType =
+                resolvedType && !this.checker.isTupleType(resolvedType)
+                    ? resolvedType
+                    : parameter.type;
             const argumentType = this.checker.getTypeAtLocation(argument);
             if (
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&

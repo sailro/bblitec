@@ -14954,6 +14954,64 @@ test("imported containers written through a destructured or exported alias are w
     await executeGeneratedAssertions(t, "imported-container-aliases", cpp);
 });
 
+check(
+    "functions-run-on-a-receiver-they-are-handed",
+    `
+    const box = { n: 1 };
+    function bump(this: { n: number }, by: number): void { this.n += by; }
+    bump.call(box, 2);
+    bump.apply(box, [3]);
+    Reflect.apply(bump, box, [4]);
+    const bound = bump.bind(box);
+    bound(5);
+    if (box.n !== 15) throw new Error("receiver " + box.n);
+`,
+);
+
+check(
+    "numeric-logical-operators-and-array-membership",
+    `
+    const L = [3, 0, 5];
+    let calls = 0;
+    function next(): number { calls++; return 7; }
+    function pick(i: number): number { return (L[i] && 1) || 2; }
+    let far = 1;
+    for (let k = 0; k < 2; k++) far += 2;
+    const either = L[0]! || next();
+    const both = L[1]! && next();
+    if (pick(0) !== 1 || pick(1) !== 2 || pick(far) !== 2 || either !== 3 || both !== 0 || calls !== 0)
+        throw new Error("logical " + calls);
+    if (!(1 in L) || far in L || !("length" in L) || !("push" in L) || !("2" in L) || Object.hasOwn(L, "push"))
+        throw new Error("membership");
+`,
+);
+
+test("crypto.getRandomValues fills integer typed arrays in place", async (t) => {
+    const source = `
+        const bytes = new Uint8Array(16);
+        const same = crypto.getRandomValues(bytes);
+        const words = crypto.getRandomValues(new Uint32Array(4));
+        let filled = false;
+        for (let tries = 0; tries < 4 && !filled; tries++) {
+            crypto.getRandomValues(bytes);
+            filled = bytes.some((value) => value !== 0) && words.some((value) => value !== 0);
+        }
+        if (same !== bytes || words.length !== 4 || !filled) throw new Error("random values");
+    `;
+    const result = compileSource(source, { fileName: "random-values.ts" });
+    assert.ok(result.manifest.features.includes("data:crypto"));
+    await executeGeneratedAssertions(t, "random-values", result.cpp);
+    assert.throws(
+        () => compileSource(`crypto.getRandomValues(new Float32Array(2));`),
+        /fills an integer typed array/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`const xs = [1]; Array.prototype.push.call(xs, 2);`),
+        /borrows a library method for another receiver/,
+    );
+});
+
 // A record handed to a function that compares it is the one object its
 // literal created, whether the call is inlined or runs a compiled body.
 check(

@@ -375,6 +375,7 @@ export const featureSources: Record<Feature, string[]> = {
     // its lowering reaches the family.
     "data:bigint": [],
     "data:symbol": [],
+    "data:crypto": [],
     "data:tagged-template": [],
     // Web Storage's platform half. `localStorage` has no Babylon
     // declaration behind it, so like the frame conductor's timers it is a
@@ -854,6 +855,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("data:symbol")
             ? "#include <bblite/js_symbol.hpp>\n"
+            : "") +
+        (features.includes("data:crypto")
+            ? "#include <bblite/js_crypto.hpp>\n"
             : "") +
         (features.includes("data:tagged-template")
             ? "#include <bblite/js_template.hpp>\n"

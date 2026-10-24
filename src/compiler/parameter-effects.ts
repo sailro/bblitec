@@ -29,6 +29,8 @@ import {
     libraryCallName,
     libraryGlobal,
     libraryName,
+    libraryStaticMember,
+    resolvedSymbol,
     nullishComparison,
     calledDeclaration,
     namedMember,
@@ -49,6 +51,8 @@ import {
     equalityOperator,
     parameterForArgument,
     functionKind,
+    functionOfDeclaration,
+    isMemberAccess,
     mutatingCallTarget,
     referenceBases,
     variableKind,
@@ -1187,10 +1191,77 @@ export function libraryArgumentEffect(
             ? "writes"
             : "reads";
     }
+    const forwarded = forwardedCall(checker, call);
+    if (forwarded) return forwardedArgumentEffect(checker, forwarded, index);
     const callee = namedMember(checker, unwrapExpression(call.expression));
     return callee && libraryGlobal(checker, callee.expression) === undefined
         ? "reads"
         : "unknown";
+}
+
+/**
+ * A library call that runs a program function on a receiver and arguments
+ * it is handed: `fn.call(thisArg, ...args)`, `fn.apply(thisArg, args)`,
+ * `fn.bind(thisArg, ...args)` and `Reflect.apply(fn, thisArg, args)`.
+ */
+interface ForwardedCall {
+    readonly fn: EffectFunction;
+    /** The argument the function takes as `this`. */
+    readonly receiver: number;
+    /** The argument its first parameter takes, one per parameter. */
+    readonly first?: number;
+    /** The argument whose elements its parameters take. */
+    readonly spread?: number;
+}
+
+function forwardedCall(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): ForwardedCall | undefined {
+    if (!ts.isCallExpression(call)) return undefined;
+    const target = (expression: ts.Expression | undefined) => {
+        const value = expression && unwrapExpression(expression);
+        const declaration =
+            value && ts.isIdentifier(value)
+                ? resolvedSymbol(checker, value)?.valueDeclaration
+                : undefined;
+        return declaration && functionOfDeclaration(declaration);
+    };
+    const reflected = libraryStaticMember(
+        checker,
+        unwrapExpression(call.expression),
+    );
+    if (reflected?.owner === "Reflect" && reflected.name === "apply") {
+        const fn = target(call.arguments[0]);
+        return fn && { fn, receiver: 1, spread: 2 };
+    }
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee || !["apply", "bind", "call"].includes(callee.name))
+        return undefined;
+    const fn = target(callee.expression);
+    if (!fn) return undefined;
+    return callee.name === "apply"
+        ? { fn, receiver: 0, spread: 1 }
+        : { fn, receiver: 0, first: 1 };
+}
+
+/** What a forwarded call does to its argument at `index`: what the function does to it. */
+function forwardedArgumentEffect(
+    checker: ts.TypeChecker,
+    { fn, receiver, first, spread }: ForwardedCall,
+    index: number,
+): LibraryArgumentEffect {
+    const readOnly = (parameter: ts.ParameterDeclaration | undefined) =>
+        parameter === undefined ||
+        (ts.isIdentifier(parameter.name) &&
+            parameterIsReadOnly(checker, fn, parameter.name));
+    if (index === receiver)
+        return functionWritesThis(checker, fn) ? "writes" : "reads";
+    if (first !== undefined && index >= first)
+        return readOnly(fn.parameters[index - first]) ? "reads" : "writes";
+    if (index === spread)
+        return fn.parameters.every(readOnly) ? "reads" : "writes";
+    return "reads";
 }
 
 /** A typed array, an ArrayBuffer or a DataView: what Web IDL passes by reference. */
@@ -1996,9 +2067,10 @@ export function libraryCallWritesReceiver(
 const thisWriters = new WeakMap<ts.Node, boolean>();
 
 /**
- * Whether a function writes through `this`: a write or a writing method
- * call on `this` or a member of it, its own or an arrow's sharing it, or
- * a method of `this` that does.
+ * Whether a function writes through `this` or hands it on: a write or a
+ * writing method call on `this` or a member of it, its own or an arrow's
+ * sharing it, a method of `this` that does, or `this` passed, stored or
+ * returned rather than read through or compared.
  */
 export function functionWritesThis(
     checker: ts.TypeChecker,
@@ -2017,6 +2089,21 @@ export function functionWritesThis(
     const writes = someAnalysisNode(
         body,
         (node) => {
+            if (node.kind === ts.SyntaxKind.ThisKeyword) {
+                const position = outermostWrapper(node as ts.Expression);
+                const parent = position.parent;
+                if (
+                    !(
+                        isMemberAccess(parent) && parent.expression === position
+                    ) &&
+                    !(
+                        ts.isBinaryExpression(parent) &&
+                        equalityOperator(parent.operatorToken.kind) !==
+                            undefined
+                    )
+                )
+                    return true;
+            }
             const sites = writeSites(node);
             if (sites.length > 0)
                 return sites.some(({ target }) => isThis(target));

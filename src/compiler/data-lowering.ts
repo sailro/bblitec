@@ -14772,12 +14772,53 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ownerNode,
             );
         }
+        // An array's own keys are its indices and its length; `in` also
+        // reaches Array.prototype's and Object.prototype's members.
+        const length = this.membershipArrayLength(narrowed);
+        if (length !== undefined) {
+            if (key.staticString !== undefined) {
+                const name = key.staticString;
+                const index = Number(name);
+                if (name === "length") return "true";
+                if (String(index) === name && Number.isInteger(index))
+                    return `bbl::js::array_has_index(${length}, ${doubleLiteral(index)})`;
+                return String(
+                    operator === "in" &&
+                        (name in Array.prototype ||
+                            Object.hasOwn(Object.prototype, name)),
+                );
+            }
+            if (key.kind === "number" || key.dataType?.kind === "number") {
+                this.context.reachJsData();
+                return `bbl::js::array_has_index(${length}, ${this.context.castNumber(key, "double")})`;
+            }
+            return this.context.fail(
+                keyNode,
+                "Membership of an array takes a number or a generation-known string key.",
+            );
+        }
         return this.context.fail(
             ownerNode,
             operator === "in"
-                ? "'in' is decided for compile-time records, dictionaries and structs."
-                : "Object.hasOwn is decided for compile-time records, dictionaries and structs.",
+                ? "'in' is decided for compile-time records, dictionaries, structs and arrays."
+                : "Object.hasOwn is decided for compile-time records, dictionaries, structs and arrays.",
         );
+    }
+
+    /** An array-like owner's length as a double, when membership can read it. */
+    private membershipArrayLength(owner: Value): string | undefined {
+        if (owner.kind === "tuple" && owner.tupleElements) {
+            this.context.emitDiscardedValue(owner);
+            return doubleLiteral(owner.tupleElements.length);
+        }
+        const type = owner.kind === "data" ? owner.dataType : undefined;
+        if (
+            type?.kind === "vector" ||
+            type?.kind === "span" ||
+            (type !== undefined && isTypedArrayType(type))
+        )
+            return `static_cast<double>(${owner.cpp}.size())`;
+        return undefined;
     }
 
     private membershipStringKeyCpp(key: Value, node: ts.Expression): string {

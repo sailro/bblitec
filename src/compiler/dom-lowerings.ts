@@ -49,6 +49,9 @@ export const CANVAS_CAPTURE_STREAM = "HTMLCanvasElement.captureStream";
 /** The engine's gamepad snapshot (`expressions.ts`). */
 export const NAVIGATOR_GET_GAMEPADS = "Navigator.getGamepads";
 
+/** Random bits from the host's entropy source (`expressions.ts`). */
+export const CRYPTO_GET_RANDOM_VALUES = "Crypto.getRandomValues";
+
 const LOWERED_CALLS: ReadonlySet<string> = new Set([
     ...windowFunction(MESSAGE_BOX_FUNCTIONS),
     ...windowFunction(IDLE_FUNCTIONS),
@@ -57,6 +60,7 @@ const LOWERED_CALLS: ReadonlySet<string> = new Set([
     MEDIA_RECORDER_TYPE_SUPPORTED,
     CANVAS_CAPTURE_STREAM,
     NAVIGATOR_GET_GAMEPADS,
+    CRYPTO_GET_RANDOM_VALUES,
 ]);
 
 const LOWERED_READS: ReadonlySet<string> = new Set(

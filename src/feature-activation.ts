@@ -1761,6 +1761,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "the ECMAScript Symbol values",
         consumers: INVENTORY,
     },
+    "data:crypto": {
+        provenance: "the Web Crypto getRandomValues entropy source",
+        consumers: INVENTORY,
+    },
     "data:tagged-template": {
         provenance: "the ECMAScript tagged template string arrays",
         consumers: INVENTORY,

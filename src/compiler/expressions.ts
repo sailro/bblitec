@@ -45,6 +45,7 @@ import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
     isHandleKind,
+    isTypedArrayType,
     isUndefinedDataType,
     primitiveTraits,
     propertyIsReadOnly,
@@ -82,7 +83,10 @@ import {
     libraryStaticMember,
     staticAccessKey,
 } from "./symbols.js";
-import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
+import {
+    CRYPTO_GET_RANDOM_VALUES,
+    NAVIGATOR_GET_GAMEPADS,
+} from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
     foldNumberFormat,
@@ -3610,6 +3614,11 @@ export class ExpressionLowerer {
     private compileCall(call: ts.CallExpression): Value {
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
+        const forwarded = this.compileForwardedCall(call);
+        if (forwarded) return forwarded;
+        const random = this.compileRandomValues(call);
+        if (random) return random;
+        this.refuseBorrowedPrototypeMethod(call);
         if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
             return this.context.moduleNamespaces.compileImport(call);
         const deferred = this.context.deferredCapabilities.compile(call);
@@ -4184,13 +4193,18 @@ export class ExpressionLowerer {
                     "Callback value is missing its declaration.",
                 );
             }
-            const inRecordScope = <T>(work: () => T): T =>
-                bound.callbackRecordOwner
-                    ? this.context.withRecordScopes(
-                          bound.callbackRecordOwner,
-                          work,
-                      )
-                    : work();
+            const inRecordScope = <T>(work: () => T): T => {
+                const run = (): T =>
+                    bound.callbackRecordOwner
+                        ? this.context.withRecordScopes(
+                              bound.callbackRecordOwner,
+                              work,
+                          )
+                        : work();
+                return bound.callbackThis
+                    ? this.context.withThis(bound.callbackThis, run)
+                    : run();
+            };
             const result = ts.isIdentifier(bound.callbackDeclaration)
                 ? this.context.userFunctions.compile(
                       this.context,
@@ -6696,17 +6710,13 @@ export class ExpressionLowerer {
         };
     }
 
-    /**
-     * `f.call(thisArg, ...args)` on a named function that declares or reads
-     * its `this`: the function runs with `this` bound to thisArg, which is
-     * read before the arguments, as each argument is read before the next.
-     */
-    private compileReceiverCall(
-        call: ts.CallExpression,
-        callee: NamedMember,
-    ): Value | undefined {
-        const target = this.context.unwrap(callee.expression);
+    /** A named function that declares or reads its `this`, which a receiver binds. */
+    private dynamicThisFunction(
+        expression: ts.Expression | undefined,
+    ): ts.Identifier | undefined {
+        const target = expression && this.context.unwrap(expression);
         if (
+            !target ||
             !ts.isIdentifier(target) ||
             this.context.bindings.lookupOptional(target) !== undefined
         )
@@ -6715,36 +6725,178 @@ export class ExpressionLowerer {
             this.context.checker,
             target,
         );
-        if (
-            !declaration ||
-            !(
-                ts.isFunctionDeclaration(declaration) ||
-                ts.isFunctionExpression(declaration)
-            ) ||
-            !(
-                functionUsesDynamicThis(declaration) ||
+        return declaration &&
+            (ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)) &&
+            (functionUsesDynamicThis(declaration) ||
                 this.context.checker.getSignatureFromDeclaration(declaration)
-                    ?.thisParameter
-            ) ||
-            call.arguments.length === 0 ||
-            call.arguments.some(ts.isSpreadElement)
+                    ?.thisParameter)
+            ? target
+            : undefined;
+    }
+
+    /**
+     * A dynamic-`this` function run on a receiver it is handed:
+     * `f.call(thisArg, ...args)`, `f.apply(thisArg, [...args])` and
+     * `Reflect.apply(f, thisArg, [...args])` run `f` with `this` bound to
+     * thisArg, read before the arguments, as each argument before the next.
+     */
+    private compileForwardedCall(call: ts.CallExpression): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        const reflected = libraryStaticMember(this.context.checker, callee);
+        const member = reflected
+            ? undefined
+            : namedMember(this.context.checker, callee);
+        const shape =
+            reflected?.owner === "Reflect" && reflected.name === "apply"
+                ? { target: call.arguments[0], receiver: 1, spread: true }
+                : member?.name === "call" || member?.name === "apply"
+                  ? {
+                        target: member.expression,
+                        receiver: 0,
+                        spread: member.name === "apply",
+                    }
+                  : undefined;
+        const target = shape && this.dynamicThisFunction(shape.target);
+        if (!shape || !target) return undefined;
+        const receiver = call.arguments[shape.receiver];
+        const list = shape.spread
+            ? call.arguments[shape.receiver + 1] &&
+              this.context.unwrap(call.arguments[shape.receiver + 1]!)
+            : undefined;
+        if (
+            !receiver ||
+            call.arguments.some(ts.isSpreadElement) ||
+            (shape.spread &&
+                list !== undefined &&
+                (!ts.isArrayLiteralExpression(list) ||
+                    list.elements.some(ts.isSpreadElement)))
         )
-            return undefined;
-        const pins = this.context.evaluationOrder.operandsToPin(call.arguments);
-        const values = call.arguments.map((argument, index) => {
-            const value = this.compileValue(argument);
+            return this.context.fail(
+                call,
+                "A dynamic-this function runs on a receiver it is handed with its arguments listed: separately, or as an array literal.",
+            );
+        const operands = [
+            receiver,
+            ...(shape.spread
+                ? list && ts.isArrayLiteralExpression(list)
+                    ? list.elements
+                    : []
+                : call.arguments.slice(1)),
+        ];
+        const pins = this.context.evaluationOrder.operandsToPin(operands);
+        const values = operands.map((operand, index) => {
+            const value = this.compileValue(operand);
             return pins[index]
-                ? pinOperand(this.context, value, argument, "call_argument")
+                ? pinOperand(this.context, value, operand, "call_argument")
                 : value;
         });
-        return this.context.withThis(values[0], () => {
-            return this.context.userFunctions.compileCallbackWithValues(
+        return this.context.withThis(values[0], () =>
+            this.context.userFunctions.compileCallbackWithValues(
                 this.context,
                 target,
                 values.slice(1),
                 call,
+            ),
+        );
+    }
+
+    /**
+     * A library prototype's method run on another receiver
+     * (`Array.prototype.push.call(list, x)`) is not lowered; the method
+     * called on the receiver itself is. `Object.prototype.hasOwnProperty`
+     * has its own lowering.
+     */
+    private refuseBorrowedPrototypeMethod(call: ts.CallExpression): void {
+        const member = (node: ts.Expression) =>
+            namedMember(this.context.checker, this.context.unwrap(node));
+        const callee = member(call.expression);
+        if (callee?.name !== "call" && callee?.name !== "apply") return;
+        const method = member(callee.expression);
+        const prototype = method && member(method.expression);
+        if (prototype?.name !== "prototype") return;
+        const owner = this.context.libraryGlobal(
+            this.context.unwrap(prototype.expression),
+        );
+        if (
+            owner === undefined ||
+            (owner === "Object" && method?.name === "hasOwnProperty")
+        )
+            return;
+        this.context.fail(
+            call,
+            `${owner}.prototype.${method?.name}.${callee.name} borrows a library method for another receiver; call the method on that receiver.`,
+        );
+    }
+
+    /**
+     * `crypto.getRandomValues(array)`: fills an integer typed array with
+     * random bits from the host's entropy source and returns that array.
+     */
+    private compileRandomValues(call: ts.CallExpression): Value | undefined {
+        if (
+            resolvedDomApi(this.context.checker, call) !==
+            CRYPTO_GET_RANDOM_VALUES
+        )
+            return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const argument = argumentAt(call, 0);
+        const array = this.compileValue(argument);
+        const type = array.dataType;
+        if (
+            array.kind !== "data" ||
+            !type ||
+            !isTypedArrayType(type) ||
+            type.kind === "f32array" ||
+            type.kind === "f64array"
+        )
+            return this.context.fail(
+                argument,
+                "crypto.getRandomValues fills an integer typed array.",
             );
+        const filled = this.context.bindings.pinValueToTemporary(
+            array,
+            "random_values",
+            argument,
+        );
+        this.context.reachFeature("data:crypto", call);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::js::fill_random_values(${filled.cpp});`,
         });
+        return filled;
+    }
+
+    /**
+     * `f.bind(thisArg)` on a dynamic-`this` function: the function with
+     * `this` bound to thisArg, read once here. Bound arguments are not
+     * represented.
+     */
+    private compileReceiverBind(
+        call: ts.CallExpression,
+        callee: NamedMember,
+    ): Value | undefined {
+        const target = this.dynamicThisFunction(callee.expression);
+        if (!target) return undefined;
+        if (
+            call.arguments.length !== 1 ||
+            ts.isSpreadElement(call.arguments[0]!)
+        )
+            return this.context.fail(
+                call,
+                "Binding a dynamic-this function takes its receiver alone; bound arguments are not represented.",
+            );
+        const receiver = this.context.bindings.pinValueToTemporary(
+            this.compileValue(call.arguments[0]!),
+            "bound_receiver",
+            call.arguments[0],
+        );
+        return {
+            kind: "callback",
+            cpp: "",
+            callbackDeclaration: target,
+            callbackThis: receiver,
+        };
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */
@@ -6869,6 +7021,10 @@ export class ExpressionLowerer {
     ): Value | undefined {
         const callee = member.access;
         const memberName = member.name;
+        if (memberName === "bind") {
+            const bound = this.compileReceiverBind(call, member);
+            if (bound) return bound;
+        }
         if (
             memberName === "bind" &&
             callSignatures(
@@ -6978,10 +7134,6 @@ export class ExpressionLowerer {
                     `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
-        }
-        if (memberName === "call") {
-            const receiverCall = this.compileReceiverCall(call, member);
-            if (receiverCall) return receiverCall;
         }
         if (memberName === "call" || memberName === "apply") {
             const functionCall = this.context.probeEmission(() => {
