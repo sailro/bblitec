@@ -3216,7 +3216,13 @@ function emitLocalMatrixAssignment(
     state: TargetPropertyAssignment,
 ): boolean {
     const { expression, target, property } = state;
-    if (target.kind === "asset-root" && property === "_localMatrix") {
+    // A widened clone is a mesh or imported-root clone (a standalone
+    // TransformNode clone throws); native holds neither as a raw matrix.
+    if (
+        (target.kind === "asset-root" ||
+            (target.kind === "scene-node" && target.sceneNodeClone)) &&
+        property === "_localMatrix"
+    ) {
         requireSimpleAssignment(
             context,
             expression,
@@ -3230,7 +3236,7 @@ function emitLocalMatrixAssignment(
         ) {
             context.fail(
                 expression.right,
-                "An imported synthetic root only exposes clearing _localMatrix with undefined.",
+                "An imported root or its clone only exposes clearing _localMatrix with undefined.",
             );
         }
         context.assetRegistry.assertAssetRootWritable(target, expression);

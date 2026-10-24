@@ -209,7 +209,7 @@ import {
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
-import { pickedMeshHandleCpp } from "./properties.js";
+import { pickedMeshHandle } from "./properties.js";
 import {
     absenceKind,
     isNullable,
@@ -401,7 +401,7 @@ function hoistsPreparedArm(value: Value): boolean {
  * for a runtime number, the two spellings of a boolean, an enum's name,
  * and `null`.
  */
-function staticStringCoercion(value: Value): string | undefined {
+export function staticStringCoercion(value: Value): string | undefined {
     if (value.parameterBinding) return undefined;
     if (value.staticString !== undefined) return value.staticString;
     if (value.staticNumber !== undefined) return String(value.staticNumber);
@@ -599,14 +599,7 @@ export class ExpressionLowerer {
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
-                    cpp: pickedMeshHandleCpp(
-                        this.context,
-                        asserted,
-                        expression,
-                    ),
-                    ...(asserted.engineCpp
-                        ? { engineCpp: asserted.engineCpp }
-                        : {}),
+                    ...pickedMeshHandle(this.context, asserted, expression),
                     optionalFoundCpp:
                         `(${asserted.cpp}.picked_kind == ` +
                         `bbl::PickedNodeKind::mesh)`,

@@ -1416,8 +1416,12 @@ export class UserFunctionLowerer {
         }
     >();
     private readonly active = new EmissionSet<SupportedFunction>();
-    /** Call sites whose inlined bodies are being lowered. */
-    private readonly activeCallSites = new EmissionSet<ts.Node>();
+    /**
+     * Call sites whose inlined bodies are being lowered in the native body
+     * being emitted.
+     * @unjournaled Replaced and restored around one stored function's lowering.
+     */
+    private activeCallSites = new EmissionSet<ts.Node>();
     private readonly scalarResults = new FunctionSpecializations<
         Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
     >();
@@ -3047,7 +3051,9 @@ export class UserFunctionLowerer {
                         // including through an anonymous scheduler body or a
                         // function literal in a record or array the callee
                         // keeps. A named function in such a literal is a
-                        // value it passes, not a call.
+                        // value it passes (stored storage reuses itself),
+                        // unless async: each activation lowers its body, so
+                        // only a group bounds a cycle through it.
                         const visitArgument = (
                             argument: ts.Expression,
                             nested: boolean,
@@ -3060,14 +3066,17 @@ export class UserFunctionLowerer {
                                 for (const called of this.directCalls(value))
                                     callees.add(called);
                             }
-                            const callback =
-                                !nested && ts.isIdentifier(value)
-                                    ? tryResolveFunctionDeclaration(
-                                          this.checker,
-                                          value,
-                                      )
-                                    : undefined;
-                            if (callback) callees.add(callback);
+                            const callback = ts.isIdentifier(value)
+                                ? tryResolveFunctionDeclaration(
+                                      this.checker,
+                                      value,
+                                  )
+                                : undefined;
+                            if (
+                                callback &&
+                                (!nested || isAsyncFunction(callback))
+                            )
+                                callees.add(callback);
                             if (ts.isArrayLiteralExpression(value))
                                 for (const element of value.elements)
                                     visitArgument(
@@ -3083,6 +3092,12 @@ export class UserFunctionLowerer {
                                             property.initializer,
                                             true,
                                         );
+                                    else if (
+                                        ts.isShorthandPropertyAssignment(
+                                            property,
+                                        )
+                                    )
+                                        visitArgument(property.name, true);
                                     else if (ts.isMethodDeclaration(property))
                                         for (const called of this.directCalls(
                                             property,
@@ -4987,6 +5002,10 @@ export class UserFunctionLowerer {
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);
+        // Its own native body: re-entering it refuses above, so its callers'
+        // inlined call sites cannot recur through it.
+        const callerSites = this.activeCallSites;
+        this.activeCallSites = new EmissionSet();
         try {
             return this.lowerStoredDataFunction(
                 context,
@@ -4998,6 +5017,7 @@ export class UserFunctionLowerer {
                 expression,
             );
         } finally {
+            this.activeCallSites = callerSites;
             this.loweringStoredDataFunctions.delete(declaration);
         }
     }

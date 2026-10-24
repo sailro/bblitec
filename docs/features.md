@@ -59,7 +59,9 @@ Rules:
   lists re-read a local `const` initializer whose names no visible write reaches.
 - A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
   merges the results into native storage.
-- Recursive groups evaluate a caller-independent default once at the root; other defaults refuse.
+- Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
+  passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
+  function there.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
@@ -166,6 +168,8 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 
 `loadGltf` with a runtime URL, in runtime control flow or repeated out of order profiles its documents: each composes
 once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
+`loadTexture2D` address modes may be runtime members of a string-literal union. A clone of a glTF root held as a
+`SceneNode` (an async result field) checks at run time that it is an imported root for `createHierarchyInstancePool`.
 
 `KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
 the pinned extension's texture identities; material extensions run as the pin's own features. Separate-image ORM
@@ -247,7 +251,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses.
+  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses. A stored or
+  awaited result's `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.

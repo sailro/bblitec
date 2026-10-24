@@ -123,7 +123,7 @@ test("nullable picking results reuse data returns and preserve the unchanged sce
     }
 });
 
-test("data-transported results refuse bare mesh casts and sinks that discard their engine", () => {
+test("data-transported results become bare meshes of the entry engine their pick proves", () => {
     for (const body of [
         "const meshes:Mesh[]=[info.pickedMesh as Mesh]; return meshes[0]!.name;",
         "const meshes:Mesh[]=[info.pickedMesh!]; return meshes[0]!.name;",
@@ -131,9 +131,7 @@ test("data-transported results refuse bare mesh casts and sinks that discard the
         "const selected=direct.pickedMesh ?? info.pickedMesh; const mesh=selected as Mesh; return mesh.name;",
         "let selected=direct; selected=info; const mesh=selected.pickedMesh as Mesh; return mesh.name;",
     ]) {
-        assert.throws(
-            () =>
-                compileSource(`
+        const result = compileSource(`
             import {createEngine,createSceneContext,createGpuPicker,pickAsync,type PickingInfo,type Mesh} from "@babylonjs/lite";
             async function main() {
                 const engine=await createEngine({}); const scene=createSceneContext(engine);
@@ -141,10 +139,8 @@ test("data-transported results refuse bare mesh casts and sinks that discard the
                 const readers:Array<(info:PickingInfo)=>string>=[(info)=>{${body}}];
                 if(readers[0]!(direct)==="wrong") throw new Error("wrong owner");
             }
-        `),
-            /data-transported PickingInfo cannot become a bare Mesh handle/,
-            body,
-        );
+        `);
+        assert.match(result.cpp, /bbl::picked_mesh\([^()]+, v_engine\)/, body);
     }
 });
 

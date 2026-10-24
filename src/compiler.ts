@@ -206,7 +206,11 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
-import { ExpressionLowerer } from "./compiler/expressions.js";
+import {
+    ExpressionLowerer,
+    staticStringCoercion,
+    stringConcatPart,
+} from "./compiler/expressions.js";
 import { NativeFunctionLowerer } from "./compiler/native-functions.js";
 import {
     emitReachableStatements,
@@ -4572,10 +4576,8 @@ class Compiler implements LoweringServices {
         ) {
             return undefined;
         }
-        const suffix = this.compileValue(path.templateSpans[0]!.expression);
-        if (!isStringValue(suffix)) {
-            return undefined;
-        }
+        const span = path.templateSpans[0]!.expression;
+        const suffix = this.compileValue(span);
         const url = new URL(path.head.text, "https://bblite.invalid/");
         for (const [search, replacement] of replacements) {
             url.pathname = url.pathname.replace(search, replacement);
@@ -4584,8 +4586,12 @@ class Compiler implements LoweringServices {
             url.origin === "https://bblite.invalid"
                 ? `${url.pathname}${url.search}${url.hash}`
                 : url.href;
-        if (suffix.staticString !== undefined) {
-            const staticString = prefix + suffix.staticString;
+        // Any other substitution converts as in every template literal.
+        const text = isStringValue(suffix)
+            ? suffix.staticString
+            : staticStringCoercion(suffix);
+        if (text !== undefined) {
+            const staticString = prefix + text;
             return {
                 kind: "string",
                 cpp: this.cppString(staticString),
@@ -4600,9 +4606,16 @@ class Compiler implements LoweringServices {
                     prefix,
                 ].sort();
         }
+        if (isStringValue(suffix))
+            return {
+                kind: "data",
+                cpp: `(${this.cppString(prefix)} + ${suffix.cpp})`,
+                dataType: { kind: "string" },
+            };
+        this.reachJsData();
         return {
             kind: "data",
-            cpp: `(${this.cppString(prefix)} + ${suffix.cpp})`,
+            cpp: `bbl::js::concat(${this.cppString(prefix)}, ${stringConcatPart(this, suffix, span)})`,
             dataType: { kind: "string" },
         };
     }

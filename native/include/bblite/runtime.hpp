@@ -7713,6 +7713,12 @@ GpuPickerHandle create_gpu_picker(Scene& scene);
 [[nodiscard]] std::string picked_node_name(const PickingInfo& info);
 /** A picked scene node asserted to the pinned `Mesh` type. */
 [[nodiscard]] MeshHandle picked_mesh(const PickingInfo& info);
+/** The same mesh as a handle of `engine`, which must be the pick's own engine. */
+[[nodiscard]] inline MeshHandle picked_mesh(const PickingInfo& info, const Engine& engine) {
+    if (&picking_engine(info) != &engine)
+        throw std::runtime_error("A picked mesh belongs to another engine than its handle names.");
+    return picked_mesh(info);
+}
 /** The basic pick's nullable world point in the plain-data model. */
 [[nodiscard]] js::Nullable<js::Tuple<3>> picked_point(const PickingInfo& info);
 /** Populate basic picking's world-space `pickedPoint` from its depth lane. */

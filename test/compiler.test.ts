@@ -14784,6 +14784,44 @@ test("packages runtime-selected module textures as a closed image directory", ()
     assert.match(result.cpp, /bbl::load_file_texture/);
 });
 
+test("a realm's module texture URLs take a union suffix and its address modes at run time", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { demoAssetUrl } from "./demo-asset-url.js";
+
+            const sources = [
+                { file: "road-straight.png", addressModeU: "clamp-to-edge" },
+                { file: "boost-arrow.png", addressModeU: "repeat" },
+            ] as const;
+            async function main(): Promise<void> {
+                const engine = await createEngine(document.querySelector("canvas")!);
+                const urls = sources.map((source) => demoAssetUrl(\`./antigravity-racer/track/\${source.file}\`, import.meta.url));
+                await Promise.all(
+                    sources.map((source, i) =>
+                        loadTexture2D(engine, urls[i]!, { addressModeU: source.addressModeU }),
+                    ),
+                );
+            }
+            queueMicrotask(() => {});
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/realm-track-texture-test.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /bbl::js::concat\("\/antigravity-racer\/track\/", bblscene::\w+_to_string\(/,
+    );
+    assert.match(
+        result.cpp,
+        /== bblscene::\w+::clamp_to_edge \? bbl::TextureAddressMode::clamp : bbl::TextureAddressMode::repeat\)/,
+    );
+});
+
 test("preserves numeric tuple identity except through array spread", () => {
     const result = compileSource(`
         type V3 = [number, number, number];

@@ -4,6 +4,7 @@ import {
     writable,
 } from "../emission-transaction.js";
 import { compileAssetDecoderConfiguration } from "../asset-decoders.js";
+import { CompileError } from "../compile-error.js";
 import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -671,6 +672,23 @@ function compileLoadBabylon(
     };
 }
 
+/** A generation-known text, or undefined for a run-time value. */
+function staticText(
+    context: AssetIntrinsicContext,
+    expression: ts.Expression,
+): string | undefined {
+    try {
+        return context.compileStringLiteral(expression);
+    } catch (error) {
+        if (
+            error instanceof CompileError &&
+            error.reason === "static-value-required"
+        )
+            return undefined;
+        throw error;
+    }
+}
+
 function compileLoadTexture2D(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
@@ -735,11 +753,10 @@ function compileLoadTexture2D(
         if (magExpression) {
             magFilter = filterName(magExpression);
         }
-        const addressMode = (expression: ts.Expression): string => {
-            const unwrapped = context.unwrap(expression);
-            if (ts.isConditionalExpression(unwrapped))
-                return context.dataLowerer.selectArms(unwrapped, addressMode);
-            const mode = context.compileStringLiteral(expression);
+        const mappedAddressMode = (
+            mode: string,
+            expression: ts.Expression,
+        ): string => {
             const mapped = addressModeByPin[mode];
             if (!mapped) {
                 context.fail(
@@ -748,6 +765,43 @@ function compileLoadTexture2D(
                 );
             }
             return `bbl::${mapped}`;
+        };
+        const addressMode = (expression: ts.Expression): string => {
+            const unwrapped = context.unwrap(expression);
+            if (ts.isConditionalExpression(unwrapped))
+                return context.dataLowerer.selectArms(unwrapped, addressMode);
+            const mode = staticText(context, expression);
+            if (mode !== undefined) return mappedAddressMode(mode, expression);
+            // A run-time member of a literal union selects among its modes.
+            const value = context.compileValue(expression);
+            const type = value.dataType;
+            if (type?.kind !== "enum")
+                return context.fail(
+                    expression,
+                    "A run-time texture address mode requires a string literal union.",
+                );
+            const selected = context.bindings.pinValueToTemporary(
+                value,
+                "address_mode",
+                expression,
+            );
+            const arms = context.dataTypes
+                .enumMembers(type.name)
+                .map((member) => ({
+                    member: context.dataTypes.enumMemberCpp(
+                        type,
+                        member,
+                        expression,
+                    ),
+                    mode: mappedAddressMode(member, expression),
+                }));
+            return arms
+                .slice(0, -1)
+                .reduceRight(
+                    (rest, arm) =>
+                        `(${selected.cpp} == ${arm.member} ? ${arm.mode} : ${rest})`,
+                    arms.at(-1)!.mode,
+                );
         };
         const addressUExpression = context.objectProperty(
             options,
