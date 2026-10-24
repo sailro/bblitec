@@ -287,7 +287,9 @@ export class VarBindings {
      * or unreadable until then where its type cannot hold undefined.
      */
     public declareFor(statement: ts.Statement): void {
-        const body = statement.parent;
+        // A statement the compiler synthesized sits in no scope of its own.
+        const body: ts.Node | undefined = statement.parent;
+        if (!body) return;
         const scope =
             ts.isSourceFile(body) || ts.isModuleBlock(body)
                 ? body
