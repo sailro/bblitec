@@ -206,7 +206,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             variadic: true,
             cpp: (args) => mathExtremeCall(name, args),
             rangeCpp: (range) => mathExtremeCpp(name, range),
-            fold: Math[name],
+            fold: (...values: number[]) => Math[name](...values),
             reach: "js-data",
         },
     ]),
