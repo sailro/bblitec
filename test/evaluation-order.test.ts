@@ -14,6 +14,9 @@ import { createCompilerProgram } from "../src/compiler/program.js";
 // one expression (`operandsToPin`) and the order JavaScript defers code in
 // (`footprint`).
 
+/** No element holds another. */
+const apart = (): boolean => false;
+
 function analysis(source: string) {
     const frontend = createCompilerProgram(
         source,
@@ -64,7 +67,7 @@ export function readsPage(): number { return document.body.childElementCount; }
 export function writesValues(): void { values.push(1); }
 export function writesState(): void { state.x = 1; }`);
     const conflict = (a: string, b: string): boolean =>
-        footprintsConflict(footprint(a), footprint(b));
+        footprintsConflict(footprint(a), footprint(b), apart);
     assert.ok(conflict("writesCanvas", "readsCanvas"));
     assert.ok(!conflict("writesCanvas", "writesPanel"));
     assert.ok(conflict("writesPanel", "readsPage"));
@@ -97,9 +100,9 @@ test("the clock is state no code writes; the random sequence is written by each 
 export function now(): number { return Date.now(); }
 export function draw(): number { return Math.random(); }`);
     assert.ok(!touchesNoState(footprint("now")));
-    assert.ok(!footprintsConflict(footprint("now"), footprint("now")));
-    assert.ok(footprintsConflict(footprint("draw"), footprint("draw")));
-    assert.ok(!footprintsConflict(footprint("now"), footprint("draw")));
+    assert.ok(!footprintsConflict(footprint("now"), footprint("now"), apart));
+    assert.ok(footprintsConflict(footprint("draw"), footprint("draw"), apart));
+    assert.ok(!footprintsConflict(footprint("now"), footprint("draw"), apart));
 });
 
 test("waiting and a library operation's own work are the operand question's alone", () => {
@@ -178,4 +181,37 @@ ${use}`,
     assert.equal(callers("void new ReadableStream(game);"), undefined);
     // The language calls its protocols on any object.
     assert.equal(callers("void `${game}`;", "toString"), undefined);
+});
+
+test("a page lookup reads the element it finds by id, or the whole page; a read-only method writes nothing", () => {
+    const { footprint } = analysis(`
+const label = document.getElementById("label") as HTMLDivElement;
+export function findsPlay(): HTMLElement | null { return document.getElementById("play"); }
+export function findsAny(): Element | null { return document.querySelector(".item"); }
+export function writesLabel(): void { label.textContent = "x"; }
+export function readsTitle(): string | null { return label.getAttribute("title"); }`);
+    assert.ok(
+        !footprintsConflict(
+            footprint("findsPlay"),
+            footprint("writesLabel"),
+            apart,
+        ),
+    );
+    assert.ok(
+        footprintsConflict(
+            footprint("findsAny"),
+            footprint("writesLabel"),
+            apart,
+        ),
+    );
+    // A write to an element changes the elements inside it.
+    assert.ok(
+        footprintsConflict(
+            footprint("findsPlay"),
+            footprint("writesLabel"),
+            (outer, inner) => outer === "label" && inner === "play",
+        ),
+    );
+    assert.equal(footprint("readsTitle").writes.objects.size, 0);
+    assert.ok(footprint("readsTitle").reads.objects.has("page:label"));
 });

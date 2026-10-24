@@ -6,6 +6,7 @@ import {
     handedFunctions,
     lookedUpElementId,
     touchesNoState,
+    type PageNests,
     type Access,
     type CodePart,
 } from "./evaluation-order.js";
@@ -157,6 +158,7 @@ export function activationOrderIsUnobservable(
             !footprintsConflict(
                 later,
                 context.evaluationOrder.footprint(first.code),
+                pageNests(context),
             )
         );
     });
@@ -186,6 +188,7 @@ export function reactionOrderIsUnobservable(
             !footprintsConflict(
                 later,
                 context.evaluationOrder.footprint(first.code),
+                pageNests(context),
             )
         );
     });
@@ -276,6 +279,12 @@ function pageNesting(context: OrderContext): PageNesting {
         pageNestings.set(context.checker, nesting);
     }
     return nesting;
+}
+
+/** {@link PageNesting.mayContain} as the footprint overlap reads it. */
+function pageNests(context: OrderContext): PageNests {
+    const nesting = pageNesting(context);
+    return (outer, inner) => nesting.mayContain(outer, inner);
 }
 
 /**

@@ -113,86 +113,165 @@ import {
 export type ObjectFamily =
     "page" | `page:${string}` | "engine" | "data" | "objects";
 
-/** Whether two families may hold one object. */
-function familiesOverlap(a: ObjectFamily, b: ObjectFamily): boolean {
+/**
+ * Whether the element with id `outer` may be or hold the one with id
+ * `inner` while the program runs (`PageNesting`).
+ */
+export type PageNests = (outer: string, inner: string) => boolean;
+
+/**
+ * Whether two families may hold one object: an element found by id holds
+ * the elements the page puts inside it, so a write to it changes them and
+ * a write to one of them changes it.
+ */
+function familiesOverlap(
+    a: ObjectFamily,
+    b: ObjectFamily,
+    nests: PageNests,
+): boolean {
     if (a === b || a === "objects" || b === "objects") return true;
+    const element = (family: ObjectFamily): string | undefined =>
+        family.startsWith("page:") ? family.slice("page:".length) : undefined;
+    const [first, second] = [element(a), element(b)];
+    if (first !== undefined && second !== undefined)
+        return nests(first, second) || nests(second, first);
     return (
-        (a === "page" && b.startsWith("page:")) ||
-        (b === "page" && a.startsWith("page:"))
+        (a === "page" && second !== undefined) ||
+        (b === "page" && first !== undefined)
     );
 }
 
+/** What a platform method does beyond reading its receiver. */
+type PlatformMethodEffect =
+    "reads" | "creates" | "writes-receiver" | "runs-code";
+
+function methodEffects(
+    effect: PlatformMethodEffect,
+    ...names: string[]
+): [string, PlatformMethodEffect][] {
+    return names.map((name) => [name, effect]);
+}
+
 /**
- * DOM platform methods with state behind their receiver: a streaming
- * decoder's pending bytes, a byte stream's queue and lock, an abort.
+ * Platform methods by the interface declaring them (a global function is
+ * the Window's): a lookup or a read leaves its receiver and the page as
+ * they were, a creation makes a node outside the page, a decoder or a
+ * stream keeps state behind its receiver (pending bytes, a queue and a
+ * lock), and a dispatch runs the listeners of the event it fires before it
+ * returns. Any other page method changes its receiver and what it is
+ * handed.
  */
-type PlatformMethodEffect = "writes-receiver" | "runs-code";
 const PLATFORM_METHOD_EFFECTS: ReadonlyMap<
     string,
     ReadonlyMap<string, PlatformMethodEffect>
-> = new Map([
+> = new Map<string, ReadonlyMap<string, PlatformMethodEffect>>([
     [
-        "TextDecoder",
-        new Map<string, PlatformMethodEffect>([["decode", "writes-receiver"]]),
+        "Document",
+        new Map([
+            ...methodEffects(
+                "reads",
+                "getElementById",
+                "getElementsByClassName",
+                "getElementsByName",
+                "getElementsByTagName",
+            ),
+            ...methodEffects(
+                "creates",
+                "createComment",
+                "createDocumentFragment",
+                "createElement",
+                "createElementNS",
+                "createTextNode",
+            ),
+        ]),
+    ],
+    ["DocumentFragment", new Map(methodEffects("reads", "getElementById"))],
+    ["NonElementParentNode", new Map(methodEffects("reads", "getElementById"))],
+    [
+        "ParentNode",
+        new Map(methodEffects("reads", "querySelector", "querySelectorAll")),
     ],
     [
-        "ReadableStream",
-        new Map<string, PlatformMethodEffect>([
-            ["getReader", "writes-receiver"],
-            ["cancel", "writes-receiver"],
+        "Element",
+        new Map(
+            methodEffects(
+                "reads",
+                "closest",
+                "getAttribute",
+                "getAttributeNames",
+                "getBoundingClientRect",
+                "getClientRects",
+                "getElementsByClassName",
+                "getElementsByTagName",
+                "hasAttribute",
+                "hasAttributes",
+                "matches",
+            ),
+        ),
+    ],
+    [
+        "Node",
+        new Map(
+            methodEffects(
+                "reads",
+                "compareDocumentPosition",
+                "contains",
+                "getRootNode",
+                "hasChildNodes",
+                "isEqualNode",
+                "isSameNode",
+            ),
+        ),
+    ],
+    ["DOMTokenList", new Map(methodEffects("reads", "contains"))],
+    [
+        "Window",
+        new Map([
+            ...methodEffects("reads", "getComputedStyle", "matchMedia"),
+            ...methodEffects("runs-code", "blur", "focus"),
         ]),
+    ],
+    ["EventTarget", new Map(methodEffects("runs-code", "dispatchEvent"))],
+    ["HTMLElement", new Map(methodEffects("runs-code", "click"))],
+    ["HTMLOrSVGElement", new Map(methodEffects("runs-code", "blur", "focus"))],
+    [
+        "HTMLFormElement",
+        new Map(methodEffects("runs-code", "requestSubmit", "reset")),
+    ],
+    ["AbortController", new Map(methodEffects("runs-code", "abort"))],
+    ["FileReader", new Map(methodEffects("runs-code", "abort"))],
+    ["XMLHttpRequest", new Map(methodEffects("runs-code", "abort"))],
+    ["TextDecoder", new Map(methodEffects("writes-receiver", "decode"))],
+    [
+        "ReadableStream",
+        new Map(methodEffects("writes-receiver", "cancel", "getReader")),
+    ],
+    [
+        "ReadableStreamGenericReader",
+        new Map(methodEffects("writes-receiver", "cancel")),
     ],
     [
         "ReadableStreamDefaultReader",
-        new Map<string, PlatformMethodEffect>([
-            ["read", "writes-receiver"],
-            ["cancel", "writes-receiver"],
-            ["releaseLock", "writes-receiver"],
-        ]),
-    ],
-    [
-        "AbortController",
-        new Map<string, PlatformMethodEffect>([["abort", "runs-code"]]),
+        new Map(methodEffects("writes-receiver", "read", "releaseLock")),
     ],
 ]);
 
+/** The effect of the platform method a declaration declares, by its interface. */
 function platformMethodEffect(
-    receiver: ts.Type,
-    method: string,
+    declaration: ts.Declaration | undefined,
 ): PlatformMethodEffect | undefined {
-    for (const member of unionMembers(receiver)) {
-        const symbol = member.getSymbol();
-        if (!symbol || !declaredInDomLibrary(symbol)) continue;
-        const effect = PLATFORM_METHOD_EFFECTS.get(symbol.name)?.get(method);
-        if (effect) return effect;
-    }
-    return undefined;
+    if (!declaration || declarationOrigin(declaration) !== "dom")
+        return undefined;
+    const name = ts.getNameOfDeclaration(declaration);
+    const owner = ts.isInterfaceDeclaration(declaration.parent)
+        ? declaration.parent.name.text
+        : ts.isSourceFile(declaration.parent)
+          ? "Window"
+          : undefined;
+    return name && ts.isIdentifier(name) && owner !== undefined
+        ? PLATFORM_METHOD_EFFECTS.get(owner)?.get(name.text)
+        : undefined;
 }
-
-/** DOM methods that only read the page, or create a node outside it. */
-const PAGE_ACCESSES: ReadonlyMap<string, "reads" | "creates"> = new Map([
-    ["getElementById", "reads"],
-    ["getElementsByClassName", "reads"],
-    ["getElementsByTagName", "reads"],
-    ["querySelector", "reads"],
-    ["querySelectorAll", "reads"],
-    ["createComment", "creates"],
-    ["createDocumentFragment", "creates"],
-    ["createElement", "creates"],
-    ["createElementNS", "creates"],
-    ["createTextNode", "creates"],
-]);
-
-/** DOM methods that dispatch an event, running its listeners before they return. */
-const LISTENER_RUNNING_METHODS: ReadonlySet<string> = new Set([
-    "abort",
-    "blur",
-    "click",
-    "dispatchEvent",
-    "focus",
-    "requestSubmit",
-    "reset",
-]);
 
 /** Library calls that read the clock (`Math.random` advances its sequence). */
 const CLOCK_LIBRARY_CALLS: ReadonlySet<string> = new Set([
@@ -410,7 +489,11 @@ export function touchesNoState(footprint: Access): boolean {
  * Whether two runs of code observe their order: one writes state the other
  * reads or writes, an object of one family meeting its own or `objects`.
  */
-export function footprintsConflict(a: Access, b: Access): boolean {
+export function footprintsConflict(
+    a: Access,
+    b: Access,
+    nests: PageNests,
+): boolean {
     const any = (footprint: Access): boolean =>
         footprint.reads.any || footprint.writes.any;
     if ((any(a) && !touchesNoState(b)) || (any(b) && !touchesNoState(a)))
@@ -421,7 +504,7 @@ export function footprintsConflict(a: Access, b: Access): boolean {
         ) ||
         [...writes.objects].some((written) =>
             [...other.objects].some((family) =>
-                familiesOverlap(written, family),
+                familiesOverlap(written, family, nests),
             ),
         );
     return (
@@ -633,7 +716,10 @@ function privateObjects(
                 freshValue(checker, initializer) ||
                 ts.isArrowFunction(initializer) ||
                 ts.isFunctionExpression(initializer) ||
-                (method && PAGE_ACCESSES.get(method.name) === "creates")
+                (ts.isCallExpression(initializer) &&
+                    platformMethodEffect(
+                        calledDeclaration(checker, initializer),
+                    ) === "creates")
             ) {
                 candidates.add(symbol);
                 return;
@@ -1981,41 +2067,36 @@ export class EvaluationOrder {
             if (this.mayHoldArray(checker.getTypeAtLocation(expression)))
                 work.writes.arrays = true;
         };
-        const page =
-            origin === "dom" && callee
-                ? PAGE_ACCESSES.get(callee.name)
-                : undefined;
-        if (
-            origin === "dom" &&
-            callee &&
-            LISTENER_RUNNING_METHODS.has(callee.name)
-        )
-            touchEverything(access);
+        const effect = ts.isCallExpression(call)
+            ? platformMethodEffect(declaration)
+            : undefined;
+        if (effect === "runs-code") touchEverything(access);
         const receiver = callee?.expression;
+        // A library global (`Math`, `document`) is no object a program
+        // reads; a lookup of the page reads the element it finds by id, or
+        // the whole page.
+        const global =
+            receiver === undefined ||
+            libraryGlobal(checker, receiver) !== undefined;
+        if (effect === "reads" && global && ts.isCallExpression(call)) {
+            const id = lookedUpElementId(checker, call);
+            work.reads.objects.add(id === undefined ? "page" : `page:${id}`);
+        }
         if (receiver && !this.isPrimitive(receiver)) {
-            // A library global (`Math`, `document`) is no object a program
-            // reads; the page's own are its state.
-            const global = libraryGlobal(checker, receiver) !== undefined;
             if (!global) {
                 const family = this.objectOf(receiver, unit);
                 if (family) work.reads.objects.add(family);
-                const platform = platformMethodEffect(
-                    checker.getTypeAtLocation(receiver),
-                    callee.name,
-                );
-                // Aborting runs the signal's listeners: any program code.
-                if (platform === "runs-code") touchEverything(access);
-                else if (platform === "writes-receiver") change(receiver);
             }
             if (
-                origin === "dom"
-                    ? page === undefined
+                effect === "writes-receiver" ||
+                (origin === "dom"
+                    ? effect === undefined
                     : !global &&
                       libraryMethodWritesReceiver(
                           checker,
                           receiver,
                           callee.name,
-                      )
+                      ))
             )
                 change(receiver);
         }
@@ -2042,7 +2123,7 @@ export class EvaluationOrder {
         }
         const written = libraryWrittenArgument(checker, call);
         if (written) change(written);
-        if (origin !== "dom" || page !== undefined) return;
+        if (origin !== "dom" || effect !== undefined) return;
         if (!callee) work.writes.objects.add("page");
         else
             for (const argument of call.arguments)
