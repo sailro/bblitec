@@ -6,6 +6,7 @@ import { findAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { isInstantiatedNamespace } from "./namespace-declarations.js";
 import {
     aliasTarget,
+    calledFunction,
     declaredSymbol,
     type CompilerSymbols,
 } from "./symbols.js";
@@ -238,34 +239,6 @@ export function planEntryModuleState(
     ).planEntryState(retainedDeclarations);
 }
 
-/** The function a callee expression names, as the planner resolves it. */
-function calleeFunction(
-    symbols: CompilerSymbols,
-    expression: ts.Expression,
-): ts.FunctionLikeDeclaration | undefined {
-    const current = unwrapExpression(expression);
-    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
-        return current;
-    }
-    if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) {
-        return undefined;
-    }
-    const name = ts.isPropertyAccessExpression(current)
-        ? current.name
-        : current;
-    if (!ts.isIdentifier(name)) return undefined;
-    const declaration = symbols.valueSymbol(name)?.valueDeclaration;
-    if (declaration && ts.isFunctionLike(declaration)) {
-        return declaration as ts.FunctionLikeDeclaration;
-    }
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        ts.isFunctionLike(declaration.initializer)
-        ? declaration.initializer
-        : undefined;
-}
-
 /**
  * A `const` whose initializer creates an object its members need, so
  * JavaScript's one evaluation in module order is observable: a record
@@ -286,7 +259,7 @@ export function createsReceiverState(
     if (isRecordWithReceiverMethods(initializer)) return true;
     const call = unwrapExpression(initializer);
     const called = ts.isCallExpression(call)
-        ? calleeFunction(symbols, call.expression)
+        ? calledFunction(checker, call)
         : undefined;
     if (!called?.body) return false;
     const owner = (node: ts.Node) =>
@@ -605,7 +578,7 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                     }
                 }
                 if (ts.isCallExpression(node)) {
-                    const called = this.calledFunction(node.expression);
+                    const called = calledFunction(this.checker, node);
                     if (
                         called?.body &&
                         projectFiles.has(called.getSourceFile())
@@ -707,7 +680,7 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                         }
                     }
                     if (ts.isCallExpression(node)) {
-                        const called = this.calledFunction(node.expression);
+                        const called = calledFunction(this.checker, node);
                         if (called?.body && !activeFunctions.has(called)) {
                             activeFunctions.add(called);
                             visit(called.body);
@@ -781,12 +754,6 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
         return false;
     }
 
-    private calledFunction(
-        expression: ts.Expression,
-    ): ts.FunctionLikeDeclaration | undefined {
-        return calleeFunction(this.symbols, expression);
-    }
-
     /** @unjournaled A cache of each file's writes, from its source alone. */
     private readonly initializerMutationCache = new Map<
         ts.SourceFile,
@@ -857,7 +824,7 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                         }
                         for (const argument of current.arguments)
                             record(argument, true);
-                        const called = this.calledFunction(callee);
+                        const called = calledFunction(this.checker, current);
                         if (called?.body && !activeFunctions.has(called)) {
                             activeFunctions.add(called);
                             visit(called.body);

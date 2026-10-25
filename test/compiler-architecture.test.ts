@@ -620,6 +620,24 @@ test("a void result reads as undefined through one rule", () => {
             "src/compiler/undefined-values.ts",
         ],
     );
+    // A call, property or element read takes its receiver through
+    // voidReceiver; an absent receiver's TypeError is absentReceiverRead's
+    // (data-methods.ts adds a primitive's missing method).
+    assert.deepEqual(declarationOwners("voidReceiver"), [
+        "src/compiler/undefined-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /public absentReceiverRead\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes("absent_receiver_read"))
+            .sort(),
+        ["src/compiler/data-methods.ts", "src/compiler/properties.ts"],
+    );
 });
 
 test("a type's absent members are read through type-facts.ts", () => {
@@ -1945,20 +1963,19 @@ test("a Math member is one row of MATH_MEMBERS", () => {
     );
 });
 
-test("what a library call's result holds is one table in kept-values.ts", () => {
+test("what a library call's result holds is answered in kept-values.ts from the facts table", () => {
     // libraryResultMayHold answers for an argument, callResultHoldsArguments
-    // for any of them; the holding methods are listed once, the computing
-    // statics are LIBRARY_CALL_FACTS rows, and an unlisted static may hold.
-    for (const name of [
-        "libraryResultMayHold",
-        "callResultHoldsArguments",
-        "ARGUMENT_HOLDING_METHODS",
-    ])
+    // for any of them; the holding methods and the computing statics are
+    // library-call-facts.ts rows, and an unlisted static may hold.
+    for (const name of ["libraryResultMayHold", "callResultHoldsArguments"])
         assert.deepEqual(
             declarationOwners(name),
             ["src/compiler/kept-values.ts"],
             name,
         );
+    assert.deepEqual(declarationOwners("ARGUMENT_HOLDING_METHODS"), [
+        "src/compiler/library-call-facts.ts",
+    ]);
     assert.deepEqual(declarationOwners("libraryCallName"), [
         "src/compiler/symbols.ts",
     ]);

@@ -18,10 +18,16 @@ import {
     presentMembers,
     holdsOnly,
     arrayShape,
+    isVoid,
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
-import { knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOfNull,
+    knownCondition,
+    undefinedValue,
+} from "./values/model.js";
+import { voidReceiver } from "./undefined-values.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -2083,9 +2089,11 @@ interface PropertyAccessContext
             | "classLowerer"
             | "defaultEngine"
             | "deferredCapabilities"
+            | "emitDiscardedValue"
             | "handleCollections"
             | "optionalChainStop"
             | "platformDocumentHidden"
+            | "sharedClosures"
             | "useNativeValue"
         > {
     /** Bound only while lowering a platform visibility callback body. */
@@ -2180,6 +2188,38 @@ function isStoredPrimitiveRead(value: Value): boolean {
 /** Property access on every owner the compiler represents. */
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
+
+    /**
+     * A read through an absent receiver, after the operands JavaScript
+     * evaluates first: its TypeError, typed as the value `node` would have
+     * produced. `member` is the key, when generation knows it.
+     */
+    public absentReceiverRead(
+        node: ts.Expression,
+        absence: "undefined" | "null",
+        member?: string,
+    ): Value {
+        const message = this.context.cppString(
+            `Cannot read properties of ${absence}${member === undefined ? "" : ` (reading '${member}')`}`,
+        );
+        this.context.reachJsData();
+        const type = this.context.dataLowerer.dataTypeAt(node);
+        if (type)
+            return this.context.dataLowerer.leafValue(
+                `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
+                type,
+            );
+        const result = this.context.checker.getTypeAtLocation(node);
+        if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
+            return {
+                kind: "void",
+                cpp: `bbl::js::throw_nullish_access(${message})`,
+            };
+        return this.context.fail(
+            node,
+            "A read through an absent receiver requires a represented result type.",
+        );
+    }
 
     /**
      * An event target narrowed to an element interface, read through the
@@ -2911,7 +2951,11 @@ export class PropertyAccessLowerer {
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const compiledOwner = this.context.compileValue(ownerExpression);
+        const compiledOwner = voidReceiver(
+            this.context,
+            this.context.compileValue(ownerExpression),
+            ownerExpression,
+        );
         const rawOwner =
             this.context.presentationHostCpp &&
             compiledOwner.browserValue?.kind === "object" &&
@@ -2941,8 +2985,14 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (platformProperty) return platformProperty;
-        if (owner.kind === "json-null" && expression.questionDotToken)
-            return undefinedValue();
+        if (owner.kind === "json-null")
+            return expression.questionDotToken
+                ? undefinedValue()
+                : this.absentReceiverRead(
+                      expression,
+                      absenceOfNull(owner),
+                      expression.name.text,
+                  );
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")

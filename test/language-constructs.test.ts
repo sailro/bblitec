@@ -15516,6 +15516,47 @@ test("a void result read without a proven undefined completion refuses", () => {
         );
 });
 check(
+    "a void receiver reads as undefined for calls, property and element reads",
+    `
+    let trace = "";
+    function quiet(): void { trace += "q"; }
+    function key(): string { trace += "k"; return "m"; }
+    function arg(): number { trace += "a"; return 1; }
+    function message(run: () => void): string {
+        try { run(); } catch (error) { return error instanceof TypeError ? error.message : "other"; }
+        return "none";
+    }
+    const call = message(() => { (quiet() as unknown as { m(a: number): number }).m(arg()); });
+    const read = message(() => { const v = (quiet() as unknown as { x: number }).x; void v; });
+    if (call !== "Cannot read properties of undefined (reading 'm')" || read !== "Cannot read properties of undefined (reading 'x')" || trace !== "qq")
+        throw new Error("member " + call + " " + read + " " + trace);
+    trace = "";
+    const element = message(() => { const v = (quiet() as unknown as Record<string, number>)[key()]; void v; });
+    if (!element.startsWith("Cannot read properties of undefined") || trace !== "qk") throw new Error("element " + element + " " + trace);
+    trace = "";
+    const skipped = (quiet() as unknown as { m(a: number): number } | undefined)?.m(arg());
+    const absent = (quiet() as unknown as { x: number } | undefined)?.x;
+    if (skipped !== undefined || absent !== undefined || trace !== "qq") throw new Error("optional " + trace);
+    `,
+);
+test("a void receiver without a proven undefined completion refuses", () => {
+    // The annotation erased what ask returns: JavaScript reads its object.
+    for (const read of [
+        "(ask() as unknown as { m(): number }).m()",
+        "(ask() as unknown as { x: number }).x",
+        "(ask() as unknown as { m(): number } | undefined)?.m()",
+        '(ask() as unknown as Record<string, number>)["x"]',
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `const ask: () => void = () => ({ m() { return 3; }, x: 4 }); const v = ${read}; export {};`,
+                ),
+            /A void receiver requires a proven undefined completion/,
+            read,
+        );
+});
+check(
     "an undefined-typed method result compares as undefined",
     `
     class C {

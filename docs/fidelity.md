@@ -91,6 +91,7 @@ Bullet substitutes for Havok; physics residuals include solver differences.
 | Boxes/hulls       | Zero-thickness axes get the ground-plane adaptation; hulls get no Bullet margin                                               |
 | Floating origin   | Separate worlds; no cross-region collisions                                                                                   |
 | Queries           | GJK/EPA, convex sweep; cylinder margin `min(0.015, 0.1 * minHalfExtent)`, box margin 0.015 capped by the smallest half-extent |
+| Raycast triangles | `triangleIndex` is the source mesh triangle; Havok numbers compressed pieces, merging coplanar neighbours                     |
 | Threads           | One controller owns Bullet's scheduler; workers run no callbacks; clang-cl and MSVC share the SIMD solver layout              |
 
 ## Text contract

@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
+import {
+    ARGUMENT_HOLDING_METHODS,
+    LIBRARY_CALL_FACTS,
+} from "./library-call-facts.js";
 import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
 import {
     calledDeclaration,
@@ -116,19 +119,6 @@ export function callResultCanHoldReceiver(
 const BINARY_VIEWS: ReadonlySet<string> = new Set([
     ...TYPED_ARRAY_KINDS.keys(),
     "DataView",
-]);
-
-/**
- * Library methods whose result holds an argument: a new array or
- * collection holding it, or the receiver it was stored into.
- */
-const ARGUMENT_HOLDING_METHODS: ReadonlySet<string> = new Set([
-    "add",
-    "concat",
-    "fill",
-    "set",
-    "toSpliced",
-    "with",
 ]);
 
 /**

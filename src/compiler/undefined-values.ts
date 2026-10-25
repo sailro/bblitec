@@ -274,6 +274,30 @@ export function undefinedFromVoid(
     };
 }
 
+/**
+ * A member read's receiver: a void result runs, then reads as the
+ * `undefined` it converts to, so a call, property or element read through
+ * it takes the absent-receiver path. One only a void annotation types
+ * refuses: the annotation erased whatever the function returned.
+ */
+export function voidReceiver(
+    context: UndefinedContext & {
+        emitDiscardedValue(value: Value): void;
+        fail(node: ts.Node, message: string): never;
+    },
+    value: Value,
+    node: ts.Expression,
+): Value {
+    if (value.kind !== "void") return value;
+    if (!value.abruptCompletion && readsErasedVoid(context, value, node))
+        context.fail(
+            node,
+            "A void receiver requires a proven undefined completion.",
+        );
+    context.emitDiscardedValue(value);
+    return undefinedValue();
+}
+
 /** Primitive return lanes cannot participate in thenable adoption. */
 export function isNonThenableDataType(type: DataType | undefined): boolean {
     if (!type) return false;

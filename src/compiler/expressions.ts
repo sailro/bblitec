@@ -61,7 +61,7 @@ import {
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
-import { readsErasedVoid } from "./undefined-values.js";
+import { readsErasedVoid, voidReceiver } from "./undefined-values.js";
 import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -222,7 +222,6 @@ import {
     absenceKind,
     isNullable,
     nullability,
-    isVoid,
     valueKindOf,
     callSignatures,
     stringPlusOperands,
@@ -4981,33 +4980,19 @@ export class ExpressionLowerer {
     /**
      * An index of an absent (null or undefined) receiver: an optional chain
      * short-circuits to undefined without evaluating the key; any other read
-     * evaluates the key, then throws JavaScript's TypeError, typed as the
-     * element it would have read.
+     * evaluates the key, then throws JavaScript's TypeError.
      */
     private compileAbsentElementAccess(
         unwrapped: ts.ElementAccessExpression,
+        owner: Value,
     ): Value {
         if (unwrapped.questionDotToken) return undefinedValue();
-        const type = this.context.dataLowerer.dataTypeAt(unwrapped);
-        if (!type)
-            return this.context.fail(
-                unwrapped.expression,
-                "Element access is not supported for json-null.",
-            );
-        this.context.emitDiscardedValue(
-            this.compileValue(unwrapped.argumentExpression),
-        );
-        const absent = nullability(
-            this.context.checker.getTypeAtLocation(
-                this.context.unwrap(unwrapped.expression),
-            ),
-        );
-        this.context.reachJsData();
-        return this.context.dataLowerer.leafValue(
-            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${this.context.cppString(
-                `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
-            )})`,
-            type,
+        const key = this.compileValue(unwrapped.argumentExpression);
+        this.context.emitDiscardedValue(key);
+        return this.context.propertyAccess.absentReceiverRead(
+            unwrapped,
+            absenceOfNull(owner),
+            staticKeyOf(key),
         );
     }
 
@@ -5127,9 +5112,13 @@ export class ExpressionLowerer {
         if (collectionElement) {
             return collectionElement;
         }
-        const owner = this.compileValue(unwrapped.expression);
+        const owner = voidReceiver(
+            this.context,
+            this.compileValue(unwrapped.expression),
+            unwrapped.expression,
+        );
         if (owner.kind === "json-null")
-            return this.compileAbsentElementAccess(unwrapped);
+            return this.compileAbsentElementAccess(unwrapped, owner);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -7619,42 +7608,26 @@ export class ExpressionLowerer {
                   this.compileModuleNamespace(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
-                  : this.compileValue(receiver);
+                  : voidReceiver(
+                        this.context,
+                        this.compileValue(receiver),
+                        receiver,
+                    );
             const instance = receiverValue
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
-            // A known-absent receiver -- a void call's undefined included --
-            // can occur in a runtime branch even when its declared type
-            // names a class. Read the method with JavaScript's failure
-            // semantics before evaluating arguments; the declared call
-            // result only types that throwing branch.
-            if (instance?.kind === "json-null" || instance?.kind === "void") {
+            // A known-absent receiver can occur in a runtime branch even
+            // when its declared type names a class. Read the method with
+            // JavaScript's failure semantics before evaluating arguments;
+            // the declared call result only types that throwing branch.
+            if (instance?.kind === "json-null") {
                 this.context.emitDiscardedValue(instance);
                 if (callee.questionDotToken) return undefinedValue();
-                const absence =
-                    instance.kind === "void"
-                        ? "undefined"
-                        : absenceOfNull(instance);
-                const message = this.context.cppString(
-                    `Cannot read properties of ${absence} (reading '${memberName}')`,
-                );
-                const type = this.context.dataLowerer.dataTypeAt(call);
-                this.context.reachJsData();
-                if (type)
-                    return this.context.dataLowerer.leafValue(
-                        `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
-                        type,
-                    );
-                const result = this.context.checker.getTypeAtLocation(call);
-                if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
-                    return {
-                        kind: "void",
-                        cpp: `bbl::js::throw_nullish_access(${message})`,
-                    };
-                return this.context.fail(
+                return this.context.propertyAccess.absentReceiverRead(
                     call,
-                    "A method call on an absent receiver requires a represented result type.",
+                    absenceOfNull(instance),
+                    memberName,
                 );
             }
             const callableProperty = instance
