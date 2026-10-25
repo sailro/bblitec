@@ -2,7 +2,6 @@ import {
     optionalPresentCpp,
     representedStorage,
     valueForKind,
-    withNativeMetadata,
 } from "./types.js";
 import {
     EmissionSet,
@@ -22,7 +21,6 @@ import {
     type NamedMember,
 } from "./symbols.js";
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
 import { isJsonValue } from "./json-bridge.js";
 import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import type { DataStructField, DataType } from "./data-types.js";
@@ -1611,74 +1609,24 @@ export class ClassLowerer {
         const structName = value.dataType.name;
         const binding = this.context.dataTypes.classStruct(structName);
         if (!binding) return undefined;
-        // Every field read repeats the receiver's spelling. A plain name
-        // repeats for free; anything else -- a call, an indexed read, a
-        // member of another record -- is bound once so the instance the
-        // method runs on is the one the call named.
-        let instanceCpp = value.cpp;
-        let bound: Pick<Value, "nativeCaptures"> = {};
-        if (!cppIdentifierPattern.test(instanceCpp)) {
-            const name = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver`,
-            );
-            const source = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver_source`,
-            );
-            const lifetime = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver_lifetime`,
-            );
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto&",
-                name: source,
-                initializer: instanceCpp,
-            });
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: lifetime,
-                initializer: `${source}.lifetime_owner()`,
-                attributes: "[[maybe_unused]] ",
-            });
-            this.context.emit({
-                kind: "declaration",
-                type: this.context.dataTypes.cppType(value.dataType),
-                name,
-                initializer: source,
-            });
-            this.context.registerNativeBindingType(
-                name,
-                this.context.dataTypes.cppType(value.dataType),
-            );
-            // A closure reading the receiver (a dispatch's tag test) captures
-            // this local, as one reading its fields does.
-            bound = {
-                nativeCaptures: [
-                    this.context.registerNativeBinding(name, false, true),
-                ],
-            };
-            instanceCpp = name;
-        }
-        // A computed receiver's identity and presence spellings follow the
-        // binding, or an optional call would spell the call a second time;
-        // a storage read is stable and keeps its own.
-        const receiver =
-            instanceCpp === value.cpp || value.nativeLvalue
-                ? value
-                : withNativeMetadata(
-                      this.context.dataValue(instanceCpp, value.dataType),
-                      value,
-                  );
+        // Every field read repeats the receiver's spelling, so a computed
+        // one is bound once: the instance the method runs on is the one the
+        // call named.
+        const receiver = this.context.bindings.pinReceiverToTemporary(
+            value,
+            value.dataType,
+            `${structName.toLowerCase()}_receiver`,
+        );
         if (!this.context.dataTypes.classStructTagged(structName)) {
             return this.receiverRecord(
-                { ...receiver, cpp: instanceCpp, ...bound },
+                receiver,
                 binding.declaration,
                 undefined,
                 binding.type,
             );
         }
         return this.narrowedReceiver(
-            { ...receiver, cpp: instanceCpp, ...bound },
+            receiver,
             this.staticCandidates(binding.declaration, node),
             node ?? binding.declaration,
         );
