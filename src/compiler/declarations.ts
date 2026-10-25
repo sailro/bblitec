@@ -1340,7 +1340,7 @@ export class DeclarationLowerer {
             const written =
                 value.kind === "record" &&
                 !aliasesRecord &&
-                (accessorWrites?.heap ||
+                ((accessorWrites?.objects.size ?? 0) > 0 ||
                     accessorWrites?.any ||
                     this.inferredObjectIsMutated(declaration.name));
             if (written) {
