@@ -14993,6 +14993,24 @@ check(
 `,
 );
 
+// An argument is checked against the call's type at its position: a
+// generic tuple parameter's instantiation, a bound function's rest element.
+check(
+    "arguments-checked-at-their-resolved-position",
+    `
+    function swap<T>(pair: [T, T]): [T, T] { return [pair[1], pair[0]]; }
+    let n = 1;
+    for (let i = 0; i < 3; i++) n += i;
+    const swapped = swap([n, 2]);
+    const box = { n: 1 };
+    function bump(this: { n: number }, by: number, label: string): void { this.n += by + label.length; }
+    const bound = bump.bind(box);
+    bound(5, "ab");
+    if (swapped[0] !== 2 || swapped[1] !== n || box.n !== 8)
+        throw new Error("arguments " + swapped[0] + " " + box.n);
+`,
+);
+
 check(
     "numeric-logical-operators-and-array-membership",
     `

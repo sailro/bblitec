@@ -7112,7 +7112,6 @@ export class UserFunctionLowerer {
         fail: Fail,
     ): void {
         const rest = restParameterIndex(ir.declaration);
-        const resolved = this.checker.getResolvedSignature(call);
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
@@ -7138,16 +7137,12 @@ export class UserFunctionLowerer {
             ) {
                 return;
             }
-            const resolvedParameter = resolved?.getParameters()[index];
-            const resolvedType =
-                resolvedParameter &&
-                this.checker.getTypeOfSymbol(resolvedParameter);
-            // A rest tuple (`OmitThisParameter`'s `...args` of a bound
-            // function) types the parameters the declaration spells.
+            // The resolved signature's type at the argument's position: a
+            // rest tuple (`OmitThisParameter`'s `...args` of a bound
+            // function) gives its element there. A position the call's
+            // signature does not type checks against the declaration.
             const parameterType =
-                resolvedType && !this.checker.isTupleType(resolvedType)
-                    ? resolvedType
-                    : parameter.type;
+                this.checker.getContextualType(argument) ?? parameter.type;
             const argumentType = this.checker.getTypeAtLocation(argument);
             if (
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&
