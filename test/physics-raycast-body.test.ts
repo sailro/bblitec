@@ -343,3 +343,103 @@ test("exact scene103 retains thin-body ray indices and default-query matrix pick
     assert.ok(interactive.manifest.features.includes("math:mat4-invert"));
     assert.match(interactive.cpp, /mat4_invert_array/);
 });
+
+test("a ray reports a MESH shape's struck triangle and -1 elsewhere, as the pinned Havok query does", async () => {
+    // The native fixture (physics-container-check.cpp) asserts the same
+    // triangles, rays and answers against the Bullet PAL, which reports the
+    // source triangle; Havok's key numbers its compressed mesh primitives,
+    // two coplanar triangles sharing an edge being one, so the two agree
+    // while no triangles merge. The compiled record reads the PAL's field.
+    const require = createRequire(import.meta.url);
+    const wasmBinary = new Uint8Array(
+        readFileSync(
+            require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"),
+        ),
+    ).buffer;
+    const hknp = await HavokPhysics({ wasmBinary });
+    interface World {
+        _hknp: typeof hknp;
+        _hkWorld: HP_WorldId;
+        _bodies: { _hkBody: HP_BodyId }[];
+        _queryCollector?: HP_CollectorId;
+    }
+    const { physicsRaycast } = await importPinnedModule<{
+        physicsRaycast(
+            this: void,
+            world: World,
+            from: { x: number; y: number; z: number },
+            to: { x: number; y: number; z: number },
+        ): { hasHit: boolean; triangleIndex: number };
+    }>("physics/havok-queries.js");
+    const heap = (values: number[], integers: boolean): number => {
+        const offset = hknp._malloc(values.length * 4);
+        (integers
+            ? new Int32Array(hknp.HEAPU8.buffer, offset, values.length)
+            : new Float32Array(hknp.HEAPU8.buffer, offset, values.length)
+        ).set(values);
+        return offset;
+    };
+    const positions = heap(
+        [0, 0, 40, 1, 0, 40, 0, 1, 40, 5, 0, 40, 6, 0, 40, 5, 1, 40],
+        false,
+    );
+    const triangles = heap([0, 1, 2, 3, 4, 5], true);
+    const mesh = hknp.HP_Shape_CreateMesh(positions, 6, triangles, 2)[1];
+    hknp._free(positions);
+    hknp._free(triangles);
+    const box = hknp.HP_Shape_CreateBox([0, 0, 0], [0, 0, 0, 1], [1, 1, 1])[1];
+    const bodies = [mesh, box].map((shape, index) => {
+        const body = hknp.HP_Body_Create()[1];
+        hknp.HP_Body_SetMotionType(body, hknp.MotionType.STATIC);
+        hknp.HP_Body_SetShape(body, shape);
+        hknp.HP_Body_SetQTransform(body, [
+            [index === 0 ? 0 : 10, 0, 0],
+            [0, 0, 0, 1],
+        ]);
+        return { _hkBody: body };
+    });
+    const world: World = {
+        _hknp: hknp,
+        _hkWorld: hknp.HP_World_Create()[1],
+        _bodies: bodies,
+    };
+    try {
+        for (const body of bodies)
+            hknp.HP_World_AddBody(world._hkWorld, body._hkBody, false);
+        hknp.HP_World_Step(world._hkWorld, 1 / 60);
+        const ray = (x: number, y: number, z: number) =>
+            physicsRaycast(world, { x, y, z: z - 2 }, { x, y, z: z + 2 });
+        assert.deepEqual(
+            [ray(0.2, 0.2, 40).hasHit, ray(0.2, 0.2, 40).triangleIndex],
+            [true, 0],
+        );
+        assert.equal(ray(5.2, 0.2, 40).triangleIndex, 1);
+        assert.deepEqual(
+            [ray(10, 0, 0).hasHit, ray(10, 0, 0).triangleIndex],
+            [true, -1],
+        );
+        assert.deepEqual(
+            [ray(3, 3, 40).hasHit, ray(3, 3, 40).triangleIndex],
+            [false, -1],
+        );
+    } finally {
+        if (world._queryCollector)
+            hknp.HP_QueryCollector_Release(world._queryCollector);
+        for (const body of bodies) {
+            hknp.HP_World_RemoveBody(world._hkWorld, body._hkBody);
+            hknp.HP_Body_Release(body._hkBody);
+        }
+        hknp.HP_Shape_Release(mesh);
+        hknp.HP_Shape_Release(box);
+        hknp.HP_World_Release(world._hkWorld);
+    }
+    const result = compileSource(`
+        import HavokPhysics from "@babylonjs/havok";
+        import { createBox, createEngine, createSceneContext, createHavokWorld, physicsRaycast } from "babylon-lite";
+        const engine = await createEngine({});
+        const world = createHavokWorld(createSceneContext(engine), await HavokPhysics());
+        const hit = physicsRaycast(world, { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 });
+        createBox(engine).position.x = hit.triangleIndex;
+    `);
+    assert.match(result.cpp, /\.triangle_index/);
+});

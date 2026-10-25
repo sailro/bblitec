@@ -199,10 +199,7 @@ export interface OneObjectContext
 
 /** What keeping a stored record's object reads of the compiler. */
 export interface HeldRecordContext {
-    readonly bindings: Pick<
-        BindingScopes,
-        "recordDeclaration" | "recordParameter"
-    >;
+    readonly bindings: Pick<BindingScopes, "recordHolder">;
     readonly dynamicBindings: ReadonlyMap<
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
@@ -213,9 +210,10 @@ export interface HeldRecordContext {
 
 /**
  * A compile-time record stored where it stays one object: the binding that
- * holds it -- found by its members, whatever node the store reads it from
- * (a spread operand, a member, the name) -- takes native storage, so the
- * store keeps that binding's object rather than a copy. `expression` is
+ * holds it, itself or nested in its fields -- found by its members, whatever
+ * node the store reads it from (a spread operand, a member, the name) --
+ * takes native storage, a variable's or a parameter's object, so the store
+ * keeps that object rather than a copy. `expression` is
  * the store's source expression, where there is one: an unbound container
  * name there stands in for a nested record it holds.
  */
@@ -228,12 +226,12 @@ export function requireHeldRecordStorage(
         : undefined,
 ): void {
     if (value.kind !== "record") return;
-    const declaration = context.bindings.recordDeclaration(value, expression);
-    if (!declaration) {
-        // A parameter's record held as field storage has no object yet.
-        const parameter = context.bindings.recordParameter(value);
-        if (parameter && !context.parameterObjects.has(parameter))
-            throw new ParameterObjectStorageRequired(parameter);
+    const declaration = context.bindings.recordHolder(value, expression);
+    if (!declaration) return;
+    // A parameter's record held as field storage has no object yet.
+    if (ts.isParameter(declaration)) {
+        if (!context.parameterObjects.has(declaration))
+            throw new ParameterObjectStorageRequired(declaration);
         return;
     }
     // A binding already given its own storage is still a record only when

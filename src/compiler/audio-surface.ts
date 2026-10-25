@@ -42,6 +42,16 @@ import {
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
 import { presentMembers, callSignatures } from "./type-facts.js";
+import { staticTableValue, type TableOption } from "./table-options.js";
+
+/** `oscillator.type` and `filter.type`: the reached Web Audio spellings. */
+const audioNodeType: TableOption = {
+    table: Object.fromEntries([...OSCILLATOR_WAVES, ...BIQUAD_FILTER_KINDS]),
+    refusal: (spelling) =>
+        `'${spelling}' is not a reached oscillator or filter type. A custom periodic wave is not lowered.`,
+    name: "Web Audio oscillator or filter type",
+    label: "node_type",
+};
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -1172,26 +1182,16 @@ function audioWriteValue(
         };
     if (property === "type")
         return {
-            value: () => {
-                const spelling = context.compileValue(right).staticString;
-                if (spelling === undefined)
-                    context.fail(
+            // The composed set of types is closed at generation.
+            value: () =>
+                context.cppString(
+                    staticTableValue(
+                        context,
+                        audioNodeType,
+                        context.compileValue(right),
                         right,
-                        "An oscillator or filter type must be a static string; the " +
-                            "pin's own types are string enums and the composed set is " +
-                            "closed at generation.",
-                    );
-                if (
-                    !OSCILLATOR_WAVES.some(([name]) => name === spelling) &&
-                    !BIQUAD_FILTER_KINDS.some(([name]) => name === spelling)
-                )
-                    context.fail(
-                        right,
-                        `'${spelling}' is not a reached oscillator or filter type. A ` +
-                            "custom periodic wave is not lowered.",
-                    );
-                return context.cppString(spelling);
-            },
+                    ),
+                ),
         };
     return undefined;
 }

@@ -1194,8 +1194,16 @@ export class DeclarationLowerer {
                     value,
                     declaration.initializer,
                 ) ?? value;
+        // A const name holding a present element (a canvas's 2D context
+        // included) names that element, whatever its nullable annotation.
+        const presentElement =
+            value.kind === "ui-element" &&
+            !value.optionalFoundCpp &&
+            !value.optionalStorageCpp &&
+            variableKind(declaration) === "const";
         if (
             nullableResource &&
+            !presentElement &&
             (value.kind === nullableResource.kind ||
                 (nullableResource.dataType &&
                     value.dataType?.kind === "optional" &&

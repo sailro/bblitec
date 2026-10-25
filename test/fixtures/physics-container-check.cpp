@@ -90,6 +90,33 @@ int main() {
                                                               0xffffffffu, 0xffffffffu, false);
     assert(direct_default_hit.has_hit && std::abs(direct_default_hit.point[2] - 29.5) < 0.001);
     assert(direct_scaled_hit.has_hit && std::abs(direct_scaled_hit.point[2] - 29) < 0.001);
+    // The pin's triangleIndex: a MESH shape's struck triangle, -1 for any
+    // other shape (a container's children included) and for a miss.
+    assert(direct_default_hit.triangle_index == -1 && ray(2).triangle_index == -1);
+    assert(scaled_miss.triangle_index == -1);
+    // Two separate triangles: the source triangle index is what the pinned
+    // Havok query reports while no two triangles merge into one quad.
+    const auto triangles = pal::physics_shape_create_mesh(
+        {{0, 0, 40}, {1, 0, 40}, {0, 1, 40}, {5, 0, 40}, {6, 0, 40}, {5, 1, 40}},
+        {0, 1, 2, 3, 4, 5});
+    for (const auto motion :
+         {pal::PhysicsMotionType::immovable, pal::PhysicsMotionType::simulated}) {
+        const auto mesh_body = pal::physics_body_create();
+        pal::physics_body_set_shape(mesh_body, triangles);
+        pal::physics_body_set_motion_type(mesh_body, motion);
+        pal::physics_world_add_body(solver_world, mesh_body, false);
+        pal::physics_world_step(solver_world, 1.0 / 60);
+        const auto lower = pal::physics_world_raycast(solver_world, {0.2, 0.2, 38}, {0.2, 0.2, 42},
+                                                      0xffffffffu, 0xffffffffu, false);
+        const auto upper = physics_raycast(world, Vec3d{5.2, 0.2, 38}, Vec3d{5.2, 0.2, 42},
+                                           0xffffffffu, 0xffffffffu, false);
+        assert(lower.has_hit && lower.triangle_index == 0);
+        assert(upper.has_hit && upper.triangle_index == 1.0);
+        pal::physics_world_remove_body(solver_world, mesh_body);
+    }
+    const auto mesh_miss =
+        physics_raycast(world, Vec3d{3, 3, 38}, Vec3d{3, 3, 42}, 0xffffffffu, 0xffffffffu, false);
+    assert(!mesh_miss.has_hit && mesh_miss.triangle_index == -1.0);
     fixture_worlds[0].fill(0);
     bool singular = false;
     try {

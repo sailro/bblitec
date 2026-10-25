@@ -9732,8 +9732,7 @@ test("shares one cell between the closures that capture and write a by-value bin
 });
 
 test("refuses a hoisted var read while it can be undefined its type cannot hold", () => {
-    // The scope's own read TypeScript reports used before assigned (TS2454),
-    // and one `!` asserts.
+    // The scope's own read some path reaches unassigned, `!` or not.
     for (const read of ["y", "y!"])
         assert.throws(
             () =>
@@ -9742,6 +9741,14 @@ test("refuses a hoisted var read while it can be undefined its type cannot hold"
                 ),
             /The `var` 'y' can be read here before it is assigned/,
         );
+    // A read inside a class the definite-assignment walk does not follow.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(c: boolean): number { if (c) { var y = 3; } class K { static v = y; } return K.v; } console.log(f(true));",
+            ),
+        /The `var` 'y' is read where its assignment runs through a ClassDeclaration, which the definite-assignment analysis does not follow/,
+    );
     // A function lowered before the walk reached an assignment.
     assert.throws(
         () =>
@@ -14887,6 +14894,52 @@ test("a realm's module texture URLs take a union suffix and its address modes at
     assert.match(
         result.cpp,
         /== bblscene::\w+::clamp_to_edge \? bbl::TextureAddressMode::clamp : bbl::TextureAddressMode::repeat\)/,
+    );
+});
+
+test("an enum-like intrinsic option reads its string through one pin table", () => {
+    const result = compileSource(`
+        import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(smooth: boolean): Promise<void> {
+            const engine = await createEngine({});
+            const sampling: "linear" | "nearest" = smooth ? "linear" : "nearest";
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1], sampling });
+            createSprite2DLayer(atlas, { capacity: 1, depth: "test-write" });
+            await loadTexture2D(engine, "a.png", { addressModeU: smooth ? "repeat" : "mirror-repeat" });
+        }
+        void main(Math.random() > 0.5);
+    `);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_sampling == bblscene::\w+::linear \? bbl::TextureFilter::linear : bbl::TextureFilter::nearest\)/,
+    );
+    assert.match(result.cpp, /bbl::Sprite2DDepthMode::test_write/);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_smooth \? bbl::TextureAddressMode::repeat : bbl::TextureAddressMode::mirror\)/,
+    );
+    // An option a generation-time decision reads takes a known string.
+    const engine = `import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});`;
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const mode: "nearest" | "linear" = Math.random() > 0.5 ? "nearest" : "linear";
+            await loadTexture2D(engine, "a.png", { minFilter: mode });
+        }
+        void main();`),
+        /A texture filter must be a generation-known string/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1] });
+            const mode: "none" | "test" = Math.random() > 0.5 ? "none" : "test";
+            createSprite2DLayer(atlas, { capacity: 1, depth: mode });
+        }
+        void main();`),
+        /A sprite layer depth mode must be a generation-known string/,
     );
 });
 

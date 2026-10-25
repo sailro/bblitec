@@ -472,19 +472,6 @@ export function structFieldKey(
     return `${structName}.${field.name}`;
 }
 
-/**
- * The key ({@link structFieldKey}) of a struct field holding an engine,
- * whose stores' engines are tracked; undefined for any other field.
- */
-export function engineFieldSlot(
-    structName: string,
-    field: DataStructField,
-): string | undefined {
-    return field.type.kind === "handle" && field.type.handle === "engine"
-        ? structFieldKey(structName, field)
-        : undefined;
-}
-
 /** The accessors an accessor-backed record field holds. */
 export type StructFieldAccessor = "get" | "get-set";
 
@@ -842,6 +829,19 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
 /** Text nodes share retained node handles, but are never element interfaces. */
 export function isDomTextType(symbol: ts.Symbol): boolean {
     return libraryName(symbol) === "Text";
+}
+
+/**
+ * The DOM interfaces a retained UI element handle carries: an element, a
+ * text node, and a canvas's 2D context, which is its canvas's handle.
+ */
+export function isUiElementHandleType(symbol: ts.Symbol): boolean {
+    return (
+        isDomElementType(symbol) ||
+        isDomTextType(symbol) ||
+        (declaredInDomLibrary(symbol) &&
+            libraryName(symbol) === "CanvasRenderingContext2D")
+    );
 }
 
 /**
@@ -4262,10 +4262,7 @@ export class DataTypeRegistry {
             // storage: audio context/buses, geometry, font, animation or particle plans.
             return undefined;
         }
-        if (
-            type.symbol &&
-            (isDomElementType(type.symbol) || isDomTextType(type.symbol))
-        ) {
+        if (type.symbol && isUiElementHandleType(type.symbol)) {
             return { kind: "handle", handle: "ui-element" };
         }
         if (libraryName(type) === "OffscreenCanvas") {
@@ -7823,19 +7820,12 @@ export class DataTypeRegistry {
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
                 : this.checker.getTypeAtLocation(member.name);
-            // A shared object keeps a retained 2D context as its canvas's handle.
-            const canvasContext: DataType | undefined =
-                libraryName(propertyType) === "CanvasRenderingContext2D"
-                    ? { kind: "handle", handle: "ui-element" }
-                    : undefined;
             const declared =
                 this.fromFunctionType(
                     this.checker.getNonNullableType(propertyType),
                     member.name,
                     true,
-                ) ??
-                this.fromClassFieldType(propertyType, member.name) ??
-                canvasContext;
+                ) ?? this.fromClassFieldType(propertyType, member.name);
             const mapped =
                 declared &&
                 this.withDemandedNumericSlot(member, propertyType, declared);

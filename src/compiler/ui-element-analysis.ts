@@ -1,13 +1,9 @@
 import ts from "typescript";
-import {
-    isDomElementType,
-    isDomTextType,
-    type DataType,
-} from "./data-types.js";
+import { isUiElementHandleType, type DataType } from "./data-types.js";
 
 /**
  * Whether the data model can map a checker type to the retained UI element
- * handle. DOM element and Text interfaces map to it (the object arm of
+ * handle. DOM element, Text and 2D context interfaces map to it (the object arm of
  * `DataTypes.fromTsType`); every other route reaches that arm through a
  * constituent this walk visits: a union member (nullable or not), an
  * intersection member (`NonNullable<T>`), a type argument (a synchronously
@@ -29,11 +25,7 @@ export function typeMayMapToUiElement(
             typeMayMapToUiElement(member, checker, visited),
         );
     if ((type.flags & ts.TypeFlags.Object) === 0) return false;
-    if (
-        type.symbol &&
-        (isDomElementType(type.symbol) || isDomTextType(type.symbol))
-    )
-        return true;
+    if (type.symbol && isUiElementHandleType(type.symbol)) return true;
     return (
         ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !==
             0 &&

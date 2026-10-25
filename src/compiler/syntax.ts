@@ -247,6 +247,14 @@ export function operandYield(
     }
 }
 
+/** The `c ? a : b` an expression is, past its wrappers. */
+export function conditionalExpression(
+    expression: ts.Expression,
+): ts.ConditionalExpression | undefined {
+    const node = unwrapExpression(expression);
+    return ts.isConditionalExpression(node) ? node : undefined;
+}
+
 /** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
 export function isOperandSelection(node: ts.Node): boolean {
     return (
@@ -1704,6 +1712,36 @@ export function bindingNameIdentifiers(name: ts.BindingName): ts.Identifier[] {
         ts.isBindingElement(element)
             ? bindingNameIdentifiers(element.name)
             : [],
+    );
+}
+
+/**
+ * What owns a frame a function-scoped binding lives in: a function, a class
+ * static block, a namespace body (a function of its own at run time) or
+ * the file.
+ */
+export type EvaluationContainer =
+    | ts.SignatureDeclaration
+    | ts.ClassStaticBlockDeclaration
+    | ts.ModuleBlock
+    | ts.SourceFile;
+
+export function isEvaluationContainer(
+    node: ts.Node,
+): node is EvaluationContainer {
+    return (
+        ts.isFunctionLike(node) ||
+        ts.isClassStaticBlockDeclaration(node) ||
+        ts.isModuleBlock(node) ||
+        ts.isSourceFile(node)
+    );
+}
+
+/** The container whose frame a declaration's variable lives in. */
+export function evaluationContainer(node: ts.Node): EvaluationContainer {
+    return (
+        ts.findAncestor(node.parent, isEvaluationContainer) ??
+        node.getSourceFile()
     );
 }
 

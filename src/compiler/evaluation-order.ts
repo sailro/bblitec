@@ -48,6 +48,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
+    evaluationContainer,
     unwrapExpression,
     rootExpression,
     writeSites,
@@ -502,16 +503,6 @@ export function footprintsConflict(
         meets(a.writes, b.writes) ||
         meets(b.writes, a.reads)
     );
-}
-
-/** The function (or file) whose frame a declaration's variable lives in. */
-function evaluationContainer(node: ts.Node): ts.Node {
-    for (let current = node.parent; current; current = current.parent) {
-        if (ts.isFunctionLike(current) || ts.isSourceFile(current))
-            return current;
-        if (ts.isClassStaticBlockDeclaration(current)) return current;
-    }
-    return node.getSourceFile();
 }
 
 /** Whether `outer` lexically contains `inner`. */

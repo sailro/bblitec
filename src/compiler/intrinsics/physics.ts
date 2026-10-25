@@ -1981,6 +1981,7 @@ function compilePhysicsRaycast(
             hitPoint: vec3Record(`${result}.hit_point`),
             hitNormal: vec3Record(`${result}.hit_normal`),
             hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
+            triangleIndex: { kind: "number", cpp: `${result}.triangle_index` },
             bodyIndex: { kind: "number", cpp: `${result}.body_index` },
             body: {
                 kind: "data",

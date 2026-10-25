@@ -225,17 +225,23 @@ export class AsyncLowerer {
                         child,
                         "An await under a browser-only guard inside an asynchronous function is not supported: the browser decides whether its turn is taken.",
                     );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: this.context.allocateTemporaryCppName("erased_await"),
-                    initializer:
-                        "co_await bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
-                    attributes: "[[maybe_unused]] ",
-                });
+                this.suspend(this.asPromise(undefined, child), "erased_await");
             },
             { functions: "skip", types: "skip" },
         );
+    }
+
+    /** `co_await` of a promise into a temporary named after `label`. */
+    private suspend(awaited: Value, label: string): string {
+        const temporary = this.context.allocateTemporaryCppName(label);
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: temporary,
+            initializer: `co_await ${awaited.cpp}`,
+            attributes: "[[maybe_unused]] ",
+        });
+        return temporary;
     }
 
     compile(expression: ts.Expression): Value | undefined {
@@ -281,26 +287,19 @@ export class AsyncLowerer {
                 ) &&
                 awaitedType !== undefined &&
                 isVoid(awaitedType);
-            let operand: Value = erasedVoid
-                ? { kind: "void", cpp: "" }
+            let operand = erasedVoid
+                ? undefined
                 : context.compileValue(node.expression);
             // `await null;` yields like any await; nothing reads its null.
             if (
-                operand.kind === "json-null" &&
+                operand?.kind === "json-null" &&
                 ts.isExpressionStatement(outermostWrapper(node).parent)
             ) {
                 context.emitDiscardedValue(operand);
-                operand = { kind: "void", cpp: "" };
+                operand = undefined;
             }
             const awaited = this.asPromise(operand, node);
-            const temporary = context.allocateTemporaryCppName("await_result");
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: temporary,
-                initializer: `co_await ${awaited.cpp}`,
-                attributes: "[[maybe_unused]] ",
-            });
+            const temporary = this.suspend(awaited, "await_result");
             const settled = awaited.promiseResult!;
             // An owned engine pair is never taken or rebound, so a
             // declaration it initializes aliases it.
@@ -2279,30 +2278,39 @@ export class AsyncLowerer {
         );
     }
 
+    /**
+     * `value` as a settled promise, converted against `source` (the awaited
+     * expression's type). No value -- an erased await's -- settles void and
+     * reads no type.
+     */
     private asPromise(
-        value: Value,
+        value: Value | undefined,
         node: ts.Node,
-        source = this.context.checker.getTypeAtLocation(node),
+        source?: ts.Type,
         target?: DataType<"promise">,
     ): Value {
-        if (value.kind === "promise") return value;
-        const adopted = this.adoptPromiseUnion(value, node, source, target);
-        if (adopted) return adopted;
-        value = this.normalizeUndefined(value, source);
-        this.refuseThenable(value, node, source);
-        value = this.ownResult(value, node, source);
-        const type = this.cppType(value, node);
-        if (value.kind === "void") {
-            this.context.emitDiscardedValue(value);
-            value = { ...value, cpp: "" };
+        if (value?.kind === "promise") return value;
+        if (value) {
+            source ??= this.context.checker.getTypeAtLocation(node);
+            const adopted = this.adoptPromiseUnion(value, node, source, target);
+            if (adopted) return adopted;
+            value = this.normalizeUndefined(value, source);
+            this.refuseThenable(value, node, source);
+            value = this.ownResult(value, node, source);
         }
-        const cpp =
-            value.kind === "void"
-                ? "bbl::js::PromiseVoid{}"
-                : this.resultCpp(value, node);
+        if (!value || value.kind === "void") {
+            if (value) this.context.emitDiscardedValue(value);
+            return {
+                kind: "promise",
+                cpp: "bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+                promiseResult: { ...value, kind: "void", cpp: "" },
+                promiseType: "bbl::js::PromiseVoid",
+            };
+        }
+        const type = this.cppType(value, node);
         return {
             kind: "promise",
-            cpp: `bbl::js::Promise<${type}>::resolved(${cpp})`,
+            cpp: `bbl::js::Promise<${type}>::resolved(${this.resultCpp(value, node)})`,
             promiseResult: value,
             promiseType: type,
         };

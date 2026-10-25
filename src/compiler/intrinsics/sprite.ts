@@ -16,10 +16,17 @@ import {
 import { handleCppType } from "../data-types/handles.js";
 import { retainedOptions, emitPresentOption } from "./retained-options.js";
 import {
-    addressModeByPin,
+    addressModeCppByPin,
     pixelsTexture2DOptionFields,
     pixelsTextureOptionsCpp,
+    textureFilterCppByPin,
 } from "../../pinned-address-modes.js";
+import {
+    staticTableValue,
+    tableEntry,
+    tableOptionValue,
+    type TableOption,
+} from "../table-options.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -286,6 +293,24 @@ function optionsRecord(
 
 function property(options: Value | undefined, name: string): Value | undefined {
     return options?.recordProperties?.[name];
+}
+
+const spriteDepthMode: TableOption = {
+    table: {
+        none: "bbl::Sprite2DDepthMode::none",
+        test: "bbl::Sprite2DDepthMode::test",
+        "test-write": "bbl::Sprite2DDepthMode::test_write",
+    },
+    refusal:
+        'createSprite2DLayer depth must be "none", "test", or "test-write".',
+    name: "sprite layer depth mode",
+    label: "depth_mode",
+};
+
+function isSpriteDepthMode(
+    mode: string,
+): mode is NonNullable<Value["spriteDepthMode"]> {
+    return Object.prototype.hasOwnProperty.call(spriteDepthMode.table, mode);
 }
 
 /**
@@ -1179,29 +1204,38 @@ function compileLoadSpriteAtlas(
     // options literal's mode and the caller's spread replaces it, so an
     // option naming only one axis must not land on the other.
     const addressMode = (name: "addressModeU" | "addressModeV"): string => {
-        const pinned =
-            property(textureOptions, name)?.staticString ??
-            loadSpriteAtlasDefaults()[name];
-        const mapped = addressModeByPin[pinned];
-        if (!mapped) {
-            context.fail(
-                argumentAt(call, 2),
+        const option: TableOption = {
+            table: addressModeCppByPin,
+            refusal: (pinned) =>
                 `loadSpriteAtlas ${name} '${pinned}' is not a pinned address mode.`,
-            );
-        }
-        return `bbl::${mapped}`;
+            name: "sprite atlas address mode",
+            label: "address_mode",
+        };
+        const value = property(textureOptions, name);
+        return value
+            ? tableOptionValue(context, option, value, argumentAt(call, 2))
+            : tableEntry(
+                  context,
+                  option,
+                  loadSpriteAtlasDefaults()[name],
+                  call,
+              );
     };
     const sampling = property(options, "sampling");
-    if (
-        sampling &&
-        sampling.staticString !== "linear" &&
-        sampling.staticString !== "nearest"
-    ) {
-        context.fail(
-            argumentAt(call, 2),
-            'loadSpriteAtlas sampling must be the literal "linear" or "nearest".',
-        );
-    }
+    const samplingCpp = sampling
+        ? tableOptionValue(
+              context,
+              {
+                  table: textureFilterCppByPin,
+                  refusal:
+                      'loadSpriteAtlas sampling must be the literal "linear" or "nearest".',
+                  name: "sprite atlas sampling",
+                  label: "sampling",
+              },
+              sampling,
+              argumentAt(call, 2),
+          )
+        : "bbl::TextureFilter::linear";
     const premultipliedAlpha = property(options, "premultipliedAlpha");
     const premultiplyOnLoad = property(options, "premultiplyOnLoad");
     context.reachFeature("sprite:2d", call);
@@ -1213,9 +1247,7 @@ function compileLoadSpriteAtlas(
             `bbl::LoadSpriteAtlasOptions{` +
             `${gridSize[0]!}, ` +
             `${gridSize[1]!}, ` +
-            `bbl::TextureFilter::${
-                sampling?.staticString === "nearest" ? "nearest" : "linear"
-            }, ` +
+            `${samplingCpp}, ` +
             `${premultipliedAlpha?.cpp ?? String(loadSpriteAtlasDefaults().premultipliedAlpha)}, ` +
             `${premultiplyOnLoad?.cpp ?? String(loadSpriteAtlasDefaults().premultiplyOnLoad)}, ` +
             `${addressMode("addressModeU")}, ` +
@@ -1237,15 +1269,10 @@ function compileCreateSprite2DLayer(
         "createSprite2DLayer",
     );
     const depth = property(options, "depth");
-    if (
+    // A layer's depth mode decides its draws at generation.
+    const depthKey =
         depth &&
-        !["none", "test", "test-write"].includes(depth.staticString ?? "")
-    ) {
-        context.fail(
-            argumentAt(call, 1),
-            'createSprite2DLayer depth must be "none", "test", or "test-write".',
-        );
-    }
+        staticTableValue(context, spriteDepthMode, depth, argumentAt(call, 1));
     for (const unreached of ["view"]) {
         if (property(options, unreached)) {
             context.fail(
@@ -1274,17 +1301,13 @@ function compileCreateSprite2DLayer(
         call.arguments[1] ?? call,
     );
     const engineCpp = context.engineFor(atlas, call);
-    const depthMode = depth?.staticString ?? defaults.depth;
-    if (
-        depthMode !== "none" &&
-        depthMode !== "test" &&
-        depthMode !== "test-write"
-    ) {
+    const depthMode = depthKey ?? defaults.depth;
+    if (!isSpriteDepthMode(depthMode))
         return context.fail(
             call,
             `createSprite2DLayer defaults its depth to '${depthMode}', which is not lowered.`,
         );
-    }
+    const depthCpp = tableEntry(context, spriteDepthMode, depthMode, call);
     context.reachFeature("sprite:2d", call);
     return {
         kind: "sprite-layer",
@@ -1296,9 +1319,7 @@ function compileCreateSprite2DLayer(
             `${numberOption(options, "opacity", floatLiteral(defaults.opacity), "float")}, ` +
             `${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
             `${numberOption(options, "order", floatLiteral(defaults.order), "float")}, ` +
-            `bbl::Sprite2DDepthMode::${
-                depthMode === "test-write" ? "test_write" : depthMode
-            }, ` +
+            `${depthCpp}, ` +
             `${numberOption(options, "layerZ", doubleLiteral(defaults.layerZ), "double")}, ` +
             `bbl::Vec2d{${
                 pivot

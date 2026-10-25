@@ -6,7 +6,9 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
-import { nativeBlendFactor } from "../lowering/pinned-blend-table.js";
+import { blendFactorByPin } from "../lowering/pinned-blend-table.js";
+import { depthCompareByPin } from "../lowering/pinned-depth-state.js";
+import { staticTableOption, type TableOption } from "./table-options.js";
 import {
     pinnedErrorCode,
     pinnedErrorMessageCpp,
@@ -41,6 +43,29 @@ import type {
 import { isTypedArrayType, tupleComponents } from "./data-types.js";
 import { presenceCpp } from "./types.js";
 import { knownCondition } from "./values/model.js";
+
+/** A shader material's depth comparison, which its pipeline reads at generation. */
+const shaderDepthCompare: TableOption = {
+    table: depthCompareByPin,
+    refusal: (compare) => `Unsupported shader depthCompare '${compare}'.`,
+    name: "shader depthCompare",
+    label: "depth_compare",
+};
+
+const shaderBlendFactor: TableOption = {
+    table: blendFactorByPin,
+    refusal: (factor) =>
+        `Pinned blend uses factor '${factor}', which this runtime has no enumerator for.`,
+    name: "shader blend factor",
+    label: "blend_factor",
+};
+
+const shaderBlendOperation: TableOption = {
+    table: { add: "add" },
+    refusal: "Shader blend supports the add operation only.",
+    name: "shader blend operation",
+    label: "blend_operation",
+};
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -340,25 +365,8 @@ export function compileShaderMaterialOptions(
         "depthCompare",
     );
     const depthCompare = depthCompareExpression
-        ? context.compileStringLiteral(depthCompareExpression)
+        ? staticTableOption(context, shaderDepthCompare, depthCompareExpression)
         : undefined;
-    if (
-        depthCompare !== undefined &&
-        ![
-            "never",
-            "less",
-            "equal",
-            "less-equal",
-            "greater",
-            "not-equal",
-            "greater-equal",
-            "always",
-        ].includes(depthCompare)
-    )
-        context.fail(
-            depthCompareExpression!,
-            `Unsupported shader depthCompare '${depthCompare}'.`,
-        );
     const depthBiasOptions: {
         depthBias?: number;
         depthBiasSlopeScale?: number;
@@ -520,28 +528,15 @@ function compileShaderBlend(
             "Shader blend components accept operation, srcFactor and dstFactor.",
         );
         const operation = context.objectProperty(literal, "operation");
-        if (operation && context.compileStaticString(operation) !== "add") {
-            context.fail(
-                operation,
-                "Shader blend supports the add operation only.",
-            );
-        }
+        if (operation)
+            staticTableOption(context, shaderBlendOperation, operation);
         const factor = (name: "srcFactor" | "dstFactor"): string => {
             const field = context.objectProperty(literal, name);
-            const text = field
-                ? context.compileStaticString(field)
+            return field
+                ? staticTableOption(context, shaderBlendFactor, field)
                 : name === "srcFactor"
                   ? "one"
                   : "zero";
-            try {
-                nativeBlendFactor(text);
-            } catch (error) {
-                context.fail(
-                    field ?? literal,
-                    error instanceof Error ? error.message : String(error),
-                );
-            }
-            return text;
         };
         return [factor("srcFactor"), factor("dstFactor")];
     };

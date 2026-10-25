@@ -285,7 +285,6 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/declarations.ts",
         "src/compiler/expressions.ts",
         "src/compiler/handle-collections.ts",
-        "src/compiler/intrinsics/asset.ts",
         "src/compiler/intrinsics/engine.ts",
         "src/compiler/intrinsics/material.ts",
         "src/compiler/intrinsics/particle.ts",
@@ -1204,12 +1203,13 @@ test("string concatenation operands and number formats are read once", () => {
 test("an intrinsic's conditional arms are selected by one rule", () => {
     // selectArms tests the condition by truthiness and runs each arm's
     // preparation only on its own branch; intrinsics that spell `c ? a : b`
-    // over their own arm spellings use it.
+    // over their own arm spellings use it, as table-options.ts does for a
+    // table option's arms.
     for (const path of [
         "src/compiler/assignments.ts",
-        "src/compiler/intrinsics/asset.ts",
         "src/compiler/intrinsics/physics.ts",
         "src/compiler/intrinsics/sprite.ts",
+        "src/compiler/table-options.ts",
     ])
         assert.ok(sourceFacts(path).members.has("selectArms"), path);
 });
@@ -1626,6 +1626,81 @@ test("a `var` binds through var-bindings.ts", () => {
         );
 });
 
+test("an await suspends through one co_await and one void settlement", () => {
+    // AsyncLowerer.suspend spells every await's co_await; asPromise spells
+    // the void promise an erased await and a void operand settle.
+    const source = sourceText("src/compiler/async.ts");
+    assert.equal(source.split("co_await ${").length - 1, 1);
+    assert.equal(
+        source.split(
+            "bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+        ).length - 1,
+        1,
+    );
+});
+
+test("a var's definite assignment is a syntactic analysis, and its frame the evaluation container", () => {
+    // var-bindings reads definite-assignment.ts, never the checker's
+    // diagnostics (a type check of the whole file); its scope is
+    // syntax.ts's evaluationContainer, which evaluation-order shares.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                sourceText(path).includes("getSemanticDiagnostics"),
+        ),
+        [],
+    );
+    assert.deepEqual(declarationOwners("evaluationContainer"), [
+        "src/compiler/syntax.ts",
+    ]);
+    assert.deepEqual(declarationOwners("definitelyAssignedAt"), [
+        "src/compiler/definite-assignment.ts",
+    ]);
+});
+
+test("an enum-like intrinsic option reads its string through table-options.ts", () => {
+    // A string looked up in a pin table, a `?:` over its arms and a run-time
+    // literal union matched against each member's spelling are
+    // table-options.ts's; no intrinsic matches a union's members itself.
+    for (const name of [
+        "compileTableOption",
+        "staticTableOption",
+        "staticTableEntry",
+        "staticTableValue",
+        "tableOptionValue",
+        "tableEntry",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/table-options.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/compiler/intrinsics/") &&
+                sourceFacts(path).members.has("enumMemberCpp"),
+        ),
+        [],
+    );
+});
+
+test("an engine field's engine is an analysis result before emission", () => {
+    // engine-field-identities.ts reads every store to a field's name before
+    // emission; no lowering notes an engine field's store as it emits it.
+    assert.deepEqual(declarationOwners("engineFieldIdentities"), [
+        "src/compiler/engine-field-identities.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("noteEngineSlot"),
+        ),
+        [],
+    );
+});
+
 test("a value is written to an assignment target through one owner", () => {
     // emitAssignmentTargetWrite writes a computed value as `target = value`
     // would (a variable, a member, an array or object pattern): the
@@ -1769,16 +1844,15 @@ test("a projection's path algebra is read through projections.ts", () => {
 });
 
 test("a stored record keeps its binding's object through one owner", () => {
-    // requireHeldRecordStorage asks recordDeclaration for every store, and
-    // recordParameter for a record a parameter holds as field storage; a
-    // `delete` asks for runtime storage and a JSON view for an observing
-    // owner, each its own question.
+    // requireHeldRecordStorage asks recordHolder, one rule for variables
+    // and parameters, for every store; a `delete` asks for runtime storage
+    // and a JSON view for an observing owner, each its own question.
     assert.deepEqual(declarationOwners("requireHeldRecordStorage"), [
         "src/compiler/dynamic-binding-storage.ts",
     ]);
     assert.deepEqual(
         sourcePaths
-            .filter((path) => sourceText(path).includes(".recordParameter("))
+            .filter((path) => sourceText(path).includes(".recordHolder("))
             .sort(),
         ["src/compiler/dynamic-binding-storage.ts"],
     );

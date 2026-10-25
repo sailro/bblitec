@@ -16165,3 +16165,66 @@ test("a method key that runs code refuses", () => {
         /A method key that runs code/,
     );
 });
+
+check(
+    "a hoisted var reads where every path assigned it",
+    `
+    function sw(k: number): string {
+        switch (k) {
+            case 1:
+                var s = "one";
+                break;
+            default:
+                s = "other";
+        }
+        return s;
+    }
+    function tc(fail: boolean): number {
+        try {
+            if (fail) throw new Error("x");
+            var v = 2;
+        } catch {
+            v = -1;
+        }
+        return v;
+    }
+    function loop(): number {
+        for (;;) {
+            var n = 4;
+            break;
+        }
+        return n!;
+    }
+    function cond(c: boolean): number {
+        {
+            var t: number;
+        }
+        c ? (t = 1) : (t = 2);
+        return t;
+    }
+    if (sw(1) + sw(2) !== "oneother") throw new Error("switch");
+    if (tc(false) !== 2 || tc(true) !== -1) throw new Error("try");
+    if (loop() !== 4) throw new Error("loop");
+    if (cond(true) + cond(false) !== 3) throw new Error("cond");
+    `,
+);
+
+check(
+    "a record nested in a variable or a parameter stays one object where a store holds it",
+    `
+    function viaParameter(p: { inner: { n: number } }): number {
+        const held = [p.inner];
+        held[0]!.n = 2;
+        return p.inner.n;
+    }
+    if (viaParameter({ inner: { n: 1 } }) !== 2) throw new Error("parameter");
+    function viaSpread(seed: number): number {
+        const outer = { inner: { n: seed }, m: 1 };
+        const copy = { ...outer };
+        const kept = [copy.inner];
+        kept[0]!.n = 4;
+        return outer.inner.n;
+    }
+    if (viaSpread(1) !== 4) throw new Error("spread copy " + viaSpread(1));
+    `,
+);
