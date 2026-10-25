@@ -145,6 +145,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
+import { stringDomain } from "./string-domain.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
@@ -201,6 +202,9 @@ type UiMarkupBranching =
           expression: ts.Expression;
           alternatives: readonly string[];
       };
+
+/** The closed markups each part of one innerHTML value holds, read once per lowering. */
+type UiMarkupDomains = Map<ts.Node, readonly string[] | undefined>;
 
 /** The parts each branch of `part` continues with. */
 function uiMarkupBranches(part: UiMarkupBranching): UiMarkupPart[][] {
@@ -336,7 +340,6 @@ interface UiProjectionContext extends Pick<
     | "hasPresentationHost"
     | "isCanvasElement"
     | "libraryGlobal"
-    | "moduleConstantTexts"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
     | "bindings"
@@ -4367,11 +4370,12 @@ export class UiProjection {
                 node.left.name.text === "innerHTML"
             ) {
                 try {
-                    const form = this.uiMarkupForm(node.right);
+                    const domains: UiMarkupDomains = new Map();
+                    const form = this.uiMarkupForm(node.right, domains);
                     candidates.push(
                         ...(form.kind === "structured"
                             ? uiMarkupSources(
-                                  this.uiMarkupParts(node.right),
+                                  this.uiMarkupParts(node.right, domains),
                                   UiProjection.UI_MARKUP_ALTERNATIVES + 1,
                               )
                             : [form.source]),
@@ -4887,6 +4891,7 @@ export class UiProjection {
      */
     private uiMarkupForm(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
     ):
         | { kind: "static"; source: string }
         | { kind: "flat"; source: string; substitutions: ts.Expression[] }
@@ -4905,7 +4910,7 @@ export class UiProjection {
                     typeof part !== "string" &&
                     (ts.isConditionalExpression(this.context.unwrap(part)) ||
                         this.uiStoredMarkupShape(part) ||
-                        this.uiMarkupAlternatives(part)),
+                        this.uiMarkupAlternatives(part, domains)),
             )
         )
             return { kind: "structured" };
@@ -4926,13 +4931,14 @@ export class UiProjection {
         expression: ts.Expression,
         ownerId?: number,
     ): string {
-        const form = this.uiMarkupForm(expression);
+        const domains: UiMarkupDomains = new Map();
+        const form = this.uiMarkupForm(expression, domains);
         if (form.kind === "static")
             return this.context.cppString(
                 this.lowerUiMarkupLiteral(form.source, expression, ownerId),
             );
         if (form.kind === "structured")
-            return this.compileUiStructuredMarkup(expression, ownerId);
+            return this.compileUiStructuredMarkup(expression, domains, ownerId);
         const { source, substitutions } = form;
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         this.context.reachJsData();
@@ -5070,16 +5076,28 @@ export class UiProjection {
             : undefined;
     }
 
-    /** The closed authored markups a runtime text holds one of (module constant data). */
+    /** The closed authored markups a runtime text holds one of (its closed string domain). */
     private uiMarkupAlternatives(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
     ): readonly string[] | undefined {
-        const texts = this.context.moduleConstantTexts(expression);
-        return texts?.some((text) => /[<>]/.test(text)) ? texts : undefined;
+        const node = this.context.unwrap(expression);
+        if (domains.has(node)) return domains.get(node);
+        const texts = stringDomain(this.context, node, {
+            label: "Native UI innerHTML markup",
+        });
+        const alternatives = texts?.some((text) => /[<>]/.test(text))
+            ? texts
+            : undefined;
+        domains.set(node, alternatives);
+        return alternatives;
     }
 
     /** The closed markup parts of an innerHTML source: text, runtime text, stored markup, choices and selections. */
-    private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
+    private uiMarkupParts(
+        source: ts.Expression,
+        domains: UiMarkupDomains,
+    ): UiMarkupPart[] {
         const exact = this.tryUiStaticString(source);
         if (exact !== undefined) return [exact];
         const node = this.context.unwrap(source);
@@ -5087,7 +5105,7 @@ export class UiProjection {
             return [
                 node.head.text,
                 ...node.templateSpans.flatMap((span) => [
-                    ...this.uiMarkupParts(span.expression),
+                    ...this.uiMarkupParts(span.expression, domains),
                     span.literal.text,
                 ]),
             ];
@@ -5098,16 +5116,16 @@ export class UiProjection {
                 "string"
         )
             return [
-                ...this.uiMarkupParts(node.left),
-                ...this.uiMarkupParts(node.right),
+                ...this.uiMarkupParts(node.left, domains),
+                ...this.uiMarkupParts(node.right, domains),
             ];
         if (ts.isConditionalExpression(node))
             return [
                 {
                     kind: "choice",
                     condition: node.condition,
-                    yes: this.uiMarkupParts(node.whenTrue),
-                    no: this.uiMarkupParts(node.whenFalse),
+                    yes: this.uiMarkupParts(node.whenTrue, domains),
+                    no: this.uiMarkupParts(node.whenFalse, domains),
                 },
             ];
         const shape = this.uiStoredMarkupShape(node);
@@ -5119,7 +5137,7 @@ export class UiProjection {
                 );
             return [{ kind: "stored", expression: source, shape }];
         }
-        const alternatives = this.uiMarkupAlternatives(node);
+        const alternatives = this.uiMarkupAlternatives(node, domains);
         if (alternatives)
             return [{ kind: "selected", expression: source, alternatives }];
         return [{ kind: "text", expression: source }];
@@ -5128,9 +5146,10 @@ export class UiProjection {
     /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
     private compileUiStructuredMarkup(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
         ownerId?: number,
     ): string {
-        const sourceParts = this.uiMarkupParts(expression);
+        const sourceParts = this.uiMarkupParts(expression, domains);
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&

@@ -273,7 +273,6 @@ test("operand selection is read through syntax.ts", () => {
     };
     const pending = [
         "src/compiler.ts",
-        "src/compiler/asset-url-domain.ts",
         "src/compiler/assignments.ts",
         "src/compiler/browser-erasure.ts",
         "src/compiler/canvas-instrumentation.ts",
@@ -300,6 +299,7 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/runtime-case-split.ts",
         "src/compiler/statements.ts",
         "src/compiler/static-evaluator.ts",
+        "src/compiler/string-domain.ts",
         "src/compiler/ui-projection.ts",
         "src/lowering/animation-lowerer.ts",
         "src/lowering/animation-property-playback.ts",
