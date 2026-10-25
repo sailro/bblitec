@@ -40,7 +40,11 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
-import { declaredInDomLibrary, libraryName } from "./symbols.js";
+import {
+    accessedPropertySymbol,
+    declaredInDomLibrary,
+    libraryName,
+} from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -2189,6 +2193,23 @@ function isStoredPrimitiveRead(value: Value): boolean {
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
 
+    /** A class method read without calling it: method values are unsupported. */
+    private refuseMethodValue(expression: ts.PropertyAccessExpression): void {
+        const declaration = accessedPropertySymbol(
+            this.context.checker,
+            expression,
+        )?.valueDeclaration;
+        if (
+            declaration &&
+            ts.isMethodDeclaration(declaration) &&
+            ts.isClassLike(declaration.parent)
+        )
+            this.context.fail(
+                expression,
+                `Class method '${expression.name.text}' is read as a value; method values are unsupported (call it, or call it in an arrow).`,
+            );
+    }
+
     /**
      * A read through an absent receiver, after the operands JavaScript
      * evaluates first: its TypeError, typed as the value `node` would have
@@ -2904,6 +2925,7 @@ export class PropertyAccessLowerer {
                 if (accessor) {
                     return this.context.compileRecordGetter(instance, accessor);
                 }
+                this.refuseMethodValue(expression);
                 this.context.fail(
                     expression,
                     `Field '${expression.name.text}' is not assigned before this read ` +
@@ -3565,6 +3587,7 @@ export class PropertyAccessLowerer {
                     // guards, `typeof` and concatenation read.
                     return undefinedValue();
                 }
+                this.refuseMethodValue(expression);
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +

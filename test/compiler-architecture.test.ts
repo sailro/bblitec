@@ -616,6 +616,20 @@ test("where a value goes is one forward classifier in syntax.ts", () => {
     );
 });
 
+test("a thrown or rejected value raises through one rule", () => {
+    // thrownException (error-values.ts): `throw` and Promise.reject carry
+    // an Error, a string or a dynamic value alike.
+    assert.deepEqual(declarationOwners("thrownException"), [
+        "src/compiler/error-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /ThrownString|thrown_exception\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/error-values.ts"],
+    );
+});
+
 test("a void result reads as undefined through one rule", () => {
     // readsErasedVoid / undefinedFromVoid (undefined-values.ts): a void
     // annotation alone does not make a result undefined. async.ts proves a

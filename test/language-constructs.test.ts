@@ -4426,6 +4426,44 @@ checkInRealm(
 );
 
 checkInRealm(
+    "rejected promises carry an Error or a string to any handler",
+    `
+    let seen = "";
+    function declared(error: unknown): string { seen += String(error) + ";"; return "declared"; }
+    const stored = (reason: unknown): string => { seen += typeof reason + ":" + String(reason) + ";"; return "stored"; };
+    function quiet(error: Error): void { seen += error.message + ";"; }
+    const failure = new Error("same");
+    void (async () => {
+        const results = [
+            await Promise.reject(new Error("a")).catch(declared),
+            await Promise.reject("b").catch(stored),
+            await Promise.reject(new Error("c")).catch((error: unknown) => String(error)),
+        ];
+        await Promise.reject(new Error("d")).catch(quiet);
+        const same = await Promise.reject(failure).catch((reason: unknown) => reason === failure);
+        let caught = "";
+        try { await Promise.reject("e"); } catch (reason) { caught = typeof reason + ":" + String(reason); }
+        if (results.join() !== "declared,stored,Error: c" || !same || caught !== "string:e")
+            throw new Error("results " + results.join() + " " + same + " " + caught);
+        if (seen !== "Error: a;string:b;d;") throw new Error("seen " + seen);
+        globalThis.close();
+    })();
+`,
+);
+
+test("a class method read as a value refuses, bound or not", () => {
+    for (const read of ["c.inc", "c.inc.bind(c)", "[1].map(c.inc)"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `class Counter { n = 0; inc(): number { return ++this.n; } } const c = new Counter(); const v = ${read}; export {};`,
+                ),
+            /Class method 'inc' is read as a value; method values are unsupported/,
+            read,
+        );
+});
+
+checkInRealm(
     "promise-combinators-over-literal-spreads",
     `
     const order: string[] = [];
