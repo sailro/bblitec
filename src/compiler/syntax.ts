@@ -831,6 +831,25 @@ const NO_WRITE_SITES: readonly WriteSite[] = [];
 
 /** The places `node` itself writes; writes nested in its operands are their own sites. */
 export function writeSites(node: ts.Node): readonly WriteSite[] {
+    // Only an assignment, an update, a `delete` or a loop head writes: any
+    // other node answers by its kind alone, the hot path of whole-file scans.
+    switch (node.kind) {
+        case ts.SyntaxKind.BinaryExpression:
+            if (
+                ts.isBinaryExpression(node) &&
+                isAssignmentOperator(node.operatorToken.kind)
+            )
+                break;
+            return NO_WRITE_SITES;
+        case ts.SyntaxKind.PrefixUnaryExpression:
+        case ts.SyntaxKind.PostfixUnaryExpression:
+        case ts.SyntaxKind.DeleteExpression:
+        case ts.SyntaxKind.ForOfStatement:
+        case ts.SyntaxKind.ForInStatement:
+            break;
+        default:
+            return NO_WRITE_SITES;
+    }
     // Only an assignment or a loop head walks a pattern; any other node
     // answers at once. Factory nodes may acquire another parent, which a
     // pattern's role reads.

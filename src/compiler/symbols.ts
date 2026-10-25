@@ -452,6 +452,15 @@ export function calledDeclaration(
         : undefined;
 }
 
+/** Where the declaration a call resolves to comes from ({@link declarationOrigin}). */
+export function calledOrigin(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): DeclarationOrigin | undefined {
+    const declaration = calledDeclaration(checker, call);
+    return declaration && declarationOrigin(declaration);
+}
+
 /**
  * The authored function a call runs: the declaration it resolves to when
  * that has a body, else the function literal its `const` callee was

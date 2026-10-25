@@ -5394,7 +5394,10 @@ test("narrows guarded optional strings before trim", () => {
             if (!value) return "";
             return value.trim();
         }
-        const cleaned = clean(" value ");
+        // A pure helper handed a known value folds at its call.
+        let input: string | undefined = " value ";
+        if (Date.now() < 0) input = undefined;
+        const cleaned = clean(input);
         const words = cleaned.split(/\\s+/);
         const numbers = "1 2".split(/\\s+/).map(Number);
     `);
@@ -5416,11 +5419,14 @@ test("calls a string method on a parenthesized runtime conditional", () => {
             const semi = line.indexOf(";");
             return (semi >= 0 ? line.slice(0, semi) : line).trim();
         }
-        const value = clean("key=value ; comment");
+        // A pure helper handed a known value folds at its call.
+        let line = "key=value ; comment";
+        if (Date.now() < 0) line = "";
+        const value = clean(line);
     `);
 
     assert.match(result.cpp, /return bbl::js::string_trim\(/);
-    assert.match(result.cpp, /auto& v_value = \w+;/);
+    assert.match(result.cpp, /v_value = bblscene::clean\(v_line\);/);
     assert.match(result.cpp, /\? bbl::js::string_slice\(/);
     assert.match(result.cpp, /"key=value ; comment"/);
 });
