@@ -6,6 +6,7 @@ import {
     callResultCanHoldReceiver,
     callResultHoldsArguments,
     keptArguments,
+    valueDestination,
 } from "./kept-values.js";
 import { callArgumentIsReadOnly } from "./parameter-effects.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
@@ -23,7 +24,6 @@ import {
     plainDataMembers,
     rootExpression,
     unwrapExpression,
-    valueUse,
     wrappedParent,
 } from "./syntax.js";
 import {
@@ -394,63 +394,41 @@ function writesThroughBinding(
     // Stored or returned references can acquire aliases outside this walk:
     // a scalar-record certificate does not survive its identity escaping,
     // and cannot follow the result of a function other than a named helper.
-    // A reference is followed through the results that can hold it.
     const scalarRecordEscapes = (
         reference: ts.Expression,
         scan: AliasedMutationScan,
     ): boolean => {
-        const carried = (result: ts.Expression): boolean =>
-            typeCanCarryReference(checker.getTypeAtLocation(result));
-        for (let use = valueUse(reference); ;)
-            switch (use.kind) {
-                case "member": {
-                    const call = use.access.parent;
-                    if (
-                        !ts.isCallExpression(call) ||
-                        call.expression !== use.access ||
-                        !callResultCanHoldReceiver(checker, call) ||
-                        !carried(call)
+        if (!typeCanCarryReference(checker.getTypeAtLocation(reference)))
+            return false;
+        const use = valueDestination(checker, reference, {
+            // A construction may keep its arguments.
+            argument: (call, index) =>
+                !ts.isCallExpression(call) || writesArgument(scan, call, index),
+            await: true,
+        });
+        switch (use.kind) {
+            case "returned":
+                return (
+                    !ts.isReturnStatement(use.from) ||
+                    !returningFunctionName(use.from)
+                );
+            case "assigned":
+                return !(
+                    names(
+                        scan,
+                        identityUnwrap(checker, use.assignment.right),
+                    ) &&
+                    unobservedNativeValueAssignment(
+                        checker,
+                        program,
+                        use.assignment,
                     )
-                        return false;
-                    use = valueUse(call);
-                    break;
-                }
-                case "argument":
-                    if (
-                        (ts.isCallExpression(use.call) &&
-                            !writesArgument(scan, use.call, use.index)) ||
-                        !carried(use.call)
-                    )
-                        return false;
-                    use = valueUse(use.call);
-                    break;
-                case "awaited":
-                    if (!carried(use.await)) return false;
-                    use = valueUse(use.await);
-                    break;
-                case "returned":
-                    return (
-                        !ts.isReturnStatement(use.from) ||
-                        !returningFunctionName(use.from)
-                    );
-                case "assigned":
-                    return !(
-                        names(
-                            scan,
-                            identityUnwrap(checker, use.assignment.right),
-                        ) &&
-                        unobservedNativeValueAssignment(
-                            checker,
-                            program,
-                            use.assignment,
-                        )
-                    );
-                case "defaulted":
-                case "thrown":
-                    return true;
-                default:
-                    return false;
-            }
+                );
+            case "stored":
+                return true;
+            default:
+                return false;
+        }
     };
     return aliasedMutationScan(
         name,
@@ -475,7 +453,6 @@ function writesThroughBinding(
             mutates: (node, scan) =>
                 (scalarRecord &&
                     ts.isExpression(node) &&
-                    typeCanCarryReference(checker.getTypeAtLocation(node)) &&
                     names(scan, node) &&
                     scalarRecordEscapes(node, scan)) ||
                 // The alias walk can stop at a getter's scalar result,

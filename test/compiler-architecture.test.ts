@@ -292,7 +292,6 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/intrinsics/sprite.ts",
         "src/compiler/material-plugin.ts",
         "src/compiler/option-helpers.ts",
-        "src/compiler/parameter-effects.ts",
         "src/compiler/properties.ts",
         "src/compiler/resource-loops.ts",
         "src/compiler/runtime-case-split.ts",
@@ -453,7 +452,6 @@ test("name roles are read through syntax.ts", () => {
         [
             "src/compiler/absence-tag-storage.ts",
             "src/compiler/numeric-slot-storage.ts",
-            "src/compiler/parameter-effects.ts",
             "src/compiler/symbols.ts",
             "src/compiler/syntax.ts",
         ],
@@ -596,24 +594,19 @@ test("function kinds and suspension points are read through syntax.ts", () => {
 });
 
 test("where a value goes is one forward classifier in syntax.ts", () => {
-    // valueUse climbs wrappers, selected operands and literals, then names
-    // the consumer: the escape analysis (evaluation-order.ts) and the
-    // scalar-record walk (module-container-writes.ts) map its kinds.
-    for (const name of ["valueUse", "enclosingLiteral"])
+    // valueConsumer names a value's consumer one step; valueUse climbs the
+    // selections and literals that yield it, valueDestination the results
+    // that can hold it. parameter-effects.ts and array-length-growth.ts read
+    // the consumer itself.
+    for (const name of ["valueConsumer", "valueUse"])
         assert.deepEqual(
             declarationOwners(name),
             ["src/compiler/syntax.ts"],
             name,
         );
-    assert.deepEqual(
-        sourcePaths
-            .filter((path) => sourceFacts(path).calls.has("valueUse"))
-            .sort(),
-        [
-            "src/compiler/evaluation-order.ts",
-            "src/compiler/module-container-writes.ts",
-        ],
-    );
+    assert.deepEqual(declarationOwners("valueDestination"), [
+        "src/compiler/kept-values.ts",
+    ]);
 });
 
 test("a thrown or rejected value raises through one rule", () => {
@@ -657,7 +650,8 @@ test("a void result reads as undefined through one rule", () => {
     );
     // A call, property or element read takes its receiver through
     // voidReceiver; an absent receiver's TypeError is absentReceiverRead's
-    // (data-methods.ts adds a primitive's missing method).
+    // (data-methods.ts adds a primitive's missing method), and its message
+    // absentReceiverMessage's.
     assert.deepEqual(declarationOwners("voidReceiver"), [
         "src/compiler/undefined-values.ts",
     ]);
@@ -672,6 +666,14 @@ test("a void result reads as undefined through one rule", () => {
             .filter((path) => sourceText(path).includes("absent_receiver_read"))
             .sort(),
         ["src/compiler/data-methods.ts", "src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /properties of \$\{|method on a nullish receiver/.test(
+                sourceText(path),
+            ),
+        ),
+        ["src/compiler/properties.ts"],
     );
 });
 

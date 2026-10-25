@@ -264,7 +264,10 @@ template <typename Target, typename Function, typename Receiver, typename Rest, 
                         [](auto& captures, Rest tail) {
                             return std::apply(
                                 [&](auto& function, const Rest& elements, auto&... fixed) {
-                                    Rest values(elements.begin(), elements.end());
+                                    Rest values;
+                                    if constexpr (requires { values.reserve(0); })
+                                        values.reserve(elements.size() + tail.size());
+                                    values.insert(values.end(), elements.begin(), elements.end());
                                     values.insert(values.end(), tail.begin(), tail.end());
                                     return function(fixed..., std::move(values));
                                 },

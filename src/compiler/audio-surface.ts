@@ -41,11 +41,7 @@ import {
     PANNER_PROPERTIES,
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
-import {
-    presentMembers,
-    callSignatures,
-    signatureParameterTypes,
-} from "./type-facts.js";
+import { presentMembers, callableParameterCount } from "./type-facts.js";
 import { staticTableValue, type TableOption } from "./table-options.js";
 
 /** `oscillator.type` and `filter.type`: the reached Web Audio spellings. */
@@ -580,16 +576,7 @@ function compileAudioListener(
                 callback,
             );
         } else {
-            if (
-                callSignatures(context.checker, callbackType, "exact").some(
-                    (signature) =>
-                        signatureParameterTypes(
-                            context.checker,
-                            signature,
-                            callback,
-                        ).length > 0,
-                )
-            )
+            if (callableParameterCount(context.checker, callback) > 0)
                 context.fail(callback, refusals.payload);
             const compiled = context.callbacks.compilePlatformCallback(
                 callback,
@@ -1243,13 +1230,7 @@ export function emitAudioPropertyAssignment(
         );
         const callbackType = context.checker.getTypeAtLocation(right);
         const absent = presentMembers(callbackType).length === 0;
-        if (
-            callSignatures(context.checker, callbackType, "exact").some(
-                (signature) =>
-                    signatureParameterTypes(context.checker, signature, right)
-                        .length > 0,
-            )
-        )
+        if (callableParameterCount(context.checker, right) > 0)
             context.fail(
                 right,
                 "Audio ended event payloads are not represented yet.",

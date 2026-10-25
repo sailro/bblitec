@@ -64,6 +64,7 @@ import {
     isNonThenableDataType,
     hasUndefinedCallbackCompletion,
     hasNonThenableCompletion,
+    provenVoidAsUndefined,
     readsErasedVoid,
 } from "./undefined-values.js";
 import { localClassOfSymbol } from "./class-members.js";
@@ -130,6 +131,7 @@ import {
     aliasedMutationScan,
     recursiveStorageEscapes,
     retainedNativeMutationTarget,
+    callbackFunction,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
     type AliasedMutationScan,
@@ -1304,19 +1306,17 @@ export class DeclarationLowerer {
         if (value.kind === "void") {
             // `void x`, or a call whose completion is proven undefined: the
             // effects run here and the binding is `undefined`.
-            if (
-                !value.abruptCompletion &&
-                !value.coroutineResult &&
-                !this.context.sharedClosures.identifierIsRebound(
-                    declaration.name,
-                ) &&
-                !readsErasedVoid(this.context, value, declaration.initializer)
-            ) {
-                this.context.emitDiscardedValue(value);
-                this.context.bindings.defineVariable(
-                    declaration.name,
-                    undefinedValue(),
-                );
+            const read = this.context.sharedClosures.identifierIsRebound(
+                declaration.name,
+            )
+                ? undefined
+                : provenVoidAsUndefined(
+                      this.context,
+                      value,
+                      declaration.initializer,
+                  );
+            if (read) {
+                this.context.bindings.defineVariable(declaration.name, read);
                 return;
             }
             this.context.fail(
@@ -2459,12 +2459,7 @@ export class DeclarationLowerer {
             name,
         );
         const source = !value.cpp
-            ? ts.isIdentifier(value.callbackDeclaration)
-                ? tryResolveFunctionDeclaration(
-                      this.context.checker,
-                      value.callbackDeclaration,
-                  )
-                : value.callbackDeclaration
+            ? callbackFunction(this.context.checker, value)
             : undefined;
         const undefinedCompletion = hasUndefinedCallbackCompletion(
             this.context.checker,

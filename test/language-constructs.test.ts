@@ -4451,6 +4451,47 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "an executor's reject carries a string to its handler",
+    `
+    let seen = "";
+    new Promise<number>((_, reject) => reject("boom")).catch((reason: unknown) => {
+        seen = typeof reason + ":" + String(reason);
+        return 0;
+    }).then(() => {
+        if (seen !== "string:boom") throw new Error("seen " + seen);
+        globalThis.close();
+    });
+`,
+);
+
+check(
+    "a bound function runs called at once and in every callback consumer",
+    `
+    function add(this: { n: number }, a: number, b: number): number { this.n += a + b; return this.n; }
+    function tally(this: { n: number }, value: number): void { this.n += value; }
+    function scale(this: { k: number }, value: number): number { return value * this.k; }
+    const box = { n: 1 };
+    if (add.bind(box, 2)(3) !== 6 || box.n !== 6) throw new Error("now " + box.n);
+    const counter = { n: 0 };
+    new Map([["a", 1], ["b", 2]]).forEach(tally.bind(counter));
+    new Set([3, 4]).forEach(tally.bind(counter));
+    if (counter.n !== 10) throw new Error("collections " + counter.n);
+    const scaled = Array.from([1, 2, 3], scale.bind({ k: 10 }));
+    if (scaled.join() !== "10,20,30") throw new Error("from " + scaled.join());
+    `,
+);
+
+check(
+    "a module record returned inside a literal is written through its holder",
+    `
+    const table = { a: 1 };
+    function leak(): { a: number } { return [table][0]!; }
+    leak().a = 5;
+    if (table.a !== 5) throw new Error("table " + table.a);
+    `,
+);
+
 test("a class method read as a value refuses, bound or not", () => {
     for (const read of ["c.inc", "c.inc.bind(c)", "[1].map(c.inc)"])
         assert.throws(
@@ -4458,7 +4499,7 @@ test("a class method read as a value refuses, bound or not", () => {
                 compileSource(
                     `class Counter { n = 0; inc(): number { return ++this.n; } } const c = new Counter(); const v = ${read}; export {};`,
                 ),
-            /Class method 'inc' is read as a value; method values are unsupported/,
+            /Method 'inc' is read as a value; method values are unsupported/,
             read,
         );
 });

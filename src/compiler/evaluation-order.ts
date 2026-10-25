@@ -13,6 +13,7 @@ import {
     type EngineBodies,
 } from "./engine-bodies.js";
 import { libraryMethodWritesReceiver } from "./receiver-methods.js";
+import { valueDestination } from "./kept-values.js";
 import { propertyIsReadOnly } from "./data-types.js";
 import {
     BIGINT_ARRAY_KINDS,
@@ -57,7 +58,6 @@ import {
     isValueReference,
     objectLiteralMembers,
     outermostWrapper,
-    valueUse,
 } from "./syntax.js";
 import {
     holdsOnly,
@@ -724,7 +724,7 @@ function privateObjects(
                 if (!ts.isIdentifier(node) || !isValueReference(node)) return;
                 const symbol = resolvedSymbol(checker, node);
                 if (!symbol || !candidates.has(symbol)) return;
-                const holder = useHolder(owner, node);
+                const holder = useHolder(checker, owner, node);
                 if (holder === "escapes") candidates.delete(symbol);
                 else if (holder !== "kept") {
                     const held = declaredSymbol(checker, holder);
@@ -755,7 +755,7 @@ function privateObjects(
                         (read) =>
                             typeCanCarryReference(
                                 checker.getTypeAtLocation(read),
-                            ) && useHolder(owner, read) !== "kept",
+                            ) && useHolder(checker, owner, read) !== "kept",
                     )
             )
                 candidates.delete(holder);
@@ -784,39 +784,41 @@ function privateObjects(
  * itself kept; what a closure returns escapes.
  */
 function useHolder(
+    checker: ts.TypeChecker,
     owner: ts.Node,
     value: ts.Expression,
 ): "kept" | "escapes" | ts.Identifier {
     const closure = ts.findAncestor(value.parent, runsAsOwner);
-    if (closure === owner) return heldAt(value, true);
+    if (closure === owner) return heldAt(checker, value, true);
     if (
         !closure ||
         (!ts.isArrowFunction(closure) && !ts.isFunctionExpression(closure)) ||
         ts.findAncestor(closure.parent, runsAsOwner) !== owner ||
-        heldAt(value, false) !== "kept"
+        heldAt(checker, value, false) !== "kept"
     )
         return "escapes";
-    return useHolder(owner, closure);
+    return useHolder(checker, owner, closure);
 }
 
 /**
  * {@link useHolder} for a value its own run evaluates: reading through it,
- * calling it and testing it keep it; any use that can keep it elsewhere
- * hands it on ({@link valueUse}).
+ * calling, testing or discarding it keep it; any use that can keep it
+ * elsewhere hands it on ({@link valueDestination}).
  */
 function heldAt(
+    checker: ts.TypeChecker,
     value: ts.Expression,
     returnsKeep: boolean,
 ): "kept" | "escapes" | ts.Identifier {
-    const use = valueUse(value);
+    const use = valueDestination(checker, value);
     switch (use.kind) {
         case "returned":
             return returnsKeep ? "kept" : "escapes";
         case "bound":
             return returnsKeep ? use.name : "escapes";
         case "member":
-        case "called":
         case "read":
+        case "discarded":
             return "kept";
         default:
             return "escapes";

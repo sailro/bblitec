@@ -4,6 +4,7 @@ import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { compileJsonPropertyKey, isJsonValue } from "./json-bridge.js";
 import { namedMember } from "./symbols.js";
+import { localCallback } from "./syntax.js";
 
 /** Construct from a present iterable; both absent values create an empty owner. */
 export function compileCollectionIterable(
@@ -108,15 +109,14 @@ export function compileCollectionForEach(
             "Collection.forEach requires one callback and no thisArg.",
         );
     const callback = lowerer.context.unwrap(call.arguments[0]!);
-    if (
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    )
-        lowerer.context.fail(
-            callback,
-            "Collection.forEach requires a local function or function literal.",
-        );
+    // A local callback is inlined per entry; another function value is read once.
+    const operand = lowerer.callbackOperand(
+        callback,
+        localCallback(callback)
+            ? undefined
+            : lowerer.prepareCallbackValue(callback, "foreach"),
+        "Collection.forEach",
+    );
     const source =
         lowerer.context.allocateTemporaryCppName("foreach_collection");
     const entry = lowerer.context.allocateTemporaryCppName("foreach_entry");
@@ -148,22 +148,24 @@ export function compileCollectionForEach(
                 ? lowerer.leafValue(`${entry}.first`, type.key)
                 : value;
         const entryCaptures = [lowerer.context.registerNativeBinding(entry)];
-        const result = lowerer.context.compileCallbackWithValues(
-            callback,
-            [
-                { ...value, nativeCaptures: entryCaptures },
-                { ...key, nativeCaptures: entryCaptures },
-                {
-                    ...owner,
-                    cpp: source,
-                    nativeCaptures: [
-                        lowerer.context.registerNativeBinding(source),
-                    ],
-                },
-            ],
-            call,
-            true,
-        );
+        const values: Value[] = [
+            { ...value, nativeCaptures: entryCaptures },
+            { ...key, nativeCaptures: entryCaptures },
+            {
+                ...owner,
+                cpp: source,
+                nativeCaptures: [lowerer.context.registerNativeBinding(source)],
+            },
+        ];
+        const result =
+            "stored" in operand
+                ? lowerer.compileFunctionValueCall(operand.stored, values, call)
+                : lowerer.context.compileCallbackWithValues(
+                      operand.local,
+                      values,
+                      call,
+                      true,
+                  );
         lowerer.context.emitDiscardedValue(result);
     } finally {
         lowerer.context.leaveRuntimeControlFlow();

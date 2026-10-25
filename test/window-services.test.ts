@@ -8,18 +8,10 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
     runRmlUiFixture,
-    windowApplicationHost,
+    headlessRealmHost,
 } from "./native-fixture.js";
 
 const deferredCapabilities = "runtime-throw" as const;
-
-/** An application realm on the native event loop, without a display. */
-const realmHost = `
-namespace bbl::pal {
-Engine& window_document_engine() { static Engine engine; return engine; }
-}
-${windowApplicationHost()}
-`;
 
 /** The application's shapes: an idle feature probe, a stored alias, confirmations and fullscreen. */
 const applicationShapes = `
@@ -192,11 +184,16 @@ test("idle callbacks run in idle periods in order, time out, cancel and keep ali
     `);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools, "The native fixture compiler is required.");
-    runGeneratedProgram(tools, "window-services/idle", result.cpp + realmHost, {
-        flags: ["/DBBLITE_WORKERS=1"],
-        expectedOutput: "",
-        timeoutMs: 60000,
-    });
+    runGeneratedProgram(
+        tools,
+        "window-services/idle",
+        result.cpp + headlessRealmHost(),
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            expectedOutput: "",
+            timeoutMs: 60000,
+        },
+    );
 });
 
 test("idle deadlines end at the next predicted frame while a repaint is pending", () => {

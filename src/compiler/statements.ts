@@ -74,7 +74,6 @@ import {
 } from "./syntax.js";
 import {
     caughtErrorValue,
-    authoredErrorValue,
     compileErrorConstruction,
     errorConstructor,
     thrownException,
@@ -2518,16 +2517,11 @@ export class StatementLowerer {
                       "thrown",
                   )
                 : context.compileValue(thrown);
-        const exception = thrownException(
-            context,
-            authoredErrorValue(context, sourceError) ?? sourceError,
-            thrown,
-            {
-                node: statement,
-                message:
-                    "A scene throws a new Error, a held Error value or a string.",
-            },
-        );
+        const exception = thrownException(context, sourceError, thrown, {
+            node: statement,
+            message:
+                "A scene throws a new Error, a held Error value or a string.",
+        });
         context.reachThrow();
         context.emitNativeThrow(exception.cpp, statement, exception.pointer);
     }

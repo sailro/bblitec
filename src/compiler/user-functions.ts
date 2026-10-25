@@ -938,14 +938,6 @@ export function resolveFunctionDeclaration(
     return declaration;
 }
 
-/** The length of a tuple type whose elements are all required. */
-function fixedTupleLength(
-    checker: ts.TypeChecker,
-    type: ts.Type,
-): number | undefined {
-    return fixedTupleElements(checker, type)?.length;
-}
-
 /**
  * Whether a function literal's final parameter is a rest parameter of a
  * fixed tuple type: its lanes are ordinary parameters of a signature that
@@ -959,7 +951,8 @@ export function hasFixedTupleRest(
     const last = declaration.parameters.at(-1);
     return (
         last?.dotDotDotToken !== undefined &&
-        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !== undefined
+        fixedTupleElements(checker, checker.getTypeAtLocation(last)) !==
+            undefined
     );
 }
 
@@ -991,6 +984,20 @@ export function tryResolveFunctionDeclaration(
         if (error === unsupported) return undefined;
         throw error;
     }
+}
+
+/** The function a callback value runs: its literal, or the one its name resolves to. */
+export function callbackFunction(
+    checker: ts.TypeChecker,
+    value: Value,
+):
+    | Exclude<NonNullable<Value["callbackDeclaration"]>, ts.Identifier>
+    | SupportedFunction
+    | undefined {
+    const declaration = value.callbackDeclaration;
+    return declaration && ts.isIdentifier(declaration)
+        ? tryResolveFunctionDeclaration(checker, declaration)
+        : declaration;
 }
 
 /**
@@ -2846,15 +2853,7 @@ export class UserFunctionLowerer {
         const callbacks: SupportedFunction[] = [callee];
         const fieldCallbacks = new EmissionSet<string>();
         for (const [key, value] of Object.entries(properties)) {
-            const declaration =
-                value.kind === "callback" &&
-                value.callbackDeclaration &&
-                ts.isIdentifier(value.callbackDeclaration)
-                    ? tryResolveFunctionDeclaration(
-                          this.checker,
-                          value.callbackDeclaration,
-                      )
-                    : value.callbackDeclaration;
+            const declaration = callbackFunction(this.checker, value);
             if (value.kind === "callback" && isSupportedFunction(declaration)) {
                 callbacks.push(declaration);
                 fieldCallbacks.add(key);
@@ -4738,10 +4737,6 @@ export class UserFunctionLowerer {
             : cpp;
     }
 
-    private fixedTupleLength(type: ts.Type): number | undefined {
-        return fixedTupleLength(this.checker, type);
-    }
-
     private nativeParameterValue(
         context: UserFunctionContext,
         parameter: ts.BindingName,
@@ -5186,7 +5181,7 @@ export class UserFunctionLowerer {
         const restLanes =
             dataType.restParameter === undefined &&
             restParameter?.declaration.dotDotDotToken
-                ? this.fixedTupleLength(restParameter.type)
+                ? fixedTupleElements(this.checker, restParameter.type)?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&

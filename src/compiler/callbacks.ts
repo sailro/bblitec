@@ -9,7 +9,6 @@ import type {
     ClosureCaptures,
     NativeCaptureBinding,
 } from "./closure-captures.js";
-import type { DataType } from "./data-types.js";
 import type { ForwardDeclaration } from "./declarations.js";
 import type { PlatformCalls } from "./platform-calls.js";
 import type {
@@ -81,16 +80,6 @@ interface CallbackContext extends Pick<
     useNativeBinding(binding: NativeCaptureBinding): void;
 }
 
-/** A stored function every parameter of which may be omitted (optional or rest). */
-function callableWithoutArguments(
-    type: Extract<DataType, { kind: "function" }>,
-): boolean {
-    return type.parameters.every(
-        (parameter, index) =>
-            parameter.kind === "optional" || index === type.restParameter,
-    );
-}
-
 /**
  * Native callbacks: frame callbacks and their named and typed-array forms, platform event
  * callbacks with forward-hoisted bindings, and the physics collision, trigger and character
@@ -145,11 +134,10 @@ export class CallbackLowerer {
     ): string {
         this.hoistForwardCallbackBindings(expression);
         const unwrapped = this.context.unwrap(expression);
+        const noArguments = signature === "void" || signature === "interval";
         const asyncType =
             this.context.dataLowerer.promiseCallbackType(unwrapped);
         if (asyncType) {
-            const noArguments =
-                signature === "void" || signature === "interval";
             if (asyncType.parameters.length > (noArguments ? 0 : 1))
                 this.context.fail(
                     expression,
@@ -197,27 +185,41 @@ export class CallbackLowerer {
                 parameter ? [parameter] : [],
             );
         }
+        // A function value, a name holds or an expression computes
+        // (`f.bind(o)`, `fs[0]`), is read once, here; each run calls it
+        // with the frame's number.
+        const bound = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : undefined;
+        if (
+            ts.isIdentifier(unwrapped)
+                ? bound?.kind === "data" && bound.dataType?.kind === "function"
+                : !ts.isArrowFunction(unwrapped) &&
+                  !ts.isFunctionExpression(unwrapped) &&
+                  callSignatures(
+                      this.context.checker,
+                      this.context.checker.getTypeAtLocation(unwrapped),
+                      "exact",
+                  ).length > 0
+        ) {
+            const parameter = noArguments
+                ? undefined
+                : {
+                      cppType: frameCallbackParameterType(signature),
+                      name: this.context.allocateTemporaryCppName(
+                          "frame_delta",
+                      ),
+                  };
+            return this.compilePlatformCallback(
+                unwrapped,
+                parameter,
+                parameter ? [{ kind: "number", cpp: parameter.name }] : [],
+                undefined,
+                true,
+                false,
+            ).cpp;
+        }
         if (ts.isIdentifier(unwrapped)) {
-            const bound =
-                signature === "void" || signature === "interval"
-                    ? this.context.bindings.lookupOptional(unwrapped)
-                    : undefined;
-            // A timer calls the stored function value it was given, with no
-            // arguments.
-            if (
-                bound?.kind === "data" &&
-                bound.dataType?.kind === "function" &&
-                callableWithoutArguments(bound.dataType)
-            ) {
-                return this.compilePlatformCallback(
-                    unwrapped,
-                    undefined,
-                    [],
-                    undefined,
-                    true,
-                    false,
-                ).cpp;
-            }
             if (signature === "void") {
                 if (
                     bound?.kind === "callback" &&
@@ -267,53 +269,19 @@ export class CallbackLowerer {
         }
         if (
             !ts.isArrowFunction(unwrapped) &&
-            !ts.isFunctionExpression(unwrapped) &&
-            callSignatures(
-                this.context.checker,
-                this.context.checker.getTypeAtLocation(unwrapped),
-                "exact",
-            ).length > 0
-        ) {
-            // A function value an expression computes (`f.bind(o)`, `fs[0]`)
-            // is read once, here; each run calls it with the frame's number.
-            const noArguments =
-                signature === "void" || signature === "interval";
-            const parameter = noArguments
-                ? undefined
-                : {
-                      cppType: frameCallbackParameterType(signature),
-                      name: this.context.allocateTemporaryCppName(
-                          "frame_delta",
-                      ),
-                  };
-            return this.compilePlatformCallback(
-                unwrapped,
-                parameter,
-                parameter ? [{ kind: "number", cpp: parameter.name }] : [],
-                undefined,
-                true,
-                false,
-            ).cpp;
-        }
-        if (
-            !ts.isArrowFunction(unwrapped) &&
             !ts.isFunctionExpression(unwrapped)
-        ) {
-            this.context.fail(
+        )
+            return this.context.fail(
                 unwrapped,
-                "A frame, timer or listener callback must be an inline function or a named local function.",
+                "A frame, timer or listener callback must be a function.",
             );
-        }
         if (unwrapped.parameters.length > 1) {
             this.context.fail(
                 unwrapped,
                 "onBeforeRender callback supports at most one deltaMs parameter.",
             );
         }
-        if (
-            (signature === "void" || signature === "interval") &&
-            unwrapped.parameters.length > 0
-        ) {
+        if (noArguments && unwrapped.parameters.length > 0) {
             this.context.fail(
                 unwrapped,
                 "A timer callback takes no parameters.",

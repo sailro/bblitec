@@ -464,12 +464,7 @@ export function settlesNever(
 
 /** A promise that only rejects, viewed as a promise settling `cppType`. */
 export function rejectionOnlyPromiseCpp(cpp: string, cppType: string): string {
-    return `bbl::js::Promise<${cppType}>::view(${cpp}, ${neverFulfilledCpp(cppType)})`;
-}
-
-/** The fulfillment of a promise that only rejects: it never runs. */
-export function neverFulfilledCpp(cppType: string): string {
-    return `[](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); }`;
+    return `bbl::js::Promise<${cppType}>::view(${cpp}, [](const auto&) -> ${cppType} { throw std::logic_error("A Promise<never> fulfilled."); })`;
 }
 
 /**

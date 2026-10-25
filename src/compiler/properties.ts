@@ -2113,6 +2113,19 @@ interface PropertyAccessContext
     enumMemberValue(expression: ts.PropertyAccessExpression): Value | undefined;
 }
 
+/** JavaScript's TypeError message for an access through an absent receiver. */
+export function absentReceiverMessage(
+    absence: "undefined" | "null" | "null or undefined",
+    member: string | undefined,
+    write = false,
+): string {
+    const reading =
+        member === undefined
+            ? ""
+            : ` (${write ? "setting" : "reading"} '${member}')`;
+    return `Cannot ${write ? "set" : "read"} properties of ${absence}${reading}`;
+}
+
 const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
     ["repeat", "repeat"],
     ["shiftKey", "shift_key"],
@@ -2195,6 +2208,12 @@ export class PropertyAccessLowerer {
 
     /** A class method read without calling it: method values are unsupported. */
     private refuseMethodValue(expression: ts.PropertyAccessExpression): void {
+        const position = outermostWrapper(expression);
+        if (
+            ts.isCallExpression(position.parent) &&
+            position.parent.expression === position
+        )
+            return;
         const declaration = accessedPropertySymbol(
             this.context.checker,
             expression,
@@ -2206,7 +2225,7 @@ export class PropertyAccessLowerer {
         )
             this.context.fail(
                 expression,
-                `Class method '${expression.name.text}' is read as a value; method values are unsupported (call it, or call it in an arrow).`,
+                `Method '${expression.name.text}' is read as a value; method values are unsupported (call it, or call it in an arrow).`,
             );
     }
 
@@ -2221,7 +2240,7 @@ export class PropertyAccessLowerer {
         member?: string,
     ): Value {
         const message = this.context.cppString(
-            `Cannot read properties of ${absence}${member === undefined ? "" : ` (reading '${member}')`}`,
+            absentReceiverMessage(absence, member),
         );
         this.context.reachJsData();
         const type = this.context.dataLowerer.dataTypeAt(node);
@@ -2734,6 +2753,7 @@ export class PropertyAccessLowerer {
     ): Value {
         const stopped = this.context.optionalChainStop(expression);
         if (stopped) return stopped;
+        this.refuseMethodValue(expression);
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -2925,7 +2945,6 @@ export class PropertyAccessLowerer {
                 if (accessor) {
                     return this.context.compileRecordGetter(instance, accessor);
                 }
-                this.refuseMethodValue(expression);
                 this.context.fail(
                     expression,
                     `Field '${expression.name.text}' is not assigned before this read ` +
@@ -3587,7 +3606,6 @@ export class PropertyAccessLowerer {
                     // guards, `typeof` and concatenation read.
                     return undefinedValue();
                 }
-                this.refuseMethodValue(expression);
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +

@@ -6,7 +6,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
-    windowApplicationHost,
+    headlessRealmHost,
 } from "./native-fixture.js";
 
 function nativeCheck(
@@ -82,14 +82,6 @@ test("bind refuses a target without native signature types or a spread receiver,
     );
 });
 
-/** A Window realm on the native event loop, without a display. */
-const windowRealmHost = `
-namespace bbl::pal {
-Engine& window_document_engine() { static Engine engine; return engine; }
-}
-${windowApplicationHost()}
-`;
-
 test("bound functions run as timers, promise reactions and Window, Document and AbortSignal listeners", (t) => {
     const result = compileSource(`
     type Box = { n: number; log: string };
@@ -143,7 +135,7 @@ test("bound functions run as timers, promise reactions and Window, Document and 
     runGeneratedProgram(
         tools,
         "callable-families/bound-realm",
-        result.cpp + windowRealmHost,
+        result.cpp + headlessRealmHost(),
         {
             flags: ["/DBBLITE_WORKERS=1"],
             timeoutMs: 20000,

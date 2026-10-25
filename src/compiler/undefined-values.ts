@@ -275,6 +275,27 @@ export function undefinedFromVoid(
 }
 
 /**
+ * The `undefined` a void result reads as, its call run first; none when its
+ * completion is not proven, it never completes normally, or it is a
+ * coroutine's.
+ */
+export function provenVoidAsUndefined(
+    context: UndefinedContext & { emitDiscardedValue(value: Value): void },
+    value: Value,
+    node: ts.Node,
+): Value | undefined {
+    if (
+        value.kind !== "void" ||
+        value.abruptCompletion ||
+        value.coroutineResult ||
+        readsErasedVoid(context, value, node)
+    )
+        return undefined;
+    context.emitDiscardedValue(value);
+    return undefinedValue();
+}
+
+/**
  * A member read's receiver: a void result runs, then reads as the
  * `undefined` it converts to, so a call, property or element read through
  * it takes the absent-receiver path. One only a void annotation types

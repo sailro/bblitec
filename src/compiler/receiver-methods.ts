@@ -9,7 +9,7 @@ import {
     namedMember,
 } from "./symbols.js";
 import {
-    callSignatures,
+    callableParameterCount,
     PRIMITIVE_KINDS,
     unionMembers,
     valueKindOf,
@@ -190,11 +190,7 @@ export function callbackTakesReceiver(
         method === "reduce" || method === "reduceRight" ? 3 : 2;
     return (
         callback !== undefined &&
-        callSignatures(
-            checker,
-            checker.getTypeAtLocation(callback),
-            "exact",
-        ).some((signature) => signature.parameters.length > receiverParameter)
+        callableParameterCount(checker, callback) > receiverParameter
     );
 }
 

@@ -61,7 +61,11 @@ import {
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
-import { readsErasedVoid, voidReceiver } from "./undefined-values.js";
+import {
+    provenVoidAsUndefined,
+    readsErasedVoid,
+    voidReceiver,
+} from "./undefined-values.js";
 import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -131,6 +135,7 @@ import {
     restParameterIndex,
     variableKind,
     isMemberAccess,
+    localCallback,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -229,6 +234,7 @@ import {
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
+    callbackFunction,
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
 } from "./user-functions.js";
@@ -4712,12 +4718,7 @@ export class ExpressionLowerer {
             )
         )
             return undefined;
-        const local =
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback) ||
-            ts.isIdentifier(callback)
-                ? callback
-                : undefined;
+        const local = localCallback(callback);
         // Static iterations specialize local callbacks with their exact inputs.
         // Resource results can carry loader metadata without an erased stored
         // function signature; already stored callbacks retain that signature.
@@ -4732,12 +4733,11 @@ export class ExpressionLowerer {
                       "tuple",
                   )
                 : undefined;
-        if (!local && !stored) {
+        if (!local && !stored)
             this.context.fail(
                 callback,
-                `Compile-time Array.${method} requires a local function or function literal callback.`,
+                `Compile-time Array.${method} requires a represented callback.`,
             );
-        }
         const elements = owner.tupleElements ?? [];
         const invoke = (element: Value, index: number): Value => {
             const values: Value[] = [
@@ -5597,16 +5597,7 @@ export class ExpressionLowerer {
      */
     private compileSelectedOperand(expression: ts.Expression): Value {
         const value = this.context.compileValue(expression);
-        if (
-            value.kind === "void" &&
-            !value.abruptCompletion &&
-            !value.coroutineResult &&
-            !readsErasedVoid(this.context, value, expression)
-        ) {
-            this.context.emitDiscardedValue(value);
-            return undefinedValue();
-        }
-        return value;
+        return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
     private compileConditionalValue(
@@ -6610,13 +6601,10 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `f.bind(thisArg, a, b)`: a fresh function of the parameters after the
-     * bound ones. The bound arguments are read once, in order after the
-     * target and thisArg, when `bind` runs; each call passes them before its
-     * own arguments. Bound arguments past the parameters are read and
-     * ignored, as the target ignores them; those reaching a rest parameter
-     * lead the fresh rest array of each call. `receiver` is the thisArg
-     * already read; the target never reads it.
+     * `f.bind(thisArg, ...bound)`: a fresh function of the parameters after
+     * the bound arguments, which are read once when `bind` runs and lead each
+     * call's own; past the parameters they are read and ignored, and into a
+     * rest parameter they lead its array. The target never reads `receiver`.
      */
     private compilePartialBind(
         call: ts.CallExpression,
@@ -6636,24 +6624,27 @@ export class ExpressionLowerer {
                 spread,
                 "Function.bind takes its bound arguments separately.",
             );
-        const restIndex = type.restParameter;
-        if (restIndex !== undefined && bound.length > restIndex)
-            return this.compileRestBind(
+        const restIndex = type.restParameter ?? Number.POSITIVE_INFINITY;
+        const rest =
+            bound.length > restIndex ? type.parameters[restIndex] : undefined;
+        if (rest && rest.kind !== "vector")
+            return this.context.fail(
                 call,
-                target,
-                type,
-                receiver,
-                restIndex,
+                "Function.bind into a rest parameter requires an array rest parameter.",
             );
-        if (bound.length > type.parameters.length)
+        if (!rest && bound.length > type.parameters.length)
             this.context.dataLowerer.noteArgumentsPastSignature(
                 type,
                 "passes",
                 call,
             );
-        const boundCpp: string[] = [];
+        const fixed: string[] = [];
+        const elements: string[] = [];
         bound.forEach((argument, index) => {
-            const parameter = type.parameters[index];
+            const parameter =
+                rest && index >= restIndex
+                    ? rest.element
+                    : type.parameters[index];
             if (!parameter) {
                 this.context.emitDiscardedValue(this.compileValue(argument));
                 return;
@@ -6669,111 +6660,68 @@ export class ExpressionLowerer {
                     parameter,
                 ),
             });
-            boundCpp.push(name);
+            (rest && index >= restIndex ? elements : fixed).push(name);
         });
-        const count = Math.min(bound.length, type.parameters.length);
+        const count = fixed.length;
         const optionalParameters = (type.optionalParameters ?? [])
             .filter((index) => index >= count)
             .map((index) => index - count);
-        const { optionalParameters: _optional, restParameter, ...rest } = type;
+        const {
+            optionalParameters: _optional,
+            restParameter,
+            ...signature
+        } = type;
         void _optional;
-        const result: DataType<"function"> = {
-            ...rest,
-            parameters: type.parameters.slice(count),
-            identity: true,
-            ...(restParameter === undefined
-                ? {}
-                : { restParameter: restParameter - count }),
-            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
-        };
+        const result: DataType<"function"> = rest
+            ? {
+                  ...signature,
+                  parameters: [rest],
+                  restParameter: 0,
+                  identity: true,
+              }
+            : {
+                  ...signature,
+                  parameters: type.parameters.slice(count),
+                  identity: true,
+                  ...(restParameter === undefined
+                      ? {}
+                      : { restParameter: restParameter - count }),
+                  ...(optionalParameters.length > 0
+                      ? { optionalParameters }
+                      : {}),
+              };
         this.context.reachJsData();
+        const resultCpp = this.context.dataTypes.cppType(result);
         return {
             kind: "data",
             dataType: result,
             freshData: true,
-            cpp: `bbl::js::bind_callback_arguments<${this.context.dataTypes.cppType(result)}>(${[target, receiver, ...boundCpp].join(", ")})`,
+            cpp: rest
+                ? `bbl::js::bind_callback_rest<${resultCpp}>(${[target, receiver, `${this.context.dataTypes.cppType(rest)}{${elements.join(", ")}}`, ...fixed].join(", ")})`
+                : `bbl::js::bind_callback_arguments<${resultCpp}>(${[target, receiver, ...fixed].join(", ")})`,
         };
     }
 
     /**
-     * A partial bind whose arguments reach the rest parameter at `restIndex`:
-     * the leading ones fill the fixed parameters, the others lead the rest
-     * array; the result takes only rest arguments.
+     * A named function that declares or reads its `this`, which a receiver
+     * binds, with the value its name holds in scope.
      */
-    private compileRestBind(
-        call: ts.CallExpression,
-        target: string,
-        type: DataType<"function">,
-        receiver: string,
-        restIndex: number,
-    ): Value {
-        const rest = type.parameters[restIndex];
-        if (rest?.kind !== "vector")
-            return this.context.fail(
-                call,
-                "Function.bind into a rest parameter requires an array rest parameter.",
-            );
-        const fixed: string[] = [];
-        const elements: string[] = [];
-        call.arguments.slice(1).forEach((argument, index) => {
-            const name =
-                this.context.allocateTemporaryCppName("bound_argument");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name,
-                initializer: this.context.dataLowerer.compileForSink(
-                    argument,
-                    index < restIndex ? type.parameters[index]! : rest.element,
-                ),
-            });
-            (index < restIndex ? fixed : elements).push(name);
-        });
-        const {
-            optionalParameters: _optional,
-            restParameter: _rest,
-            ...signature
-        } = type;
-        void _optional;
-        void _rest;
-        const result: DataType<"function"> = {
-            ...signature,
-            parameters: [rest],
-            restParameter: 0,
-            identity: true,
-        };
-        this.context.reachJsData();
-        const leading = `${this.context.dataTypes.cppType(rest)}{${elements.join(", ")}}`;
-        return {
-            kind: "data",
-            dataType: result,
-            freshData: true,
-            cpp: `bbl::js::bind_callback_rest<${this.context.dataTypes.cppType(result)}>(${[target, receiver, leading, ...fixed].join(", ")})`,
-        };
-    }
-
-    /** A named function that declares or reads its `this`, which a receiver binds. */
     private dynamicThisFunction(
         expression: ts.Expression | undefined,
-    ): ts.Identifier | undefined {
+    ): { name: ts.Identifier; binding: Value | undefined } | undefined {
         const target = expression && this.context.unwrap(expression);
         if (!target || !ts.isIdentifier(target)) return undefined;
+        // A name may hold that function itself, not another function value.
+        const bound = this.context.bindings.lookupOptional(target);
+        if (bound && bound.kind !== "callback") return undefined;
         const declaration = tryResolveFunctionDeclaration(
             this.context.checker,
             target,
         );
-        // A name may hold that function itself, not another function value.
-        const bound = this.context.bindings.lookupOptional(target);
-        const held =
-            bound?.kind === "callback" &&
-            bound.callbackDeclaration &&
-            ts.isIdentifier(bound.callbackDeclaration)
-                ? tryResolveFunctionDeclaration(
-                      this.context.checker,
-                      bound.callbackDeclaration,
-                  )
-                : bound?.callbackDeclaration;
-        if (bound && (bound.kind !== "callback" || held !== declaration))
+        if (
+            bound &&
+            callbackFunction(this.context.checker, bound) !== declaration
+        )
             return undefined;
         return declaration &&
             (ts.isFunctionDeclaration(declaration) ||
@@ -6781,7 +6729,7 @@ export class ExpressionLowerer {
             (functionUsesDynamicThis(declaration) ||
                 this.context.checker.getSignatureFromDeclaration(declaration)
                     ?.thisParameter)
-            ? target
+            ? { name: target, binding: bound }
             : undefined;
     }
 
@@ -6790,22 +6738,32 @@ export class ExpressionLowerer {
      * `f.call(thisArg, ...args)`, `f.apply(thisArg, [...args])` and
      * `Reflect.apply(f, thisArg, [...args])` run `f` with `this` bound to
      * thisArg, read before the arguments, as each argument before the next.
+     * `f.bind(thisArg, ...bound)(...args)` runs `f` once the same way.
      */
     private compileForwardedCall(call: ts.CallExpression): Value | undefined {
-        const shape = forwardedCallShape(this.context.checker, call);
+        const callee = this.context.unwrap(call.expression);
+        const bound =
+            ts.isCallExpression(callee) &&
+            forwardedCallShape(this.context.checker, callee)?.method === "bind"
+                ? callee
+                : undefined;
+        const shape = forwardedCallShape(this.context.checker, bound ?? call);
         const target =
-            shape?.method !== "bind" &&
-            shape &&
-            this.dynamicThisFunction(shape.target);
+            shape && (bound || shape.method !== "bind")
+                ? this.dynamicThisFunction(shape.target)?.name
+                : undefined;
         if (!shape || !target) return undefined;
-        const receiver = call.arguments[shape.receiver];
+        const listed = bound
+            ? [...bound.arguments, ...call.arguments]
+            : call.arguments;
+        const receiver = listed[shape.receiver];
         const list = shape.spread
-            ? call.arguments[shape.receiver + 1] &&
-              this.context.unwrap(call.arguments[shape.receiver + 1]!)
+            ? listed[shape.receiver + 1] &&
+              this.context.unwrap(listed[shape.receiver + 1]!)
             : undefined;
         if (
             !receiver ||
-            call.arguments.some(ts.isSpreadElement) ||
+            listed.some(ts.isSpreadElement) ||
             (shape.spread &&
                 list !== undefined &&
                 (!ts.isArrayLiteralExpression(list) ||
@@ -6821,7 +6779,7 @@ export class ExpressionLowerer {
                 ? list && ts.isArrayLiteralExpression(list)
                     ? list.elements
                     : []
-                : call.arguments.slice(1)),
+                : listed.slice(1)),
         ];
         const pins = this.context.evaluationOrder.operandsToPin(operands);
         const values = operands.map((operand, index) => {
@@ -6908,8 +6866,9 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         callee: NamedMember,
     ): Value | undefined {
-        const target = this.dynamicThisFunction(callee.expression);
-        if (!target) return undefined;
+        const bindable = this.dynamicThisFunction(callee.expression);
+        if (!bindable) return undefined;
+        const target = bindable.name;
         const argument = call.arguments[0];
         if (!argument || ts.isSpreadElement(argument))
             return this.context.fail(
@@ -6933,7 +6892,7 @@ export class ExpressionLowerer {
         const bound = this.context.compileStoredDataFunction(
             target,
             fresh,
-            this.context.bindings.lookupOptional(target)?.callbackRecordOwner,
+            bindable.binding?.callbackRecordOwner,
             false,
             receiver,
         );
@@ -6966,11 +6925,7 @@ export class ExpressionLowerer {
                 result.dataType?.kind !== "struct")
         )
             return result;
-        const source = callback.callbackDeclaration;
-        const declaration =
-            source && ts.isIdentifier(source)
-                ? tryResolveFunctionDeclaration(this.context.checker, source)
-                : source;
+        const declaration = callbackFunction(this.context.checker, callback);
         const signature = declaration?.body
             ? this.context.checker.getSignatureFromDeclaration(declaration)
             : undefined;

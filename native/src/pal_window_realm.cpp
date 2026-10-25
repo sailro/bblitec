@@ -1130,19 +1130,18 @@ void publish_window_document(DocumentPublication mode) {
     if (host.stopping)
         throw WorkerTerminated{};
     const auto time = EventLoop::current().fixed_animation_time();
-    if (!snapshot && mode == DocumentPublication::render) {
-        // Unless the display's latest update, at the latest published time, left
-        // no time-driven work due by now, an empty delta waits for its update.
-        if (host.next_update && host.time == host.next_update->milliseconds &&
-            !host.next_update->due(*time)) {
-            host.time = time;
-        } else {
-            snapshot = std::make_unique<DocumentSnapshot>();
-            snapshot->text_updates.emplace();
-        }
+    // The display is current when its latest update ran at the latest
+    // published time and left no time-driven work due by now; otherwise an
+    // empty delta waits for its update.
+    const bool current = host.next_update && host.time == host.next_update->milliseconds &&
+                         !host.next_update->due(*time);
+    if (!snapshot && mode == DocumentPublication::render && !current) {
+        snapshot = std::make_unique<DocumentSnapshot>();
+        snapshot->text_updates.emplace();
     }
-    if (snapshot) {
+    if (snapshot || mode == DocumentPublication::render)
         host.time = time;
+    if (snapshot) {
         snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
         host.pending = std::move(snapshot);
         doc.published_revision = doc.engine.ui_revision;
@@ -1969,18 +1968,15 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             SDL_Delay(1);
                         continue;
                     }
-                    // A frame its realm ended without publishing presents
-                    // after the display's update at its time.
-                    if (fixed_clock) {
-                        const std::lock_guard lock(services->mutex);
-                        if (services->time != updated_time)
-                            continue;
-                    }
                 }
                 std::vector<WindowCanvasFrame> frames;
                 bool canvases_ready = false;
                 {
                     std::lock_guard lock(services->mutex);
+                    // A frame its realm ended without publishing presents
+                    // after the display's update at its time.
+                    if (batched_repaints && fixed_clock && services->time != updated_time)
+                        continue;
                     if ((frame_options.max_frames > 0 || !frame_options.screenshot_path.empty()) &&
                         !services->capture_failure.empty())
                         throw std::runtime_error("Source canvas initialization failed: " +

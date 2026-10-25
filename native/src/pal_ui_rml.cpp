@@ -5436,7 +5436,7 @@ struct UiRmlRuntime {
                 context->Update();
             if (refresh_gradient_text())
                 context->Update();
-            if (update_gradient_text())
+            if (update_gradient_text().changed)
                 context->Update();
             static_cast<void>(sync_hover_states());
             if (sync_svg_current_colors()) {
@@ -7487,9 +7487,15 @@ struct UiRmlRuntime {
         return true;
     }
 
-    bool update_gradient_text() {
+    /** Whether this update changed a glyph color, and whether any ran animated. */
+    struct GradientTextUpdate {
+        bool changed = false;
+        bool animated = false;
+    };
+
+    GradientTextUpdate update_gradient_text() {
         if (gradient_text.empty())
-            return false;
+            return {};
         bool changed = false;
         double now = 0.0;
         bool sampled_time = false;
@@ -7570,7 +7576,7 @@ struct UiRmlRuntime {
                 changed = true;
             }
         }
-        return changed;
+        return {changed, sampled_time};
     }
 
     void sync_client_rects(bool all_elements) {
@@ -8031,11 +8037,11 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                               generated_changed);
         runtime.context->Update();
     }
-    if (runtime.update_gradient_text())
+    const auto gradient = runtime.update_gradient_text();
+    if (gradient.changed)
         runtime.context->Update();
     // Animated gradient text changes with time, as RmlUi's own animations do.
-    if (std::any_of(runtime.gradient_text.begin(), runtime.gradient_text.end(),
-                    [](const auto& text) { return text.duration > 0.0; }))
+    if (gradient.animated)
         runtime.context->RequestNextUpdate(0);
     cpu.split(cpu.sample.outlines, checkpoint);
 }

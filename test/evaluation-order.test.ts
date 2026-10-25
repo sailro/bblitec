@@ -100,10 +100,21 @@ export function eitherOut(): void {
     const pick = () => box || kept[0];
     kept.push(pick());
     box.n = 1;
+}
+export function readBackOut(): void {
+    const box = { n: 0 };
+    kept.push([box].concat()[0]!);
+    box.n = 1;
 }`);
     assert.ok(touchesNoState(footprint("local")));
-    // What a closure returns escapes, a selected operand included.
-    for (const name of ["handedOn", "selectedOut", "eitherOut"]) {
+    // What a closure returns escapes, a selected operand included, and so
+    // does what is read back out of a literal or result holding it.
+    for (const name of [
+        "handedOn",
+        "selectedOut",
+        "eitherOut",
+        "readBackOut",
+    ]) {
         const handed = footprint(name);
         assert.ok(handed.writes.objects.has("data"), name);
         assert.ok(handed.writes.objects.has("objects"), name);

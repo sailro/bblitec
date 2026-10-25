@@ -16,6 +16,8 @@ import {
     objectLiteralMembers,
     referenceBases,
     unwrapExpression,
+    valueUse,
+    type ValueUse,
 } from "./syntax.js";
 import {
     arrayShape,
@@ -113,6 +115,49 @@ export function callResultCanHoldReceiver(
         typeCanCarryReference(shape.element) ||
         mutatingArrayMethods.has(callee.name)
     );
+}
+
+/**
+ * Where a value ends up: {@link valueUse} followed through the results that
+ * can be or hold it (a call that can return its receiver, an argument
+ * `follow.argument` keeps, an awaited value with `follow.await`) and
+ * through reads out of a literal or result holding it.
+ */
+export function valueDestination(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+    follow: {
+        readonly argument?: (
+            call: ts.CallExpression | ts.NewExpression,
+            index: number,
+        ) => boolean;
+        readonly await?: boolean;
+    } = {},
+): ValueUse {
+    let use = valueUse(value);
+    let held = use.held;
+    for (;;) {
+        let next: ts.Expression | undefined;
+        if (use.kind === "member") {
+            const call = use.access.parent;
+            if (ts.isCallExpression(call) && call.expression === use.access) {
+                if (callResultCanHoldReceiver(checker, call)) {
+                    next = call;
+                    held = true;
+                }
+            } else if (held) next = use.access;
+        } else if (
+            use.kind === "argument" &&
+            follow.argument?.(use.call, use.index)
+        ) {
+            next = use.call;
+            held = true;
+        } else if (use.kind === "awaited" && follow.await) next = use.await;
+        if (!next || !typeCanCarryReference(checker.getTypeAtLocation(next)))
+            return use;
+        use = valueUse(next);
+        held ||= use.held;
+    }
 }
 
 /** Typed-array and view constructors: a view of a buffer, a copy of anything else. */

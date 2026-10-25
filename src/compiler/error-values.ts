@@ -392,19 +392,24 @@ function compileErrorCause(
 
 /**
  * What a thrown or rejected value raises: an Error keeps its identity, a
- * string or a dynamic value its payload, which catch bindings then retain.
- * `pointer` marks a `std::exception_ptr`; otherwise `cpp` is an
- * exception object. `refusal` names what else the site would admit.
+ * string or dynamic value its payload. `pointer` marks a
+ * `std::exception_ptr`, otherwise an exception object.
  */
 export function thrownException(
     context: Pick<
         LoweringServices,
-        "thrownValueKinds" | "reachJson" | "fail" | "cppString" | "dataLowerer"
+        | "thrownValueKinds"
+        | "reachJson"
+        | "fail"
+        | "cppString"
+        | "dataLowerer"
+        | "dataTypes"
     >,
-    error: Value,
-    node: ts.Expression,
+    thrown: Value,
+    node: ts.Node,
     refusal: { node: ts.Node; message: string },
 ): { cpp: string; pointer: boolean } {
+    const error = authoredErrorValue(context, thrown) ?? thrown;
     if (isJsonValue(error)) {
         if (!context.thrownValueKinds.has("string"))
             throw new ThrownValueStorageRequired("string");
@@ -437,6 +442,16 @@ export function thrownException(
         })`,
         pointer: false,
     };
+}
+
+/** A {@link thrownException} as a `std::exception_ptr`. */
+export function exceptionPointer(exception: {
+    cpp: string;
+    pointer: boolean;
+}): string {
+    return exception.pointer
+        ? exception.cpp
+        : `std::make_exception_ptr(${exception.cpp})`;
 }
 
 /** The message a thrown value carries, or undefined when it carries none. */

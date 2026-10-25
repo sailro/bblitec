@@ -647,6 +647,16 @@ export function runGeneratedProgram(
     return output;
 }
 
+/** An application realm on the native event loop, without a display. */
+export function headlessRealmHost(): string {
+    return `
+namespace bbl::pal {
+Engine& window_document_engine() { static Engine engine; return engine; }
+}
+${windowApplicationHost()}
+`;
+}
+
 /**
  * The window application a generated program's `main` runs in, as C++ to
  * append to it (test/fixtures/realm-application-fixture.hpp): `errors`

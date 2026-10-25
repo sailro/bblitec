@@ -92,7 +92,7 @@ import {
     valueKindOf,
     callSignatures,
     unionMembers,
-    tupleElements,
+    boundedTupleElements,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -131,7 +131,8 @@ import {
 } from "./browser-file.js";
 import {
     errorValue,
-    thrownMessage,
+    exceptionPointer,
+    thrownException,
     refuseErrorReflection,
 } from "./error-values.js";
 import {
@@ -148,7 +149,7 @@ import {
 import { cppIdentifiers } from "./cpp-identifiers.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { pinCpp, pinOperand } from "./evaluation-order.js";
-import { isDirectDataProperty } from "./properties.js";
+import { absentReceiverMessage, isDirectDataProperty } from "./properties.js";
 import { representedResultType } from "./represented-result.js";
 import {
     arrayWriteObservation,
@@ -262,6 +263,8 @@ import {
     objectLiteralMembers,
     type MemberAccess,
     isMemberAccess,
+    localCallback,
+    type LocalCallback,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -633,6 +636,8 @@ interface DataLoweringContext extends Pick<
     | "decreaseIndent"
     | "allocateBlockPrefix"
     | "compileCallbackWithValues"
+    | "dataLowerer"
+    | "thrownValueKinds"
     | "captureManagedClosureLines"
     | "withRecordScopes"
     | "withCallbackScopes"
@@ -1448,17 +1453,13 @@ export class DataLowerer {
         const value = values[0] ?? { kind: "void", cpp: "" };
         let cpp: string;
         if (settlement.mode === "reject") {
-            const message = thrownMessage(value);
-            if (!message)
-                this.context.fail(
-                    node,
+            // A rejection carries what a throw would.
+            const exception = thrownException(this.context, value, node, {
+                node,
+                message:
                     "Promise rejection requires a represented Error or string reason.",
-                );
-            const reason =
-                value.dataType?.kind === "error"
-                    ? value.cpp
-                    : `std::make_exception_ptr(std::runtime_error(${this.compileKnownValueForSink(message, { kind: "string" }, node)}))`;
-            cpp = `${callback.cpp}.reject(${reason})`;
+            });
+            cpp = `${callback.cpp}.reject(${exceptionPointer(exception)})`;
         } else if (value.kind === "promise") {
             if (value.promiseType !== settlement.type)
                 this.context.fail(
@@ -1717,19 +1718,12 @@ export class DataLowerer {
 
     /** How many lanes the array `expression` can hold: a fixed tuple's own. */
     private maximumTupleLength(expression: ts.Expression): number {
-        const elements = tupleElements(
-            this.context.checker,
-            this.context.checker.getTypeAtLocation(expression),
+        return (
+            boundedTupleElements(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(expression),
+            )?.length ?? Number.POSITIVE_INFINITY
         );
-        return !elements ||
-            elements.some(
-                ({ flags }) =>
-                    (flags &
-                        (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
-                    0,
-            )
-            ? Number.POSITIVE_INFINITY
-            : elements.length;
     }
 
     /** Arguments for a stored std::function, including omitted TS optionals. */
@@ -8281,15 +8275,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const context = this.context;
         const sourceNode = context.unwrap(argumentAt(call, 0));
         const mapper = context.unwrap(argumentAt(call, 1));
-        if (
-            !ts.isIdentifier(mapper) &&
-            !ts.isArrowFunction(mapper) &&
-            !ts.isFunctionExpression(mapper)
-        )
-            return context.fail(
-                mapper,
-                "Array.from requires a local function or function literal mapper.",
-            );
         context.reachJsData();
         const index = context.allocateTemporaryCppName("array_from_index");
         let count: string | undefined;
@@ -8349,7 +8334,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? this.materializeIterationPair(item, entry, call)
                     : this.iterationElementValue(item, entry);
         }
-        const storedMapper = this.prepareCallbackValue(mapper, "array_from");
+        const operand = this.callbackOperand(
+            mapper,
+            this.prepareCallbackValue(mapper, "array_from"),
+            "Array.from",
+        );
         const result = context.allocateTemporaryCppName("array_from_result");
         context.emit(
             `${typedResult ? `bbl::js::TypedArrayFill<${context.dataTypes.cppType(typedResult)}>` : context.dataTypes.cppType(type)} ${result};`,
@@ -8372,15 +8361,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         dataType: { kind: "number" },
                     },
                 ];
-                const value = storedMapper
-                    ? this.compileFunctionValueCall(storedMapper, args, call)
-                    : context.compileCallbackWithValues(
-                          mapper,
-                          args,
-                          call,
-                          false,
-                          { resultType: type.element },
-                      );
+                const value =
+                    "stored" in operand
+                        ? this.compileFunctionValueCall(
+                              operand.stored,
+                              args,
+                              call,
+                          )
+                        : context.compileCallbackWithValues(
+                              operand.local,
+                              args,
+                              call,
+                              false,
+                              { resultType: type.element },
+                          );
                 context.emit({
                     kind: "expression",
                     code: `${result}.push_back(${this.compileKnownValueForSink(value, type.element, call)});`,
@@ -9211,10 +9205,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         read?: Value,
     ): Value | undefined {
         const boundary = this.context.nativeBindingCheckpoint();
-        const local =
-            ts.isIdentifier(callback) ||
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback);
+        const local = localCallback(callback) !== undefined;
         const value = ts.isIdentifier(callback)
             ? this.context.bindings.lookupOptional(callback)
             : !local
@@ -9240,6 +9231,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ...this.leafValue(name, type),
             nativeCaptures: [this.context.registerNativeBinding(name)],
         };
+    }
+
+    /**
+     * How `method` calls its callback: the function value `stored` read
+     * once, or else a local function or literal inlined per call.
+     */
+    public callbackOperand(
+        callback: ts.Expression,
+        stored: Value | undefined,
+        method: string,
+    ): { stored: Value } | { local: LocalCallback } {
+        if (stored) return { stored };
+        const local = localCallback(callback);
+        return local
+            ? { local }
+            : this.context.fail(
+                  callback,
+                  `${method} requires a represented callback.`,
+              );
     }
 
     /** Emit the shared callback protocol for reached JavaScript array methods. */
@@ -9271,12 +9281,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.checker,
             callback,
         );
-        const local =
-            ts.isIdentifier(callback) ||
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback)
-                ? callback
-                : undefined;
+        const local = localCallback(callback);
         const label = method === "forEach" ? "for_each" : method;
         const source = this.context.allocateTemporaryCppName(`${label}_source`);
         const index = this.context.allocateTemporaryCppName(`${label}_index`);
@@ -9944,7 +9949,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.reachJsData();
             this.context.emit({
                 kind: "expression",
-                code: `if (!(${receiver})) bbl::js::throw_nullish_access("Cannot call a method on a nullish receiver.");`,
+                code: `if (!(${receiver})) bbl::js::throw_nullish_access(${this.context.cppString(absentReceiverMessage("null or undefined", namedMember(this.context.checker, call.expression)?.name))});`,
             });
         }
         const callback =
