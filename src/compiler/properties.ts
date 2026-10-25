@@ -42,6 +42,7 @@ import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     accessedPropertySymbol,
+    declaredSymbol,
     declaredInDomLibrary,
     libraryName,
 } from "./symbols.js";
@@ -2206,17 +2207,30 @@ function isStoredPrimitiveRead(value: Value): boolean {
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
 
-    /** A class method read without calling it: method values are unsupported. */
-    private refuseMethodValue(expression: ts.PropertyAccessExpression): void {
+    /**
+     * A class method read without calling it: method values are
+     * unsupported. `owner` is the class of an instance read through
+     * another type (an interface it implements).
+     */
+    private refuseMethodValue(
+        expression: ts.PropertyAccessExpression,
+        owner?: ts.ClassLikeDeclaration,
+    ): void {
         const position = outermostWrapper(expression);
         if (
             ts.isCallExpression(position.parent) &&
             position.parent.expression === position
         )
             return;
-        const declaration = accessedPropertySymbol(
-            this.context.checker,
-            expression,
+        const symbol = owner?.name
+            ? declaredSymbol(this.context.checker, owner.name)
+            : undefined;
+        const declaration = (
+            symbol
+                ? this.context.checker
+                      .getDeclaredTypeOfSymbol(symbol)
+                      .getProperty(expression.name.text)
+                : accessedPropertySymbol(this.context.checker, expression)
         )?.valueDeclaration;
         if (
             declaration &&
@@ -3606,6 +3620,8 @@ export class PropertyAccessLowerer {
                     // guards, `typeof` and concatenation read.
                     return undefinedValue();
                 }
+                if (owner.classDeclaration)
+                    this.refuseMethodValue(expression, owner.classDeclaration);
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +

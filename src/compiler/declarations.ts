@@ -59,6 +59,7 @@ import {
     isVoid,
     arrayElementType,
     callSignatures,
+    classInstanceDeclaration,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -1055,6 +1056,7 @@ export class DeclarationLowerer {
         }
 
         if (
+            !this.holdsClassInstance(declaration) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -2933,6 +2935,31 @@ export class DeclarationLowerer {
      * A function literal a later assignment replaces: storage of its type,
      * whether that type is written or inferred from the initializer.
      */
+    /**
+     * A binding a class instance initializes and nothing rebinds holds that
+     * instance, whatever structural type annotates it: JavaScript keeps one
+     * object, and its reads and calls go through the class.
+     */
+    private holdsClassInstance(declaration: ts.VariableDeclaration): boolean {
+        const initializer = declaration.initializer;
+        if (
+            !declaration.type ||
+            !initializer ||
+            !ts.isIdentifier(declaration.name) ||
+            this.context.sharedClosures.identifierIsRebound(declaration.name)
+        )
+            return false;
+        const instance = classInstanceDeclaration(
+            this.context.checker.getTypeAtLocation(initializer),
+        );
+        return (
+            instance !== undefined &&
+            classInstanceDeclaration(
+                this.context.checker.getTypeFromTypeNode(declaration.type),
+            ) !== instance
+        );
+    }
+
     private isReassignedFunctionLiteral(
         declaration: ts.VariableDeclaration,
     ): boolean {

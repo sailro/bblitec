@@ -28,10 +28,11 @@ import {
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
+import { recordCopyObservation } from "../record-observations.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
-import { unionMembers } from "../type-facts.js";
+import { classInstanceDeclaration, unionMembers } from "../type-facts.js";
 import { knownCondition } from "../values/model.js";
 
 function expressionEnum(
@@ -430,6 +431,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        refuseClassRecordCopy(lowerer, dataType, value, node, false);
         requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
@@ -925,7 +927,7 @@ function accessorGetter(
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
     if (!field.accessor) {
-        refuseClassFieldCopy(lowerer, dataType, record, node);
+        refuseClassRecordCopy(lowerer, dataType, record, node, true);
         lowerer.context.dataTypes.requireAccessorSlot(
             dataType,
             field.sourceName,
@@ -941,35 +943,64 @@ function accessorGetter(
  * and methods stay bound to it, but a mutable field the record stores as
  * data would be a copy.
  */
-function refuseClassFieldCopy(
+/**
+ * A class instance stored as a record is a copy of its fields whose methods
+ * stay bound to the instance; JavaScript keeps one object. A slot an
+ * accessor reads (`strict`) refuses any mutable field; a store as another
+ * record type refuses wherever the program can tell the copy apart
+ * (`recordCopyObservation`).
+ */
+function refuseClassRecordCopy(
     lowerer: DataSinkHost,
     dataType: DataType<"struct">,
     record: Value,
     node: ts.Node,
+    strict: boolean,
 ): void {
+    const checker = lowerer.context.checker;
     const declaration = record.classDeclaration;
     const symbol = declaration?.name
-        ? declaredSymbol(lowerer.context.checker, declaration.name)
+        ? declaredSymbol(checker, declaration.name)
         : undefined;
     if (!symbol) return;
-    const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
-    for (const field of lowerer.context.dataTypes.structFields(
-        dataType.name,
-        node,
-        "accessors",
-    )) {
-        const property = instance.getProperty(field.sourceName);
-        if (
-            field.type.kind !== "function" &&
-            record.recordProperties?.[field.sourceName] &&
-            property &&
-            !propertyIsReadOnly(property)
+    const instance = checker.getDeclaredTypeOfSymbol(symbol);
+    const kept = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .filter(
+            (field) =>
+                field.type.kind !== "function" &&
+                record.recordProperties?.[field.sourceName] !== undefined,
         )
-            lowerer.context.fail(
-                node,
-                `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${field.sourceName}'; JavaScript keeps one object.`,
-            );
-    }
+        .map((field) => field.sourceName);
+    const mutable = kept.find((name) => {
+        const property = instance.getProperty(name);
+        return property !== undefined && !propertyIsReadOnly(property);
+    });
+    if (mutable === undefined) return;
+    if (strict)
+        lowerer.context.fail(
+            node,
+            `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${mutable}'; JavaScript keeps one object.`,
+        );
+    const stored = lowerer.convertedExpression(node);
+    const target = stored && checker.getContextualType(stored);
+    // The class's own records keep their storage rules.
+    if (!target || classInstanceDeclaration(target) === declaration) return;
+    const observed = recordCopyObservation(
+        lowerer.context,
+        instance,
+        target,
+        kept,
+        instance
+            .getProperties()
+            .some((property) => !kept.includes(property.name)),
+        recordExpression(lowerer, record, node),
+    );
+    if (observed)
+        lowerer.context.fail(
+            node,
+            `A '${symbol.name}' instance stored as '${checker.typeToString(target)}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+        );
 }
 
 /**

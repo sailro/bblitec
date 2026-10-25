@@ -2831,6 +2831,64 @@ test("a spread of a record holding a class's prototype accessor refuses", () => 
     );
 });
 
+check(
+    "a class instance keeps one object under an interface-typed binding",
+    `
+    interface Counting { n: number; inc(): number }
+    type Shaped = { n: number; inc(): number };
+    class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }
+    const a: Counting = new Counter();
+    a.inc(); a.inc();
+    const b: Counting = new Counter();
+    b.n = 5;
+    const stepped = b.inc();
+    let c: Counting = new Counter();
+    c.inc();
+    const k = new Counter();
+    const d: Counting = k;
+    d.inc(); k.inc();
+    const e: Shaped = new Counter();
+    e.inc();
+    if (a.n !== 2 || stepped !== 6 || b.n !== 6 || c.n !== 1 || k.n !== 2 || d.n !== 2 || d !== k || e.n !== 1)
+        throw new Error([a.n, stepped, b.n, c.n, k.n, d.n, e.n].join());
+    `,
+);
+
+check(
+    "a class instance fills an interface array where its copy is unobservable",
+    `
+    interface Named { readonly name: string; greet(): string }
+    class Person implements Named { constructor(readonly name: string) {} greet(): string { return "hi " + this.name; } }
+    interface Point { x: number; size(): number }
+    class Spot implements Point { x = 3; size(): number { return this.x; } }
+    const people: Named[] = [new Person("a"), new Person("b")];
+    const spots: Point[] = [new Spot()];
+    if (people.map((p) => p.greet()).join() !== "hi a,hi b" || spots[0]!.size() !== 3 || spots[0]!.x !== 3)
+        throw new Error("views");
+    `,
+);
+
+test("a class instance copied into an interface element or field refuses where the copy is observable", () => {
+    const prelude =
+        "interface Counting { n: number; inc(): number } class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }";
+    for (const store of [
+        "const xs: Counting[] = [new Counter()]; xs[0]!.inc();",
+        "const holder: { c: Counting } = { c: new Counter() }; holder.c.inc();",
+    ])
+        assert.throws(
+            () => compileSource(`${prelude} ${store} export {};`),
+            /A 'Counter' instance stored as 'Counting' would be a copy of the one object JavaScript keeps, and the program writes 'n'/,
+            store,
+        );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude} const c: Counting = new Counter(); const f = c.inc.bind(c); export {};`,
+            ),
+        /Method 'inc' is read as a value; method values are unsupported/,
+    );
+});
+
 test("a class instance stored as a record refuses copying its mutable fields", () => {
     assert.throws(
         () =>
