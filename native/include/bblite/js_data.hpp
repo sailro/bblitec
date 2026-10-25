@@ -2988,10 +2988,11 @@ struct ParsedDateTime {
     using namespace date_detail;
     const auto [day, within_day] = day_time(time);
     const auto civil = civil_from_days(day);
+    const std::int64_t hours = within_day / 3600000;
     double fields[] = {static_cast<double>(civil.year),
                        static_cast<double>(civil.month - 1),
                        static_cast<double>(civil.day),
-                       static_cast<double>(within_day / 3600000),
+                       static_cast<double>(hours),
                        static_cast<double>(within_day / 60000 % 60),
                        static_cast<double>(within_day / 1000 % 60),
                        static_cast<double>(within_day % 1000)};

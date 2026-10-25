@@ -72,8 +72,9 @@ public:
     bool lease([[maybe_unused]] OffscreenRun* offscreen, [[maybe_unused]] const Engine& engine) {
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen) {
-            leased_ = images_->acquire(static_cast<Uint32>(engine.options.width),
-                                       static_cast<Uint32>(engine.options.height), *offscreen);
+            leased_ =
+                images_.value().acquire(static_cast<Uint32>(engine.options.width),
+                                        static_cast<Uint32>(engine.options.height), *offscreen);
             return leased_ != nullptr;
         }
 #endif
@@ -106,7 +107,7 @@ public:
     bool submit(SdlGpuCommand& command, [[maybe_unused]] OffscreenRun* offscreen) {
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen) {
-            images_->publish(command, *offscreen);
+            images_.value().publish(command, *offscreen);
             return true;
         }
 #endif

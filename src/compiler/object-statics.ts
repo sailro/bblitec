@@ -1469,9 +1469,10 @@ function applyGlobalDefinitions(
                 `does not represent a ${definition.key} getter that reads 'this'.`,
             );
         const name = context.allocateTemporaryCppName("defined_property");
+        // The getter is often a stored callback already: referenced, not copied.
         context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: "const auto&",
             name,
             initializer: context.compileStoredDataFunction(getter.callback, {
                 kind: "function",
