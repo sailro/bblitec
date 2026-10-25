@@ -1909,6 +1909,7 @@ struct PhysicsTriggerInfo {
     Vec3d hit_point{};
     Vec3d hit_normal{};
     double hit_distance = 0.0;
+    double triangle_index = -1.0;
     js::Nullable<PhysicsBody> body{};
     double body_index = -1.0;
 };
@@ -3026,6 +3027,7 @@ ${
         Vec3d{hit.point[0], hit.point[1], hit.point[2]},
         Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
         distance,
+        static_cast<double>(hit.triangle_index),
         std::move(body),
         body_index,
     };
