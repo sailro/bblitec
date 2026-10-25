@@ -1837,16 +1837,15 @@ test("a projection's path algebra is read through projections.ts", () => {
 });
 
 test("a stored record keeps its binding's object through one owner", () => {
-    // requireHeldRecordStorage asks recordDeclaration for every store, and
-    // recordParameter for a record a parameter holds as field storage; a
-    // `delete` asks for runtime storage and a JSON view for an observing
-    // owner, each its own question.
+    // requireHeldRecordStorage asks recordHolder, one rule for variables
+    // and parameters, for every store; a `delete` asks for runtime storage
+    // and a JSON view for an observing owner, each its own question.
     assert.deepEqual(declarationOwners("requireHeldRecordStorage"), [
         "src/compiler/dynamic-binding-storage.ts",
     ]);
     assert.deepEqual(
         sourcePaths
-            .filter((path) => sourceText(path).includes(".recordParameter("))
+            .filter((path) => sourceText(path).includes(".recordHolder("))
             .sort(),
         ["src/compiler/dynamic-binding-storage.ts"],
     );

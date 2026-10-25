@@ -16146,3 +16146,23 @@ check(
     if (cond(true) + cond(false) !== 3) throw new Error("cond");
     `,
 );
+
+check(
+    "a record nested in a variable or a parameter stays one object where a store holds it",
+    `
+    function viaParameter(p: { inner: { n: number } }): number {
+        const held = [p.inner];
+        held[0]!.n = 2;
+        return p.inner.n;
+    }
+    if (viaParameter({ inner: { n: 1 } }) !== 2) throw new Error("parameter");
+    function viaSpread(seed: number): number {
+        const outer = { inner: { n: seed }, m: 1 };
+        const copy = { ...outer };
+        const kept = [copy.inner];
+        kept[0]!.n = 4;
+        return outer.inner.n;
+    }
+    if (viaSpread(1) !== 4) throw new Error("spread copy " + viaSpread(1));
+    `,
+);

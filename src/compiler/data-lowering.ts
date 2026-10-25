@@ -12455,6 +12455,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return value;
         }
         this.requireDocumentDictionaryConversion(value, dataType, source);
+        // A compile-time record stores its entries in a dictionary whatever
+        // expression produced it, as a named one does (`valueMap`).
+        if (value.kind === "record" && dataType.kind === "map")
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
         // A live engine collection stored as an array is the snapshot an
         // array copy of it takes: its handles in their current order.
         if (

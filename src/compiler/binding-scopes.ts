@@ -338,10 +338,15 @@ export class BindingScopes {
     }
 
     /**
-     * The parameter whose binding holds this compile-time record, or a
-     * record nested in it, as field storage.
+     * The earliest live binding holding this compile-time record, as itself
+     * or nested in its fields: a variable (before its const aliases) or a
+     * parameter. A store's unbound source name stands in for a record no
+     * live binding holds.
      */
-    public recordParameter(value: Value): ts.ParameterDeclaration | undefined {
+    public recordHolder(
+        value: Value,
+        expression: ts.Expression | undefined,
+    ): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
         const members = value.recordProperties;
         if (!members) return undefined;
         const seen = new Set<Value>();
@@ -355,17 +360,7 @@ export class BindingScopes {
                 )
             );
         };
-        for (const scope of this.variableScopes)
-            for (const [symbol, binding] of scope) {
-                const declaration = symbol.valueDeclaration;
-                if (
-                    declaration &&
-                    ts.isParameter(declaration) &&
-                    holds(binding.value)
-                )
-                    return declaration;
-            }
-        return undefined;
+        return this.aggregateHolder(holds, expression, true);
     }
 
     /** The earliest live declaration sharing this compile-time tuple, before any lexical aliases. */
@@ -402,21 +397,41 @@ export class BindingScopes {
         expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         if (!members) return undefined;
+        const holder = this.aggregateHolder(
+            (bound) => membersOf(bound) === members,
+            expression,
+            false,
+        );
+        return holder && ts.isVariableDeclaration(holder) ? holder : undefined;
+    }
+
+    /**
+     * The earliest live declaration whose binding `holds` the aggregate: an
+     * initialized variable, followed through its const aliases, or where
+     * `parameters` allows, a parameter.
+     */
+    private aggregateHolder(
+        holds: (value: Value) => boolean,
+        expression: ts.Expression | undefined,
+        parameters: boolean,
+    ): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
         let origin: ts.Declaration | undefined;
         for (const scope of this.variableScopes) {
             for (const [symbol, binding] of scope) {
-                if (membersOf(binding.value) !== members) continue;
+                if (!holds(binding.value)) continue;
                 const declaration = symbol.valueDeclaration;
                 if (
                     declaration &&
-                    ts.isVariableDeclaration(declaration) &&
-                    declaration.initializer
+                    ((ts.isVariableDeclaration(declaration) &&
+                        declaration.initializer) ||
+                        (parameters && ts.isParameter(declaration)))
                 )
                     origin = declaration;
                 if (origin) break;
             }
             if (origin) break;
         }
+        if (origin && ts.isParameter(origin)) return origin;
         const source = expression && unwrapExpression(expression);
         const symbol =
             source && ts.isIdentifier(source)
