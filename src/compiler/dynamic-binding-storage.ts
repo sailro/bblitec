@@ -13,6 +13,7 @@ import {
     nullability,
     arrayElementType,
     classInstanceDeclaration,
+    unionMembers,
 } from "./type-facts.js";
 import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
@@ -94,12 +95,23 @@ export function heldClassInstanceType(
         return undefined;
     const type = checker.getTypeAtLocation(initializer);
     const instance = classInstanceDeclaration(type);
+    // Only record types: an open one (`unknown`, `object`) is a dynamic view.
+    const records = unionMembers(
+        checker.getTypeFromTypeNode(declaration.type),
+    ).filter(
+        (member) =>
+            (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0,
+    );
     const symbol = declaredSymbol(checker, declaration.name);
     return instance &&
         symbol &&
-        classInstanceDeclaration(
-            checker.getTypeFromTypeNode(declaration.type),
-        ) !== instance &&
+        records.length > 0 &&
+        records.every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+                    0 && classInstanceDeclaration(member) !== instance,
+        ) &&
         !isRebound(checker, [declaration.getSourceFile()], symbol)
         ? type
         : undefined;
