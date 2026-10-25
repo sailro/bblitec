@@ -4561,11 +4561,13 @@ class Compiler implements LoweringServices {
         // The pin's createEngine resizes its surface once, and every frame
         // head and cap write runs the same resize: a DOM canvas's backing
         // store has this one writer.
-        if (this.options.workers)
+        if (this.options.workers) {
+            const resize = surfaceResizeFunction(this);
             this.emit({
                 kind: "expression",
-                code: `bbl::install_surface_resize(*${cppName}, &${surfaceResizeFunction(this)});`,
+                code: `bbl::install_surface_resize(*${cppName}, &${resize}, &${resize}_auxiliary);`,
             });
+        }
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
             this.engineCreationExecution = {
@@ -10116,6 +10118,7 @@ class Compiler implements LoweringServices {
         this.reachFeature("renderer:scene", node);
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
+        this.reachFeature("frame-graph:target-disposal", node);
         if (!this.defaultRenderTaskAdapted) {
             this.nativeEmission.registerNativeFunction(
                 "void bbl_ensure_default_render_task(bbl::Scene& scene);",
@@ -10130,6 +10133,11 @@ class Compiler implements LoweringServices {
                         "bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});",
                     `        ${recordAt("engine.render_targets", "target")}.surface_canvas = scene.surface_canvas;`,
                     `        ${recordAt("engine.render_targets", "resolve_target")}.surface_canvas = scene.surface_canvas;`,
+                    "        // The readable attachments belong to the scene's default frame graph.",
+                    "        scene.disposables.emplace_back([owner = scene.engine, target, resolve_target] {",
+                    "            bbl::dispose_render_target(*owner, target);",
+                    "            bbl::dispose_render_target(*owner, resolve_target);",
+                    "        });",
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
                         'bbl::RenderTaskOptions{"default-render-task", target, std::nullopt, true, ' +
                         `${handleCppType("camera")}{}, false, true, true, true});`,

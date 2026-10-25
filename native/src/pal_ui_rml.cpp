@@ -3267,6 +3267,10 @@ public:
     }
 
     void SetMouseCursor(const Rml::String& name) override {
+        if (SDL_GetWindowRelativeMouseMode(window)) {
+            SDL_HideCursor();
+            return;
+        }
         // A scene canvas may have hidden the cursor before this UI took over.
         // SDL's RmlUi backend selects a shape but does not restore visibility.
         SDL_ShowCursor();
@@ -5446,6 +5450,13 @@ struct UiRmlRuntime {
 #if BBLITE_HAS_DOM_INPUT
             auto& input = dom_input(engine);
             input.hit_path = [this](double x, double y) {
+                if (this->engine.pointer_locked && this->engine.pointer_lock_canvas) {
+                    auto* element =
+                        handle_at(projected_elements, *this->engine.pointer_lock_canvas).element;
+                    if (!element)
+                        throw std::logic_error("Pointer lock canvas has no retained element.");
+                    return event_path(element);
+                }
                 if (this->engine.pointer_locked)
                     return dom_canvas_path();
                 auto* hit = context->GetElementAtPoint(Rml::Vector2f{

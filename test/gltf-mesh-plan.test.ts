@@ -246,8 +246,8 @@ test("scene recording refuses unknown resources and registration effects", async
             bin,
             doctoredContext(
                 scene,
-                "if (build) {",
-                "if (build) { build(ctx, []);",
+                "let group = ctx._groups.get(build);",
+                "build(ctx, []); let group = ctx._groups.get(build);",
             ),
         ),
         /cannot execute a material GPU builder/,

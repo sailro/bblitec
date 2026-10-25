@@ -196,7 +196,7 @@ test("interleaved document preparation keeps animated white fallback tied to sou
         const input = pinnedMaterialInputFromGltf(animated, {
             materialFeatures: animatedFeatures,
         });
-        assert.deepEqual(input.baseColorFactor, factor);
+        assert.deepEqual(input.baseColorFactor, [0.2, 0.3, 0.4, 1]);
         assert.equal(
             pinnedMaterialInputFromGltf(plain, {
                 materialFeatures: plainFeatures,

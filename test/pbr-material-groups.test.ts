@@ -233,7 +233,7 @@ function sourceOracle(
             .replace(/^export /, "");
     const add = context.functionDeclaration(
         sceneModule,
-        "addToScene",
+        "joinMaterialGroup",
     ).declaration;
     const build = context.variableInitializer(add, "build").parent.parent
         .parent;
@@ -298,6 +298,7 @@ function sourceOracle(
         ${["A", "B", "C", "X", "moveRuntimeMeshToGroup"].map((name) => declaration(runtimeModule, name)).join("\n")}
         ${declaration("src/mesh/thin-instance.ts", "buildRuntimeThinMesh")}
         ${declaration(sceneModule, "buildScene")}
+        ${declaration(sceneModule, "joinMaterialGroup")}
         ${rebuildSource}
         function installRuntimeBuilds(scene) {
             return scene._runtimeBuilds = {

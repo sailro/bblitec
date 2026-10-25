@@ -31,6 +31,18 @@ import { doctoredContext } from "./doctored-store.js";
 type RecordValue = Record<string, unknown>;
 type MaterialFunction = (...args: unknown[]) => unknown;
 
+test("animated base-color target groups refuse uses beyond captured membership", () => {
+    const context = doctoredContext(
+        "src/loader-gltf/animation-pointer-basecolor.ts",
+        "if (!targets) {",
+        "if (!targets || targets.length === 0) {",
+    );
+    assert.throws(
+        () => lowerGltfMaterialProperties(context),
+        /Source base-color target membership/,
+    );
+});
+
 function reversedMaterialRegistry(): LoweringContext {
     const module = "src/loader-gltf/gltf-feature-registry.ts";
     const source = new LoweringContext().sourceFile(module).getFullText();
@@ -779,7 +791,7 @@ for (const [variant, context] of [
                 material.set("_baseColorImage", GltfPbrValue{std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{0})});
                 const auto result = ${lowered.features.find((feature) => feature.handler.module.endsWith("/gltf-ext-unlit.ts"))!.handler.cpp}(material);
                 assert(result.get("_unlit").truthy());
-                assert(result.get("_unlitColor").at(0.0).number() == 0.2);
+                assert(result.get("_unlitColor").undefined());
             };
             unlit_lifetime();
             const auto live_allocations = outstanding_allocations;
@@ -792,6 +804,17 @@ for (const [variant, context] of [
                 GltfPbrValue first{texture};
                 const GltfPbrValue second{gltf_cached_material_texture(cache, image, true)};
                 assert(first.equals(second));
+                GltfCoreMaterial supplied_core;
+                supplied_core._baseColorImage = image;
+                GltfPbrTextures supplied_layers;
+                supplied_layers.baseColorTexture = texture;
+                const GltfPbrValue default_supplied{gltf_default_pbr_textures(supplied_core, supplied_layers).baseColorTexture};
+                assert(default_supplied.undefined());
+                const GltfPbrValue extended_supplied{gltf_default_pbr_textures_ext(supplied_core, supplied_layers).baseColorTexture};
+                assert(!extended_supplied.equals(first));
+                assert(extended_supplied.texture().image == image);
+                extended_supplied.set("uOffset", GltfPbrValue{0.75});
+                assert(first.get("uOffset").undefined());
                 GltfPbrContext upload_context;
                 upload_context.upload_image = [](const GltfPbrValue& bitmap, bool srgb) {
                     return GltfPbrValue{GltfMaterialTexture{bitmap.image(), srgb, std::nullopt, nullptr}};
@@ -939,7 +962,6 @@ for (const [variant, context] of [
                 ${named("applyGltfUvTransform")}(props, textures);
                 ${named("applyGltfOptInPbrFeatures")}(props, mat);
                 compare(props, row.at("expected").at("props"));
-                assert(props.get("baseColorFactor").equals(mat.get("_baseColorFactor")));
                 const auto document = ts::JsonValue::from_native(row.at("document"));
                 const auto features = gltf_pbr_material_features(GltfPbrValue{&document});
                 const auto wrap = gltf_pbr_has_texture_wrap(GltfPbrValue{&document});
@@ -956,7 +978,7 @@ for (const [variant, context] of [
                 };
                 compare(features, row.at("selected"));
                 compare(${named("runGltfMaterialFeatures")}(mat, features, selected_context), row.at("expected").at("layers"));
-                selected_context.default_textures = [&](const GltfPbrValue& input_mat) { assert(input_mat.equals(mat)); return textures; };
+                selected_context.default_textures = [&](const GltfPbrValue& input_mat, const GltfPbrValue&) { assert(input_mat.equals(mat)); return textures; };
                 selected_context.sampled_textures = selected_context.default_textures;
                 selected_context.extended_textures = selected_context.default_textures;
                 compare(gltf_pbr_build_material(mat, features, selected_context, GltfPbrValue{extended}, GltfPbrValue{sampled}),

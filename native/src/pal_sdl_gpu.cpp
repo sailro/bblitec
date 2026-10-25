@@ -3421,8 +3421,7 @@ public:
                                     throw std::runtime_error(
                                         "Temporal task source has no retained scene UBO.");
                                 }
-                                CameraRecord* camera =
-                                    handle_find(engine.cameras, source.source_scene->camera);
+                                CameraRecord* camera = task_pass_camera(engine, source);
                                 [[maybe_unused]] const double draws =
                                     upstream::execute_taa_post_process(
                                         taa, task.post_process.passes.at(0).params[0], camera,

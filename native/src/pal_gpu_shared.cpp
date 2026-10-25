@@ -166,6 +166,8 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
 
 std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scene& scene,
                                                 std::uint32_t width, std::uint32_t height) {
+    if (!engine.surface_panes.empty())
+        return engine.surface_panes.at(scene.surface_canvas.value_or(UiElementHandle{}).value);
 #if BBLITE_HAS_UI
     if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
         return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
@@ -178,6 +180,8 @@ std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
                                                  std::optional<UiElementHandle> surface_canvas,
                                                  std::uint32_t target_width,
                                                  std::uint32_t target_height) {
+    if (!engine.surface_panes.empty())
+        return engine.surface_panes.at(surface_canvas.value_or(UiElementHandle{}).value);
 #if BBLITE_HAS_UI
     if (!surface_canvas)
         return std::nullopt;

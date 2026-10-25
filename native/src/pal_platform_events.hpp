@@ -732,7 +732,9 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
 inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     if (const auto* offscreen = OffscreenRun::current()) {
         // The pin's render loop resizes each surface at the head of every frame.
-        if (engine.resize_surface)
+        if (engine.update_surface_layout)
+            engine.update_surface_layout(engine);
+        else if (engine.resize_surface)
             engine.resize_surface(engine);
         const auto extent = offscreen->extent();
         const int width = static_cast<int>(extent.width);
@@ -1047,6 +1049,21 @@ inline void set_document_hidden(Engine& engine, bool hidden) {
     engine.visibility_change_callbacks.dispatch(hidden);
 }
 
+inline void trace_pointer_motion(const Engine& engine, const SDL_MouseMotionEvent& event,
+                                 const PlatformMouseEvent& pointer) {
+    static thread_local std::size_t count = 0;
+    if (runtime_trace_enabled() && count < 32 &&
+        (engine.pointer_lock_requested || engine.pointer_locked || event.state != 0)) {
+        ++count;
+        std::cerr << "[bblite trace] input mouse-motion"
+                  << " xrel=" << pointer.movement_x << " yrel=" << pointer.movement_y
+                  << " sdl-mask=" << static_cast<unsigned long long>(event.state)
+                  << " dom-buttons=" << pointer.buttons
+                  << " requested=" << (engine.pointer_lock_requested ? 1 : 0)
+                  << " locked=" << (engine.pointer_locked ? 1 : 0) << '\n';
+    }
+}
+
 inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool include_dom = true) {
     if (event.type == SDL_EVENT_WINDOW_RESIZED ||
         event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
@@ -1111,17 +1128,7 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
             .movement_x = static_cast<double>(event.motion.xrel),
             .movement_y = static_cast<double>(event.motion.yrel),
         };
-        static std::size_t traced_motion_count = 0;
-        if (runtime_trace_enabled() && traced_motion_count < 32 &&
-            (engine.pointer_lock_requested || engine.pointer_locked || event.motion.state != 0)) {
-            ++traced_motion_count;
-            std::cerr << "[bblite trace] input mouse-motion"
-                      << " xrel=" << mouse_event.movement_x << " yrel=" << mouse_event.movement_y
-                      << " sdl-mask=" << static_cast<unsigned long long>(event.motion.state)
-                      << " dom-buttons=" << mouse_event.buttons
-                      << " requested=" << (engine.pointer_lock_requested ? 1 : 0)
-                      << " locked=" << (engine.pointer_locked ? 1 : 0) << '\n';
-        }
+        trace_pointer_motion(engine, event.motion, mouse_event);
         dispatch_platform_mouse_move(engine, mouse_event, include_dom);
         sync_pointer_lock(SDL_GetWindowFromID(event.motion.windowID), engine);
         return;
@@ -1321,6 +1328,8 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             .meta_key = (modifiers & SDL_KMOD_GUI) != 0,
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };
+        if (move && engine.pointer_lock_canvas)
+            trace_pointer_motion(engine, event.motion, pointer);
         const auto window_id = move    ? event.motion.windowID
                                : wheel ? event.wheel.windowID
                                        : event.button.windowID;

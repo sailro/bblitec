@@ -196,6 +196,7 @@ function instrumentPointerWriters(
     module: string,
     bridge: string,
     redirects: ReadonlyMap<string, string>,
+    append = "",
 ): string {
     const file = context.sourceFile(module);
     const closures = new Map(
@@ -262,7 +263,7 @@ function instrumentPointerWriters(
     return pinnedModuleTextUrl(
         module.replace(/^src\//, "").replace(/\.ts$/, ".js"),
         transpileForBrowser(
-            `import {recordWriter as __recordWriter, recordLightLookup as __recordLightLookup} from ${JSON.stringify(bridge)};\n${text}`,
+            `import {recordWriter as __recordWriter, recordLightLookup as __recordLightLookup} from ${JSON.stringify(bridge)};\n${text}\n${append}`,
             module,
         ),
         [],
@@ -869,7 +870,7 @@ export function readAnimationReceipt(
         if (
             item.kind === "closure" &&
             typeof item.site === "string" &&
-            /^src\/loader-gltf\/animation-pointer(?:-ext|-lights)?\.ts:\d+$/.test(
+            /^src\/loader-gltf\/animation-pointer(?:-ext|-lights|-basecolor)?\.ts:\d+$/.test(
                 item.site,
             )
         ) {
@@ -1073,18 +1074,18 @@ export function gltfPointerSourceUrls(
     const baseColorModule = "src/loader-gltf/animation-pointer-basecolor.ts";
     const baseColorFile = context.sourceFile(baseColorModule);
     context.variableInitializer(baseColorFile, "_animBaseColorDefs");
-    const baseColor = pinnedModuleTextUrl(
-        "loader-gltf/animation-pointer-basecolor.js",
-        transpileForBrowser(
-            `${baseColorFile.text}\nexport function __baseColorDefinitions() { return _animBaseColorDefs; }`,
-            baseColorModule,
-        ),
-    );
     const base = instrumentPointerWriters(
         context,
         "src/loader-gltf/animation-pointer.ts",
         bridge,
         new Map(),
+    );
+    const baseColor = instrumentPointerWriters(
+        context,
+        baseColorModule,
+        bridge,
+        new Map([["./animation-pointer.js", base]]),
+        "export function __baseColorDefinitions() { return _animBaseColorDefs; }",
     );
     const ext = instrumentPointerWriters(
         context,
@@ -1157,14 +1158,19 @@ export function gltfPointerSourceUrls(
     const cleanup = `function __clearPointerMaterialMap(meshes) {
         if (_matMapKey === meshes) { _matMapKey = null; _matMap = []; }
     }
-    function __baseColorDefinitions() { return _baseColorMod?.__baseColorDefinitions(); }`;
+    function __baseColorDefinitions() { return _baseColorMod?.__baseColorDefinitions(); }
+    function __prepareBaseColorMaterial(mat) { return _baseColorMod?.prepareMaterial(mat); }`;
     const feature = pinnedModuleTextUrl(
         "loader-gltf/gltf-feature-animation-pointer.js",
         transpileForBrowser(
             `import {recordParser as __recordParser} from ${JSON.stringify(bridge)};\n${text}\n${cleanup}`,
             module,
         ),
-        ["__clearPointerMaterialMap", "__baseColorDefinitions"],
+        [
+            "__clearPointerMaterialMap",
+            "__baseColorDefinitions",
+            "__prepareBaseColorMaterial",
+        ],
         new Map([
             ["./gltf-animation.js", animation],
             ["./animation-pointer.js", base],

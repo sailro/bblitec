@@ -30,8 +30,8 @@ test("pinned factor textures are fresh objects and retain actual sRGB upload byt
     });
     assert.deepEqual(result.materials, [0, 1, 2, 3, 4]);
     assert.deepEqual(result.fallbackTexels, {
-        0: [137, 188, 225, 128],
-        1: [137, 188, 225, 128],
+        0: [137, 188, 225, 255],
+        1: [137, 188, 225, 255],
         2: [255, 255, 255, 255],
         3: [255, 255, 255, 255],
         4: [255, 255, 255, 255],

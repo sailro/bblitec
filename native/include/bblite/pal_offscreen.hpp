@@ -11,6 +11,7 @@
 #include <bblite/pal_gpu_timestamp.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <exception>
@@ -157,6 +158,8 @@ struct OffscreenFrame {
     std::uint64_t sequence = 0;
     std::shared_ptr<OffscreenImage> image;
     bool capture_ready = true;
+    /** Normalized view into a leased image shared by several canvas surfaces. */
+    std::array<float, 4> uv{0, 0, 1, 1};
 };
 
 /**
@@ -206,6 +209,10 @@ public:
         std::lock_guard lock(mutex_);
         return closed_;
     }
+    bool presenting() const {
+        std::lock_guard lock(mutex_);
+        return presenting_;
+    }
 
 private:
     friend class OffscreenRun;
@@ -217,7 +224,8 @@ private:
         return {width, height};
     }
 
-    bool publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
+    bool publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image,
+                 std::array<float, 4> uv, std::uint64_t sequence) {
         checked_extent(width, height);
         if (!image)
             throw std::runtime_error("Offscreen frame has no GPU image.");
@@ -225,11 +233,12 @@ private:
                                            OffscreenFrame{width, height, 0, std::move(image)});
         const bool ready = !capture_ready_ || capture_ready_->load();
         next->capture_ready = ready;
+        next->uv = uv;
         {
             std::lock_guard lock(mutex_);
             if (closed_)
                 return false;
-            next->sequence = ++sequence_;
+            next->sequence = sequence;
             frame_.swap(next);
         }
         // Release a superseded frame outside the mailbox lock.
@@ -239,9 +248,9 @@ private:
     mutable std::mutex mutex_;
     Extent extent_;
     std::optional<OffscreenFrame> frame_;
-    std::uint64_t sequence_ = 0;
     bool closed_ = false;
     bool producer_active_ = false;
+    bool presenting_ = true;
     const std::shared_ptr<AnimationFrameSource> animation_frames_;
     const std::uint64_t capture_frame_count_;
     const std::shared_ptr<const std::atomic<bool>> capture_ready_;
@@ -286,7 +295,24 @@ public:
 #endif
     }
     OffscreenSurface::Extent extent() const { return surface_.extent(); }
+    struct View {
+        std::shared_ptr<OffscreenRun> destination;
+        std::uint32_t x, y, width, height;
+    };
+    void set_views(OffscreenSurface::Extent extent, std::vector<View> views) {
+        render_extent_ = OffscreenSurface::checked_extent(extent.width, extent.height);
+        views_ = std::move(views);
+    }
+    OffscreenSurface::Extent render_extent() const {
+        return render_extent_ ? *render_extent_ : extent();
+    }
     void resize(std::uint32_t width, std::uint32_t height) { surface_.resize(width, height); }
+    void set_presenting(bool value) {
+        std::lock_guard lock(surface_.mutex_);
+        surface_.presenting_ = value;
+        if (!value)
+            surface_.frame_.reset();
+    }
     OffscreenDevice& device() const {
         require_live_device();
         return device_;
@@ -319,10 +345,31 @@ public:
 
     void publish(std::uint32_t width, std::uint32_t height, std::shared_ptr<OffscreenImage> image) {
         require_live_device();
-        last_frame_capture_ready_ = surface_.publish(width, height, std::move(image));
+        const auto sequence = ++published_frames_;
+        if (views_.empty()) {
+            last_frame_capture_ready_ =
+                surface_.publish(width, height, std::move(image), {0, 0, 1, 1}, sequence);
+            return;
+        }
+        last_frame_capture_ready_ = true;
+        for (const auto& view : views_) {
+            if (view.x + view.width > width || view.y + view.height > height)
+                throw std::logic_error("Canvas view exceeds its submitted image.");
+            const std::array<float, 4> uv{
+                static_cast<float>(view.x) / width, static_cast<float>(view.y) / height,
+                static_cast<float>(view.width) / width, static_cast<float>(view.height) / height};
+            auto& target = view.destination ? *view.destination : *this;
+            last_frame_capture_ready_ &=
+                target.surface_.publish(view.width, view.height, image, uv, sequence);
+        }
     }
 
-    void discard_pending() { surface_.take_frame(); }
+    void discard_pending() {
+        surface_.take_frame();
+        for (const auto& view : views_)
+            if (view.destination)
+                view.destination->discard_pending();
+    }
 
 private:
     bool last_frame_capture_ready_ = false;
@@ -342,6 +389,9 @@ private:
     std::shared_ptr<OffscreenDevice> device_owner_;
     std::optional<double> animation_frame_timestamp_;
     bool device_disposed_ = false;
+    std::optional<OffscreenSurface::Extent> render_extent_;
+    std::vector<View> views_;
+    std::uint64_t published_frames_ = 0;
 };
 
 /** A realm renderer presents to its Window host, which alone captures its frames. */

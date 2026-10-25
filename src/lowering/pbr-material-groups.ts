@@ -23,7 +23,7 @@ export function lowerPbrMaterialGroups(
 ): string {
     const { file, declaration } = context.functionDeclaration(
         sceneModule,
-        "addToScene",
+        "joinMaterialGroup",
     );
     const initializer = context.variableInitializer(declaration, "build");
     const statement = initializer.parent.parent.parent;
@@ -31,15 +31,6 @@ export function lowerPbrMaterialGroups(
         context.contractError(
             initializer,
             "Expected the mesh material-group selection.",
-        );
-    const next =
-        statement.parent.statements[
-            statement.parent.statements.indexOf(statement) + 1
-        ];
-    if (!next || !ts.isIfStatement(next))
-        context.contractError(
-            statement,
-            "Expected the material-group attachment guard.",
         );
     const bindings = new Map<string, PinnedBinding>([
         ["mesh", { cpp: "mesh", type: "opaque" }],
@@ -49,7 +40,10 @@ export function lowerPbrMaterialGroups(
         ],
         [
             "mesh.material._buildGroup",
-            { cpp: "source_material_group_key(*material)", type: "scalar" },
+            {
+                cpp: "(material ? source_material_group_key(*material) : std::uint64_t{0})",
+                type: "scalar",
+            },
         ],
         ["build", { cpp: "build", type: "scalar" }],
         ["group", { cpp: "group", type: "opaque", absentCpp: "!group" }],
@@ -79,6 +73,27 @@ export function lowerPbrMaterialGroups(
                 bindings,
                 calls: new Map(),
                 statement(node, _numeric, depth) {
+                    if (
+                        ts.isIfStatement(node) &&
+                        context.expressionMatchesShape(
+                            node.expression,
+                            "!group![0]",
+                        )
+                    ) {
+                        context.assertStatementShapes(
+                            node,
+                            [node],
+                            "if (!group![0]) { ctx._groups.delete(build); return; }",
+                            "Empty deferred material group",
+                        );
+                        return [
+                            `${depth}if (group->meshes.empty()) {`,
+                            `${depth}    static_cast<void>(scene.state->source_material_groups->erase(build));`,
+                            `${depth}    if (build == 1) scene.state->pbr_material_group.reset();`,
+                            `${depth}    return;`,
+                            `${depth}}`,
+                        ];
+                    }
                     if (ts.isVariableStatement(node)) {
                         context.assertStatementShapes(
                             node,
@@ -137,9 +152,17 @@ export function lowerPbrMaterialGroups(
             `${indent}}, SceneDeferredFailure::promise_rejection);`,
         ];
     };
-    const body = lowerPinnedBody(file, [statement, next], {
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
+        returnValue(expression) {
+            if (expression)
+                context.contractError(
+                    expression,
+                    "Expected void material-group attachment.",
+                );
+            return "";
+        },
 
         expression(node) {
             if (context.expressionMatchesShape(node, "mesh.material"))
@@ -150,7 +173,7 @@ export function lowerPbrMaterialGroups(
                     "mesh.material._buildGroup",
                 )
             )
-                return "source_material_group_key(*material)";
+                return "(material ? source_material_group_key(*material) : std::uint64_t{0})";
             if (
                 node.kind === ts.SyntaxKind.UndefinedKeyword ||
                 (ts.isIdentifier(node) && node.text === "undefined")
@@ -283,14 +306,37 @@ export function lowerPbrMaterialGroups(
             ],
         ]),
         calls: new Map(),
+        expression(node) {
+            if (
+                context.expressionMatchesShape(
+                    node,
+                    "ctx._materialSwapQueue.splice(0)[0]",
+                )
+            )
+                return "!std::exchange(scene.state->pbr_material_swap_queue, {}).empty()";
+            return undefined;
+        },
         statement(node, _lowerer, indent) {
             if (!ts.isExpressionStatement(node)) return undefined;
+            if (
+                context.expressionMatchesShape(
+                    node.expression,
+                    "ctx._groups.forEach((group) => (group.length = 0))",
+                )
+            )
+                return [
+                    `${indent}if (scene.state->source_material_groups) for (const auto& [builder, group] : *scene.state->source_material_groups) {`,
+                    `${indent}    group->meshes.clear();`,
+                    `${indent}}`,
+                ];
             context.assertExpressionShape(
                 node.expression,
-                "ctx._materialSwapQueue.length = 0",
-                "Initial material swap queue reset",
+                "ctx.meshes.forEach((mesh) => joinMaterialGroup(ctx, mesh))",
+                "Initial material group membership",
             );
-            return [`${indent}scene.state->pbr_material_swap_queue.clear();`];
+            return [
+                `${indent}for (const auto mesh : scene.meshes) queue_pbr_material_group(scene, mesh);`,
+            ];
         },
     });
     const builtStore = context.findNodes(
@@ -321,7 +367,7 @@ export function lowerPbrMaterialGroups(
     return `${gltfSceneHooks ? "" : lowerRebuildTransaction(context, "run_pbr_rebuild_transaction")}
 ${lowerMaterialPublication(context, thinBindings)}
 ${materialPublicationTransport()}
-// ${context.provenance(sceneModule, "addToScene")}
+// ${context.provenance(sceneModule, "joinMaterialGroup")}
 void process_pbr_material_swaps(Scene& scene);
 bool pbr_mesh_list_contains(const std::vector<MeshHandle>& meshes, MeshHandle mesh) {
     return std::any_of(meshes.begin(), meshes.end(), [mesh](MeshHandle value) { return value == mesh; });

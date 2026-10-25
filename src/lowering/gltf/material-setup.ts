@@ -178,6 +178,7 @@ export function lowerGltfMaterialSetup(
                                         "_generateMipmaps!",
                                         "getCachedTexture",
                                         "wrapTex",
+                                        "extLayers",
                                         "samplerFor",
                                     ],
                                 ],
@@ -191,6 +192,7 @@ export function lowerGltfMaterialSetup(
                                         "generateMipmaps",
                                         "getCachedTex",
                                         "wrapTex",
+                                        "layers",
                                     ],
                                 ],
                                 [
@@ -203,6 +205,7 @@ export function lowerGltfMaterialSetup(
                                         "_generateMipmaps!",
                                         "samplerFor!",
                                         "getCachedTexture",
+                                        "extLayers",
                                     ],
                                 ],
                                 [
@@ -214,6 +217,7 @@ export function lowerGltfMaterialSetup(
                                         "sampler",
                                         "_generateMipmaps!",
                                         "getCachedTexture",
+                                        "extLayers",
                                     ],
                                 ],
                             ] as const;
@@ -237,7 +241,12 @@ export function lowerGltfMaterialSetup(
                                         "Material texture boundary",
                                     ),
                                 );
-                                return `extCtx.${member}(${lowerer.expression(call.arguments[1]!)})`;
+                                const layers = parameters.findIndex(
+                                    (name) =>
+                                        name === "extLayers" ||
+                                        name === "layers",
+                                );
+                                return `extCtx.${member}(${lowerer.expression(call.arguments[1]!)}, ${lowerer.expression(call.arguments[layers]!)})`;
                             }
                             return undefined;
                         },

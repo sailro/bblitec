@@ -1,12 +1,15 @@
 {
   "scene": "antigravity-racer",
-  "notes": "Split-screen: the demo creates the second player's canvas at run time and appends it to host chrome the retained UI does not project, so that canvas has no layout rectangle and the two surface scenes share the window in equal panes. Selecting 'Split-Screen (2 Players)' from the menu must present both panes on both backends (the 2026-09-06 release did; layout-only panes left both black).",
+  "notes": "Split-screen presents distinct canvas views, survives returning through the menu, and can transition to the track editor on both backends.",
   "capture": false,
   "phases": [
-    { "id": "split", "frame": 600, "tape": ["-*240", "ArrowDown", "-*10", "Enter"] }
+    { "id": "split", "frame": 600, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return"] },
+    { "id": "split-reentered", "frame": 900, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Escape", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Down", "-*10", "UiKey@Return"] },
+    { "id": "editor-after-split", "frame": 900, "env": { "BBLITE_CAPTURE_UI": "1" }, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Escape", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return"] }
   ],
   "expect": [
-    { "kind": "viewport", "phase": "split", "equals": [1280, 720] },
+    { "kind": "viewport", "phase": "*", "equals": [1280, 720] },
+    { "kind": "image-mad", "phase": "editor-after-split", "vs": "split", "min": 5 },
     { "kind": "plugin", "module": "checks/plugins/racer-split.mjs" }
   ]
 }

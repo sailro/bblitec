@@ -247,7 +247,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /if \(remove_mesh_from_scene_tasks\(engine, scene, mesh\)\) \+\+engine\.draw_list_epoch;[\s\S]{0,200}scene\.meshes\.erase\(listed\);\s*\+\+scene\.render_topology_version;\s*\}\s*std::erase_if\(scene\.state->material_outputs,[\s\S]{0,400}erase_first_mesh\(scene\.state->pbr_material_swap_queue, mesh\);\s*clear_mesh_parent\(engine, mesh\);\s*if \(unregister_mesh_material_scene\(scene, mesh\)\) retire_mesh_record\(engine, mesh\);[\s\S]{0,200}for \(const MeshHandle child : children\) remove_from_scene\(scene, child\);/,
+        /if \(remove_mesh_from_scene_tasks\(engine, scene, mesh\)\) \+\+engine\.draw_list_epoch;[\s\S]{0,200}scene\.meshes\.erase\(listed\);\s*\+\+scene\.render_topology_version;\s*\}\s*std::erase_if\(scene\.state->material_outputs,[\s\S]{0,400}std::erase_if\(group->outputs,[\s\S]{0,200}erase_first_mesh\(scene\.state->pbr_material_swap_queue, mesh\);\s*clear_mesh_parent\(engine, mesh\);\s*if \(unregister_mesh_material_scene\(scene, mesh\)\) retire_mesh_record\(engine, mesh\);[\s\S]{0,200}for \(const MeshHandle child : children\) remove_from_scene\(scene, child\);/,
     );
     assert.match(
         lowered.source,
@@ -2222,7 +2222,7 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#755"\);/,
+        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#761"\);/,
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

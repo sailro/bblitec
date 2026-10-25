@@ -51,7 +51,7 @@ int main(){
     bbl::remove_compute_dispatch(task,first);bbl::remove_compute_dispatch(task,first);
     assert(task.dispatches.size()==1&&task.dispatches[0]==second);
     auto foreign=std::make_shared<Dispatch>();foreign->shader->engine=std::make_shared<Engine>();
-    bool failed=false;try{bbl::add_compute_dispatch(task,foreign);}catch(const std::exception& error){failed=std::string(error.what())=="#970";}assert(failed);
+    bool failed=false;try{bbl::add_compute_dispatch(task,foreign);}catch(const std::exception& error){failed=std::string(error.what())=="#976";}assert(failed);
     std::vector<int> released;
     task.one_shot_dispose=[&]{released.push_back(1);};
     task.pass=std::make_shared<Pass>([&]{released.push_back(2);});task.passes.push_back(1);
@@ -64,7 +64,7 @@ int main(){
     fail=false;bbl::dispose_compute_task(task);bbl::dispose_compute_task(task);
     assert(task.disposed&&!task.uniform_arenas&&!task.one_shot_dispose&&!task.flush_owned&&!task.dispose_owned&&!task.one_shot_recorded);
     assert(released==std::vector<int>({1,2,3,1,3}));
-    failed=false;try{bbl::add_compute_dispatch(task,first);}catch(const std::exception& error){failed=std::string(error.what())=="#969";}assert(failed);
+    failed=false;try{bbl::add_compute_dispatch(task,first);}catch(const std::exception& error){failed=std::string(error.what())=="#975";}assert(failed);
 }
 `,
         { timeoutMs: 10000, expectedOutput: "" },

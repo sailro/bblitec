@@ -185,6 +185,15 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
                 if (!ts.isCallExpression(expression)) return undefined;
                 if (
                     context.expressionMatchesShape(
+                        expression,
+                        '_notifySceneChange(ctx, entity, "added")',
+                    )
+                ) {
+                    // onSceneChange is not admitted, so no subscriber can be installed.
+                    return [];
+                }
+                if (
+                    context.expressionMatchesShape(
                         expression.expression,
                         "ctx.animationGroups.push",
                     )

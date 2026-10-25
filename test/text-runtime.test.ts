@@ -635,11 +635,14 @@ test("deferred scene registration observes snapshot order, identity guards, fail
         "void register_scene(",
         "void unregister_scene(",
         "void retire_scene_shadow_states(",
+        "void throw_scene_disposal_failures(",
+        "template<class Cleanup>\nvoid dispose_scene_callbacks(",
         "void dispose_scene(",
     ]
         .map((name) => cppFunction(source, name))
         .join("\n");
     const cpp = `#include <bblite/upstream_text_renderable.hpp>
+#include <bblite/js_aggregate_error.hpp>
 namespace bbl {
 ${lowerMeshMaterialSetter(context)}
 ${bodies}
@@ -766,6 +769,8 @@ test("the text scene pass rebinds when a registration publishes text and does no
         "void register_scene(",
         "void unregister_scene(",
         "void retire_scene_shadow_states(",
+        "void throw_scene_disposal_failures(",
+        "template<class Cleanup>\nvoid dispose_scene_callbacks(",
         "void dispose_scene(",
     ]
         .map((name) => cppFunction(source, name))
@@ -774,6 +779,7 @@ test("the text scene pass rebinds when a registration publishes text and does no
     const cpp = `#define BBLITE_FLOATING_ORIGIN 0
 #include <bblite/upstream_text_renderable.hpp>
 #include <bblite/text_gpu.hpp>
+#include <bblite/js_aggregate_error.hpp>
 namespace bbl {
 ${lowerMeshMaterialSetter(context)}
 ${bodies}

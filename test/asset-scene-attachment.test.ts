@@ -68,12 +68,17 @@ const scenarios: Scenario[] = [
 ];
 
 function sourceResult(context: LoweringContext, input: Scenario): object {
-    const declaration = context.functionDeclaration(
-        module,
-        "addToScene",
-    ).declaration;
     const code = transpileCommonJs(
-        declaration.getText().replace("export ", "") + "\nreturn addToScene;",
+        "const _sceneChangeHook = undefined;\n" +
+            ["joinMaterialGroup", "_notifySceneChange", "addToScene"]
+                .map((name) =>
+                    context
+                        .functionDeclaration(module, name)
+                        .declaration.getText()
+                        .replace("export ", ""),
+                )
+                .join("\n") +
+            "\nreturn addToScene;",
         module,
     );
     const attach = createJavaScriptFunction(

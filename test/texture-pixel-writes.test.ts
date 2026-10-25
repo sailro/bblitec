@@ -142,9 +142,9 @@ const expectError = (code: string, write: () => void): void => {
     try {write();} catch (error) {if ((error as Error).message !== code) throw error; caught = true;}
     if (!caught) throw new Error("expected " + code);
 };
-expectError("#826", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(64), 0, 0, 0, 1));
-expectError("#827", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(8), 0, 0, 2, 2));
-expectError("#827", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(60)));
+expectError("#832", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(64), 0, 0, 0, 1));
+expectError("#833", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(8), 0, 0, 2, 2));
+expectError("#833", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(60)));
 expectError("GPU texture write exceeds its destination texture.", () => updateTexture2DFromPixels(engine, texture, new Uint8Array(8), 3, 0, 2, 1));
 `);
     const factory = new FactoryLowerer(
@@ -285,18 +285,18 @@ int main() {
 
     // The pin's validation, then WebGPU's copy rules, and nothing written.
     const auto version = texture.rgba.version();
-    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 0.0, 1.0); }, "#826");
+    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 0.0, 1.0); }, "#832");
     rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 1.0, std::numeric_limits<double>::quiet_NaN()); }, "GPU extent is not a supported WebGPU size.");
-    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(7), 0.0, 0.0, 2.0, 1.0); }, "#827");
+    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(7), 0.0, 0.0, 2.0, 1.0); }, "#833");
     rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(8), 3.0, 0.0, 2.0, 1.0); }, "GPU texture write exceeds its destination texture.");
-    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(4), 0.0, 2.0, 1.0, 2.0); }, "#827");
+    rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(4), 0.0, 2.0, 1.0, 2.0); }, "#833");
     rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(32), 0.0, 2.0, 1.0, 2.0); }, "GPU texture write exceeds its destination texture.");
     rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(8), 0.5, 0.0, 2.0, 1.0); }, "GPU extent is not a supported WebGPU size.");
     rejects([&] { update_texture_2d_from_pixels(engine, texture, js::U8Array(8), -1.0, 0.0, 2.0, 1.0); }, "GPU extent is not a supported WebGPU size.");
     rejects([&] { update_texture_2d_from_pixels(engine, StoredTexture{FileTexture{}}, js::U8Array(48), std::nullopt, std::nullopt, std::nullopt, std::nullopt); },
         "updateTexture2DFromPixels writes createTexture2DFromPixels textures; loadTexture2D, solid and render textures are not represented.");
     assert(texture.rgba.version() == version);
-    rejects([&] { changed::update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 1.0, 1.0); }, "#826");
+    rejects([&] { changed::update_texture_2d_from_pixels(engine, texture, js::U8Array(64), 0.0, 0.0, 1.0, 1.0); }, "#832");
 
     // Device recovery: a rebuilt device uploads the binding's bytes, which
     // are the latest texels, then everything written since its version.

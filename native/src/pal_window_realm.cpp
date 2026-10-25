@@ -130,7 +130,7 @@ struct ListenerNames {
 };
 struct PageFullscreen;
 /** Window-thread work a realm requests (`submit_window_request`). */
-using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&)>;
+using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&, Engine&)>;
 /** One request on the Window thread, then its failure (empty on success) back to the realm. */
 struct WindowRequest final : CompletionEvent {
     WindowWork perform;
@@ -140,6 +140,7 @@ struct WindowRequest final : CompletionEvent {
 };
 /** The display ended page fullscreen itself: Escape, or the system left window fullscreen. */
 struct WindowFullscreenExit final : ExternalEvent {};
+struct WindowPointerLockExit final : ExternalEvent {};
 /** An alert or confirmation the realm waits on while the Window thread shows it. */
 struct MessageBoxRequest {
     bool confirm = false;
@@ -433,8 +434,8 @@ struct PageFullscreen {
 };
 
 /** Performs the realm's Window requests in order and posts each one's completion. */
-void serve_window_requests(WindowServices& services, SDL_Window* window,
-                           PageFullscreen& fullscreen) {
+void serve_window_requests(WindowServices& services, SDL_Window* window, PageFullscreen& fullscreen,
+                           Engine& display) {
     std::vector<std::unique_ptr<WindowRequest>> requests;
     {
         std::lock_guard lock(services.mutex);
@@ -442,7 +443,7 @@ void serve_window_requests(WindowServices& services, SDL_Window* window,
     }
     for (auto& request : requests) {
         // The work and what it captured end on this thread, before the completion is posted.
-        request->error = std::exchange(request->perform, {})(window, fullscreen);
+        request->error = std::exchange(request->perform, {})(window, fullscreen, display);
         services.inbox->post(std::move(request));
     }
 }
@@ -569,6 +570,7 @@ struct WindowDocument {
     /** Fullscreen elements, the document's fullscreen element last. */
     std::vector<UiElementHandle> fullscreen;
     PlatformEventListeners<void()> fullscreen_listeners;
+    std::weak_ptr<Engine> pointer_lock_owner;
     ApplicationErrors* errors = nullptr;
     const bool screen_identity = true;
 };
@@ -844,6 +846,62 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
 }
 } // namespace
 
+void request_window_pointer_lock(std::weak_ptr<Engine> owner, UiElementHandle canvas, bool locked);
+
+namespace {
+struct WindowSurface {
+    UiElementHandle canvas;
+    std::shared_ptr<OffscreenRun> run;
+    std::shared_ptr<bool> disposed;
+};
+
+void update_window_surfaces(Engine& engine, std::vector<WindowSurface>& surfaces) {
+    if (surfaces.empty()) {
+        if (engine.resize_surface)
+            engine.resize_surface(engine);
+        engine.offscreen_run->set_views(engine.offscreen_run->extent(), {});
+        return;
+    }
+    update_window_document();
+    if (engine.resize_surface)
+        engine.resize_surface(engine);
+    std::erase_if(surfaces, [](const auto& surface) {
+        if (!*surface.disposed)
+            return false;
+        surface.run->set_presenting(false);
+        return true;
+    });
+    engine.surface_panes.clear();
+    const auto primary = engine.offscreen_run->extent();
+    if (surfaces.empty()) {
+        engine.offscreen_run->set_views(primary, {});
+        return;
+    }
+    engine.surface_panes.emplace(invalid_handle,
+                                 PixelViewport{0, 0, static_cast<std::int32_t>(primary.width),
+                                               static_cast<std::int32_t>(primary.height)});
+    std::vector<OffscreenRun::View> views{{{}, 0, 0, primary.width, primary.height}};
+    auto width = primary.width, height = primary.height;
+    for (const auto& surface : surfaces) {
+        if (!engine.resize_surface_canvas)
+            throw InvalidCanvasState("Additional canvas has no source surface resize function.");
+        const auto& doc = current_document();
+        const auto& box = handle_at(doc.layout->elements, surface.canvas).rectangle;
+        engine.resize_surface_canvas(*surface.run, box.width / doc.layout->pixel_ratio,
+                                     box.height / doc.layout->pixel_ratio);
+        const auto extent = surface.run->extent();
+        engine.surface_panes.emplace(surface.canvas.value,
+                                     PixelViewport{static_cast<std::int32_t>(width), 0,
+                                                   static_cast<std::int32_t>(extent.width),
+                                                   static_cast<std::int32_t>(extent.height)});
+        views.push_back({surface.run, width, 0, extent.width, extent.height});
+        width += extent.width;
+        height = std::max(height, extent.height);
+    }
+    engine.offscreen_run->set_views({width, height}, std::move(views));
+}
+} // namespace
+
 void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
                         const std::shared_ptr<Engine>& engine) {
     auto& doc = current_document();
@@ -860,6 +918,30 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas,
     engine->canvas_client_width = box.width;
     engine->canvas_client_height = box.height;
     engine->dom_canvas = true;
+    auto surfaces = std::make_shared<std::vector<WindowSurface>>();
+    engine->attach_surface = [surfaces, owner = std::weak_ptr<Engine>(engine)](
+                                 UiElementHandle element, std::shared_ptr<bool> disposed) {
+        const auto target = owner.lock();
+        if (!target)
+            throw InvalidCanvasState("Additional surface has no owning engine.");
+        auto run = window_canvas(element)->rendering_context();
+        if (run == target->offscreen_run ||
+            std::any_of(surfaces->begin(), surfaces->end(), [&](const auto& surface) {
+                return !*surface.disposed && surface.run == run;
+            }))
+            throw InvalidCanvasState("Canvas already belongs to an engine surface.");
+        run->set_presenting(true);
+        surfaces->push_back({element, std::move(run), std::move(disposed)});
+        if (!target->update_surface_layout)
+            target->update_surface_layout = [surfaces](Engine& target) {
+                update_window_surfaces(target, *surfaces);
+            };
+        update_window_surfaces(*target, *surfaces);
+    };
+    engine->request_platform_pointer_lock = [owner = std::weak_ptr<Engine>(engine),
+                                             element = UiElementHandle{entry->first}](bool locked) {
+        request_window_pointer_lock(owner, element, locked);
+    };
 }
 
 Engine& window_document_engine() { return current_document().engine; }
@@ -923,7 +1005,7 @@ js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     js::Promise<js::PromiseVoid> result;
     try {
         submit_window_request(
-            [text = std::move(text)](SDL_Window*, PageFullscreen&) {
+            [text = std::move(text)](SDL_Window*, PageFullscreen&, Engine&) {
                 return SDL_SetClipboardText(text.c_str()) ? std::string() : SDL_GetError();
             },
             [result](const std::string& error) {
@@ -937,6 +1019,39 @@ js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     }
     return result;
 }
+void request_window_pointer_lock(std::weak_ptr<Engine> owner, UiElementHandle canvas, bool locked) {
+    submit_window_request(
+        [canvas, locked](SDL_Window* window, PageFullscreen&, Engine& display) {
+            display.pointer_lock_requested = locked;
+            sync_pointer_lock(window, display);
+            if (display.pointer_locked != locked)
+                return std::string(SDL_GetError());
+            display.pointer_lock_canvas = locked ? std::optional{canvas} : std::nullopt;
+            return std::string();
+        },
+        [owner, locked](const std::string& error) {
+            const auto engine = owner.lock();
+            if (!engine)
+                return;
+            if (!error.empty()) {
+                engine->pointer_lock_requested = engine->pointer_locked;
+                throw std::runtime_error("Pointer lock request failed: " + error);
+            }
+            auto& doc = current_document();
+            if (const auto previous = doc.pointer_lock_owner.lock();
+                previous && previous != engine) {
+                previous->pointer_lock_requested = previous->pointer_locked = false;
+                dispatch_platform_event(EventLoop::current(),
+                                        previous->pointer_lock_change_callbacks);
+            }
+            doc.pointer_lock_owner = locked ? owner : std::weak_ptr<Engine>{};
+            if (engine->pointer_locked == locked)
+                return;
+            engine->pointer_locked = locked;
+            dispatch_platform_event(EventLoop::current(), engine->pointer_lock_change_callbacks);
+        });
+}
+
 bool window_message_box(bool confirm, std::string message) {
     auto& host = *current_document().host;
     auto request = std::make_shared<MessageBoxRequest>();
@@ -978,7 +1093,7 @@ void exit_page_fullscreen() {
 void request_window_fullscreen(std::optional<bool> fullscreen,
                                std::function<void(const std::string&)> settle) {
     submit_window_request(
-        [fullscreen](SDL_Window* window, PageFullscreen& page) {
+        [fullscreen](SDL_Window* window, PageFullscreen& page, Engine&) {
             if (!fullscreen)
                 return std::string();
             return *fullscreen ? page.enter(window) : page.leave(window);
@@ -1510,6 +1625,16 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             exit_page_fullscreen();
                             return;
                         }
+                        if (dynamic_cast<WindowPointerLockExit*>(packet.get())) {
+                            auto& owner = current_document().pointer_lock_owner;
+                            if (const auto engine = owner.lock()) {
+                                engine->pointer_lock_requested = engine->pointer_locked = false;
+                                dispatch_platform_event(EventLoop::current(),
+                                                        engine->pointer_lock_change_callbacks);
+                            }
+                            owner.reset();
+                            return;
+                        }
                         // Acknowledge document input however its dispatch ends,
                         // so the display can finish any pending input wait.
                         const auto handled = js::finally([&] {
@@ -1759,7 +1884,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             while (running && !finished) {
                 co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
-                serve_window_requests(*services, window.get(), page_fullscreen);
+                serve_window_requests(*services, window.get(), page_fullscreen, display);
                 serve_message_box(*services, window.get());
                 SDL_Event event;
                 for (;;) {
@@ -1775,6 +1900,14 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         continue;
                     if (end_page_fullscreen(*services, window.get(), page_fullscreen, event))
                         continue;
+                    if (display.pointer_locked && ((event.type == SDL_EVENT_KEY_DOWN &&
+                                                    event.key.scancode == SDL_SCANCODE_ESCAPE) ||
+                                                   event.type == SDL_EVENT_WINDOW_FOCUS_LOST)) {
+                        display.pointer_lock_requested = false;
+                        sync_pointer_lock(window.get(), display);
+                        display.pointer_lock_canvas.reset();
+                        services->inbox->post(std::make_unique<WindowPointerLockExit>());
+                    }
                     end_press_mouse_capture(event);
                     // Mouse motion has no cancelable native default. Keep its
                     // source callbacks ordered in the realm mailbox without
@@ -1892,7 +2025,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     const double y = move    ? event.motion.y
                                      : wheel ? event.wheel.mouse_y
                                              : event.button.y;
-                    auto target = pointer_capture;
+                    auto target = display.pointer_lock_canvas.value_or(pointer_capture);
                     if (target.value == invalid_handle)
                         target = canvas_at(x * layout->pixel_ratio, y * layout->pixel_ratio);
                     if (target.value == invalid_handle || target.value >= layout->elements.size())
@@ -1981,7 +2114,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         !services->capture_failure.empty())
                         throw std::runtime_error("Source canvas initialization failed: " +
                                                  services->capture_failure);
+                    std::size_t presenting = 0;
                     for (const auto& [index, canvas] : services->canvases) {
+                        if (!canvas->surface->presenting()) {
+                            latest.erase(index);
+                            continue;
+                        }
+                        ++presenting;
                         if (auto frame = canvas->surface->take_frame())
                             latest.insert_or_assign(index, std::move(*frame));
                         if (const auto found = latest.find(index);
@@ -1989,8 +2128,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             frames.push_back({UiElementHandle{index}, found->second});
                         }
                     }
-                    canvases_ready =
-                        services->completed > 0 && frames.size() == services->canvases.size();
+                    canvases_ready = services->completed > 0 && frames.size() == presenting;
                 }
                 services->wake.notify_all();
                 const bool source_ready =
@@ -2050,8 +2188,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         screenshot_path = checkpoint_ready ? next_checkpoint->path
                                                            : frame_options.screenshot_path;
                     const double present_started = cpu_profile ? monotonic_milliseconds() : 0;
-                    did_present = presenter->present(
-                        frames, canvas_capture ? *canvas_capture : recorded, screenshot_path);
+                    const auto& visible = canvas_capture ? *canvas_capture : recorded;
+                    const auto views = window_canvas_views(visible, frames);
+                    did_present =
+                        presenter->present(frames, views ? *views : visible, screenshot_path);
                     if (cpu_profile)
                         present_ms = monotonic_milliseconds() - present_started;
                     if (did_present && capture && checkpoint_ready) {
@@ -2088,10 +2228,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                               << std::chrono::duration<double, std::milli>(
                                      EventLoop::Clock::now().time_since_epoch())
                                      .count();
-                        for (const auto& canvas : frames)
+                        for (const auto& canvas : frames) {
+                            const auto& box = handle_at(layout->elements, canvas.element).rectangle;
                             trace << " canvas=" << canvas.element.value << ':'
                                   << canvas.frame.sequence << '@' << canvas.frame.width << 'x'
-                                  << canvas.frame.height;
+                                  << canvas.frame.height << '[' << box.left << ',' << box.top << ','
+                                  << box.width << ',' << box.height << ']';
+                        }
                         trace << '\n';
                         std::cerr << trace.str();
                     }

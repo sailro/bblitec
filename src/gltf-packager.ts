@@ -6,6 +6,7 @@ import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
+import { pinnedGltfMaterialCore } from "./pinned-gltf-material-core.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { writeGlb } from "./glb-container.js";
 import {
@@ -248,6 +249,7 @@ async function basisuImageColorSpaces(
     const feature = await loadPinnedBasisuFeature();
     await feature.preMesh(probe, markers, "");
     const reachedTextures = new Set<number>();
+    const assembleCore = pinnedGltfMaterialCore();
     for (const [index, material] of asRecords(probe.materials).entries()) {
         const stripped = textureInfos(authored[index]).filter(
             ({ path }) => valueAt(material, path) === undefined,
@@ -256,7 +258,7 @@ async function basisuImageColorSpaces(
         let out: JsonRecord | null;
         try {
             out = await feature.applyMaterial(
-                { _rawMatDef: material },
+                assembleCore(material, () => undefined),
                 { _engine: observation },
             );
         } catch (error) {

@@ -62,6 +62,7 @@ struct CsmStaticCacheState {
     std::shared_ptr<void> refit;
     // renderCsmShadowMapCached
     double last_camera_version = -1.0;
+    const CameraRecord* last_camera = nullptr;
     double last_camera_aspect = -1.0;
     double cached_content_version = -1.0;
     /** `_pendingCascades`: the last refit's fit, published cascade by cascade. */

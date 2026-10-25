@@ -87,5 +87,29 @@ int main() {
         std::this_thread::yield();
     live.close();
     producer.join();
+    // Several canvas views lease one image, retain their own backing sizes,
+    // and join the primary run's frame counter when created mid-run.
+    OffscreenSurface first(20, 10), second(12, 8);
+    OffscreenRun run(first, device);
+    auto auxiliary = std::make_shared<OffscreenRun>(second, device);
+    run.publish(20, 10, std::make_shared<Image>());
+    assert(first.take_frame()->sequence == 1);
+    run.set_views({32, 10}, {{nullptr, 0, 0, 20, 10}, {auxiliary, 20, 0, 12, 8}});
+    assert(run.extent().width == 20 && run.render_extent().width == 32);
+    auto image = std::make_shared<Image>();
+    run.publish(32, 10, image);
+    auto left = first.take_frame(), right = second.take_frame();
+    assert(left->sequence == 2 && right->sequence == 2);
+    assert(left->image == image && right->image == image);
+    assert(left->width == 20 && right->width == 12 && right->height == 8);
+    assert((right->uv == std::array<float, 4>{0.625f, 0, 0.375f, 0.8f}));
+    run.publish(32, 10, image);
+    run.discard_pending();
+    assert(!first.take_frame() && !second.take_frame());
+    auxiliary->set_presenting(false);
+    run.set_views({20, 10}, {});
+    assert(!second.presenting() && run.render_extent().width == 20);
+    run.publish(20, 10, image);
+    assert(first.take_frame()->sequence == 4);
     std::cout << "offscreen ownership, bounded leases, resize and close passed\n";
 }

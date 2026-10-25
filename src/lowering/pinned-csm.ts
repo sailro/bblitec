@@ -434,7 +434,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
 
 interface Parameter {
     name: string;
-    annotation: string;
+    annotation: string | undefined;
     cpp: string;
     shape: Shape;
 }
@@ -463,7 +463,9 @@ function bindParameters(
         if (
             !ts.isIdentifier(parameter.name) ||
             parameter.name.text !== expected.name ||
-            !sameSource(parameter.type, expected.annotation)
+            (expected.annotation === undefined
+                ? parameter.type !== undefined
+                : !sameSource(parameter.type, expected.annotation))
         ) {
             context.contractError(
                 parameter,
@@ -1035,6 +1037,65 @@ ${lowerer.statement(statement, "    ").join("\n")}
 }`;
 }
 
+function lowerSliceCorners(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        modulePath,
+        "_csmSliceCornersInto",
+    );
+    const scope = numericScope();
+    scope.calls = new Map([
+        ...scope.calls,
+        [
+            "transformCoordInto",
+            (args: readonly string[]) =>
+                `csm_transform_coord_into(${args.join(", ")})`,
+        ],
+    ]);
+    const lowerer = new CsmNumericAdapter(context, file, scope);
+    const corners = declaration.parameters[0]!.name;
+    if (!ts.isIdentifier(corners))
+        context.contractError(corners, "Expected the slice corner parameter.");
+    bindParameters(context, lowerer, declaration, [
+        {
+            name: corners.text,
+            annotation: "number[][]",
+            cpp: "corners",
+            shape: cornersShape,
+        },
+        {
+            name: "invViewProj",
+            annotation: "ArrayLike<number>",
+            cpp: "inv_view_proj",
+            shape: f64,
+        },
+        {
+            name: "nearSplit",
+            annotation: "number",
+            cpp: "near_split",
+            shape: number,
+        },
+        {
+            name: "farSplit",
+            annotation: "number",
+            cpp: "far_split",
+            shape: number,
+        },
+    ]);
+    const ndc = constant(context, "FRUSTUM_NDC");
+    if (!ts.isIdentifier(ndc.declaration.name))
+        context.contractError(ndc.declaration, "Expected the NDC binding.");
+    lowerer.bind(ndc.declaration.name, {
+        shape: cornersShape,
+        cpp: "csm_frustum_ndc",
+    });
+    return `// ${context.provenance(modulePath, "_csmSliceCornersInto")}
+template <typename Matrix>
+inline void csm_slice_corners_into(std::array<std::array<double, 3>, 8>& corners,
+    const Matrix& inv_view_proj, double near_split, double far_split) {
+${declaration.body!.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
+}`;
+}
+
 function lowerCascades(context: LoweringContext): string {
     const { file, declaration } = context.functionDeclaration(
         modulePath,
@@ -1053,6 +1114,7 @@ function lowerCascades(context: LoweringContext): string {
     for (const [pinned, cpp] of [
         ["_castersWorldAabbInto", "csm_casters_world_aabb_into"],
         ["transformCoordInto", "csm_transform_coord_into"],
+        ["_csmSliceCornersInto", "csm_slice_corners_into"],
         ["buildLightViewMatrixInto", "build_light_view_matrix_into"],
         ["invertMat4ToRefOrIdentity", "mat4_invert_to_ref_or_identity"],
         ["orthoViewInto", "ortho_view_into"],
@@ -1112,17 +1174,15 @@ function lowerCascades(context: LoweringContext): string {
             cpp: "scratch",
             shape: scratchShape,
         },
+        {
+            name: "radiusScale",
+            annotation: undefined,
+            cpp: "radius_scale",
+            shape: number,
+        },
     ]);
-    const ndc = constant(context, "FRUSTUM_NDC");
-    if (!ts.isIdentifier(ndc.declaration.name))
-        return context.contractError(
-            ndc.declaration,
-            "Expected the NDC binding.",
-        );
-    lowerer.bind(ndc.declaration.name, {
-        shape: cornersShape,
-        cpp: "csm_frustum_ndc",
-    });
+    const radiusScale = declaration.parameters.at(-1)!.initializer!;
+    const radiusDefault = context.numericValue(radiusScale, file);
     scope.returnValue = (expression) =>
         expression
             ? lowerer.expression(expression)
@@ -1136,7 +1196,7 @@ inline CsmCascades& csm_compute_cascades(
     double effective_aspect, const Camera& camera,
     const Light& light, const CsmConfig& cfg,
     const std::vector<ShadowCaster>& casters, CsmCascadeScratch& scratch,
-    const Project project) {
+    const Project project, double radius_scale = ${context.doubleLiteral(radiusDefault)}) {
 ${declaration.body!.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
 }`;
 }
@@ -1305,6 +1365,8 @@ ${lowerThinBounds(context)}
 ${lowerInstancePredicate(context)}
 
 ${lowerCasterBounds(context)}
+
+${lowerSliceCorners(context)}
 
 ${lowerCascades(context)}
 

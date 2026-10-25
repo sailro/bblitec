@@ -327,7 +327,7 @@ test(
         }).source;
         writeFileSync(
             join(output, "lifecycle.hpp"),
-            `namespace bbl {\n` +
+            `#include <bblite/js_aggregate_error.hpp>\nnamespace bbl {\n` +
                 [
                     lowerMeshMaterialSetter(context),
                     cppFunction(solid, "SolidTexture create_solid_texture("),
@@ -342,6 +342,8 @@ test(
                         "void register_scene(",
                         "void unregister_scene(",
                         "void retire_scene_shadow_states(",
+                        "void throw_scene_disposal_failures(",
+                        "template<class Cleanup>\nvoid dispose_scene_callbacks(",
                         "void dispose_scene(",
                     ].map((signature) => cppFunction(scene, signature)),
                 ].join("\n") +

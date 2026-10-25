@@ -74,6 +74,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.
+- Window pointer lock applies relative mouse mode and cursor visibility on the display thread; Escape and focus
+  loss release it and notify the owning engine.
 - UI handles input before cameras; `preventDefault` suppresses camera propagation. Only the primary touch emits mouse events.
 - `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
   NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); writing 0 is erased, other

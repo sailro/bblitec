@@ -111,7 +111,7 @@ export function lowerGltfMaterialObjectFunction(
         bindings.set(sourceName, gltfValue(sourceName));
         return sourceName === contextParameter
             ? `const ${target.contextType ?? "GltfPbrContext"}& ${sourceName}`
-            : `GltfPbrValue ${sourceName}`;
+            : `GltfPbrValue ${sourceName}${parameter.questionToken ? " = {}" : ""}`;
     });
     const calls = new Map<string, (args: readonly string[]) => string>();
     let temporary = 0;

@@ -78,6 +78,7 @@ test("TAA lowered lifecycle observes pinned pass order, failures and rebuild sta
         _height: 32,
     };
     const sourceTask = {
+        _config: { cam: null as Camera | null },
         scene: { camera: null as Camera | null },
         _suData: new Float32Array(32),
         _sceneUBO: {},
@@ -134,6 +135,8 @@ test("TAA lowered lifecycle observes pinned pass order, failures and rebuild sta
         { camera: 0, version: 4, factor: 0.125, disable: true }, // first update
         { camera: 0, version: 4, factor: 0.375, disable: true }, // live public factor
         { camera: 1, version: 4, factor: 0.25, disable: true }, // different identity, equal pin key
+        { camera: 0, version: 4, factor: 0.25, disable: true, override: true },
+        { camera: 0, version: 4, factor: 0.25, disable: true, override: true },
         { camera: 1, version: 5, factor: 0.125, disable: true }, // camera reset
         { camera: 1, version: 6, factor: 0.375, disable: false },
         { camera: -1, version: 0, factor: 0.125, disable: true },
@@ -151,7 +154,10 @@ test("TAA lowered lifecycle observes pinned pass order, failures and rebuild sta
     ];
     const inputs: number[][] = [];
     for (const step of steps) {
-        sourceTask.scene.camera = cameras[step.camera] ?? null;
+        const override = "override" in step && step.override;
+        sourceTask.scene.camera =
+            cameras[override ? 1 - step.camera : step.camera] ?? null;
+        sourceTask._config.cam = override ? cameras[step.camera]! : null;
         worldVersion = step.version;
         task.factor = step.factor;
         task.disableOnCameraMove = step.disable;

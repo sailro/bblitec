@@ -3,7 +3,11 @@
 // browser's main and worker requestAnimationFrame rates. A measurement:
 // the rates are reported, and only their presence is asserted.
 import assert from "node:assert/strict";
-import { observedStep, requireObservations } from "./support.mjs";
+import {
+    observedStep,
+    requireObservations,
+    windowSamples,
+} from "./support.mjs";
 
 /**
  * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
@@ -31,22 +35,12 @@ export function check(context) {
     for (const backend of context.backends) {
         const run = context.results[backend]?.run;
         assert(run, `${backend}: missing phase run`);
-        const rows = [
-            ...run.log.matchAll(
-                /window frame=(\d+) now-ms=([\d.]+)((?: canvas=\d+:\d+@\d+x\d+)+)/g,
+        const rows = windowSamples(run.log).map((sample) => ({
+            ...sample,
+            canvases: new Map(
+                sample.canvases.map((canvas) => [canvas.id, canvas.sequence]),
             ),
-        ].map(([, frame, time, canvases]) => {
-            assert(canvases !== undefined);
-            return {
-                frame: Number(frame),
-                time: Number(time),
-                canvases: new Map(
-                    [...canvases.matchAll(/canvas=(\d+):(\d+)@/g)].map(
-                        (canvas) => [Number(canvas[1]), Number(canvas[2])],
-                    ),
-                ),
-            };
-        });
+        }));
         const first = rows.find((row) => row.frame >= 120);
         const last = rows.at(-1);
         assert(

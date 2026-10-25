@@ -7,6 +7,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { lowerFrameGraphTaskActions } from "../src/lowering/frame-graph-task-actions.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
+import { lowerRenderTargetDisposal } from "../src/lowering/render-target-disposal.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { doctoredContext } from "./doctored-store.js";
@@ -261,6 +262,7 @@ if(order!==2)throw new Error("argument calls");`,
 namespace bbl {
 ${["FrameTaskRecord& task_record(", "TaskHandle append_task(", "TaskHandle create_render_task(", "TaskHandle create_copy_to_texture_task(", "void add_task(Scene&"].map((name) => cppFunction(geometry, name)).join("\n")}
 ${["RenderTargetHandle create_render_target(", "RenderTargetHandle swapchain_render_target(", "RenderTextureRef render_target_texture("].map((name) => cppFunction(targets, name)).join("\n")}
+${lowerRenderTargetDisposal(context, false)}
 ${cppFunction(scene, "Scene create_scene_context(Engine&")}
 ${lowerFrameGraphTaskActions(context)}
 Engine create_engine(EngineOptions options) {Engine engine;engine.options=options;return engine;}
@@ -279,6 +281,25 @@ int main() {
     assert(bbl::handle_at(engine.frame_tasks, scene.tasks[0]).render.name == "default-render-task");
     bblscene::bbl_ensure_default_render_task(scene);
     assert(scene.tasks.size() == 1 && scene.frame_passes().size() == 3);
+    const auto owned_count = engine.render_targets.size();
+    const auto version = engine.render_targets_version;
+    const auto user_target = bbl::create_render_target(engine, {});
+    // Disposing the default graph retires only its readable attachments.
+    for (const auto& dispose : scene.disposables) dispose();
+    std::size_t retired = 0;
+    for (std::size_t index = 0; index < owned_count; ++index) {
+        const auto& target = engine.render_targets[index];
+        assert(target.retired != target.swapchain);
+        retired += target.retired;
+    }
+    assert(retired == 2 && engine.render_targets_version == version + 2);
+    assert(!bbl::handle_at(engine.render_targets, user_target).retired);
+    for (const auto& dispose : scene.disposables) dispose();
+    assert(engine.render_targets_version == version + 2);
+    auto replacement = bbl::create_scene_context(engine);
+    bblscene::bbl_ensure_default_render_task(replacement);
+    const auto replacement_target = bbl::handle_at(engine.frame_tasks, replacement.tasks[0]).render.target;
+    assert(!bbl::handle_at(engine.render_targets, replacement_target).retired);
     auto disabled = bbl::configure_scene_render_defaults(bbl::create_scene_context(engine), false, 1);
     bblscene::bbl_ensure_default_render_task(disabled);
     assert(!disabled.has_frame_passes());

@@ -613,14 +613,22 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
         };
         return variant_material ? gltf_variant_upload_image(image, srgb, upload) : gltf_extension_upload_image(image, srgb, upload);
     };
-    context.default_textures = [&](const GltfPbrValue& value) { return texture_values(gltf_default_pbr_textures(gltf_pbr_core_storage(value), texture_cache, sampler_context), false); };
-    context.sampled_textures = [&](const GltfPbrValue& value) { return texture_values(gltf_sampled_pbr_textures(gltf_pbr_core_storage(value), texture_cache, sampler_context), false); };
-    context.extended_textures = [&](const GltfPbrValue& value) {
+    const auto supplied_textures = [](const GltfPbrValue& layers) {
+        GltfPbrTextures supplied;
+        if (!layers.nullish()) {
+            if (const auto base = layers.get("baseColorTexture"); base.truthy()) supplied.baseColorTexture = base.texture();
+            if (const auto orm = layers.get("ormTexture"); orm.truthy()) supplied.ormTexture = orm.texture();
+        }
+        return supplied;
+    };
+    context.default_textures = [&](const GltfPbrValue& value, const GltfPbrValue& layers) { return texture_values(gltf_default_pbr_textures(gltf_pbr_core_storage(value), supplied_textures(layers), texture_cache, sampler_context), false); };
+    context.sampled_textures = [&](const GltfPbrValue& value, const GltfPbrValue& layers) { return texture_values(gltf_sampled_pbr_textures(gltf_pbr_core_storage(value), supplied_textures(layers), texture_cache, sampler_context), false); };
+    context.extended_textures = [&](const GltfPbrValue& value, const GltfPbrValue& layers) {
         std::function<GltfMaterialTexture(GltfMaterialImage, bool)> upload;
         if (variant_material) upload = [&](GltfMaterialImage bitmap, bool encoded) {
             return gltf_pbr_variant_texture(GltfPbrValue{std::move(bitmap)}, GltfPbrValue{encoded}, context).texture();
         };
-        return texture_values(gltf_default_pbr_textures_ext(gltf_pbr_core_storage(value), !variant_material && sampled_material, texture_cache, sampler_context, upload), true);
+        return texture_values(gltf_default_pbr_textures_ext(gltf_pbr_core_storage(value), supplied_textures(layers), !variant_material && sampled_material, texture_cache, sampler_context, upload), true);
     };
     context.texture = [&](const GltfPbrValue& info, bool srgb) {
         const auto upload = [&](GltfMaterialImage image, bool encoded) {

@@ -8,41 +8,13 @@
 // (more than 80 frames after frame 800) and the resize reaches both
 // engines (700x279 canvases).
 import assert from "node:assert/strict";
-import { loadPng } from "./support.mjs";
+import { loadPng, windowSamples } from "./support.mjs";
 
 /**
  * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
  */
 
-/**
- * @typedef {{ id: number, sequence: number, width: number, height: number }} CanvasSample
- * @typedef {{ frame: number, time: number, canvases: CanvasSample[] }} FrameSample
- */
-
-/**
- * @param {string} log
- * @returns {FrameSample[]}
- */
-const samples = (log) =>
-    [
-        ...log.matchAll(
-            /window frame=(\d+) now-ms=([\d.]+)((?: canvas=\d+:\d+@\d+x\d+)+)/g,
-        ),
-    ].map(([, frame, time, canvases]) => {
-        assert(canvases !== undefined);
-        return {
-            frame: Number(frame),
-            time: Number(time),
-            canvases: [...canvases.matchAll(/canvas=(\d+):(\d+)@(\d+)x(\d+)/g)]
-                .map((canvas) => ({
-                    id: Number(canvas[1]),
-                    sequence: Number(canvas[2]),
-                    width: Number(canvas[3]),
-                    height: Number(canvas[4]),
-                }))
-                .sort((left, right) => left.id - right.id),
-        };
-    });
+/** @import { FrameSample } from "./support.mjs" */
 
 /**
  * The main and worker canvas sequences of one frame sample.
@@ -62,7 +34,7 @@ export function check(context) {
     for (const backend of context.backends) {
         for (const phase of Object.values(context.results[backend] ?? {})) {
             const where = `${backend}/${phase.id}`;
-            const frames = samples(phase.log);
+            const frames = windowSamples(phase.log);
             assert(
                 frames.length > 100 &&
                     frames.every((frame) => frame.canvases.length === 2),

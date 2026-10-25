@@ -1,0 +1,16 @@
+{
+  "scene": "minecraft",
+  "notes": "A left click captures the pointer, relative movement turns the camera, and Escape releases capture.",
+  "phases": [
+    { "id": "idle", "frame": 60 },
+    { "id": "look", "frame": 60, "tape": ["-*20", "UiClick@640:360", "-*5", "UiMove@660:360", "UiMove@680:360", "UiMove@700:360"] },
+    { "id": "release", "frame": 60, "tape": ["-*20", "UiClick@640:360", "-*5", "UiKey@Escape"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "look", "pattern": "pointer-lock phase=sync-applied requested=1 locked=1 relative=1 cursor-visible=0", "count": 1 },
+    { "kind": "log-match", "phase": "release", "pattern": "pointer-lock phase=sync-applied requested=0 locked=0 relative=0 cursor-visible=1", "count": 1 },
+    { "kind": "log-match", "phase": "*", "pattern": "pointer-lock phase=sync-rejected", "absent": true },
+    { "kind": "capture-differs", "phase": "look", "vs": "idle", "path": "camera" },
+    { "kind": "image-mad", "phase": "look", "vs": "idle", "min": 0.1 }
+  ]
+}

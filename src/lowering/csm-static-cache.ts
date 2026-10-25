@@ -246,6 +246,7 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
     for (const shape of [
         "createCsmRefitGate<Mesh>({ refitAngle: cache._refitAngle, refitMaxIntervalMs: cache._refitMaxIntervalMs })",
         "createCsmStaticRefitScheduler(cascadeCount, cache._staticCascadesPerFrame ?? 0)",
+        "cache._cascadeCoveragePadding ? createCoverageState(cache._cascadeCoveragePadding) : null",
     ])
         context.expectShapeCount(ensure, shape, "CSM cached task state");
     const render = context.functionDeclaration(
@@ -254,13 +255,14 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
     ).declaration;
     for (const shape of [
         "cached._gate.syncCasters(cached._casterMeshes)",
-        "camVersion !== cached._lastCamVersion || camAspect !== cached._lastCamAspect",
+        "camera !== cached._lastCamera",
+        "swapped || camVersion !== cached._lastCamVersion || camAspect !== cached._lastCamAspect",
         "cached._scene._renderableVersion !== cached._cachedContentVersion",
         "lightWorld[0]! * direction.x + lightWorld[4]! * direction.y + lightWorld[8]! * direction.z",
         "lightWorld[1]! * direction.x + lightWorld[5]! * direction.y + lightWorld[9]! * direction.z",
         "lightWorld[2]! * direction.x + lightWorld[6]! * direction.y + lightWorld[10]! * direction.z",
         "cfg._forceRefreshEveryFrame || contentChanged",
-        "!decision.renderDynamic && !hadPending",
+        "!decision.renderDynamic && !hadPending && !missed",
         "scheduler.arm(cached._gate._lastRefitDriftOnly() && !scheduler.pending())",
         "scheduler.pending() ? scheduler.take() : null",
         "cached._gate._lastDynamicChanged() || cascades?.length === cfg._numCascades",
@@ -280,7 +282,9 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
     for (const shape of [
         "updatedCascades.length === cfg._numCascades",
         "_writeCsmUbo(state._uboData, cascades, cfg)",
-        "state._uboData.set(transform, cascade * 16)",
+        "state._uboData.set(cascades._transforms[cascade]!, cascade * 16)",
+        "transform.set(cascades._transforms[cascade]!)",
+        "view.set(cascades._views[cascade]!)",
         "_biasViewProjection(transform, clipBias)",
     ])
         context.expectShapeCount(publish, shape, "CSM cascade publication");
@@ -366,7 +370,7 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
     CsmRefitRuntime* refit = csm_refit_runtime(cache);
     if (!camera || !refit) return false;
     const bool camera_changed =
-        camera_version != cache.last_camera_version || camera_aspect != cache.last_camera_aspect;
+        camera != cache.last_camera || camera_version != cache.last_camera_version || camera_aspect != cache.last_camera_aspect;
     const double content_version = static_cast<double>(scene.state->renderable_version);
     const bool content_changed = content_version != cache.cached_content_version;
     csm_refit_sync(engine, *refit, generator);
@@ -410,6 +414,7 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
             csm_bias_view_projection(fitted.caster_view_projection, csm_caster_clip_bias(cfg, cascades, index));
         }
         cache.last_camera_version = camera_version;
+        cache.last_camera = camera;
         cache.last_camera_aspect = camera_aspect;
         cache.cached_content_version = content_version;
         refit->scheduler->arm(refit->gate->last_refit_drift_only() && !refit->scheduler->pending());
@@ -472,6 +477,19 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
     const bindings = new Map<string, PinnedBinding>([
         ["options.refitAngle", { cpp: "refit_angle", type: "scalar" }],
         ["options.refitMaxIntervalMs", optional("refit_max_interval_ms")],
+        // The compiler refuses the new coverage option; omission retains the pin's default.
+        [
+            "options.cascadeCoveragePadding",
+            optional("cascade_coverage_padding"),
+        ],
+        [
+            "sg._config._stabilizeCascades",
+            {
+                cpp: "upstream::csm_config(generator)._stabilizeCascades",
+                type: "bool",
+            },
+        ],
+        ["sg._config._mapSize", { cpp: "generator.map_size", type: "scalar" }],
         [
             "options.staticCascadesPerFrame",
             optional("static_cascades_per_frame"),
@@ -609,12 +627,17 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
                 if (
                     !members ||
                     names !==
-                        "_refitAngle,_refitMaxIntervalMs,_staticCascadesPerFrame"
+                        "_refitAngle,_refitMaxIntervalMs,_staticCascadesPerFrame,_cascadeCoveragePadding"
                 )
                     return context.contractError(
                         expression,
-                        "Expected the cache's three options.",
+                        "Expected the cache's four options.",
                     );
+                context.assertExpressionShape(
+                    members[3]![1],
+                    "cascadeCoveragePadding",
+                    "Omitted coverage option",
+                );
                 const [angle, interval, perFrame] = members.map((member) =>
                     lowerer.expression(member![1]),
                 );
@@ -673,10 +696,13 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
                 declaration,
                 `enableCsmStaticCache no longer has '${shape}'.`,
             );
-    if (rejected.join() !== "Error,RangeError,RangeError,Error")
+    if (
+        rejected.join() !==
+        "Error,RangeError,RangeError,RangeError,Error,RangeError,Error"
+    )
         context.contractError(
             declaration,
-            "Expected the four enableCsmStaticCache rejections.",
+            "Expected the seven enableCsmStaticCache rejections.",
         );
     return `
 // ${context.provenance(enableModule, "enableCsmStaticCache")}
@@ -685,6 +711,7 @@ std::optional<js::Error> enable_csm_static_cache(
     std::optional<double> refit_max_interval_ms,
     std::optional<double> static_cascades_per_frame) {
     ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
+    const std::optional<double> cascade_coverage_padding;
 ${body}
 }
 `;

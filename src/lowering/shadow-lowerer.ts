@@ -1079,11 +1079,10 @@ function assertPcfResourceContracts(
  * port refreshing on a different rule.
  */
 function assertShadowRenderGateContracts(context: LoweringContext): void {
-    const singleMapGate =
+    const singleMapGatePrefix =
         "!sg._config._forceRefreshEveryFrame && " +
         "casterVersion === state._lastCasterVersion && " +
-        "lightVersion === state._lastLightVersion && " +
-        "foVersion === state._lastFoVersion";
+        "lightVersion === state._lastLightVersion && ";
     for (const [module, renderer, ensure, stateLocal] of [
         [
             esmModule,
@@ -1104,9 +1103,18 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         );
         context.expectShapeCount(
             declaration,
-            singleMapGate,
+            singleMapGatePrefix +
+                (module === esmModule
+                    ? "foVersion === state._lastFoVersion && foCam === state._lastFoCamera"
+                    : "!foChanged"),
             `${renderer} render gate`,
         );
+        if (module === hooksModule)
+            context.expectShapeCount(
+                declaration,
+                "foVersion !== state._lastFoVersion || foCam !== state._lastFoCamera",
+                `${renderer} floating-origin identity`,
+            );
         // The three signals the gate compares, each read where the pin
         // reads it: the caster sum, the light's world version, and the
         // floating-origin camera's version (zero with the mode off).
@@ -1179,6 +1187,7 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
             "casterVersion === state._lastCasterVersion && " +
             "lightVersion === state._lastLightVersion && " +
             "camVersion === state._lastCamVersion && " +
+            "camera === state._lastCamera && " +
             "camAspect === state._lastCamAspect",
         "renderCsmShadowMap render gate",
     );
@@ -1530,7 +1539,8 @@ function lowerCsmCameraGate(context: LoweringContext): {
         !gate ||
         !ts.isIfStatement(gate) ||
         !ts.isBinaryExpression(gate.expression) ||
-        !ts.isBinaryExpression(gate.expression.left)
+        !ts.isBinaryExpression(gate.expression.left) ||
+        !ts.isBinaryExpression(gate.expression.left.left)
     )
         return context.contractError(
             declaration,
@@ -1538,7 +1548,12 @@ function lowerCsmCameraGate(context: LoweringContext): {
         );
     const cameraCondition = ts.factory.updateBinaryExpression(
         gate.expression,
-        gate.expression.left.right,
+        ts.factory.updateBinaryExpression(
+            gate.expression.left,
+            gate.expression.left.left.right,
+            gate.expression.left.operatorToken,
+            gate.expression.left.right,
+        ),
         gate.expression.operatorToken,
         gate.expression.right,
     );
@@ -1546,6 +1561,8 @@ function lowerCsmCameraGate(context: LoweringContext): {
         bindings: new Map<string, PinnedBinding>([
             ["camVersion", { cpp: "csm_camera->change_key", type: "scalar" }],
             ["camAspect", { cpp: "csm_camera->aspect", type: "scalar" }],
+            ["camera", { cpp: "csm_camera->camera", type: "opaque" }],
+            ["state._lastCamera", { cpp: "gate.last_camera", type: "opaque" }],
             [
                 "state._lastCamVersion",
                 { cpp: "gate.last_camera_change_key", type: "scalar" },
@@ -1564,11 +1581,13 @@ function lowerCsmCameraGate(context: LoweringContext): {
         )
             return false;
         const left = statement.expression.left;
-        return ["state._lastCamVersion", "state._lastCamAspect"].some((field) =>
-            context.expressionMatchesShape(left, field),
-        );
+        return [
+            "state._lastCamVersion",
+            "state._lastCamAspect",
+            "state._lastCamera",
+        ].some((field) => context.expressionMatchesShape(left, field));
     });
-    if (publish.length !== 2)
+    if (publish.length !== 3)
         context.contractError(
             declaration,
             "Expected CSM camera gate publication.",
@@ -2003,6 +2022,7 @@ struct ShadowRefreshGate {
     double last_light_angle = 0.0;
     double last_light_parameter_version = 0.0;
     Vec3d last_fo_offset{};
+    const CameraRecord* last_camera = nullptr;
 #if BBLITE_SHADOWS_CSM
     double last_camera_change_key = 0.0;
     double last_camera_aspect = 0.0;
@@ -2025,6 +2045,7 @@ struct CsmCameraKey;
 struct CsmCameraKey {
     double change_key = 0.0;
     double aspect = 0.0;
+    const CameraRecord* camera = nullptr;
 };
 #endif
 
@@ -2057,7 +2078,8 @@ inline bool shadow_refresh_due(
     const LightRecord& light,
     Vec3d eye,
     [[maybe_unused]] const CsmCameraKey* csm_camera,
-    ShadowRefreshGate& gate) {
+    ShadowRefreshGate& gate,
+    const CameraRecord* fo_camera = nullptr) {
     // The pin evaluates \`_forceRefreshEveryFrame\` first in its own
     // \`&&\` chain, so nothing else is read on a forced frame; returning
     // here is that same order, minus the version sum and the lane updates
@@ -2067,13 +2089,13 @@ inline bool shadow_refresh_due(
     const std::uint64_t caster_version = shadow_caster_version_sum(engine, generator);
 #if BBLITE_SHADOWS_CSM
     const bool camera_unchanged = csm_camera == nullptr
-        ? eye.x == gate.last_fo_offset.x &&
+        ? fo_camera == gate.last_camera && eye.x == gate.last_fo_offset.x &&
             eye.y == gate.last_fo_offset.y &&
             eye.z == gate.last_fo_offset.z
         : ${csmCameraGate.unchanged};
 #else
     const bool camera_unchanged =
-        eye.x == gate.last_fo_offset.x && eye.y == gate.last_fo_offset.y &&
+        fo_camera == gate.last_camera && eye.x == gate.last_fo_offset.x && eye.y == gate.last_fo_offset.y &&
         eye.z == gate.last_fo_offset.z;
 #endif
     if (
@@ -2101,6 +2123,7 @@ inline bool shadow_refresh_due(
     gate.last_light_angle = light.angle;
     gate.last_light_parameter_version = light.parameter_version;
     gate.last_fo_offset = eye;
+    gate.last_camera = fo_camera;
 #if BBLITE_SHADOWS_CSM
     if (csm_camera != nullptr) {
 ${csmCameraGate.publish}

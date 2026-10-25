@@ -111,18 +111,18 @@ test("bound source writers retain aliases and refresh independent native materia
                             ...(present ? { _rawMatDef: {} } : {}),
                             _baseColorImage: image ? {} : null,
                         };
-                        const definitions = new WeakSet<object>();
+                        const definitions = new WeakMap<object, unknown[]>();
                         if (selected && input._rawMatDef)
-                            definitions.add(input._rawMatDef);
+                            definitions.set(input._rawMatDef, []);
                         const definition = context.functionDeclaration(
                             "src/loader-gltf/animation-pointer-basecolor.ts",
-                            "whiteFallback",
+                            "prepareMaterial",
                         ).declaration;
                         const white = createJavaScriptFunction(
                             "exports",
                             "_animBaseColorDefs",
                             transpileCommonJs(
-                                `${definition.getText()}\nreturn whiteFallback;`,
+                                `${definition.getText()}\nreturn prepareMaterial;`,
                                 "white.ts",
                             ),
                         )({}, definitions);
@@ -145,7 +145,7 @@ test("bound source writers retain aliases and refresh independent native materia
                         );
                         const result = (await apply(
                             input,
-                            module ? { whiteFallback: white } : null,
+                            module ? { prepareMaterial: white } : null,
                         )) as { baseColorFactor?: unknown } | null | undefined;
                         whiteCases.push({
                             version,
@@ -186,7 +186,7 @@ test("bound source writers retain aliases and refresh independent native materia
         { path: ["_reflectanceTexture"], field: "reflectance" },
     ];
     const captures = {
-        base: closure(writer("mat.baseColorFactor![0]"), { mat }),
+        base: closure(writer("_writeBaseColorFactor(mat, out, off)"), { mat }),
         roughness: closure(writer("mat.roughnessFactor ="), { mat }),
         uv: closure(writer("tex.uAng ="), {
             mat,
@@ -275,7 +275,7 @@ ${materialLowerings
     .map(
         (lowered, index) => `namespace white_${index} {
 ${[
-    lowered.functions.find((target) => target.name === "whiteFallback")!,
+    lowered.functions.find((target) => target.name === "prepareMaterial")!,
     lowered.features.find((feature) =>
         feature.handler.module.endsWith("/gltf-feature-animation-pointer.ts"),
     )!.handler,
@@ -294,7 +294,7 @@ int main(int argc, char** argv) {
         core.set("_baseColorFactor", GltfPbrValue{std::vector<double>{.2, .4, .6, .8}});
         if (fields.at("present").as_boolean()) core.set("_rawMatDef", GltfPbrValue::object());
         if (fields.at("image").as_boolean()) core.set("_baseColorImage", GltfPbrValue::object());
-        const GltfPbrContext context{fields.at("selected").as_boolean(), fields.at("module").as_boolean()};
+        const GltfPbrContext context{fields.at("selected").as_boolean() && fields.at("present").as_boolean(), fields.at("module").as_boolean()};
         const auto result = fields.at("version").as_number() == 0
             ? white_0::gltf_pbr_gltf_feature_animation_pointer_applyMaterial(core, context)
             : white_1::gltf_pbr_gltf_feature_animation_pointer_applyMaterial(core, context);

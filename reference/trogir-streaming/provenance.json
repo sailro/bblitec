@@ -3,12 +3,12 @@
   "scene": "trogir-streaming",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.34.0",
-    "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0"
+    "version": "1.36.0",
+    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
   },
   "reference": {
     "source": "reference/trogir-streaming/babylon-lite-golden.png",
-    "sha256": "afd723aa637ab0687b0480ce52bc48d9f12e3d373b733d68135b30e377a91972"
+    "sha256": "883744715c476d12a00ba38a6043940eacf8971fcc79e341494af72169fc0221"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
@@ -30,28 +30,62 @@
     "quality": "low"
   },
   "readiness": {
-    "engine": "Babylon Lite v1.34.0",
+    "engine": "Babylon Lite v1.36.0",
     "streamPhase": "idle",
     "selectedSplats": "1000000",
     "residentFiles": "8",
-    "coarseReady": "true",
     "collisionReady": "true",
-    "ready": "true",
-    "leaves": "123 / 123",
-    "gpuBytes": "221.0 / 221.0 MB",
-    "requests": "8 / 0"
+    "coarseSubmitted": "true",
+    "coarseSubmittedAt": "846.5",
+    "coarseReady": "true",
+    "coarseReadyAt": "846.5",
+    "ready": "true"
   },
   "browser": {
-    "version": "155.0.8059.39",
+    "version": "155.0.8059.85",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
       "--disable-lcd-text"
     ],
+    "showScrollbars": false,
     "adapter": {
-      "vendor": "nvidia",
-      "architecture": "lovelace"
+      "info": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "device": "",
+        "description": ""
+      },
+      "features": [
+        "depth32float-stencil8",
+        "rg11b10ufloat-renderable",
+        "bgra8unorm-storage",
+        "texture-formats-tier1",
+        "chromium-experimental-multi-draw-indirect",
+        "texture-compression-bc",
+        "dual-source-blending",
+        "core-features-and-limits",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "float32-filterable",
+        "indirect-first-instance",
+        "float32-blendable",
+        "atomic-vec2u-min-max",
+        "subgroup-size-control",
+        "texture-compression-unaligned",
+        "depth-clip-control",
+        "texture-compression-bc-sliced-3d",
+        "texture-formats-tier2",
+        "clip-distances",
+        "timestamp-query",
+        "shader-f16",
+        "primitive-index",
+        "texture-component-swizzle",
+        "subgroups"
+      ]
     }
   },
-  "capturedAt": "2026-10-13T00:50:29.797Z"
+  "capturedAt": "2026-10-25T19:25:10.397Z",
+  "moduleSha256": "1dc9e34b5e8f7ef017320a4860dc9cb8236bff7a3a027b960f846c792d644508",
+  "canvasSha256": "b91457539713afaebeef0a6702e6d39872eaa1728c09887b238b655a1c39de5e"
 }

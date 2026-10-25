@@ -33,6 +33,44 @@ export const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 export const loadPng = (path) => PNG.sync.read(readFileSync(path));
 
 /**
+ * @typedef {{ id: number, sequence: number, width: number, height: number, rectangle?: number[] }} CanvasSample
+ * @typedef {{ frame: number, time: number, canvases: CanvasSample[] }} FrameSample
+ */
+
+/**
+ * Window progress, including optional layout bounds from current runtimes.
+ * @param {string} log
+ * @returns {FrameSample[]}
+ */
+export const windowSamples = (log) =>
+    [
+        ...log.matchAll(
+            /window frame=(\d+) now-ms=([\d.]+)( canvas=[^\r\n]*)/g,
+        ),
+    ].map(([, frame, time, canvases]) => {
+        assert(canvases !== undefined);
+        return {
+            frame: Number(frame),
+            time: Number(time),
+            canvases: [
+                ...canvases.matchAll(
+                    /canvas=(\d+):(\d+)@(\d+)x(\d+)(?:\[([^\]]+)\])?/g,
+                ),
+            ]
+                .map((canvas) => ({
+                    id: Number(canvas[1]),
+                    sequence: Number(canvas[2]),
+                    width: Number(canvas[3]),
+                    height: Number(canvas[4]),
+                    ...(canvas[5] === undefined
+                        ? {}
+                        : { rectangle: canvas[5].split(",").map(Number) }),
+                }))
+                .sort((left, right) => left.id - right.id),
+        };
+    });
+
+/**
  * The largest absolute lane difference between two equal-length arrays.
  * @param {readonly number[]} a
  * @param {readonly number[]} b
