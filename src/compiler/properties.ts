@@ -3276,7 +3276,7 @@ export class PropertyAccessLowerer {
             if (property === "defaultPrevented")
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" || owner.kind === "platform-mouse-event" ? "is_default_prevented()" : "default_prevented"}`,
+                    cpp: `${owner.cpp}.is_default_prevented()`,
                 };
             const declared = readProperty(
                 this.context,

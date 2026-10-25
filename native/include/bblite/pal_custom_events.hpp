@@ -10,26 +10,19 @@
 namespace bbl {
 
 /** An explicitly constructed DOM event owns its payload and dispatch identity.
- * JSON views retain the source record/array; copying an event does not clone detail. */
-struct PlatformCustomEvent {
+ * JSON views retain the source record/array; copying an event does not clone detail.
+ * Copies share its dispatch state, so they share its canceled flag. */
+struct PlatformCustomEvent : PlatformEventFlags {
     struct Payload {
         js::JsonValue detail = js::JsonValue::null_value();
-        bool canceled = false;
         Engine* owner = nullptr;
         std::weak_ptr<const int> owner_lifetime;
         void gc_trace(const js::TraceVisitor& visitor) const { visitor(detail); }
     };
-    std::shared_ptr<DomEventState> dom = std::make_shared<DomEventState>();
+    PlatformCustomEvent() { dom = std::make_shared<DomEventState>(); }
     std::shared_ptr<Payload> payload = js::make_gc_shared<Payload>();
 
     [[nodiscard]] js::JsonValue detail() const { return payload->detail; }
-    [[nodiscard]] bool is_default_prevented() const noexcept { return payload->canceled; }
-    void prevent_default() const noexcept {
-        if (dom->can_prevent_default())
-            payload->canceled = true;
-    }
-    void stop_propagation() const { dom->stop_propagation(); }
-    void stop_immediate_propagation() const { dom->stop_immediate_propagation(); }
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(payload); }
     [[nodiscard]] bool operator==(const PlatformCustomEvent& other) const {
         return payload == other.payload;

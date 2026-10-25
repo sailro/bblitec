@@ -1397,7 +1397,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
         }
         SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #if BBLITE_HAS_GAMEPAD
-        // The realm polls gamepads; their connections arrive with this thread's events.
+        // This thread's SDL events announce the gamepads the realm reads.
         init_flags |= SDL_INIT_GAMEPAD;
 #endif
         if (!SDL_Init(init_flags))
