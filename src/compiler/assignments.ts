@@ -4306,10 +4306,12 @@ function emitWorldMatrixProviderParent(
     const slot = context.allocateTemporaryCppName("world_provider_slot");
     context.emit({
         kind: "declaration",
-        type: "const auto",
+        type: "const auto&",
         name: slot,
         initializer: provider.cpp,
     });
+    // Each callback keeps its own reference to the shared provider.
+    const value = optional ? optionalValueCpp(slot) : slot;
     const held = context.allocateTemporaryCppName("world_provider");
     const read = (field: NonNullable<typeof fields.world>): string =>
         `${held}->${field.name}${field.accessor ? ".get()" : ""}`;
@@ -4321,11 +4323,10 @@ function emitWorldMatrixProviderParent(
         kind: "expression",
         code:
             `if (${optional ? optionalPresentCpp(slot) : `static_cast<bool>(${slot})`}) { ` +
-            `const auto ${held} = ${optional ? optionalValueCpp(slot) : slot}; ` +
             `bbl::set_mesh_world_matrix_provider(${engine}, ${target.cpp}, ` +
-            `static_cast<const void*>(${held}.get()), ` +
-            `[${held}]() { return bbl::provider_world_matrix(${read(fields.world)}); }, ` +
-            `[${held}]() { return static_cast<double>(${read(fields.version)}); }); ` +
+            `static_cast<const void*>(${value}.get()), ` +
+            `[${held} = ${value}]() { return bbl::provider_world_matrix(${read(fields.world)}); }, ` +
+            `[${held} = ${value}]() { return static_cast<double>(${read(fields.version)}); }); ` +
             `} else { bbl::set_mesh_transform_parent(${engine}, ${target.cpp}, bbl::TransformNodeHandle{}); }`,
     });
 }
