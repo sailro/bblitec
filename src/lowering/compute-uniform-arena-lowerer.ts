@@ -4,9 +4,10 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type {
-    PinnedBinding,
-    PinnedNumericScope,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { bufferAlignmentCpp } from "./gpu-buffer-adapters.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
@@ -109,6 +110,7 @@ function scope(
             "arenas.length",
             { cpp: "static_cast<double>(arenas.size())", type: "scalar" },
         ],
+        ["arenas", collectionBinding("arenas")],
         ...Object.entries(members).map(
             ([name, cpp]) =>
                 [
@@ -171,16 +173,6 @@ function scope(
             )
                 return `arenas[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             return undefined;
-        },
-        forOf(_iterated, element, _binding, syntax) {
-            if (!context.expressionMatchesShape(syntax.expression, "arenas"))
-                return undefined;
-            return {
-                range: "arenas",
-                bindings: new Map([
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
         },
         statement(node, lowerer, indent) {
             if (ts.isVariableStatement(node)) {

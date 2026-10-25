@@ -1,5 +1,12 @@
 import type { LoweringServices } from "./lowering-services.js";
-import { isGlobalUndefined, libraryGlobal, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    isGlobalUndefined,
+    libraryGlobal,
+    resolvedSymbol,
+    namedMember,
+    type NamedMember,
+} from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -24,9 +31,18 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { Value } from "./types.js";
+import { promiseReactionOf } from "./promises.js";
 import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
-import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    unwrapExpression,
+    functionKind,
+    isAsyncFunction,
+    isSuspensionPoint,
+    variableKind,
+} from "./syntax.js";
 
 interface CompressedJsonContext extends Pick<
     LoweringServices,
@@ -54,21 +70,20 @@ function identifierIs(
 }
 
 function propertyCall(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
     property: string,
-): ts.CallExpression | undefined {
+): { call: ts.CallExpression; member: NamedMember } | undefined {
     const call = unwrapExpression(expression);
     if (
         !ts.isCallExpression(call) ||
-        call.questionDotToken ||
-        (call.typeArguments?.length ?? 0) !== 0 ||
-        !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.questionDotToken ||
-        call.expression.name.text !== property
-    ) {
+        // Any `?.` in the chain may skip the call (`a?.b.decode()` too).
+        ts.isOptionalChain(call) ||
+        (call.typeArguments?.length ?? 0) !== 0
+    )
         return undefined;
-    }
-    return call;
+    const member = namedMember(checker, call.expression);
+    return member?.name === property ? { call, member } : undefined;
 }
 
 function constBinding(
@@ -76,7 +91,7 @@ function constBinding(
 ): { name: string; initializer: ts.Expression } | undefined {
     if (
         !ts.isVariableStatement(statement) ||
-        (statement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(statement.declarationList) !== "const" ||
         statement.declarationList.declarations.length !== 1
     ) {
         return undefined;
@@ -147,13 +162,12 @@ function isArrayCheck(
     expression: ts.Expression,
     value: string,
 ): boolean {
-    const call = propertyCall(expression, "isArray");
+    const found = propertyCall(checker, expression, "isArray");
     return (
-        !!call &&
-        call.arguments.length === 1 &&
-        ts.isPropertyAccessExpression(call.expression) &&
-        libraryGlobal(checker, call.expression.expression) === "Array" &&
-        identifierIs(call.arguments[0], value)
+        !!found &&
+        found.call.arguments.length === 1 &&
+        libraryGlobal(checker, found.member.expression) === "Array" &&
+        identifierIs(found.call.arguments[0], value)
     );
 }
 
@@ -228,8 +242,8 @@ function forOfBinding(
     if (
         !ts.isForOfStatement(statement) ||
         !ts.isVariableDeclarationList(statement.initializer) ||
-        statement.awaitModifier ||
-        (statement.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        isSuspensionPoint(statement) ||
+        variableKind(statement.initializer) !== "const" ||
         statement.initializer.declarations.length !== 1 ||
         !identifierIs(statement.expression, collection) ||
         !ts.isBlock(statement.statement)
@@ -252,10 +266,7 @@ function isGzipBase64JsonDecoder(
 ): boolean {
     if (
         !declaration.body ||
-        !declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "async" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 3
@@ -275,18 +286,16 @@ function isGzipBase64JsonDecoder(
         return false;
     }
 
-    const byteFactory = propertyCall(bytes.initializer, "from");
+    const byteFactory = propertyCall(checker, bytes.initializer, "from");
     if (
         !byteFactory ||
-        byteFactory.arguments.length !== 2 ||
-        !ts.isPropertyAccessExpression(byteFactory.expression) ||
-        libraryGlobal(checker, byteFactory.expression.expression) !==
-            "Uint8Array"
+        byteFactory.call.arguments.length !== 2 ||
+        libraryGlobal(checker, byteFactory.member.expression) !== "Uint8Array"
     ) {
         return false;
     }
-    const decoded = unwrapExpression(argumentAt(byteFactory, 0));
-    const mapper = unwrapExpression(argumentAt(byteFactory, 1));
+    const decoded = unwrapExpression(argumentAt(byteFactory.call, 0));
+    const mapper = unwrapExpression(argumentAt(byteFactory.call, 1));
     if (
         !ts.isCallExpression(decoded) ||
         decoded.questionDotToken ||
@@ -295,9 +304,7 @@ function isGzipBase64JsonDecoder(
         decoded.arguments.length !== 1 ||
         !identifierIs(decoded.arguments[0], encoded) ||
         !ts.isArrowFunction(mapper) ||
-        mapper.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        isAsyncFunction(mapper) ||
         mapper.parameters.length !== 1 ||
         !plainIdentifierParameter(mapper.parameters[0]!) ||
         ts.isBlock(mapper.body)
@@ -305,40 +312,47 @@ function isGzipBase64JsonDecoder(
         return false;
     }
     const char = mapper.parameters[0].name.text;
-    const charCodeAt = propertyCall(mapper.body, "charCodeAt");
+    const charCodeAt = propertyCall(checker, mapper.body, "charCodeAt");
     if (
         !charCodeAt ||
-        charCodeAt.arguments.length !== 1 ||
-        !ts.isNumericLiteral(unwrapExpression(argumentAt(charCodeAt, 0))) ||
+        charCodeAt.call.arguments.length !== 1 ||
+        !ts.isNumericLiteral(
+            unwrapExpression(argumentAt(charCodeAt.call, 0)),
+        ) ||
         Number(
-            (unwrapExpression(argumentAt(charCodeAt, 0)) as ts.NumericLiteral)
-                .text,
+            (
+                unwrapExpression(
+                    argumentAt(charCodeAt.call, 0),
+                ) as ts.NumericLiteral
+            ).text,
         ) !== 0 ||
-        !ts.isPropertyAccessExpression(charCodeAt.expression) ||
-        !identifierIs(charCodeAt.expression.expression, char)
+        !identifierIs(charCodeAt.member.expression, char)
     ) {
         return false;
     }
 
-    const pipeThrough = propertyCall(stream.initializer, "pipeThrough");
-    if (!pipeThrough || pipeThrough.arguments.length !== 1) return false;
-    const streamCall = ts.isPropertyAccessExpression(pipeThrough.expression)
-        ? propertyCall(pipeThrough.expression.expression, "stream")
-        : undefined;
-    const decompressor = unwrapExpression(argumentAt(pipeThrough, 0));
+    const pipeThrough = propertyCall(
+        checker,
+        stream.initializer,
+        "pipeThrough",
+    );
+    if (!pipeThrough || pipeThrough.call.arguments.length !== 1) return false;
+    const streamCall = propertyCall(
+        checker,
+        pipeThrough.member.expression,
+        "stream",
+    );
+    const decompressor = unwrapExpression(argumentAt(pipeThrough.call, 0));
     if (
         !streamCall ||
-        streamCall.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(streamCall.expression) ||
-        !ts.isNewExpression(
-            unwrapExpression(streamCall.expression.expression),
-        ) ||
+        streamCall.call.arguments.length !== 0 ||
+        !ts.isNewExpression(unwrapExpression(streamCall.member.expression)) ||
         !ts.isNewExpression(decompressor)
     ) {
         return false;
     }
     const blob = unwrapExpression(
-        streamCall.expression.expression,
+        streamCall.member.expression,
     ) as ts.NewExpression;
     if (
         libraryGlobal(checker, blob.expression) !== "Blob" ||
@@ -363,17 +377,16 @@ function isGzipBase64JsonDecoder(
 
     const awaited = unwrapExpression(returned.expression);
     if (!ts.isAwaitExpression(awaited)) return false;
-    const jsonCall = propertyCall(awaited.expression, "json");
+    const jsonCall = propertyCall(checker, awaited.expression, "json");
     if (
         !jsonCall ||
-        jsonCall.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(jsonCall.expression) ||
-        !ts.isNewExpression(unwrapExpression(jsonCall.expression.expression))
+        jsonCall.call.arguments.length !== 0 ||
+        !ts.isNewExpression(unwrapExpression(jsonCall.member.expression))
     ) {
         return false;
     }
     const response = unwrapExpression(
-        jsonCall.expression.expression,
+        jsonCall.member.expression,
     ) as ts.NewExpression;
     return (
         libraryGlobal(checker, response.expression) === "Response" &&
@@ -458,10 +471,7 @@ function isInputNameAliasRestorer(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.parameters.length !== 1 ||
         !plainIdentifierParameter(declaration.parameters[0]!) ||
         declaration.body.statements.length !== 4
@@ -580,11 +590,12 @@ function derivedJsonPass(
     declaration: ts.FunctionDeclaration,
 ): { value: unknown } | undefined {
     const returnType = declaration.type;
-    if (
-        !returnType ||
-        !ts.isTypeReferenceNode(returnType) ||
-        returnType.typeName.getText(returnType.getSourceFile()) !== "Record"
-    ) {
+    // The library's `Record`, however the file names it.
+    const record =
+        returnType && ts.isTypeReferenceNode(returnType)
+            ? resolvedSymbol(context.checker, returnType.typeName)
+            : undefined;
+    if (record?.name !== "Record" || !declaredInDefaultLibrary(record)) {
         return undefined;
     }
     const modulePath = declaration.getSourceFile().fileName;
@@ -684,11 +695,10 @@ export function compileCompressedJsonPromiseThen(
     context: CompressedJsonContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const then = call.expression;
+    const then = promiseReactionOf(call.expression, context.checker);
     const callback = call.arguments[0];
     if (
-        !ts.isPropertyAccessExpression(then) ||
-        then.name.text !== "then" ||
+        then?.reaction !== "then" ||
         call.arguments.length !== 1 ||
         !callback ||
         !ts.isIdentifier(callback) ||

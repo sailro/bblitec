@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     listenerAddition,
@@ -8,7 +9,8 @@ import {
 import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { libraryName, namedMember } from "./symbols.js";
+import { callableParameterCount } from "./type-facts.js";
 
 /**
  * AbortController, AbortSignal and DOMException as realm-owned native
@@ -62,7 +64,7 @@ export function compileAbortNew(
                 staticString: fallback,
             };
         const value = context.compileValue(argument);
-        if (value.kind === "json-null" && value.cpp === "std::nullopt") {
+        if (absenceOf(value) === "undefined") {
             context.emitDiscardedValue(value);
             return {
                 kind: "string" as const,
@@ -168,7 +170,7 @@ export function compileAbortMethod(
         if (!reason) return { kind: "void", cpp: `(${receiver.cpp}).abort()` };
         const value = context.compileValue(reason);
         if (
-            (value.kind === "json-null" && value.cpp === "std::nullopt") ||
+            absenceOf(value) === "undefined" ||
             value.dataType?.kind === "undefined"
         ) {
             context.emitDiscardedValue(value);
@@ -228,19 +230,18 @@ export function compileAbortListenerCall(
     context: WebPlatformCallContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        (callee.name.text !== "addEventListener" &&
-            callee.name.text !== "removeEventListener")
+        !callee ||
+        (callee.name !== "addEventListener" &&
+            callee.name !== "removeEventListener")
     )
         return undefined;
     const receiverType = context.checker.getTypeAtLocation(callee.expression);
-    if (
-        receiverType.getSymbol()?.name !== "AbortSignal" ||
-        !declaredInDomLibrary(receiverType.getSymbol())
-    )
-        return undefined;
+    if (libraryName(receiverType) !== "AbortSignal") return undefined;
     const owner = context.dataLowerer.narrowOptional(
         context.compileValue(callee.expression),
         callee.expression,
@@ -261,16 +262,13 @@ export function compileAbortListenerCall(
             "An AbortSignal dispatches only 'abort' events.",
         );
     const callback = call.arguments[1]!;
-    const signature = context.checker
-        .getTypeAtLocation(callback)
-        .getCallSignatures()[0];
-    if (signature && signature.getParameters().length > 0)
+    if (callableParameterCount(context.checker, callback) > 0)
         return context.fail(
             callback,
             "AbortSignal 'abort' listeners that take the event are not lowered.",
         );
     context.callbacks.hoistForwardCallbackBindings(callback);
-    if (callee.name.text === "removeEventListener") {
+    if (callee.name === "removeEventListener") {
         const identity = context.callbacks.platformEventCallbackIdentity(
             context.compileValue(callback),
             callback,

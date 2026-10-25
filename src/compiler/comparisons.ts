@@ -9,6 +9,7 @@
  * and pinned bodies compare with one meaning.
  */
 import ts from "typescript";
+import { staticBooleanOf } from "./values/model.js";
 import {
     PINNED_COMPARISON_OPERATORS,
     foldNumericComparison,
@@ -17,6 +18,7 @@ import { localClassOfSymbol } from "./class-members.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { valueKinds } from "./type-facts.js";
 
 const STRICT_EQUALITY = new Map<ts.SyntaxKind, ts.SyntaxKind>([
     [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken],
@@ -36,21 +38,15 @@ interface ConditionComparison {
 function primitiveKind(
     type: ts.Type,
 ): "number" | "string" | "boolean" | "bigint" | undefined {
-    const kinds = new Set(
-        (type.isUnion() ? type.types : [type]).map((member) =>
-            member.flags & ts.TypeFlags.NumberLike
-                ? "number"
-                : member.flags & ts.TypeFlags.StringLike
-                  ? "string"
-                  : member.flags & ts.TypeFlags.BooleanLike
-                    ? "boolean"
-                    : member.flags & ts.TypeFlags.BigIntLike
-                      ? "bigint"
-                      : undefined,
-        ),
-    );
+    const kinds = valueKinds(type);
     const [kind] = kinds;
-    return kinds.size === 1 ? kind : undefined;
+    return kinds.size === 1 &&
+        (kind === "number" ||
+            kind === "string" ||
+            kind === "boolean" ||
+            kind === "bigint")
+        ? kind
+        : undefined;
 }
 
 /**
@@ -122,6 +118,15 @@ export function foldSettledComparison(
         if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken) return equal;
         if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) return !equal;
     }
+    // Two strings order by UTF-16 code units, as the generator's own `<`
+    // does; two C++ literals would compare their addresses.
+    if (left.staticString !== undefined && right.staticString !== undefined) {
+        const [a, b] = [left.staticString, right.staticString];
+        if (kind === ts.SyntaxKind.LessThanToken) return a < b;
+        if (kind === ts.SyntaxKind.LessThanEqualsToken) return a <= b;
+        if (kind === ts.SyntaxKind.GreaterThanToken) return a > b;
+        if (kind === ts.SyntaxKind.GreaterThanEqualsToken) return a >= b;
+    }
     const staticNumber = (value: Value): number | undefined =>
         value.kind === "number" && !value.parameterBinding
             ? value.staticNumber
@@ -178,16 +183,16 @@ export function foldBooleanComparison(
         // A specialized option can hold a known boolean even when its
         // declaration also permits an object. The value proof below still
         // requires a concrete boolean on at least one side.
-        return (type.isUnion() ? type.types : [type]).some(
-            (member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0,
-        );
+        return valueKinds(type).has("boolean");
     };
     if (!booleanLike(expression.left) || !booleanLike(expression.right))
         return undefined;
-    const settled = (side: ts.Expression): string | undefined => {
+    const settled = (
+        side: ts.Expression,
+    ): boolean | "nullish" | "object" | undefined => {
         const resolved = context.evaluator.resolveStaticExpression(side);
-        if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
-        if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
+        if (resolved.kind === ts.SyntaxKind.TrueKeyword) return true;
+        if (resolved.kind === ts.SyntaxKind.FalseKeyword) return false;
         const value = ts.isIdentifier(resolved)
             ? context.bindings.lookupOptional(resolved)
             : ts.isPropertyAccessExpression(resolved)
@@ -196,11 +201,7 @@ export function foldBooleanComparison(
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
         if (value?.kind !== "boolean") return undefined;
-        if (value.cpp === "true" || value.cpp === "false") return value.cpp;
-        // A binding whose generation-known value outlives its storage name.
-        return value.staticBoolean === undefined
-            ? undefined
-            : String(value.staticBoolean);
+        return staticBooleanOf(value);
     };
     return context.probeEmission(() => {
         const left = settled(expression.left);
@@ -208,9 +209,8 @@ export function foldBooleanComparison(
         if (left === undefined || right === undefined) return undefined;
         // Object identity and null versus undefined remain undecided;
         // only their inequality with a concrete boolean is established.
-        const boolean = (value: string): boolean =>
-            value === "true" || value === "false";
-        if (!boolean(left) && !boolean(right)) return undefined;
+        if (typeof left !== "boolean" && typeof right !== "boolean")
+            return undefined;
         return String((left === right) === equals);
     });
 }

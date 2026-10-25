@@ -1,13 +1,19 @@
 import type { InstanceProperty } from "./class-members.js";
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 
 /**
  * A shared class field that one construction binds to a value and another
  * leaves absent: the compile replays with a presence slot for it, so a
  * method inlined on a stored instance reads the one value or nothing.
  */
-export class ClassFieldPresenceRequired extends Error {
+export class ClassFieldPresenceRequired extends StorageDemand {
     constructor(readonly declaration: InstanceProperty) {
         super("A shared class field must store whether it is present.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "class-field-presence", declaration: this.declaration };
     }
 }
 

@@ -1,8 +1,18 @@
 import ts from "typescript";
 import { forEachReturn } from "./loop-control.js";
-import { localSyncFunction, unwrapExpression } from "./syntax.js";
+import {
+    localSyncFunction,
+    unwrapExpression,
+    outermostWrapper,
+    writeSiteOf,
+    lastWriter,
+    objectLiteralMembers,
+    testsTruthinessOnly,
+    variableKind,
+} from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isNullable } from "./type-facts.js";
+import { nullishLiteral } from "./symbols.js";
 
 interface ConstructedFieldContext {
     readonly checker: ts.TypeChecker;
@@ -37,7 +47,7 @@ export function constructedFieldPresent(
         !declaration ||
         !ts.isVariableDeclaration(declaration) ||
         !ts.isIdentifier(declaration.name) ||
-        (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+        variableKind(declaration) !== "const" ||
         !declaration.initializer
     ) {
         return false;
@@ -76,35 +86,20 @@ function setsPresentField(
 ): boolean {
     if (!returned) return true;
     const value = unwrapExpression(returned);
+    if (nullishLiteral(context.checker, value) !== undefined) return true;
+    if (!ts.isObjectLiteralExpression(value)) return false;
+    const members = objectLiteralMembers(value);
     if (
-        value.kind === ts.SyntaxKind.NullKeyword ||
-        ts.isVoidExpression(value) ||
-        (ts.isIdentifier(value) && value.text === "undefined")
-    ) {
-        return true;
-    }
-    if (
-        !ts.isObjectLiteralExpression(value) ||
-        value.properties.some(
-            (property) =>
-                !ts.isPropertyAssignment(property) &&
-                !ts.isShorthandPropertyAssignment(property),
+        members.some(
+            (member) =>
+                member.kind !== "property" && member.kind !== "shorthand",
         )
-    ) {
+    )
         return false;
-    }
-    const property = value.properties.find(
-        (candidate) =>
-            candidate.name !== undefined &&
-            (ts.isIdentifier(candidate.name) ||
-                ts.isStringLiteral(candidate.name)) &&
-            candidate.name.text === field,
-    );
-    if (!property) return false;
-    const stored = ts.isPropertyAssignment(property)
-        ? property.initializer
-        : (property as ts.ShorthandPropertyAssignment).name;
-    return !isNullable(context.checker.getTypeAtLocation(stored));
+    const writer = lastWriter(members, field);
+    if (writer === undefined || writer === "unknown" || !writer.value)
+        return false;
+    return !isNullable(context.checker.getTypeAtLocation(writer.value));
 }
 
 /** Every use of the binding reads one of its fields or tests its presence. */
@@ -138,42 +133,16 @@ function onlyReadsFields(
 }
 
 function isFieldReadOrTest(identifier: ts.Identifier): boolean {
-    let use: ts.Node = identifier;
-    while (
-        ts.isParenthesizedExpression(use.parent) ||
-        ts.isNonNullExpression(use.parent)
-    ) {
-        use = use.parent;
-    }
+    const use = outermostWrapper(identifier);
     const parent = use.parent;
     if (ts.isPropertyAccessExpression(parent) && parent.expression === use) {
-        let access: ts.Node = parent;
-        while (ts.isParenthesizedExpression(access.parent)) {
-            access = access.parent;
-        }
+        const access = outermostWrapper(parent);
         const target = access.parent;
         // A method call may write its receiver; a write names the field.
         return !(
             (ts.isCallExpression(target) && target.expression === access) ||
-            (ts.isBinaryExpression(target) &&
-                target.left === access &&
-                target.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                target.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-            ts.isDeleteExpression(target) ||
-            ts.isPrefixUnaryExpression(target) ||
-            ts.isPostfixUnaryExpression(target)
+            writeSiteOf(parent) !== undefined
         );
     }
-    // `x && ...` yields x only when it is falsy, so no reference escapes.
-    return (
-        (ts.isPrefixUnaryExpression(parent) &&
-            parent.operator === ts.SyntaxKind.ExclamationToken) ||
-        ((ts.isIfStatement(parent) || ts.isWhileStatement(parent)) &&
-            parent.expression === use) ||
-        (ts.isConditionalExpression(parent) && parent.condition === use) ||
-        (ts.isBinaryExpression(parent) &&
-            parent.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken &&
-            parent.left === use)
-    );
+    return testsTruthinessOnly(use);
 }

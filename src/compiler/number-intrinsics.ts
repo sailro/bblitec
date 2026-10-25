@@ -11,6 +11,7 @@ import {
     staticStringValue,
     type Value,
 } from "./types.js";
+import { libraryStaticMember } from "./symbols.js";
 
 const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
@@ -88,13 +89,12 @@ export function compileNumberPredicate(
     context: ExpressionContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        context.libraryGlobal(callee.expression) !== "Number"
-    )
-        return undefined;
-    const predicate = predicates.get(callee.name.text);
+    const callee = libraryStaticMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (callee?.owner !== "Number") return undefined;
+    const predicate = predicates.get(callee.name);
     if (!predicate) return undefined;
     context.expectArgumentCount(call, 1, 1);
     context.reachJsData();
@@ -163,6 +163,40 @@ export function staticScalarValue(
     if (value.staticString !== undefined)
         return staticStringValue(value.staticString, cppString);
     return undefined;
+}
+
+/** A Number formatting method a generation-time string folds. */
+export type NumberFormat = "toFixed" | "toPrecision" | "toExponential";
+
+/** The integer digit counts each format accepts (JavaScript throws a RangeError outside). */
+export const NUMBER_FORMAT_DIGITS: ReadonlyMap<
+    NumberFormat,
+    readonly [number, number]
+> = new EmissionMap<NumberFormat, readonly [number, number]>([
+    ["toFixed", [0, 100]],
+    ["toPrecision", [1, 100]],
+    ["toExponential", [0, 100]],
+]);
+
+/** The format a method name is, or undefined. */
+export function numberFormatOf(name: string): NumberFormat | undefined {
+    return [...NUMBER_FORMAT_DIGITS.keys()].find((format) => format === name);
+}
+
+/**
+ * `value.<format>(digits)` folded with the engine's own formatting, or
+ * undefined when `digits` is no integer in the format's range.
+ */
+export function foldNumberFormat(
+    format: NumberFormat,
+    value: number,
+    digits: number | undefined,
+): string | undefined {
+    if (digits === undefined) return value[format]();
+    const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
+    return Number.isInteger(digits) && digits >= low && digits <= high
+        ? value[format](digits)
+        : undefined;
 }
 
 export function numberConstantValue(value: number): Value {

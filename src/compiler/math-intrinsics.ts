@@ -1,98 +1,118 @@
 /**
- * What scene code's `Math` reaches: every member the compiler lowers with
- * its runtime spelling, its generation-time fold where one is exact, and
- * the constants a numeric reader folds or spells.
+ * What `Math` reaches, in scene code and pinned bodies alike: every member
+ * with its runtime spelling, its generation-time fold where one is exact,
+ * and the constants a numeric reader folds or spells.
  *
- * The `<cmath>` members shared with the pinned layer are spelled through
- * `pinnedMathSpelling`, so the two layers cannot drift on them; the
- * compiler-only members follow the same `std::` rule here because no pinned
- * body reaches them. Members whose semantics differ from `<cmath>`
- * (`Math.round`'s tie rule, `Math.hypot`'s arity, `Math.sign`, `Math.imul`,
- * the seeded `Math.random`) carry the PAL spelling that implements the
- * spec's own rule, and say which runtime that spelling needs.
+ * The `<cmath>` members spell `std::<name>`. Members whose semantics differ
+ * from `<cmath>` (`Math.round`'s tie rule, `Math.hypot`'s arity,
+ * `Math.sign`, `Math.imul`, the seeded `Math.random`) carry the PAL
+ * spelling that implements the spec's own rule, and say which runtime that
+ * spelling needs.
  *
- * `Math.max`/`Math.min` are deliberately absent: they are n-ary, fold only
- * when every operand is a finite static number, and lower a spread over a
- * numeric container as a loop, so `DataLowerer.compileMathCall` owns them
- * as one arm rather than this table pretending they are one call. That arm
- * spells an argument list through `mathExtremeCall`, the spelling pinned
- * bodies lower `Math.max`/`Math.min` through too.
+ * `Math.max`/`Math.min` are deliberately absent: they are n-ary and lower a
+ * spread over a numeric container as a loop, so `DataLowerer.compileMathCall`
+ * owns them as one arm rather than this table pretending they are one call.
+ * That arm spells an argument list through `mathExtremeCall`, the spelling
+ * pinned bodies lower `Math.max`/`Math.min` through too.
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { LibraryGlobal } from "./symbols.js";
+import {
+    namedMember,
+    type LibraryGlobal,
+    type MemberReader,
+    type NamedMember,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
-import {
-    mathExtremeCpp,
-    mathExtremeCall,
-    pinnedHypotCall,
-    pinnedMathSpelling,
-    pinnedRoundCall,
-} from "../lowering/pinned-operators.js";
+import { exponentiationCall } from "../lowering/pinned-operators.js";
 
 interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
     readonly arity: number;
     readonly variadic?: true;
-    /** The C++ call over doubles. */
-    readonly cpp: (args: readonly string[]) => string;
+    /**
+     * The C++ call over doubles; `statics` holds the arguments generation
+     * already knows (`Math.pow` spells `std::pow` under a finite exponent).
+     */
+    readonly cpp: (
+        args: readonly string[],
+        statics?: readonly (number | undefined)[],
+    ) => string;
     /** A variadic member over an already evaluated numeric range. */
     readonly rangeCpp?: (range: string) => string;
     /**
-     * The exact generation-time fold. Only the integer-valued members carry
-     * one: their result is exact in both engines, so the folded value and
-     * the emitted call agree, and a scene that hands one to generation-time
-     * state (a particle column) needs the value rather than the expression.
-     * The transcendental members deliberately do NOT fold: V8 and a native
-     * maths library need not agree on them.
+     * The exact generation-time fold. Only the members whose result is
+     * exact in both engines carry one (the integer-valued ones, sign,
+     * imul), so the folded value and the emitted call agree, and a scene
+     * that hands one to generation-time state (a particle column) needs the
+     * value rather than the expression. The transcendental members, pow and
+     * hypot deliberately do NOT fold: V8 and a native maths library need
+     * not agree on them.
      */
-    readonly fold?: (value: number) => number;
+    readonly fold?: (...values: number[]) => number;
     /** The runtime the spelling needs beyond `<cmath>`. */
     readonly reach?: "js-data" | "js-random";
     /** Whether two calls may answer differently, so the value cannot be folded or hoisted. */
     readonly impure?: true;
 }
 
-/** A member shared with the pinned layer, spelled through its table. */
-function shared(name: string): MathMember["cpp"] {
-    const spelling = pinnedMathSpelling(name);
-    return (args) => `${spelling}(${args.join(", ")})`;
+/** A `<cmath>` member of the same name and arity over doubles. */
+function cmath(name: string): MathMember["cpp"] {
+    return (args) => `std::${name}(${args.join(", ")})`;
 }
 
-/** A compiler-only member, following the same `std::` rule. */
-function compilerOnly(name: string): MathMember["cpp"] {
-    return (args) => `std::${name}(${args.join(", ")})`;
+/**
+ * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
+ * NaN operand poisons the result and `-0` orders below `+0`, neither of
+ * which `std::max`/`std::min` does. `source` is a range of doubles, or a
+ * braced argument list (`mathExtremeCall`).
+ */
+function mathExtremeCpp(method: string, source: string): string {
+    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
+
+/**
+ * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
+ * spelling scene code and pinned bodies share. The braced list evaluates
+ * left to right, as JavaScript's argument list does, and every operand,
+ * whatever its native type, converts to JavaScript's own width first.
+ */
+function mathExtremeCall(
+    method: "max" | "min",
+    args: readonly string[],
+): string {
+    return mathExtremeCpp(method, `{${args.join(", ")}}`);
 }
 
 export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     string,
     MathMember
 >([
-    ["abs", { arity: 1, cpp: shared("abs"), fold: Math.abs }],
-    ["ceil", { arity: 1, cpp: shared("ceil"), fold: Math.ceil }],
-    ["cos", { arity: 1, cpp: shared("cos") }],
-    ["floor", { arity: 1, cpp: shared("floor"), fold: Math.floor }],
-    ["sin", { arity: 1, cpp: shared("sin") }],
-    ["sqrt", { arity: 1, cpp: shared("sqrt") }],
-    ["tan", { arity: 1, cpp: shared("tan") }],
-    ["atan", { arity: 1, cpp: compilerOnly("atan") }],
-    ["acos", { arity: 1, cpp: shared("acos") }],
-    ["asin", { arity: 1, cpp: shared("asin") }],
-    ["log", { arity: 1, cpp: shared("log") }],
-    ["log2", { arity: 1, cpp: shared("log2") }],
-    ["log10", { arity: 1, cpp: compilerOnly("log10") }],
-    ["log1p", { arity: 1, cpp: compilerOnly("log1p") }],
-    ["expm1", { arity: 1, cpp: compilerOnly("expm1") }],
-    ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
-    ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
-    ["cosh", { arity: 1, cpp: compilerOnly("cosh") }],
-    ["tanh", { arity: 1, cpp: compilerOnly("tanh") }],
-    ["asinh", { arity: 1, cpp: compilerOnly("asinh") }],
-    ["acosh", { arity: 1, cpp: compilerOnly("acosh") }],
-    ["atanh", { arity: 1, cpp: compilerOnly("atanh") }],
+    ["abs", { arity: 1, cpp: cmath("abs"), fold: Math.abs }],
+    ["ceil", { arity: 1, cpp: cmath("ceil"), fold: Math.ceil }],
+    ["cos", { arity: 1, cpp: cmath("cos") }],
+    ["floor", { arity: 1, cpp: cmath("floor"), fold: Math.floor }],
+    ["sin", { arity: 1, cpp: cmath("sin") }],
+    ["sqrt", { arity: 1, cpp: cmath("sqrt") }],
+    ["tan", { arity: 1, cpp: cmath("tan") }],
+    ["atan", { arity: 1, cpp: cmath("atan") }],
+    ["acos", { arity: 1, cpp: cmath("acos") }],
+    ["asin", { arity: 1, cpp: cmath("asin") }],
+    ["log", { arity: 1, cpp: cmath("log") }],
+    ["log2", { arity: 1, cpp: cmath("log2") }],
+    ["log10", { arity: 1, cpp: cmath("log10") }],
+    ["log1p", { arity: 1, cpp: cmath("log1p") }],
+    ["expm1", { arity: 1, cpp: cmath("expm1") }],
+    ["cbrt", { arity: 1, cpp: cmath("cbrt") }],
+    ["sinh", { arity: 1, cpp: cmath("sinh") }],
+    ["cosh", { arity: 1, cpp: cmath("cosh") }],
+    ["tanh", { arity: 1, cpp: cmath("tanh") }],
+    ["asinh", { arity: 1, cpp: cmath("asinh") }],
+    ["acosh", { arity: 1, cpp: cmath("acosh") }],
+    ["atanh", { arity: 1, cpp: cmath("atanh") }],
     [
         "fround",
         {
@@ -111,24 +131,36 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             reach: "js-data",
         },
     ],
-    ["exp", { arity: 1, cpp: compilerOnly("exp") }],
-    ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
-    // The pinned layer's `<cmath>` spelling; scene code lowers `Math.pow`
-    // through `exponentiationCall`, as it lowers `**`.
-    ["pow", { arity: 2, cpp: shared("pow") }],
-    ["atan2", { arity: 2, cpp: shared("atan2") }],
+    ["exp", { arity: 1, cpp: cmath("exp") }],
+    ["trunc", { arity: 1, cpp: cmath("trunc"), fold: Math.trunc }],
+    // JavaScript exponentiation, as `**` lowers (exponentiationCall).
+    [
+        "pow",
+        {
+            arity: 2,
+            cpp: (args, statics) =>
+                exponentiationCall(args[0]!, args[1]!, statics?.[1]).cpp,
+        },
+    ],
+    ["atan2", { arity: 2, cpp: cmath("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
     // half. `round_js` carries the spec's own rule.
     [
         "round",
-        { arity: 1, cpp: pinnedRoundCall, fold: Math.round, reach: "js-data" },
+        {
+            arity: 1,
+            cpp: (args) => `bbl::js::round_js(${args.join(", ")})`,
+            fold: Math.round,
+            reach: "js-data",
+        },
     ],
     [
         "sign",
         {
             arity: 1,
             cpp: (args) => `bbl::js::math_sign(${args.join(", ")})`,
+            fold: Math.sign,
             reach: "js-data",
         },
     ],
@@ -137,6 +169,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         {
             arity: 2,
             cpp: (args) => `bbl::js::math_imul(${args.join(", ")})`,
+            fold: Math.imul,
             reach: "js-data",
         },
     ],
@@ -152,7 +185,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         {
             arity: 0,
             variadic: true,
-            cpp: pinnedHypotCall,
+            cpp: (args) => `bbl::js::hypot_js({${args.join(", ")}})`,
             rangeCpp: (range) => `bbl::js::hypot_js(${range})`,
             reach: "js-data",
         },
@@ -166,40 +199,48 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             impure: true,
         },
     ],
+    ...(["max", "min"] as const).map((name): [string, MathMember] => [
+        name,
+        {
+            arity: 0,
+            variadic: true,
+            cpp: (args) => mathExtremeCall(name, args),
+            rangeCpp: (range) => mathExtremeCpp(name, range),
+            fold: (...values: number[]) => Math[name](...values),
+            reach: "js-data",
+        },
+    ]),
 ]);
 
+/** Whether two calls of the member may answer differently (`Math.random`). */
+export function mathMemberIsImpure(name: string): boolean {
+    return MATH_MEMBERS.get(name)?.impure === true;
+}
+
 /**
- * JavaScript exponentiation, `**` and `Math.pow` alike: `<cmath>`'s pow
- * except that a NaN exponent, or an infinite one over a base of magnitude
- * 1, is NaN (`power_js`). A statically finite exponent meets neither case
- * and spells `std::pow` without the runtime.
+ * The generation-time value of `Math.<name>(...values)`, or undefined when
+ * the call must run: the one fold every reader shares. The table's exact
+ * members fold; an approximated member folds only into generation-time
+ * source text (`formatted`, see FORMATTED_MATH_FOLDS), and an impure one
+ * (random) never does.
  */
-export function exponentiationCall(
-    base: string,
-    exponent: string,
-    staticExponent: number | undefined,
-): { readonly cpp: string; readonly jsData: boolean } {
-    return staticExponent !== undefined && Number.isFinite(staticExponent)
-        ? {
-              cpp: `${pinnedMathSpelling("pow")}(${base}, ${exponent})`,
-              jsData: false,
-          }
-        : { cpp: `bbl::js::power_js(${base}, ${exponent})`, jsData: true };
-}
-
-/** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
-export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
-    return name === "min" || name === "max"
-        ? (args) => mathExtremeCall(name, args)
-        : MATH_MEMBERS.get(name)?.cpp;
-}
-
-/** The exact fold of a one-argument member, where the table carries one. */
-export function mathUnaryFold(
+export function foldMathCall(
     name: string,
-): ((value: number) => number) | undefined {
+    values: readonly number[],
+    formatted = false,
+): number | undefined {
     const member = MATH_MEMBERS.get(name);
-    return member?.arity === 1 ? member.fold : undefined;
+    const fold =
+        member?.fold ??
+        (formatted ? FORMATTED_MATH_FOLDS.get(name) : undefined);
+    return fold && member && mathArityAccepts(member, values.length)
+        ? fold(...values)
+        : undefined;
+}
+
+/** Whether a member takes `count` arguments ({@link describeMathArity}). */
+export function mathArityAccepts(member: MathMember, count: number): boolean {
+    return member.variadic ? count >= member.arity : count === member.arity;
 }
 
 /** How a member's arity reads in a refusal. */
@@ -241,9 +282,10 @@ export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> =
 export function mathConstantAccess(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): MathConstant | undefined {
-    const access = mathMemberAccess(expression, libraryGlobal);
-    return access && MATH_CONSTANTS.get(access.name.text);
+    const access = mathMemberAccess(expression, libraryGlobal, member);
+    return access && MATH_CONSTANTS.get(access.name);
 }
 
 /**
@@ -252,13 +294,13 @@ export function mathConstantAccess(
  * (`toFixed` over a folded angle). Ordinary numeric expressions keep these
  * native, so their runtime width and library semantics are unchanged.
  */
-export const FORMATTED_MATH_FOLDS: ReadonlyMap<
+const FORMATTED_MATH_FOLDS: ReadonlyMap<
     string,
-    { readonly arity: number; readonly fold: (...args: number[]) => number }
-> = new EmissionMap([
-    ["atan2", { arity: 2, fold: Math.atan2 }],
-    ["cos", { arity: 1, fold: Math.cos }],
-    ["sin", { arity: 1, fold: Math.sin }],
+    (...values: number[]) => number
+> = new EmissionMap<string, (...values: number[]) => number>([
+    ["atan2", Math.atan2],
+    ["cos", Math.cos],
+    ["sin", Math.sin],
 ]);
 
 /**
@@ -267,12 +309,13 @@ export const FORMATTED_MATH_FOLDS: ReadonlyMap<
  * `Math` is not this, however it is spelled.
  */
 export function mathMemberAccess(
-    expression: ts.Expression,
+    expression: ts.Node,
     libraryGlobal: LibraryGlobal,
-): ts.PropertyAccessExpression | undefined {
-    return ts.isPropertyAccessExpression(expression) &&
-        libraryGlobal(expression.expression) === "Math"
-        ? expression
+    member: MemberReader,
+): NamedMember | undefined {
+    const access = member(expression);
+    return access && libraryGlobal(access.expression) === "Math"
+        ? access
         : undefined;
 }
 
@@ -280,10 +323,25 @@ export function mathMemberAccess(
 export function mathMemberCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): { readonly name: string; readonly call: ts.CallExpression } | undefined {
     if (!ts.isCallExpression(expression)) return undefined;
-    const access = mathMemberAccess(expression.expression, libraryGlobal);
-    return access ? { name: access.name.text, call: expression } : undefined;
+    const access = mathMemberAccess(
+        expression.expression,
+        libraryGlobal,
+        member,
+    );
+    return access ? { name: access.name, call: expression } : undefined;
+}
+
+/** A call of a member the table spells, with its name. */
+export function spelledMathCall(
+    expression: ts.Expression,
+    libraryGlobal: LibraryGlobal,
+    member: MemberReader,
+): ReturnType<typeof mathMemberCall> {
+    const math = mathMemberCall(expression, libraryGlobal, member);
+    return math && MATH_MEMBERS.has(math.name) ? math : undefined;
 }
 
 /** Math callbacks use the native numeric helpers and owned rest-array convention. */
@@ -301,31 +359,28 @@ export function mathFunctionValue(
     >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, (candidate) =>
-        context.libraryGlobal(candidate),
+    const access = mathMemberAccess(
+        expression,
+        (candidate) => context.libraryGlobal(candidate),
+        (node) => namedMember(context.checker, node),
     );
     if (!access) return undefined;
-    const member = MATH_MEMBERS.get(access.name.text);
-    const extreme = access.name.text === "max" || access.name.text === "min";
-    if (!member && !extreme) return undefined;
-    const variadic = extreme || member?.variadic;
+    const member = MATH_MEMBERS.get(access.name);
+    if (!member) return undefined;
     const type: DataType<"function"> = {
         kind: "function",
-        parameters: variadic
+        parameters: member.variadic
             ? [{ kind: "vector", element: { kind: "number" } }]
-            : Array.from({ length: member!.arity }, () => ({ kind: "number" })),
-        ...(variadic ? { restParameter: 0 } : {}),
+            : Array.from({ length: member.arity }, () => ({ kind: "number" })),
+        ...(member.variadic ? { restParameter: 0 } : {}),
         result: { kind: "number" },
         identity: true,
     };
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
-    if (member?.reach === "js-random") context.reachJsRandom();
-    const body = extreme
-        ? mathExtremeCpp(access.name.text, "argument_0")
-        : variadic
-          ? member!.rangeCpp!("argument_0")
-          : access.name.text === "pow"
-            ? exponentiationCall(parameters[0]!, parameters[1]!, undefined).cpp
-            : member!.cpp(parameters);
-    return nativeFunctionValue(context, access, type, `return ${body};`);
+    if (member.reach === "js-random") context.reachJsRandom();
+    const body =
+        member.variadic && member.rangeCpp
+            ? member.rangeCpp("argument_0")
+            : member.cpp(parameters);
+    return nativeFunctionValue(context, access.access, type, `return ${body};`);
 }

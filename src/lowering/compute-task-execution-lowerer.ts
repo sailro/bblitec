@@ -7,6 +7,7 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
+    memberElement,
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
@@ -70,6 +71,12 @@ export function lowerComputeTaskExecution(
                 ...(type === "opaque" ? { absentCpp: `!${value}` } : {}),
             });
         }
+        // The task list and a task's dispatches, walked element by element.
+        for (const list of ["tasks", "task._dispatches"])
+            bindings.set(list, {
+                ...bindings.get(list)!,
+                elements: { element: memberElement(bindings) },
+            });
         const calls = new Map<string, (args: readonly string[]) => string>([
             [
                 "createComputePass",
@@ -112,29 +119,6 @@ export function lowerComputeTaskExecution(
             bindings,
             calls,
 
-            forOf(_iterated, element, _binding, syntax) {
-                const range = context.expressionMatchesShape(
-                    syntax.expression,
-                    "tasks",
-                )
-                    ? "tasks"
-                    : context.expressionMatchesShape(
-                            syntax.expression,
-                            "task._dispatches",
-                        )
-                      ? "task->dispatches"
-                      : undefined;
-                if (!range) return undefined;
-                return {
-                    range,
-                    bindings: new Map([
-                        ...[...bindings].filter(([name]) =>
-                            name.startsWith(`${element}.`),
-                        ),
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
             callShapes: new Map([["pass._executeEnabled", "bool"]]),
             expression(input, lowerer) {
                 const node = unwrapExpression(input);

@@ -58,6 +58,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 import type { DeploymentOptions } from "./deployment.js";
+import { knownCondition } from "./values/model.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -1880,6 +1881,11 @@ export interface VariableBinding {
      * guessed.
      */
     reboundInNestedScope?: true;
+    /**
+     * A hoisted `var` whose storage cannot hold undefined, not yet assigned
+     * on the walk to here: a read that may run now refuses.
+     */
+    unassignedVar?: true;
 }
 
 /**
@@ -2008,12 +2014,11 @@ export function isStringValue(value: Value): boolean {
 
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
+    const known = knownCondition(cpp);
     return {
         kind: "boolean",
         cpp,
-        ...(cpp === "true" || cpp === "false"
-            ? { staticBoolean: cpp === "true" }
-            : {}),
+        ...(known === undefined ? {} : { staticBoolean: known }),
         dataType: { kind: "boolean" },
     };
 }
@@ -2445,9 +2450,10 @@ export interface ValueFields {
      * a binding of its own.
      *
      * Construction uses it to tell the fields its layout stores from the ones
-     * it hoisted, and the hoisting proof reads the same mark.
+     * it hoisted, and the hoisting proof reads the same mark. It names the
+     * slot as `Struct.field`.
      */
-    classStoredField?: true;
+    classStoredField?: string;
     /**
      * The one constructor assignment the hoisting proof selected, already
      * performed from the constructor argument the caller evaluated.
@@ -2607,7 +2613,7 @@ export interface ValueFields {
      * the container-level animation/camera wiring a second time.
      */
     assetRootClone?: true;
-    /** An iterated glTF root proven to be the container's only entity (no punctual lights). */
+    /** A glTF root proven to be the container's only entity (no punctual lights). */
     soleAssetEntity?: true;
     /** A clone with a widened node type; asset projection must check its concrete handle. */
     sceneNodeClone?: true;
@@ -3366,6 +3372,7 @@ export type Feature =
     | "data:bigint"
     /** Symbol values: brings js_symbol.hpp. */
     | "data:symbol"
+    | "data:crypto"
     /** Tagged template string arrays: brings js_template.hpp. */
     | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */

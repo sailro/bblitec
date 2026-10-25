@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, propertyKey } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isGlobalUndefined } from "./symbols.js";
 import type { Value } from "./types.js";
@@ -81,15 +81,15 @@ export function compileAssetDecoderConfiguration(
                     "Decoder URL overrides require fresh object literals with constant string values.",
                 );
             return node.properties.map((property) => {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    ts.isComputedPropertyName(property.name)
-                )
-                    context.fail(
+                const name = ts.isPropertyAssignment(property)
+                    ? propertyKey(property.name)
+                    : undefined;
+                if (name === undefined || !ts.isPropertyAssignment(property))
+                    return context.fail(
                         property,
                         "Decoder URL overrides require named properties.",
                     );
-                return [property.name.text, property.initializer];
+                return [name, property.initializer] as const;
             });
         };
         wasmUrls = Object.fromEntries(

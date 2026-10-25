@@ -1,9 +1,18 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import { caughtErrorValue } from "./error-values.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, outermostWrapper, unwrapExpression } from "./syntax.js";
+import { reactionOrderIsUnobservable } from "./continuation-order.js";
+import {
+    libraryGlobal,
+    libraryName,
+    namedMember,
+    type NamedMember,
+} from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
+import { yieldsNewArray } from "./fresh-records.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
@@ -24,6 +33,15 @@ export interface PromiseLoweringContext extends Pick<
     | "reachJson"
     | "thrownValueKinds"
     | "options"
+    | "dataValue"
+    | "dataTypes"
+    | "checker"
+    | "evaluationOrder"
+    | "sourceFile"
+    | "sourceFiles"
+    | "emitDiscardedValue"
+    | "symbols"
+    | "unwrap"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -60,15 +78,53 @@ function rejectionClause(
     };
 }
 
+/** A static of the library's Promise a call names. */
+export type PromiseStatic =
+    "all" | "allSettled" | "any" | "race" | "reject" | "resolve";
+
+const PROMISE_STATICS: ReadonlyMap<string, PromiseStatic> = new Map(
+    (["all", "allSettled", "any", "race", "reject", "resolve"] as const).map(
+        (name) => [name, name],
+    ),
+);
+
+/** `Promise.all(...)` and its siblings, the callee resolved as the library global. */
+export function promiseStatic(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): PromiseStatic | undefined {
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    return callee && libraryGlobal(checker, callee.expression) === "Promise"
+        ? PROMISE_STATICS.get(callee.name)
+        : undefined;
+}
+
+/** A reaction method of the library's Promise. */
+export type PromiseReaction = "then" | "catch" | "finally";
+
+/**
+ * The reaction member a callee names on a library Promise (`p.then`), or
+ * undefined: a user class's own `then` is an ordinary method.
+ */
+export function promiseReactionOf(
+    callee: ts.Node,
+    checker: ts.TypeChecker,
+): (NamedMember & { readonly reaction: PromiseReaction }) | undefined {
+    const access = namedMember(checker, callee);
+    if (!access) return undefined;
+    const name = access.name;
+    return (name === "then" || name === "catch" || name === "finally") &&
+        libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
+        ? { ...access, reaction: name }
+        : undefined;
+}
+
 export function compileImmediatePromise(
     context: PromiseLoweringContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "resolve"
-    ) {
+    const statics = promiseStatic(context.checker, call);
+    if (statics === "resolve") {
         // A void settlement needs an owned promise: there is no immediate
         // payload to retain, and its reactions still run in a later microtask.
         if (call.arguments.length === 0) throw new ApplicationRealmRequired();
@@ -76,25 +132,20 @@ export function compileImmediatePromise(
             context.fail(call, "Immediate Promise.resolve requires one value.");
         }
         const value = context.compileValue(argumentAt(call, 0));
-        if (
-            value.kind === "void" ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt")
-        )
+        if (value.kind === "void" || absenceOf(value) === "undefined")
             throw new ApplicationRealmRequired();
         return value;
     }
-    // The other combinators settle in later microtasks: the realm's queue.
+    // A rejection and the other combinators settle in later microtasks: the
+    // realm's queue.
     if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        ["race", "allSettled", "any"].includes(call.expression.name.text)
+        statics === "reject" ||
+        statics === "race" ||
+        statics === "allSettled" ||
+        statics === "any"
     )
         throw new ApplicationRealmRequired();
-    if (
-        ts.isPropertyAccessExpression(call.expression) &&
-        context.libraryGlobal(call.expression.expression) === "Promise" &&
-        call.expression.name.text === "all"
-    ) {
+    if (statics === "all") {
         if (call.arguments.length !== 1) {
             context.fail(call, "Promise.all requires one static iterable.");
         }
@@ -115,9 +166,22 @@ export function compileImmediatePromise(
                 // Native array callbacks execute eagerly. By the time the
                 // vector reaches Promise.all every immediate promise in it
                 // has settled and all callback side effects have run.
-                return isPromiseResultUsed(call)
-                    ? iterable
-                    : { kind: "void", cpp: "" };
+                if (!isPromiseResultUsed(call))
+                    return { kind: "void", cpp: "" };
+                // The settled values arrive in a new array, never the input:
+                // an argument no other reference holds is that array already.
+                if (yieldsNewArray(context.checker, argument)) return iterable;
+                const source = context.allocateTemporaryCppName("all_values");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name: source,
+                    initializer: iterable.cpp,
+                });
+                return context.dataValue(
+                    `${context.dataTypes.cppType(iterable.dataType)}(${source}.begin(), ${source}.end())`,
+                    iterable.dataType,
+                );
             }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
                 if (
@@ -144,7 +208,7 @@ export function compileImmediatePromise(
         // question is whether their values have to outlive the call.
         if (!isPromiseResultUsed(call)) {
             for (const element of argument.elements) {
-                emitValue(context, context.compileValue(element));
+                context.emitDiscardedValue(context.compileValue(element));
             }
             return { kind: "void", cpp: "" };
         }
@@ -177,17 +241,19 @@ export function compileImmediatePromise(
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
-    if (!ts.isPropertyAccessExpression(call.expression)) {
-        return undefined;
-    }
-    const method = call.expression.name.text;
+    const reaction = promiseReactionOf(call.expression, context.checker);
+    if (!reaction) return undefined;
+    const method = reaction.reaction;
+    // A reaction runs after the code that registers it; here it runs at
+    // once, ahead of that code.
+    if (!context.options.workers && !reactionOrderIsUnobservable(context, call))
+        throw new ApplicationRealmRequired();
     if (method === "catch") {
-        return compileImmediateCatch(context, call);
+        return compileImmediateCatch(context, call, reaction);
     }
     // Cleanup that waits for a settlement needs an owned promise.
     if (method === "finally" && !context.options.workers)
         throw new ApplicationRealmRequired();
-    if (method !== "then") return undefined;
     // Retaining the chain observes its settlement and identity. The immediate
     // callback path only emits effects; the application realm owns the result.
     if (
@@ -244,7 +310,7 @@ export function compileImmediatePromise(
         context.increaseIndent();
     }
     const settlementBoundary = context.nativeBindingCheckpoint();
-    let value = context.compileValue(call.expression.expression);
+    let value = context.compileValue(reaction.expression);
     if (
         value.kind !== "engine" &&
         value.kind !== "void" &&
@@ -268,7 +334,7 @@ export function compileImmediatePromise(
             nativeBinding: true,
         };
     } else if (value.kind === "void") {
-        emitValue(context, value);
+        context.emitDiscardedValue(value);
     }
     if (fulfilled) {
         context.emit({ kind: "expression", code: `${fulfilled} = true;` });
@@ -300,11 +366,8 @@ export function compileImmediatePromise(
 function compileImmediateCatch(
     context: PromiseLoweringContext,
     call: ts.CallExpression,
+    callee: NamedMember,
 ): Value {
-    const callee = call.expression;
-    if (!ts.isPropertyAccessExpression(callee)) {
-        context.fail(call, "Immediate promise catch requires a property call.");
-    }
     if (call.arguments.length !== 1) {
         context.fail(call, "Immediate promise catch requires one callback.");
     }
@@ -336,7 +399,7 @@ function compileImmediateCatch(
             "Immediate promise catch currently supports Promise<void> work.",
         );
     }
-    emitValue(context, value);
+    context.emitDiscardedValue(value);
     context.decreaseIndent();
     const clause = rejectionClause(context, callback);
     context.emit(clause.header);
@@ -353,17 +416,7 @@ function compileImmediateCatch(
 }
 
 function unwrappedResultUse(expression: ts.Expression): ts.Node {
-    let node: ts.Node = expression;
-    while (
-        ts.isAwaitExpression(node.parent) ||
-        ts.isParenthesizedExpression(node.parent) ||
-        ts.isAsExpression(node.parent) ||
-        ts.isNonNullExpression(node.parent) ||
-        ts.isSatisfiesExpression(node.parent)
-    ) {
-        node = node.parent;
-    }
-    return node;
+    return outermostWrapper(expression, { await: true });
 }
 
 function isImmediateReactionResultUsed(
@@ -377,9 +430,7 @@ function isImmediateReactionResultUsed(
         if (
             ts.isCallExpression(aggregate) &&
             aggregate.arguments[0] === array &&
-            ts.isPropertyAccessExpression(aggregate.expression) &&
-            aggregate.expression.name.text === "all" &&
-            context.libraryGlobal(aggregate.expression.expression) === "Promise"
+            promiseStatic(context.checker, aggregate) === "all"
         )
             return isImmediateReactionResultUsed(context, aggregate);
     }
@@ -397,12 +448,6 @@ export function isPromiseResultUsed(call: ts.CallExpression): boolean {
         ts.isExpressionStatement(node.parent) ||
         ts.isVoidExpression(node.parent)
     );
-}
-
-function emitValue(context: PromiseLoweringContext, value: Value): void {
-    if (value.kind !== "engine" && value.cpp.length > 0) {
-        context.emit({ kind: "expression", code: `${value.cpp};` });
-    }
 }
 
 /**

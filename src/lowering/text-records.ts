@@ -50,6 +50,7 @@ import {
     textGpuUnresolved,
     textGpuValues,
 } from "./text-gpu-schema.js";
+import { unwrapExpression } from "../compiler/syntax.js";
 
 const TEXT_DATA = "src/text/text-data.ts";
 const DEFAULT_TEXT_DATA = "src/text/default-text-data.ts";
@@ -804,21 +805,19 @@ function lazyExport(
     name: string,
 ): ts.FunctionDeclaration {
     const loader = model.functionDeclaration(module, name);
-    const unwrap = (node: ts.Expression): ts.Expression =>
-        ts.isParenthesizedExpression(node) ? unwrap(node.expression) : node;
     const statements = loader.body?.statements ?? [];
     const returned =
         statements.length === 1 && ts.isReturnStatement(statements[0]!)
             ? statements[0].expression
             : undefined;
-    const access = returned ? unwrap(returned) : undefined;
+    const access = returned ? unwrapExpression(returned) : undefined;
     const loaded =
         access && ts.isPropertyAccessExpression(access)
-            ? unwrap(access.expression)
+            ? unwrapExpression(access.expression)
             : undefined;
     const imported =
         loaded && ts.isAwaitExpression(loaded)
-            ? unwrap(loaded.expression)
+            ? unwrapExpression(loaded.expression)
             : undefined;
     const declaration =
         access &&

@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** The source bone hook over entries carrying their glTF node index and override fields. */
 export function lowerGltfAnimationBoneOverrides(
@@ -76,9 +77,9 @@ export function lowerGltfAnimationBoneOverrides(
                 !ts.isArrayBindingPattern(names) ||
                 names.elements.length !== 2 ||
                 !ts.isBindingElement(names.elements[0]!) ||
-                names.elements[0].name.getText(file) !== "ni" ||
+                !sameSource(names.elements[0].name, "ni") ||
                 !ts.isBindingElement(names.elements[1]!) ||
-                names.elements[1].name.getText(file) !== "o"
+                !sameSource(names.elements[1].name, "o")
             )
                 context.contractError(
                     statement,

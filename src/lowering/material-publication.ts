@@ -5,6 +5,7 @@ import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderPacketInactiveHook } from "./shader-binding-update.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Output identities and captured material handles transport the source renderables. */
 export function lowerMaterialPublication(
@@ -382,15 +383,15 @@ export function lowerMaterialPublication(
         statement(node, _numeric, indent) {
             if (ts.isVariableStatement(node)) {
                 const variable = node.declarationList.declarations[0]!;
-                if (variable.name.getText() === "stale")
+                if (sameSource(variable.name, "stale"))
                     return [`${indent}const auto stale = group->outputs;`];
-                if (variable.name.getText() === "staleSet")
+                if (sameSource(variable.name, "staleSet"))
                     return [
                         `${indent}const std::unordered_set<SourceMaterialOutput> stale_set(stale.begin(), stale.end());`,
                         `${indent}std::unordered_set<std::uint32_t> live_meshes;`,
                         `${indent}for (const auto& output : outputs) live_meshes.insert(output->mesh.value);`,
                     ];
-                if (variable.name.getText() === "kept")
+                if (sameSource(variable.name, "kept"))
                     return [`${indent}const auto& kept = outputs;`];
             }
             if (ts.isForStatement(node))

@@ -10,6 +10,8 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
+    collectionBinding,
+    memberElement,
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
@@ -17,6 +19,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-shader.ts";
 export function computeShaderDefaultEntryPoint(): string {
@@ -110,13 +113,13 @@ function scope(
         "shader",
         "kind",
         "entryPoint",
-        "decls",
         "slots",
         "pairs",
         "dynamicCounts",
         "limits",
     ])
         bindings.set(name, { cpp: name, type: "opaque" });
+    bindings.set("decls", collectionBinding("decls", memberElement(bindings)));
     bindings.set("name", {
         cpp: "name",
         type: "opaque",
@@ -305,22 +308,6 @@ function scope(
             }
             return undefined;
         },
-        forOf(_iterated, element, _binding, syntax) {
-            if (
-                !context.expressionMatchesShape(syntax.expression, "decls") ||
-                element !== "decl"
-            )
-                return undefined;
-            return {
-                range: "decls",
-                bindings: new Map([
-                    ...[...bindings].filter(([name]) =>
-                        name.startsWith(`${element}.`),
-                    ),
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
-        },
         statement(node, lowerer, indent) {
             if (
                 ts.isVariableStatement(node) &&
@@ -365,8 +352,8 @@ function scope(
                     const compare = initializer.arguments[0];
                     if (
                         compare.parameters.length !== 2 ||
-                        compare.parameters[0]!.name.getText(file) !== "a" ||
-                        compare.parameters[1]!.name.getText(file) !== "b" ||
+                        !sameSource(compare.parameters[0]!.name, "a") ||
+                        !sameSource(compare.parameters[1]!.name, "b") ||
                         ts.isBlock(compare.body)
                     )
                         return context.contractError(

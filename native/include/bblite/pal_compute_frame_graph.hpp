@@ -94,7 +94,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
 #endif
         for (const auto handle : scene->frame_passes()) {
             const auto& record = handle_at(engine.frame_tasks, handle);
-            if (record.execution_enabled == false)
+            if (!frame_task_executes(record))
                 continue;
             if (record.kind != FrameTaskKind::compute) {
                 if (prefix.tasks.empty() && !render_started &&

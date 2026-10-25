@@ -14,8 +14,20 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { presentMembers } from "./type-facts.js";
+import {
+    presentMembers,
+    holdsOnly,
+    arrayShape,
+    isVoid,
+    unionMembers,
+} from "./type-facts.js";
 import ts from "typescript";
+import {
+    absenceOfNull,
+    knownCondition,
+    undefinedValue,
+} from "./values/model.js";
+import { voidReceiver } from "./undefined-values.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -28,7 +40,11 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import {
+    accessedPropertySymbol,
+    declaredInDomLibrary,
+    libraryName,
+} from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -86,7 +102,13 @@ import { readFrozenParticleProperty } from "./particle-buffer.js";
 import { recordAt } from "./record-access.js";
 import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { staticFetchProperty } from "./static-fetch.js";
-import { isAssignmentOperator } from "./syntax.js";
+import {
+    isAssignmentOperator,
+    isTypeAssertion,
+    outermostWrapper,
+    valueUse,
+    wrappersAround,
+} from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { readSplatStreamProperty } from "./splat-stream-surface.js";
@@ -1769,8 +1791,7 @@ function readsWithoutMutableAlias(
     checker: ts.TypeChecker,
     read: ts.Node,
 ): boolean {
-    let use = read;
-    while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+    const use = outermostWrapper(read);
     const parent = use.parent;
     if (
         ts.isElementAccessExpression(parent) &&
@@ -1783,15 +1804,15 @@ function readsWithoutMutableAlias(
         const parts = presentMembers(type);
         return (
             parts.length > 0 &&
-            parts.every((part) =>
-                checker.isTupleType(part)
-                    ? (part as ts.TupleTypeReference).target.readonly
-                    : part.getSymbol()?.getName() === "ReadonlyArray",
-            )
+            parts.every((part) => {
+                const shape = arrayShape(checker, part);
+                return shape !== undefined && !shape.mutable;
+            })
         );
     };
-    if (ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent))
-        return readonly(checker.getTypeFromTypeNode(parent.type));
+    // The outermost assertion types the value; `satisfies` keeps its type.
+    const assertion = wrappersAround(read).filter(isTypeAssertion).at(-1);
+    if (assertion) return readonly(checker.getTypeFromTypeNode(assertion.type));
     return ts.isExpression(use) && readonly(checker.getContextualType(use));
 }
 
@@ -2024,22 +2045,32 @@ export function readProperty(
 }
 
 /** A bare MeshHandle can carry only the entry's statically known engine.
- * Its lexical aliases may have different emitted names.
- * Data-transported picking results instead own a checked engine association;
- * dropping that carrier would lose both provenance and lifetime checks. */
-export function pickedMeshHandleCpp(
-    context: Pick<PropertyContext, "fail">,
+ * Its lexical aliases may have different emitted names. A data-transported
+ * picking result's checked owner must prove to be that engine. */
+export function pickedMeshHandle(
+    context: Pick<
+        LoweringServices,
+        "fail" | "defaultEngine" | "requireDefaultEngine"
+    >,
     value: Value,
     site: ts.Node,
-): string {
-    if (!value.engineCpp || !value.pickingEngineKnown) {
+): { cpp: string; engineCpp: string } {
+    if (value.engineCpp && value.pickingEngineKnown)
+        return {
+            cpp: `bbl::picked_mesh(${value.cpp})`,
+            engineCpp: value.engineCpp,
+        };
+    if (context.defaultEngine() === undefined)
         context.fail(
             site,
-            "A data-transported PickingInfo cannot become a bare Mesh handle; " +
+            "A data-transported PickingInfo becomes a bare Mesh handle only of the entry's engine; " +
                 "read pickedMesh.name or getPickedNormal from the result so its checked engine owner travels with it.",
         );
-    }
-    return `bbl::picked_mesh(${value.cpp})`;
+    const engine = context.requireDefaultEngine(site);
+    return {
+        cpp: `bbl::picked_mesh(${value.cpp}, ${engine})`,
+        engineCpp: engine,
+    };
 }
 
 /**
@@ -2058,13 +2089,16 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
+            | "browserErasure"
             | "moduleNamespaces"
             | "classLowerer"
             | "defaultEngine"
             | "deferredCapabilities"
+            | "emitDiscardedValue"
             | "handleCollections"
             | "optionalChainStop"
             | "platformDocumentHidden"
+            | "sharedClosures"
             | "useNativeValue"
         > {
     /** Bound only while lowering a platform visibility callback body. */
@@ -2078,6 +2112,19 @@ interface PropertyAccessContext
         accessor: ts.GetAccessorDeclaration,
     ): Value;
     enumMemberValue(expression: ts.PropertyAccessExpression): Value | undefined;
+}
+
+/** JavaScript's TypeError message for an access through an absent receiver. */
+export function absentReceiverMessage(
+    absence: "undefined" | "null" | "null or undefined",
+    member: string | undefined,
+    write = false,
+): string {
+    const reading =
+        member === undefined
+            ? ""
+            : ` (${write ? "setting" : "reading"} '${member}')`;
+    return `Cannot ${write ? "set" : "read"} properties of ${absence}${reading}`;
 }
 
 const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
@@ -2159,6 +2206,60 @@ function isStoredPrimitiveRead(value: Value): boolean {
 /** Property access on every owner the compiler represents. */
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
+
+    /**
+     * A class method read as a value: method values are unsupported, though
+     * a call, test or comparison reads it (`valueUse`). `method` is what
+     * the read names, through the class of a kept instance where known.
+     */
+    private refuseMethodValue(
+        expression: ts.PropertyAccessExpression,
+        method = accessedPropertySymbol(this.context.checker, expression)
+            ?.valueDeclaration,
+    ): void {
+        if (
+            method &&
+            ts.isMethodDeclaration(method) &&
+            ts.isClassLike(method.parent) &&
+            valueUse(expression).kind !== "read"
+        )
+            this.context.fail(
+                expression,
+                `Method '${expression.name.text}' is read as a value; method values are unsupported (call it, or call it in an arrow).`,
+            );
+    }
+
+    /**
+     * A read through an absent receiver, after the operands JavaScript
+     * evaluates first: its TypeError, typed as the value `node` would have
+     * produced. `member` is the key, when generation knows it.
+     */
+    public absentReceiverRead(
+        node: ts.Expression,
+        absence: "undefined" | "null",
+        member?: string,
+    ): Value {
+        const message = this.context.cppString(
+            absentReceiverMessage(absence, member),
+        );
+        this.context.reachJsData();
+        const type = this.context.dataLowerer.dataTypeAt(node);
+        if (type)
+            return this.context.dataLowerer.leafValue(
+                `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
+                type,
+            );
+        const result = this.context.checker.getTypeAtLocation(node);
+        if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
+            return {
+                kind: "void",
+                cpp: `bbl::js::throw_nullish_access(${message})`,
+            };
+        return this.context.fail(
+            node,
+            "A read through an absent receiver requires a represented result type.",
+        );
+    }
 
     /**
      * An event target narrowed to an element interface, read through the
@@ -2247,6 +2348,9 @@ export class PropertyAccessLowerer {
             owner.dataType?.kind === "event-target" &&
             isAbsentWindowMember(property)
         ) {
+            // The global object, known at generation, reads it as undefined.
+            if (this.context.browserErasure.isAbsentGlobalMember(expression))
+                return undefinedValue();
             this.context.emit({
                 kind: "expression",
                 code: `static_cast<void>(bbl::dom_window_owner(${owner.cpp}));`,
@@ -2278,10 +2382,10 @@ export class PropertyAccessLowerer {
     /** Whether the checker types an owner as a canvas. */
     private declaresCanvas(ownerExpression: ts.Expression): boolean {
         const type = this.context.checker.getTypeAtLocation(ownerExpression);
-        return (type.isUnion() ? type.types : [type]).some(
+        return unionMembers(type).some(
             (member) =>
-                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
-                member.getSymbol()?.getName() === "OffscreenCanvas",
+                libraryName(member) === "HTMLCanvasElement" ||
+                libraryName(member) === "OffscreenCanvas",
         );
     }
 
@@ -2649,6 +2753,7 @@ export class PropertyAccessLowerer {
     ): Value {
         const stopped = this.context.optionalChainStop(expression);
         if (stopped) return stopped;
+        this.refuseMethodValue(expression);
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -2674,8 +2779,7 @@ export class PropertyAccessLowerer {
         );
         if (environment) return environment;
         const deployed = browserDeploymentValue(this.context, expression);
-        if (deployed === null)
-            return { kind: "json-null", cpp: "std::nullopt" };
+        if (deployed === null) return undefinedValue();
         if (typeof deployed === "boolean")
             return {
                 kind: "boolean",
@@ -2735,7 +2839,7 @@ export class PropertyAccessLowerer {
                     // `pickAsync` is only lowered in its pinned BASIC mode.
                     // Upstream sets `info.ray = null` in that mode, so the
                     // optional access is exactly the nullish left operand.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
             }
         }
@@ -2761,7 +2865,11 @@ export class PropertyAccessLowerer {
         const staticField =
             this.context.classLowerer.resolveStaticField(expression);
         if (staticField?.initializer) {
-            return this.context.compileValue(staticField.initializer);
+            const initializer = staticField.initializer;
+            return this.context.classLowerer.withDeclaringClass(
+                staticField,
+                () => this.context.compileValue(initializer),
+            );
         }
         const staticStorage =
             this.context.classLowerer.readStaticField(expression);
@@ -2884,7 +2992,11 @@ export class PropertyAccessLowerer {
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const compiledOwner = this.context.compileValue(ownerExpression);
+        const compiledOwner = voidReceiver(
+            this.context,
+            this.context.compileValue(ownerExpression),
+            ownerExpression,
+        );
         const rawOwner =
             this.context.presentationHostCpp &&
             compiledOwner.browserValue?.kind === "object" &&
@@ -2914,8 +3026,14 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (platformProperty) return platformProperty;
-        if (owner.kind === "json-null" && expression.questionDotToken)
-            return { kind: "json-null", cpp: "std::nullopt" };
+        if (owner.kind === "json-null")
+            return expression.questionDotToken
+                ? undefinedValue()
+                : this.absentReceiverRead(
+                      expression,
+                      absenceOfNull(owner),
+                      expression.name.text,
+                  );
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")
@@ -3145,7 +3263,7 @@ export class PropertyAccessLowerer {
             // Basic GPU picks publish a null ray; only the detailed pipeline
             // carries one. Keeping that null in the value model lets the
             // source's optional chain and fallback lower unchanged.
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         if (owner.platformEventBase) {
             const eventInterface = this.declaredEventInterface(ownerExpression);
@@ -3165,6 +3283,13 @@ export class PropertyAccessLowerer {
                     truthinessCpp: "true",
                     impure: true,
                 };
+            }
+            if (eventInterface === "GamepadEvent" && property === "gamepad") {
+                this.context.reachFeature("input:gamepad", expression);
+                return this.context.dataLowerer.leafValue(
+                    `${owner.cpp}.as<bbl::PlatformGamepadEvent>().gamepad`,
+                    { kind: "handle", handle: "gamepad" },
+                );
             }
             if (eventInterface === "DragEvent") {
                 if (property === "dataTransfer")
@@ -3242,7 +3367,7 @@ export class PropertyAccessLowerer {
             if (property === "defaultPrevented")
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" || owner.kind === "platform-mouse-event" ? "is_default_prevented()" : "default_prevented"}`,
+                    cpp: `${owner.cpp}.is_default_prevented()`,
                 };
             const declared = readProperty(
                 this.context,
@@ -3444,7 +3569,16 @@ export class PropertyAccessLowerer {
                 ? this.context.compileRecordGetter(owner, accessor)
                 : owner.recordProperties?.[property];
             if (!value) {
-                const method = owner.recordMethods?.[property];
+                // A class instance read through another type has its class's
+                // methods, which a test or comparison reads as present.
+                const classMethod = this.context.classLowerer.viewMethod(
+                    owner,
+                    property,
+                    expression,
+                );
+                if (classMethod)
+                    this.refuseMethodValue(expression, classMethod);
+                const method = owner.recordMethods?.[property] ?? classMethod;
                 if (method) {
                     return {
                         kind: "callback",
@@ -3457,9 +3591,7 @@ export class PropertyAccessLowerer {
                     this.context.dataLowerer.dataTypeAt(expression);
                 const declaredTsType =
                     this.context.checker.getTypeAtLocation(expression);
-                const declaredMembers = declaredTsType.isUnion()
-                    ? declaredTsType.types
-                    : [declaredTsType];
+                const declaredMembers = unionMembers(declaredTsType);
                 const optionalProperty = this.context.checker
                     .getNonNullableType(
                         this.context.checker.getTypeAtLocation(
@@ -3473,19 +3605,15 @@ export class PropertyAccessLowerer {
                         (optionalProperty.flags & ts.SymbolFlags.Optional) !==
                             0) ||
                     (declared?.kind === "function" &&
-                        declaredMembers.some(
-                            (member) =>
-                                (member.flags &
-                                    (ts.TypeFlags.Null |
-                                        ts.TypeFlags.Undefined)) !==
-                                0,
+                        declaredMembers.some((member) =>
+                            holdsOnly(member, ["null", "undefined"]),
                         ))
                 ) {
                     // Object literals omit optional fields entirely. A
                     // compile-time record preserves that absence as
                     // JavaScript's `undefined`, which `??`, equality
                     // guards, `typeof` and concatenation read.
-                    return { kind: "json-null", cpp: "std::nullopt" };
+                    return undefinedValue();
                 }
                 this.context.fail(
                     expression,
@@ -3734,7 +3862,7 @@ export class PropertyAccessLowerer {
         // present one, already tested, and carries none.
         if (
             ownerFlag === undefined ||
-            ownerFlag === "true" ||
+            knownCondition(ownerFlag) === true ||
             !ts.isOptionalChain(expression) ||
             !isStoredPrimitiveRead(value)
         )

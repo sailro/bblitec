@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { unwrapExpression } from "./context.js";
+import { sameSource } from "../compiler/syntax.js";
 
 export function lowerManagedResources(context: LoweringContext): LoweredSource {
     const path = "src/resource/managed-resource-hooks.ts";
@@ -52,8 +53,10 @@ export function lowerManagedResources(context: LoweringContext): LoweredSource {
                 !ts.isBinaryExpression(node.expression) ||
                 node.expression.operatorToken.kind !==
                     ts.SyntaxKind.EqualsToken ||
-                node.expression.left.getText(file) !==
-                    "engine._disposeManagedResources"
+                !sameSource(
+                    node.expression.left,
+                    "engine._disposeManagedResources",
+                )
             )
                 return undefined;
             const callback = node.expression.right;
@@ -81,7 +84,7 @@ export function lowerManagedResources(context: LoweringContext): LoweredSource {
                         const callee = unwrapExpression(expression.expression);
                         if (
                             !ts.isElementAccessExpression(callee) ||
-                            callee.expression.getText(file) !== "disposers"
+                            !sameSource(callee.expression, "disposers")
                         )
                             return undefined;
                         return `(*disposers)[static_cast<std::size_t>(${lowerer.expression(callee.argumentExpression)})]()`;

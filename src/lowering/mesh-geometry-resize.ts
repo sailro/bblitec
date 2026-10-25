@@ -1,9 +1,14 @@
 import ts from "typescript";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { retainedMeshResizeWrappers } from "./mesh-cpu-streams.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const module = "src/mesh/mesh-factories.ts";
 
@@ -80,7 +85,7 @@ export function lowerMeshGeometryResize(
                 if (
                     ts.isExpressionStatement(node) &&
                     ts.isBinaryExpression(node.expression) &&
-                    node.expression.left.getText(file) === "resource._refCount"
+                    sameSource(node.expression.left, "resource._refCount")
                 )
                     return [
                         `${indent}geometry.owners=static_cast<std::uint32_t>(${lowerer.expression(node.expression.right)});`,
@@ -150,7 +155,6 @@ function lowerMeshFactoryFunction(
     for (const arg of [
         "engine",
         "mesh",
-        "meshes",
         "positions",
         "normals",
         "indices",
@@ -185,6 +189,31 @@ function lowerMeshFactoryFunction(
         "bool",
     );
     bind("meshes.length", "static_cast<double>(meshes.size())", "scalar");
+    // Each mesh of the list is a handle that may be invalid, read through
+    // the same members as the `mesh` parameter; the registered scenes are
+    // walked through the engine's own list.
+    bindings.set(
+        "meshes",
+        collectionBinding(
+            "meshes",
+            (name) =>
+                new Map([
+                    ...memberElement(bindings)(name),
+                    [
+                        name,
+                        {
+                            cpp: name,
+                            type: "opaque",
+                            absentCpp: `${name}.value == invalid_handle`,
+                        },
+                    ],
+                ]),
+        ),
+    );
+    bindings.set(
+        "engine._renderingContexts",
+        collectionBinding("engine.scenes()", memberElement(bindings)),
+    );
     bind(
         "sc._renderableVersion",
         "ctx->render_topology_version",
@@ -237,41 +266,10 @@ function lowerMeshFactoryFunction(
             ["release", "bool"],
             ["owners.has", "bool"],
         ]),
-        forOf(iterated, element) {
-            const range =
-                iterated === "meshes"
-                    ? "meshes"
-                    : iterated === "engine._renderingContexts"
-                      ? "engine.scenes()"
-                      : undefined;
-            return range
-                ? {
-                      range,
-                      bindings: new Map([
-                          ...[...bindings].filter(([name]) =>
-                              name.startsWith(`${element}.`),
-                          ),
-                          [
-                              element,
-                              {
-                                  cpp: element,
-                                  type: "opaque",
-                                  ...(element === "mesh"
-                                      ? {
-                                            absentCpp:
-                                                "mesh.value == invalid_handle",
-                                        }
-                                      : {}),
-                              },
-                          ],
-                      ]),
-                  }
-                : undefined;
-        },
         expression(node, lowerer) {
             if (
                 ts.isElementAccessExpression(node) &&
-                node.expression.getText(file) === "meshes"
+                sameSource(node.expression, "meshes")
             )
                 return `(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)}) < meshes.size() ? meshes[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})] : MeshHandle{})`;
             return undefined;
@@ -320,7 +318,7 @@ function lowerMeshFactoryFunction(
             if (
                 ts.isExpressionStatement(node) &&
                 ts.isBinaryExpression(node.expression) &&
-                node.expression.left.getText(file) === "mesh._gpu"
+                sameSource(node.expression.left, "mesh._gpu")
             )
                 return [
                     `${indent}${recordAt("engine.meshes", "mesh")}.geometry=${lowerer.expression(node.expression.right)};`,

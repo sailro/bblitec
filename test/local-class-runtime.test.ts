@@ -655,10 +655,10 @@ test(
     },
 );
 
-test("an instance a container later shares is that shared object from its construction", () => {
-    // Storing the instance replays the compile with its class native, so
-    // the one object is built once and the Set holds it.
-    const result = compileSource(`
+test("keeps a compile-time instance out of a container that shares objects", () => {
+    assert.throws(
+        () =>
+            compileSource(`
                 class Node {
                     readonly weight: number;
                     constructor(weight: number) { this.weight = weight; }
@@ -667,10 +667,8 @@ test("an instance a container later shares is that shared object from its constr
                 const seen = new Set<Node>();
                 seen.add(first);
                 const unused = seen.size;
-            `);
-    assert.equal(
-        result.cpp.match(/bbl::js::make_ref<bblscene::NodeData>\(\)/g)?.length,
-        1,
+            `),
+        /compile-time record/,
     );
 });
 

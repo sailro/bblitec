@@ -13,6 +13,7 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -427,6 +428,29 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept;
 /** Returns true when the event should continue to the canvas/scene. */
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event);
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height);
+/**
+ * The time CSS animations and transitions evaluate at: a Window display
+ * runs its application realm's published capture time; without one they
+ * follow `performance_milliseconds()`.
+ */
+void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds);
+/**
+ * When time-driven UI work (animations, transitions, caret blink, scrolling,
+ * animated gradient text) next changes the document after an update at a set
+ * time.
+ */
+struct UiRmlNextUpdate {
+    /** The update's `set_ui_rml_time` time. */
+    double milliseconds = 0;
+    /** RmlUi's `Context::GetNextUpdateDelay`: seconds, infinite when no such work runs. */
+    double delay = 0;
+    /** RmlUi's timers step by the float difference of its elapsed seconds. */
+    [[nodiscard]] bool due(double at) const {
+        return static_cast<float>(at / 1000.0 - milliseconds / 1000.0) >= delay;
+    }
+};
+/** The latest update's next update; none while the runtime follows `performance_milliseconds()`. */
+std::optional<UiRmlNextUpdate> ui_rml_next_update(const UiRmlRuntime& runtime);
 /** Record RmlUi output; the active GPU renderer consumes the returned frame. */
 const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t width,
                                          std::uint32_t height);

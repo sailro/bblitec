@@ -166,3 +166,40 @@ int main() {
         windowsHide: true,
     });
 });
+
+test("a realm entry engine keeps one identity from a constructor's scoped context to a stored callback", () => {
+    // The manager learns its engine from the constructor's property targets;
+    // the stored callback reads its groups through the entry engine.
+    const result = compileSource(`
+        import type { AnimationGroup, AnimationManager, TransformNode } from "@babylonjs/lite";
+        import {
+            createAnimationManager, createEngine, createPropertyAnimationClip, createPropertyAnimationGroup,
+            createTransformNode, crossFadeAnimationGroups, updateAnimationManager,
+        } from "@babylonjs/lite";
+        class Fader {
+            private readonly manager: AnimationManager = createAnimationManager();
+            private readonly groups: Record<"low" | "high", AnimationGroup>;
+            constructor(pivot: TransformNode) {
+                const target = { hinge: { get angle(): number { return pivot.position.x; }, set angle(value: number) { pivot.position.x = value; } } };
+                const clip = (name: string, value: number) =>
+                    createPropertyAnimationClip(name, [{ path: "hinge.angle", frameRate: 30, keys: [{ frame: 0, value }, { frame: 30, value }] }]);
+                this.groups = {
+                    low: createPropertyAnimationGroup(this.manager, target, clip("low", 0), { loop: true }),
+                    high: createPropertyAnimationGroup(this.manager, target, clip("high", 1), { loop: true }),
+                };
+            }
+            fade(): void { crossFadeAnimationGroups(this.manager, this.groups.low, this.groups.high, { durationMs: 100 }); }
+            tick(ms: number): void { updateAnimationManager(this.manager, ms); }
+        }
+        const handlers = new Set<() => void>();
+        const engine = await createEngine(new OffscreenCanvas(1, 1));
+        const fader = new Fader(createTransformNode("pivot"));
+        handlers.add(() => fader.fade());
+        await Promise.resolve();
+        for (const handler of handlers) handler();
+        fader.tick(16);
+        globalThis.close();
+    `);
+    assert.ok(result.manifest.features.includes("platform:workers"));
+    assert.match(result.cpp, /bbl::cross_fade_animation_groups\(/);
+});

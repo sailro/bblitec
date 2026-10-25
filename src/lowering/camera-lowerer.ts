@@ -8,7 +8,10 @@ import {
     worldAabbLaneBindings,
 } from "./world-bounds-lowerer.js";
 
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 import { pinnedHeader } from "./pinned-header.js";
 import {
@@ -22,6 +25,7 @@ import {
     cameraControlPublication,
     lowerCameraControlLifecycle,
 } from "./camera-control-attachment.js";
+import { isValueReference, sameSource } from "../compiler/syntax.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -434,7 +438,7 @@ CameraHandle create_arc_rotate_camera(
                         node.operatorToken.kind !==
                             ts.SyntaxKind.QuestionQuestionToken ||
                         !ts.isPropertyAccessExpression(node.left) ||
-                        node.left.expression.getText(file) !== "b"
+                        !sameSource(node.left.expression, "b")
                     )
                         return undefined;
                     const plane = node.left.name.text;
@@ -576,10 +580,7 @@ ${invalidation}
                 if (
                     identifier.text !== name &&
                     declared.has(identifier.text) &&
-                    !(
-                        ts.isPropertyAccessExpression(identifier.parent) &&
-                        identifier.parent.name === identifier
-                    )
+                    isValueReference(identifier)
                 )
                     include(identifier.text);
         };
@@ -730,6 +731,33 @@ CameraHandle create_banked_free_camera(
                     },
                 ],
                 ...worldAabbLaneBindings(this.context, "acc", "acc"),
+                [
+                    "scene.meshes",
+                    collectionBinding(
+                        "scene.meshes",
+                        (element) =>
+                            new Map<string, PinnedBinding>([
+                                [element, { cpp: element, type: "opaque" }],
+                                [
+                                    `${element}.visible === false`,
+                                    nodeVisibility
+                                        ? {
+                                              cpp:
+                                                  `(${element}.value < engine.meshes.size() && ` +
+                                                  `!${recordAt("engine.meshes", element)}.visible)`,
+                                              type: "bool",
+                                          }
+                                        : // Nothing writes `visible` in a
+                                          // scene without the feature.
+                                          {
+                                              cpp: "false",
+                                              type: "bool",
+                                              staticBoolean: false,
+                                          },
+                                ],
+                            ]),
+                    ),
+                ],
             ]),
             calls: new Map([
                 ["emptyWorldAabb", () => "empty_world_aabb()"],
@@ -754,32 +782,6 @@ CameraHandle create_banked_free_camera(
                 ["vec3", "vec3"],
             ]),
 
-            forOf: (iterated, element) =>
-                iterated === "scene.meshes"
-                    ? {
-                          range: "scene.meshes",
-                          bindings: new Map<string, PinnedBinding>([
-                              [element, { cpp: element, type: "opaque" }],
-                              [
-                                  `${element}.visible === false`,
-                                  nodeVisibility
-                                      ? {
-                                            cpp:
-                                                `(${element}.value < engine.meshes.size() && ` +
-                                                `!${recordAt("engine.meshes", element)}.visible)`,
-                                            type: "bool",
-                                        }
-                                      : // Nothing writes `visible` in a
-                                        // scene without the feature.
-                                        {
-                                            cpp: "false",
-                                            type: "bool",
-                                            staticBoolean: false,
-                                        },
-                              ],
-                          ]),
-                      }
-                    : undefined,
             // `createArcRotateCamera` returns the native camera's handle.
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
@@ -796,7 +798,7 @@ CameraHandle create_banked_free_camera(
                 if (
                     !call ||
                     !ts.isCallExpression(call) ||
-                    call.expression.getText(file) !== "createArcRotateCamera"
+                    !sameSource(call.expression, "createArcRotateCamera")
                 )
                     return this.context.contractError(
                         camera,

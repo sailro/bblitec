@@ -34,7 +34,8 @@ import type { NativeCaptureBinding } from "../closure-captures.js";
 // are. A native build links a solver through `pal_physics_*.cpp` and never
 // sees the WASM the browser loaded.
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { jsToUint32Call } from "../../lowering/pinned-operators.js";
+import { argumentAt, unwrapExpression } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
 import { vec3Record } from "./mesh.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
@@ -50,6 +51,7 @@ import {
     requiredObjectNumber,
     type RequiredObjectNumberContext,
 } from "./engine-options.js";
+import { unionMembers } from "../type-facts.js";
 
 export interface PhysicsIntrinsicContext
     extends
@@ -75,7 +77,9 @@ export interface PhysicsIntrinsicContext
             | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
+            | "dataLowerer"
             | "intrinsicOptions"
+            | "reachJsData"
             | "sceneManifest"
         > {}
 
@@ -543,15 +547,7 @@ function compileImpulsePoint(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
 ): string {
-    let unwrapped = expression;
-    while (
-        ts.isParenthesizedExpression(unwrapped) ||
-        ts.isAsExpression(unwrapped) ||
-        ts.isTypeAssertionExpression(unwrapped) ||
-        ts.isNonNullExpression(unwrapped)
-    ) {
-        unwrapped = unwrapped.expression;
-    }
+    const unwrapped = unwrapExpression(expression);
     if (ts.isConditionalExpression(unwrapped)) {
         const absent = unwrapped.whenFalse;
         if (!context.symbols.isGlobalUndefined(absent)) {
@@ -646,7 +642,7 @@ function compileBodyEnum(
     const actual = context.checker.getTypeAtLocation(expression);
     const expected =
         parameter && context.checker.getTypeOfSymbolAtLocation(parameter, call);
-    const members = actual.isUnion() ? actual.types : [actual];
+    const members = unionMembers(actual);
     if (
         !expected ||
         !members.every((type) => type.isNumberLiteral()) ||
@@ -819,7 +815,7 @@ function compileCreatePhysicsConstraint(
     const compileType = (expression: ts.Expression): string => {
         const node = context.resolveStaticExpression(expression);
         if (ts.isConditionalExpression(node))
-            return `(${context.compileBoolean(node.condition)} ? ${compileType(node.whenTrue)} : ${compileType(node.whenFalse)})`;
+            return context.dataLowerer.selectArms(node, compileType);
         pinnedEnumMemberName(context, node, "PhysicsConstraintType");
         return context.compileNumber(node, "double");
     };
@@ -1568,12 +1564,13 @@ function compileSetPhysicsShapeFilterMembershipMask(
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     context.expectKind(shape, "physics-shape", argumentAt(call, 1));
     context.expectSameEngine(world, shape, call);
+    context.reachJsData();
     return {
         kind: "void",
         cpp:
             `bbl::upstream::set_physics_shape_filter_membership_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
-            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+            `${jsToUint32Call(context.compileNumber(argumentAt(call, 2), "double"))})`,
     };
 }
 
@@ -1624,12 +1621,13 @@ function compileSetPhysicsShapeFilterCollideMask(
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     context.expectKind(shape, "physics-shape", argumentAt(call, 1));
     context.expectSameEngine(world, shape, call);
+    context.reachJsData();
     return {
         kind: "void",
         cpp:
             `bbl::upstream::set_physics_shape_filter_collide_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
-            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+            `${jsToUint32Call(context.compileNumber(argumentAt(call, 2), "double"))})`,
     };
 }
 
@@ -1960,9 +1958,12 @@ function compilePhysicsRaycast(
                 `ray_${name}`,
             ).cpp;
             if (name === "shouldHitTriggers") shouldHitTriggers = snapshot;
-            else if (name === "membership")
-                membership = `static_cast<std::uint32_t>(${snapshot})`;
-            else collideWith = `static_cast<std::uint32_t>(${snapshot})`;
+            else {
+                context.reachJsData();
+                if (name === "membership")
+                    membership = jsToUint32Call(snapshot);
+                else collideWith = jsToUint32Call(snapshot);
+            }
         }
     }
     const result = context.allocateTemporaryCppName("physics_raycast");
@@ -1980,6 +1981,7 @@ function compilePhysicsRaycast(
             hitPoint: vec3Record(`${result}.hit_point`),
             hitNormal: vec3Record(`${result}.hit_normal`),
             hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
+            triangleIndex: { kind: "number", cpp: `${result}.triangle_index` },
             bodyIndex: { kind: "number", cpp: `${result}.body_index` },
             body: {
                 kind: "data",

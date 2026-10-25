@@ -117,7 +117,15 @@ import {
 } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    declaredSymbol,
+    calledDeclaration,
+    namedMember,
+    type NamedMember,
+    isLibraryStatic,
+    libraryName,
+} from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
 import {
@@ -125,13 +133,31 @@ import {
     parseAuthoredMarkup,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
-import { argumentAt } from "./syntax.js";
+import {
+    argumentAt,
+    isOperandSelection,
+    valueClassOfString,
+    valueOperands,
+    yieldedOperands,
+    writeSites,
+    writeSiteOf,
+    accessKey,
+    variableKind,
+} from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
+import { stringDomain } from "./string-domain.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
     typeMayMapToUiElement,
 } from "./ui-element-analysis.js";
+import {
+    presentMembers,
+    valueKindOf,
+    callSignatures,
+    unionMembers,
+} from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -161,12 +187,31 @@ type UiMarkupPart =
     | string
     | { kind: "text"; expression: ts.Expression }
     | { kind: "stored"; expression: ts.Expression; shape: UiMarkupShape }
+    | UiMarkupBranching;
+
+/** A condition's two continuations, or a runtime text equal to one of closed authored texts. */
+type UiMarkupBranching =
     | {
           kind: "choice";
           condition: ts.Expression;
           yes: UiMarkupPart[];
           no: UiMarkupPart[];
+      }
+    | {
+          kind: "selected";
+          expression: ts.Expression;
+          alternatives: readonly string[];
       };
+
+/** The closed markups each part of one innerHTML value holds, read once per lowering. */
+type UiMarkupDomains = Map<ts.Node, readonly string[] | undefined>;
+
+/** The parts each branch of `part` continues with. */
+function uiMarkupBranches(part: UiMarkupBranching): UiMarkupPart[][] {
+    return part.kind === "choice"
+        ? [part.yes, part.no]
+        : part.alternatives.map((alternative) => [alternative]);
+}
 
 /** The placeholder a runtime value takes in a markup source, by its order. */
 function uiMarkupHole(index: number): string {
@@ -200,21 +245,17 @@ function uiMarkupSources(
                       part.shape.slice(hole + 1).join("");
         } else {
             const rest = parts.slice(index + 1);
-            const yes = uiMarkupSources(
-                [...part.yes, ...rest],
-                limit,
-                source,
-                next,
-            );
-            return [
-                ...yes,
-                ...uiMarkupSources(
-                    [...part.no, ...rest],
-                    limit - yes.length,
-                    source,
-                    next,
-                ),
-            ].slice(0, Math.max(limit, 0));
+            const sources: string[] = [];
+            for (const branch of uiMarkupBranches(part))
+                sources.push(
+                    ...uiMarkupSources(
+                        [...branch, ...rest],
+                        limit - sources.length,
+                        source,
+                        next,
+                    ),
+                );
+            return sources.slice(0, Math.max(limit, 0));
         }
     }
     return limit > 0 ? [source] : [];
@@ -684,14 +725,15 @@ export class UiProjection {
                         ? tracked.staticId
                         : undefined;
                 const lookupId = element.uiHostId ?? element.uiLookupId;
-                const canvas =
-                    lookupId !== undefined && !element.uiCanvas
-                        ? this.hostCanvas(
-                              lookupId,
-                              element.uiTag ?? uiTag,
-                              expression,
-                          )
-                        : {};
+                const canvas = element.uiCanvas
+                    ? {}
+                    : lookupId !== undefined
+                      ? this.hostCanvas(
+                            lookupId,
+                            element.uiTag ?? uiTag,
+                            expression,
+                        )
+                      : this.storedCanvasRole(element, expression);
                 return uiTag === undefined &&
                     uiStaticId === undefined &&
                     !canvas.uiCanvas
@@ -809,20 +851,17 @@ export class UiProjection {
             );
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getContext"
-            ) {
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            if (callee?.name === "getContext") {
                 const canvas = this.uiElementValue(callee.expression);
                 if (canvas?.uiCanvas) {
                     return { ...canvas, uiCanvasContext: true };
                 }
             }
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                this.isUiElementLookup(owner, callee)
-            ) {
+            if (callee && this.isUiElementLookup(owner, callee)) {
                 const value = this.context.compilePlatformCall(owner);
                 return asElement(
                     value?.kind === "data" &&
@@ -943,7 +982,7 @@ export class UiProjection {
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(expression),
         );
-        const members = type.isUnion() ? type.types : [type];
+        const members = unionMembers(type);
         return members.every((member) =>
             tags.includes(
                 elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",
@@ -962,13 +1001,10 @@ export class UiProjection {
         const fixed = this.tryUiStaticString(expression);
         if (fixed !== undefined) return [fixed];
         const value = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            const whenTrue = this.uiImageSourceCandidates(value.whenTrue);
-            const whenFalse = this.uiImageSourceCandidates(value.whenFalse);
-            return whenTrue && whenFalse
-                ? [...whenTrue, ...whenFalse]
-                : undefined;
-        }
+        if (isOperandSelection(value))
+            return this.selectedCandidates(value, (operand) =>
+                this.uiImageSourceCandidates(operand),
+            );
         if (
             !ts.isPropertyAccessExpression(value) ||
             !ts.isPropertyAccessExpression(value.expression) ||
@@ -1010,31 +1046,24 @@ export class UiProjection {
         };
         const writesKey = (target: ts.Expression): boolean => {
             const value = this.context.unwrap(target);
-            if (ts.isPropertyAccessExpression(value))
-                return isDataset(value.expression) && value.name.text === key;
             if (
-                ts.isElementAccessExpression(value) &&
-                isDataset(value.expression)
-            ) {
-                const name = this.context.unwrap(value.argumentExpression);
-                return !ts.isStringLiteralLike(name) || name.text === key;
-            }
-            return false;
+                (!ts.isPropertyAccessExpression(value) &&
+                    !ts.isElementAccessExpression(value)) ||
+                !isDataset(value.expression)
+            )
+                return false;
+            // A key only the run time knows may be this one.
+            const name = accessKey(value);
+            return name === undefined || name === key;
         };
         const writes = (node: ts.Node): boolean => {
-            if (
-                (ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                    writesKey(node.left)) ||
-                (ts.isDeleteExpression(node) && writesKey(node.expression))
-            )
+            if (writeSites(node).some(({ target }) => writesKey(target)))
                 return true;
             if (ts.isCallExpression(node)) {
-                const callee = this.context.unwrap(node.expression);
-                const name = ts.isPropertyAccessExpression(callee)
-                    ? callee.name.text
-                    : undefined;
+                const name = namedMember(
+                    this.context.checker,
+                    this.context.unwrap(node.expression),
+                )?.name;
                 const first = node.arguments[0]
                     ? this.context.unwrap(node.arguments[0])
                     : undefined;
@@ -1068,14 +1097,13 @@ export class UiProjection {
                 ? known
                 : { ...known, engineCpp: this.documentEngine(expression) };
         const owner = this.context.unwrap(expression);
-        // The checker types a conditional as the union of its arms, which
-        // no one data type names; each arm answers for itself.
+        // The checker types a selection as the union of its operands, which
+        // no one data type names; each yielded operand answers for itself.
         const holdsElement = (node: ts.Expression): boolean => {
             const value = this.context.unwrap(node);
-            if (ts.isConditionalExpression(value))
-                return (
-                    holdsElement(value.whenTrue) &&
-                    holdsElement(value.whenFalse)
+            if (isOperandSelection(value))
+                return valueOperands(value, this.context.unwrap).every(
+                    holdsElement,
                 );
             const type = this.context.dataLowerer.dataTypeAt(node);
             const inner = type?.kind === "optional" ? type.inner : type;
@@ -1166,9 +1194,12 @@ export class UiProjection {
                 : undefined;
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            return ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "getContext" ||
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            return callee &&
+                (callee.name === "getContext" ||
                     this.isUiElementLookup(owner, callee))
                 ? "lower"
                 : undefined;
@@ -1179,14 +1210,11 @@ export class UiProjection {
     /** A call `uiElementValue` lowers through the platform call: a query, a closest ancestor, a host lookup. */
     private isUiElementLookup(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): boolean {
         if (isDocumentReceiver(this.context, callee.expression))
             return this.isNativeHostUiLookup(call);
-        return (
-            callee.name.text === "querySelector" ||
-            callee.name.text === "closest"
-        );
+        return callee.name === "querySelector" || callee.name === "closest";
     }
 
     /** `uiElementMetadata` by lowering the expression in a declined probe. */
@@ -1201,6 +1229,29 @@ export class UiProjection {
             return undefined;
         });
         return metadata;
+    }
+
+    /**
+     * Storage keeps an element handle, not its canvas role: a 2D context is
+     * its canvas's handle, and a stored canvas is a retained one, as the
+     * declared interface says.
+     */
+    private storedCanvasRole(
+        element: Value<"ui-element">,
+        expression: ts.Expression,
+    ): Pick<Value, "uiCanvas" | "uiCanvasContext"> {
+        const type = element.dataType;
+        if (type?.kind !== "handle" || type.handle !== "ui-element") return {};
+        const declared = libraryName(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression),
+            ),
+        );
+        if (declared === "CanvasRenderingContext2D")
+            return { uiCanvas: true, uiCanvasContext: true };
+        return declared === "HTMLCanvasElement" && type.ownedEngine
+            ? { uiCanvas: true }
+            : {};
     }
 
     /** A browser value naming the primary canvas, which a presentation host lowers to its element. */
@@ -1262,8 +1313,8 @@ export class UiProjection {
     ): ts.CallExpression | undefined {
         const initializer = this.context.unwrap(expression);
         return ts.isCallExpression(initializer) &&
-            ts.isPropertyAccessExpression(initializer.expression) &&
-            initializer.expression.name.text === "createElement" &&
+            namedMember(this.context.checker, initializer.expression)?.name ===
+                "createElement" &&
             initializer.arguments.length === 1
             ? initializer
             : undefined;
@@ -1303,16 +1354,18 @@ export class UiProjection {
         if (this.uiElementMetadata(value) !== undefined) {
             return true;
         }
-        const callee = this.context.unwrap(value.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(value.expression),
+        );
         const createsElement =
-            ts.isPropertyAccessExpression(callee) &&
-            (callee.name.text === "createElement" ||
-                callee.name.text === "createElementNS" ||
-                callee.name.text === "createTextNode") &&
+            callee !== undefined &&
+            (callee.name === "createElement" ||
+                callee.name === "createElementNS" ||
+                callee.name === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
-            (ts.isStringLiteral(value.arguments[0]) ||
-                ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
+            ts.isStringLiteralLike(value.arguments[0]);
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
@@ -1404,19 +1457,16 @@ export class UiProjection {
                 }
                 return true;
             }
+            // A numeric `+` is one operand (`1 + 2 + "x"` spells 3).
             if (
                 !ts.isBinaryExpression(current) ||
-                current.operatorToken.kind !== ts.SyntaxKind.PlusToken
+                current.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+                valueKindOf(this.context.checker.getTypeAtLocation(current)) !==
+                    "string"
             )
                 return false;
             if (!runtimeOperands)
                 return collect(current.left) && collect(current.right);
-            if (
-                (this.context.checker.getTypeAtLocation(current).flags &
-                    ts.TypeFlags.StringLike) ===
-                0
-            )
-                return false;
             operand(current.left);
             operand(current.right);
             return true;
@@ -1427,24 +1477,7 @@ export class UiProjection {
     private uiTemplateSubstitutionCpp(
         expression: ts.Expression,
         purpose: string,
-        allowStringFallback = false,
     ): string {
-        const logical = this.context.unwrap(expression);
-        if (
-            allowStringFallback &&
-            ts.isBinaryExpression(logical) &&
-            logical.operatorToken.kind === ts.SyntaxKind.BarBarToken
-        ) {
-            const left = this.context.compileValue(logical.left);
-            const right = this.context.compileValue(logical.right);
-            if (isStringValue(left) && isStringValue(right)) {
-                return (
-                    `(!std::string(${left.cpp}).empty()` +
-                    ` ? std::string(${left.cpp})` +
-                    ` : std::string(${right.cpp}))`
-                );
-            }
-        }
         return this.uiTemplateValueCpp(
             this.context.compileValue(expression),
             expression,
@@ -1512,6 +1545,30 @@ export class UiProjection {
             : this.uiStaticElements.get(value.uiStaticId);
     }
 
+    /**
+     * The candidates of each operand a selection yields, keeping the strings
+     * of the value classes it passes on (`a || "x"` never yields an empty `a`).
+     */
+    private selectedCandidates(
+        selection: ts.Expression,
+        candidates: (operand: ts.Expression) => string[] | undefined,
+    ): string[] | undefined {
+        const found: string[] = [];
+        for (const { operand, classes } of yieldedOperands(
+            selection,
+            this.context.unwrap,
+        )) {
+            const strings = candidates(operand);
+            if (!strings) return undefined;
+            found.push(
+                ...strings.filter((text) =>
+                    classes.has(valueClassOfString(text)),
+                ),
+            );
+        }
+        return found;
+    }
+
     private uiStringCandidates(
         expression: ts.Expression,
         budget = 32,
@@ -1519,14 +1576,11 @@ export class UiProjection {
         const exact = this.tryUiStaticString(expression);
         if (exact !== undefined) return [exact];
         const value = this.context.unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            const whenTrue = this.uiStringCandidates(value.whenTrue, budget);
-            const whenFalse = this.uiStringCandidates(value.whenFalse, budget);
-            if (!whenTrue || !whenFalse) return undefined;
-            return [...new EmissionSet([...whenTrue, ...whenFalse])].slice(
-                0,
-                budget,
+        if (isOperandSelection(value)) {
+            const found = this.selectedCandidates(value, (operand) =>
+                this.uiStringCandidates(operand, budget),
             );
+            return found && [...new EmissionSet(found)].slice(0, budget);
         }
         if (
             ts.isBinaryExpression(value) &&
@@ -1642,12 +1696,12 @@ export class UiProjection {
             };
             if (
                 method === "add" ||
-                (method === "toggle" && enabled === "true")
+                (method === "toggle" && knownCondition(enabled) === true)
             ) {
                 mutate(true);
             } else if (
                 method === "remove" ||
-                (method === "toggle" && enabled === "false")
+                (method === "toggle" && knownCondition(enabled) === false)
             ) {
                 mutate(false);
             } else {
@@ -2758,8 +2812,7 @@ export class UiProjection {
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
                 declaration.initializer &&
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                    0
+                variableKind(declaration) === "const"
             ) {
                 target = this.context.unwrap(declaration.initializer);
             }
@@ -4308,11 +4361,7 @@ export class UiProjection {
         this.uiMarkupPrefetched = true;
         const candidates: string[] = [];
         const visit = (node: ts.Node): void => {
-            if (
-                (ts.isStringLiteral(node) ||
-                    ts.isNoSubstitutionTemplateLiteral(node)) &&
-                /<[A-Za-z!/]/.test(node.text)
-            )
+            if (ts.isStringLiteralLike(node) && /<[A-Za-z!/]/.test(node.text))
                 candidates.push(node.text);
             else if (
                 ts.isBinaryExpression(node) &&
@@ -4321,11 +4370,12 @@ export class UiProjection {
                 node.left.name.text === "innerHTML"
             ) {
                 try {
-                    const form = this.uiMarkupForm(node.right);
+                    const domains: UiMarkupDomains = new Map();
+                    const form = this.uiMarkupForm(node.right, domains);
                     candidates.push(
                         ...(form.kind === "structured"
                             ? uiMarkupSources(
-                                  this.uiMarkupParts(node.right),
+                                  this.uiMarkupParts(node.right, domains),
                                   UiProjection.UI_MARKUP_ALTERNATIVES + 1,
                               )
                             : [form.source]),
@@ -4841,6 +4891,7 @@ export class UiProjection {
      */
     private uiMarkupForm(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
     ):
         | { kind: "static"; source: string }
         | { kind: "flat"; source: string; substitutions: ts.Expression[] }
@@ -4858,7 +4909,8 @@ export class UiProjection {
                 (part) =>
                     typeof part !== "string" &&
                     (ts.isConditionalExpression(this.context.unwrap(part)) ||
-                        this.uiStoredMarkupShape(part)),
+                        this.uiStoredMarkupShape(part) ||
+                        this.uiMarkupAlternatives(part, domains)),
             )
         )
             return { kind: "structured" };
@@ -4879,13 +4931,14 @@ export class UiProjection {
         expression: ts.Expression,
         ownerId?: number,
     ): string {
-        const form = this.uiMarkupForm(expression);
+        const domains: UiMarkupDomains = new Map();
+        const form = this.uiMarkupForm(expression, domains);
         if (form.kind === "static")
             return this.context.cppString(
                 this.lowerUiMarkupLiteral(form.source, expression, ownerId),
             );
         if (form.kind === "structured")
-            return this.compileUiStructuredMarkup(expression, ownerId);
+            return this.compileUiStructuredMarkup(expression, domains, ownerId);
         const { source, substitutions } = form;
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         this.context.reachJsData();
@@ -4893,7 +4946,6 @@ export class UiProjection {
             this.uiTemplateSubstitutionCpp(
                 substitutions[index]!,
                 "Native UI innerHTML",
-                true,
             ),
         );
     }
@@ -5024,8 +5076,28 @@ export class UiProjection {
             : undefined;
     }
 
-    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup and choices. */
-    private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
+    /** The closed authored markups a runtime text holds one of (its closed string domain). */
+    private uiMarkupAlternatives(
+        expression: ts.Expression,
+        domains: UiMarkupDomains,
+    ): readonly string[] | undefined {
+        const node = this.context.unwrap(expression);
+        if (domains.has(node)) return domains.get(node);
+        const texts = stringDomain(this.context, node, {
+            label: "Native UI innerHTML markup",
+        });
+        const alternatives = texts?.some((text) => /[<>]/.test(text))
+            ? texts
+            : undefined;
+        domains.set(node, alternatives);
+        return alternatives;
+    }
+
+    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup, choices and selections. */
+    private uiMarkupParts(
+        source: ts.Expression,
+        domains: UiMarkupDomains,
+    ): UiMarkupPart[] {
         const exact = this.tryUiStaticString(source);
         if (exact !== undefined) return [exact];
         const node = this.context.unwrap(source);
@@ -5033,28 +5105,27 @@ export class UiProjection {
             return [
                 node.head.text,
                 ...node.templateSpans.flatMap((span) => [
-                    ...this.uiMarkupParts(span.expression),
+                    ...this.uiMarkupParts(span.expression, domains),
                     span.literal.text,
                 ]),
             ];
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(node).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(node)) ===
+                "string"
         )
             return [
-                ...this.uiMarkupParts(node.left),
-                ...this.uiMarkupParts(node.right),
+                ...this.uiMarkupParts(node.left, domains),
+                ...this.uiMarkupParts(node.right, domains),
             ];
         if (ts.isConditionalExpression(node))
             return [
                 {
                     kind: "choice",
                     condition: node.condition,
-                    yes: this.uiMarkupParts(node.whenTrue),
-                    no: this.uiMarkupParts(node.whenFalse),
+                    yes: this.uiMarkupParts(node.whenTrue, domains),
+                    no: this.uiMarkupParts(node.whenFalse, domains),
                 },
             ];
         const shape = this.uiStoredMarkupShape(node);
@@ -5066,15 +5137,19 @@ export class UiProjection {
                 );
             return [{ kind: "stored", expression: source, shape }];
         }
+        const alternatives = this.uiMarkupAlternatives(node, domains);
+        if (alternatives)
+            return [{ kind: "selected", expression: source, alternatives }];
         return [{ kind: "text", expression: source }];
     }
 
     /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
     private compileUiStructuredMarkup(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
         ownerId?: number,
     ): string {
-        const sourceParts = this.uiMarkupParts(expression);
+        const sourceParts = this.uiMarkupParts(expression, domains);
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&
@@ -5087,7 +5162,11 @@ export class UiProjection {
         let remaining = UiProjection.UI_MARKUP_ALTERNATIVES;
         const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
             parts.some(
-                (part) => typeof part !== "string" && part.kind === "choice",
+                (part) =>
+                    typeof part !== "string" &&
+                    (part.kind === "choice" ||
+                        (part.kind === "selected" &&
+                            part.alternatives.length > 1)),
             );
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
@@ -5132,34 +5211,71 @@ export class UiProjection {
                         source += after;
                     }
                 } else {
-                    const condition = this.context.conditions.compileCondition(
-                        part.condition,
-                    );
-                    if (condition === "true" || condition === "false")
-                        return emit(
-                            [
-                                ...(condition === "true" ? part.yes : part.no),
-                                ...pending.slice(index + 1),
-                            ],
-                            source,
-                            values,
-                        );
-                    const branch = (parts: UiMarkupPart[]): string => {
+                    const continued = (
+                        parts: readonly UiMarkupPart[],
+                    ): UiMarkupPart[] => [
+                        ...parts,
+                        ...pending.slice(index + 1),
+                    ];
+                    const branch = (parts: readonly UiMarkupPart[]): string => {
                         let result = "";
                         const lines = this.context.captureEmittedLines(() => {
                             this.context.enterRuntimeControlFlow();
                             try {
-                                result = emit(
-                                    [...parts, ...pending.slice(index + 1)],
-                                    source,
-                                    values,
-                                );
+                                result = emit(continued(parts), source, values);
                             } finally {
                                 this.context.leaveRuntimeControlFlow();
                             }
                         });
                         return `${lines.join("\n")}\nreturn ${result};`;
                     };
+                    if (part.kind === "selected") {
+                        const value = this.context.bindings.pinValueToTemporary(
+                            this.context.compileValue(part.expression),
+                            "markup_text",
+                            part.expression,
+                        );
+                        const { alternatives } = part;
+                        if (value.staticString !== undefined)
+                            return emit(
+                                continued([value.staticString]),
+                                source,
+                                values,
+                            );
+                        if (alternatives.length === 1)
+                            return emit(
+                                continued(alternatives),
+                                source,
+                                values,
+                            );
+                        const text = this.uiTemplateValueCpp(
+                            value,
+                            part.expression,
+                            "Native UI innerHTML",
+                        );
+                        // The text is one of the alternatives: the last needs no test.
+                        const tests = alternatives
+                            .slice(0, -1)
+                            .map(
+                                (alternative) =>
+                                    `if (${text} == ${this.context.cppString(alternative)}) {\n${branch([alternative])}\n}\n`,
+                            )
+                            .join("");
+                        return `([&]() -> std::string { ${tests}{\n${branch([alternatives.at(-1)!])}\n} }())`;
+                    }
+                    const condition = this.context.conditions.compileCondition(
+                        part.condition,
+                    );
+                    if (knownCondition(condition) !== undefined)
+                        return emit(
+                            continued(
+                                knownCondition(condition) === true
+                                    ? part.yes
+                                    : part.no,
+                            ),
+                            source,
+                            values,
+                        );
                     return `([&]() -> std::string { if (${condition}) {\n${branch(part.yes)}\n} else {\n${branch(part.no)}\n} }())`;
                 }
             }
@@ -5194,11 +5310,12 @@ export class UiProjection {
         const handlerType = this.context.checker.getTypeAtLocation(
             assignment.right,
         );
-        const nullish =
-            (handlerType.flags &
-                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-            0;
-        if (!nullish && handlerType.getCallSignatures().length === 0)
+        const nullish = presentMembers(handlerType).length === 0;
+        if (
+            !nullish &&
+            callSignatures(this.context.checker, handlerType, "exact")
+                .length === 0
+        )
             this.context.fail(
                 assignment.right,
                 `Native UI event handler property '${property}' requires a function or null.`,
@@ -5654,8 +5771,7 @@ export class UiProjection {
         if (
             this.context.hasFeature("engine:device-recovery") &&
             ts.isPropertyAccessExpression(globalLeft) &&
-            ts.isIdentifier(this.context.unwrap(globalLeft.expression)) &&
-            this.context.unwrap(globalLeft.expression).getText() ===
+            this.context.libraryGlobal(globalLeft.expression) ===
                 "globalThis" &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             (ts.isArrowFunction(expression.right) ||
@@ -6357,21 +6473,17 @@ export class UiProjection {
                 this.context.sourceFiles(),
                 new Set([field]),
                 this.context.options.nativeHostUi,
-                (node) => {
-                    const write = node.parent;
-                    return ts.isPropertyAccessExpression(node) &&
-                        node.name.text === field &&
-                        ts.isPropertyAccessExpression(node.expression) &&
-                        node.expression.name.text === "dataset" &&
-                        ((ts.isBinaryExpression(write) &&
-                            write.left === node &&
-                            write.operatorToken.kind ===
-                                ts.SyntaxKind.EqualsToken) ||
-                            (ts.isDeleteExpression(write) &&
-                                write.expression === node))
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    node.name.text === field &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "dataset" &&
+                    // A store or delete that does not read the field first.
+                    ["assign", "delete", "loop"].includes(
+                        writeSiteOf(node)?.kind ?? "",
+                    )
                         ? "self"
-                        : undefined;
-                },
+                        : undefined,
             );
             this.observedDatasetFields.set(field, observed);
         }
@@ -6418,13 +6530,16 @@ export class UiProjection {
 
     /** Checked Document queries reach their retained owner, activating a Window realm when needed. */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
+            !callee ||
             !(
-                callee.name.text === "getElementById" ||
-                callee.name.text === "querySelector" ||
-                callee.name.text === "querySelectorAll"
+                callee.name === "getElementById" ||
+                callee.name === "querySelector" ||
+                callee.name === "querySelectorAll"
             ) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
@@ -6457,17 +6572,18 @@ export class UiProjection {
      * string.
      */
     public lookupElementId(call: ts.CallExpression): string | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         const argument = this.context.unwrap(argumentAt(call, 0));
-        const text =
-            ts.isStringLiteral(argument) ||
-            ts.isNoSubstitutionTemplateLiteral(argument)
-                ? argument.text
-                : ts.isIdentifier(argument)
-                  ? this.context.bindings.lookupOptional(argument)?.staticString
-                  : undefined;
-        return ts.isPropertyAccessExpression(callee) && text !== undefined
-            ? documentLookupId(callee.name.text, text)
+        const text = ts.isStringLiteralLike(argument)
+            ? argument.text
+            : ts.isIdentifier(argument)
+              ? this.context.bindings.lookupOptional(argument)?.staticString
+              : undefined;
+        return callee && text !== undefined
+            ? documentLookupId(callee.name, text)
             : undefined;
     }
 
@@ -6478,8 +6594,7 @@ export class UiProjection {
      * bounded IR rather than the retained element tree.
      */
     private isNativeUiHelperCall(call: ts.CallExpression): boolean {
-        const declaration =
-            this.context.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.context.checker, call);
         if (
             !declaration ||
             (!ts.isFunctionDeclaration(declaration) &&
@@ -6498,17 +6613,18 @@ export class UiProjection {
                     reached = true;
                     return;
                 }
-                const callee = this.context.unwrap(node.expression);
                 if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.name.text === "createElement" &&
-                    this.context.libraryGlobal(callee.expression) === "document"
+                    isLibraryStatic(
+                        this.context.checker,
+                        this.context.unwrap(node.expression),
+                        "document",
+                        "createElement",
+                    )
                 ) {
                     const tag = node.arguments[0];
                     if (
                         tag &&
-                        (ts.isStringLiteral(tag) ||
-                            ts.isNoSubstitutionTemplateLiteral(tag)) &&
+                        ts.isStringLiteralLike(tag) &&
                         tag.text.toLowerCase() !== "canvas"
                     ) {
                         reached = true;

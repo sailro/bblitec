@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 
 export type EngineOwnerStorageDeclaration =
@@ -20,8 +22,12 @@ export function isEngineOwnerStorageDeclaration(
 }
 
 /** A stored resource must carry the engine that gives it identity. */
-export class EngineOwnerStorageRequired extends Error {
+export class EngineOwnerStorageRequired extends StorageDemand {
     constructor(readonly declaration: EngineOwnerStorageDeclaration) {
         super("Resource storage must retain its engine owner.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "engine-owner", declaration: this.declaration };
     }
 }

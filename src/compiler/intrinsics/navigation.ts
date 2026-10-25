@@ -110,7 +110,11 @@ function emitOffMeshConnections(
                 kind: "declaration",
                 type: "const bbl::Vec3",
                 name: temporary,
-                initializer: context.vec3FromRecord(required(name), site),
+                initializer: context.vec3FromRecord(
+                    required(name),
+                    site,
+                    "float",
+                ),
             });
             return (
                 `bbl::pal::NavVec3{${temporary}.x, ` +

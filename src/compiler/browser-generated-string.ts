@@ -23,6 +23,9 @@ import { canvasBakeBrowserArgs } from "../browser-harness.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { evaluateInSharedPage } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
+import { unwrapExpression, plainDataMembers } from "./syntax.js";
+import { namedMember } from "./symbols.js";
+import { holdsOnly } from "./type-facts.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -95,10 +98,8 @@ export function browserGeneratedString(
     const signature = checker.getSignatureFromDeclaration(declaration);
     if (
         !signature ||
-        (checker.getReturnTypeOfSignature(signature).flags &
-            ts.TypeFlags.StringLike) ===
-            0 ||
-        !readsCanvasDataUrl(declaration.body)
+        !holdsOnly(checker.getReturnTypeOfSignature(signature), ["string"]) ||
+        !readsCanvasDataUrl(checker, declaration.body)
     )
         return undefined;
     const source = declaration.getSourceFile();
@@ -223,13 +224,12 @@ function runCanvasHelperInChromium(
  * not a call, and generated behaviour is never decided by source text.
  * A nested function's read is that function's, not the helper's.
  */
-function readsCanvasDataUrl(body: ts.Node): boolean {
+function readsCanvasDataUrl(checker: ts.TypeChecker, body: ts.Node): boolean {
     return someAnalysisNode(
         body,
         (node) =>
             ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "toDataURL",
+            namedMember(checker, node.expression)?.name === "toDataURL",
         { functions: "skip" },
     );
 }
@@ -243,15 +243,7 @@ function readsCanvasDataUrl(body: ts.Node): boolean {
  * value rather than with source text.
  */
 function isLiteralConfiguration(expression: ts.Expression): boolean {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
+    const current = unwrapExpression(expression);
     if (
         ts.isStringLiteral(current) ||
         ts.isNumericLiteral(current) ||
@@ -275,10 +267,12 @@ function isLiteralConfiguration(expression: ts.Expression): boolean {
         );
     }
     if (ts.isObjectLiteralExpression(current)) {
-        return current.properties.every(
-            (property) =>
-                ts.isPropertyAssignment(property) &&
-                isLiteralConfiguration(property.initializer),
+        return (
+            plainDataMembers(current)?.every(
+                (member) =>
+                    member.kind === "property" &&
+                    isLiteralConfiguration(member.value),
+            ) ?? false
         );
     }
     return false;

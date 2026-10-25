@@ -4863,10 +4863,7 @@ const sceneInputs: readonly SceneInput[] = [
             // the published measurement.
             maxFullMad: 1.3,
             maxForegroundMad: 1.1,
-            // Canvas-only lane: 0.080 / 0.086 on both backends
-            // (docs/status.md row note): the demo reports a doubled
-            // `devicePixelRatio` so the browser renders 2x and scales the
-            // canvas down, and the port erases that override. The gate is the exact pair the
+            // Canvas-only lane: the gate is the exact pair the
             // canvas-golden era enforced before the full-page promotion,
             // so a 3D regression cannot hide under the UI font residual
             // the composite thresholds above must absorb.
@@ -4901,11 +4898,9 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.1,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                ...adHocCaptureEnvironment(),
-                // The initial HUD message hides after 3s, then fades for 300ms.
-                BBLITE_SCREENSHOT_FRAME: "211",
-            },
+            // The initial HUD message hides after 3s, then fades for 300ms:
+            // frame 211, which the golden also freezes (`goldenFixedFrame`).
+            nativeEnvironment: adHocCaptureEnvironment(3500),
         },
     },
     {
@@ -5434,9 +5429,7 @@ function derivedReferenceFrameEnvironment(
         nativeEnvironment: {
             ...parity.nativeEnvironment,
             BBLITE_SCREENSHOT_FRAME: String(nativeFrame),
-            // Window presentation may repaint the same canvas several times.
-            // The browser's fixed RAF pose counts rendered engine frames.
-            BBLITE_CAPTURE_ENGINE_FRAME: String(nativeFrame),
+            ...engineFrameCapture,
         },
     };
 }
@@ -5614,6 +5607,7 @@ import {
 } from "./host-page.js";
 import {
     adHocCaptureEnvironment,
+    engineFrameCapture,
     fixedCaptureEnvironment,
 } from "./capture-timing.js";
 import {

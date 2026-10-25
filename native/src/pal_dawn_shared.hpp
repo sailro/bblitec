@@ -593,41 +593,43 @@ inline bool acquire_dawn_surface_texture(DawnDevice& state, WGPUSurfaceTexture& 
                std::to_string(static_cast<int>(texture.status)) + "): " + state.last_error());
 }
 
+#if BBLITE_OFFSCREEN_SURFACES
+/** Share an application realm endpoint's device: its Window host owns it. */
+inline void bind_dawn_offscreen_device(OffscreenRun& run, const EngineOptions& engine_options,
+                                       const DeviceOptions& options, DawnDevice& state) {
+    auto* shared = dynamic_cast<DawnOffscreenDevice*>(&run.device());
+    if (!shared)
+        dawn_error("Offscreen surface does not own a Dawn device.");
+    if (!wgpuDeviceHasFeature(shared->device, WGPUFeatureName_ImplicitDeviceSynchronization)) {
+        dawn_error("Offscreen device was created without implicit device synchronization.");
+    }
+    WGPULimits limits = WGPU_LIMITS_INIT;
+    if (wgpuDeviceGetLimits(shared->device, &limits) != WGPUStatus_Success ||
+        options.max_vertex_attributes > limits.maxVertexAttributes ||
+        options.max_color_attachment_bytes_per_sample > limits.maxColorAttachmentBytesPerSample ||
+        !dawn_limits_satisfy(limits, gpu_required_limits(engine_options.required_limits))) {
+        dawn_error("Shared offscreen device limits do not satisfy this renderer.");
+    }
+    // Immutable device/queue handles may cross realms. Every engine's
+    // scene records and renderer resources remain on its owning thread.
+    state.instance = shared->instance;
+    state.adapter = shared->adapter;
+    state.device = shared->device;
+    state.queue = shared->queue;
+    wgpuInstanceAddRef(state.instance);
+    wgpuAdapterAddRef(state.adapter);
+    wgpuDeviceAddRef(state.device);
+    wgpuQueueAddRef(state.queue);
+    state.surface_format = shared->surface_format;
+    state.surface_width = static_cast<std::uint32_t>(engine_options.width);
+    state.surface_height = static_cast<std::uint32_t>(engine_options.height);
+}
+#endif
+
+/** Open the run's window and Dawn device, or share a presentation host's window. */
 inline void create_dawn_device(const EngineOptions& engine_options, const DeviceOptions& options,
                                DawnDevice& state,
                                [[maybe_unused]] const DawnDeviceHost& host = {}) {
-#if BBLITE_OFFSCREEN_SURFACES
-    if (auto* run = OffscreenRun::current()) {
-        auto* shared = dynamic_cast<DawnOffscreenDevice*>(&run->device());
-        if (!shared)
-            dawn_error("Offscreen surface does not own a Dawn device.");
-        if (!wgpuDeviceHasFeature(shared->device, WGPUFeatureName_ImplicitDeviceSynchronization)) {
-            dawn_error("Offscreen device was created without implicit device synchronization.");
-        }
-        WGPULimits limits = WGPU_LIMITS_INIT;
-        if (wgpuDeviceGetLimits(shared->device, &limits) != WGPUStatus_Success ||
-            options.max_vertex_attributes > limits.maxVertexAttributes ||
-            options.max_color_attachment_bytes_per_sample >
-                limits.maxColorAttachmentBytesPerSample ||
-            !dawn_limits_satisfy(limits, gpu_required_limits(engine_options.required_limits))) {
-            dawn_error("Shared offscreen device limits do not satisfy this renderer.");
-        }
-        // Immutable device/queue handles may cross realms. Every engine's
-        // scene records and renderer resources remain on its owning thread.
-        state.instance = shared->instance;
-        state.adapter = shared->adapter;
-        state.device = shared->device;
-        state.queue = shared->queue;
-        wgpuInstanceAddRef(state.instance);
-        wgpuAdapterAddRef(state.adapter);
-        wgpuDeviceAddRef(state.device);
-        wgpuQueueAddRef(state.queue);
-        state.surface_format = shared->surface_format;
-        state.surface_width = static_cast<std::uint32_t>(engine_options.width);
-        state.surface_height = static_cast<std::uint32_t>(engine_options.height);
-        return;
-    }
-#endif
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #if BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;

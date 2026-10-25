@@ -1,6 +1,12 @@
 import ts from "typescript";
+import { finalReturn } from "./loop-control.js";
 import { resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    isOperandSelection,
+    unwrapExpression,
+    yieldedOperands,
+} from "./syntax.js";
+import { valueKindOf } from "./type-facts.js";
 
 /** Fixed authored fragments around runtime text. Null spans never carry markup. */
 export type UiMarkupShape = readonly (string | null)[];
@@ -40,8 +46,7 @@ export function uiMarkupValueShape(
     const nested = new Set([...active, node]);
     const shape = (value: ts.Expression): UiMarkupShape =>
         uiMarkupValueShape(value, context, nested);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-        return [node.text];
+    if (ts.isStringLiteralLike(node)) return [node.text];
     if (ts.isTemplateExpression(node))
         return join([
             node.head.text,
@@ -53,9 +58,7 @@ export function uiMarkupValueShape(
     if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-        (context.checker.getTypeAtLocation(node).flags &
-            ts.TypeFlags.StringLike) !==
-            0
+        valueKindOf(context.checker.getTypeAtLocation(node)) === "string"
     )
         return join([...shape(node.left), ...shape(node.right)]);
     if (ts.isIdentifier(node)) {
@@ -71,10 +74,12 @@ export function uiMarkupValueShape(
         )
             return shape(declaration.initializer);
     }
-    if (ts.isConditionalExpression(node)) {
-        const yes = shape(node.whenTrue),
-            no = shape(node.whenFalse);
-        if (sameShape(yes, no)) return yes;
+    if (isOperandSelection(node)) {
+        const shapes = yieldedOperands(node).map(({ operand }) =>
+            shape(operand),
+        );
+        if (shapes.every((each) => sameShape(each, shapes[0]!)))
+            return shapes[0]!;
     }
     if (
         ts.isCallExpression(node) &&
@@ -109,10 +114,8 @@ export function uiMarkupValueShape(
             };
             visit(called.body);
             // A trailing return ensures that a normal fallthrough cannot produce undefined.
-            const last = called.body.statements.at(-1);
             if (
-                last &&
-                ts.isReturnStatement(last) &&
+                finalReturn(called.body) &&
                 returns.length &&
                 returns.every((value) => sameShape(value, returns[0]!))
             )

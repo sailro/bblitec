@@ -2,9 +2,11 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
+    opaqueElement,
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const modulePath = "src/physics/havok-events.ts";
 
@@ -33,7 +35,14 @@ export function lowerPhysicsEvents(
             "removed",
             { ...binding("events.removed"), absentCpp: "!events.removed" },
         ],
-        ["deferred", { ...binding("deferred"), absentCpp: "!deferred" }],
+        [
+            "deferred",
+            {
+                ...binding("deferred"),
+                absentCpp: "!deferred",
+                elements: { range: "*deferred", element: opaqueElement },
+            },
+        ],
         ["nativeId", binding("native_id", "scalar")],
         ["body", binding("body")],
         ["body._hkBody", binding("body.handle")],
@@ -66,7 +75,7 @@ export function lowerPhysicsEvents(
             statement(statement, numeric, indent) {
                 if (ts.isVariableStatement(statement)) {
                     const local = statement.declarationList.declarations[0]!;
-                    if (local.name.getText(file) === "deferred") {
+                    if (sameSource(local.name, "deferred")) {
                         context.assertExpressionShape(
                             local.initializer!,
                             "removed",
@@ -76,7 +85,7 @@ export function lowerPhysicsEvents(
                             `${indent}const auto deferred = std::move(events.removed);`,
                         ];
                     }
-                    if (local.name.getText(file) === "count") {
+                    if (sameSource(local.name, "count")) {
                         context.assertExpressionShape(
                             local.initializer!,
                             "world._thin?.count(body)",
@@ -86,7 +95,7 @@ export function lowerPhysicsEvents(
                             `${indent}const std::optional<double> count = ${thin ? "thin_state(world, body.handle) ? std::optional<double>{static_cast<double>(thin_state(world, body.handle)->handles.size())} : std::nullopt" : "std::nullopt"};`,
                         ];
                     }
-                    if (local.name.getText(file) === "handle") {
+                    if (sameSource(local.name, "handle")) {
                         context.assertExpressionShape(
                             local.initializer!,
                             "world._thin!.instance(body, index)",
@@ -143,14 +152,6 @@ export function lowerPhysicsEvents(
                     return "physics_event_lookup(events, native_id)";
                 return undefined;
             },
-            forOf(iterated, element) {
-                return iterated === "deferred"
-                    ? {
-                          range: "*deferred",
-                          bindings: new Map([[element, binding(element)]]),
-                      }
-                    : undefined;
-            },
             returnValue: (expression, numeric) =>
                 expression ? numeric.expression(expression) : "",
         });
@@ -164,8 +165,8 @@ export function lowerPhysicsEvents(
         return value.body.statements;
     };
     const methods = (name: string) => {
-        const method = initializer.properties.find(
-            (member) => member.name?.getText(file) === name,
+        const method = initializer.properties.find((member) =>
+            sameSource(member.name, name),
         );
         if (!method || !ts.isMethodDeclaration(method) || !method.body)
             return context.contractError(
@@ -269,7 +270,7 @@ export function lowerPhysicsAfterStep(context: LoweringContext): string {
         statement(node, _lowerer, indent) {
             if (ts.isVariableStatement(node)) {
                 const local = node.declarationList.declarations[0];
-                if (local?.name.getText(file) === "cbs") {
+                if (local !== undefined && sameSource(local.name, "cbs")) {
                     context.assertExpressionShape(
                         local.initializer!,
                         "world._afterStep.slice()",
@@ -279,7 +280,7 @@ export function lowerPhysicsAfterStep(context: LoweringContext): string {
                         `${indent}const auto callbacks = world.after_step;`,
                     ];
                 }
-                if (local?.name.getText(file) === "events") {
+                if (local !== undefined && sameSource(local.name, "events")) {
                     context.assertExpressionShape(
                         local.initializer!,
                         "world._events",
@@ -311,7 +312,7 @@ export function lowerPhysicsAfterStep(context: LoweringContext): string {
                 const callee = context.unwrapExpression(expression.expression);
                 if (
                     ts.isElementAccessExpression(callee) &&
-                    callee.expression.getText(file) === "cbs"
+                    sameSource(callee.expression, "cbs")
                 ) {
                     return `callbacks.at(static_cast<std::size_t>(${lowerer.expression(callee.argumentExpression)}))(static_cast<float>(${lowerer.expression(expression.arguments[0]!)}))`;
                 }
@@ -434,7 +435,7 @@ export function lowerPhysicsCollisionInfo(context: LoweringContext): {
             const callee = context.unwrapExpression(expression.expression);
             if (
                 !ts.isElementAccessExpression(callee) ||
-                callee.expression.getText(file) !== "collision.callbacks"
+                !sameSource(callee.expression, "collision.callbacks")
             )
                 return undefined;
             context.assertExpressionShape(

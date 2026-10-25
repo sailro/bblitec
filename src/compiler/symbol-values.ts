@@ -2,11 +2,13 @@
 // creates a unique identity, `Symbol.for`/`Symbol.keyFor` use the realm's
 // registry, and a symbol answers `description` and `toString()`.
 import ts from "typescript";
+import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { stringConcatPart } from "./expressions.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isUndefinedDataType } from "./data-types.js";
 import type { Value } from "./types.js";
+import { libraryStaticMember } from "./symbols.js";
 
 type SymbolContext = Pick<
     LoweringServices,
@@ -40,7 +42,7 @@ function descriptionCpp(
     if (!argument) return "std::nullopt";
     const value = context.compileValue(argument);
     if (
-        (value.kind === "json-null" && value.cpp === "std::nullopt") ||
+        absenceOf(value) === "undefined" ||
         isUndefinedDataType(value.dataType)
     ) {
         if (value.kind !== "json-null") context.emitDiscardedValue(value);
@@ -60,11 +62,8 @@ export function compileSymbolCall(
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = context.unwrap(call.expression);
-    const statics =
-        ts.isPropertyAccessExpression(callee) &&
-        context.libraryGlobal(callee.expression) === "Symbol"
-            ? callee.name.text
-            : undefined;
+    const member = libraryStaticMember(context.checker, callee);
+    const statics = member?.owner === "Symbol" ? member.name : undefined;
     if (context.libraryGlobal(callee) !== "Symbol" && !statics)
         return undefined;
     context.reachJsData();

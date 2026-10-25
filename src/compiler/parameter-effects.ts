@@ -1,28 +1,78 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
+import {
+    boundedKeyPath,
+    derive,
+    nest,
+    pathStartsWith,
+    pathsOverlap,
+    projectMember,
+    slotProjections,
+    type KeyPath,
+    type Projection,
+} from "./projections.js";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     callbackTakesReceiver,
+    callsArgumentInPlace,
     isStoringDataCall,
     lengthPreservingArrayMethods,
+    libraryMethodWritesReceiver,
     readOnlyDataMethods,
     storingDataMethods,
 } from "./receiver-methods.js";
 import {
     declarationInDefaultLibrary,
+    declarationOrigin,
     declaredSymbol,
-    isNullishLiteral,
+    libraryCallName,
     libraryGlobal,
+    libraryName,
+    resolvedSymbol,
+    nullishComparison,
+    calledDeclaration,
+    namedMember,
+    forwardedCallShape,
+    type ForwardedCallShape,
 } from "./symbols.js";
 import {
-    assignmentTargets,
-    isAssignmentExpression,
-    isUpdateExpression,
-    propertyNameText,
+    valueConsumer,
+    propertyKey,
     unwrapExpression,
+    outermostWrapper,
+    writeSites,
+    ANY_KEY,
+    accessKey,
+    aliasKey,
+    keyIndex,
+    arrayLiteralSlots,
+    patternSlots,
+    equalityOperator,
+    parameterForArgument,
+    functionKind,
+    functionOfDeclaration,
+    isMemberAccess,
+    mutatingCallTarget,
+    referenceBases,
+    variableKind,
 } from "./syntax.js";
-import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
+import {
+    callResultHoldsArguments,
+    keptArguments,
+    libraryResultMayHold,
+} from "./kept-values.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    unionMembers,
+} from "./type-facts.js";
 
 /**
  * What a function does with the object one of its parameters holds, from
@@ -38,16 +88,13 @@ import { typeCanCarryReference } from "./type-facts.js";
  * language library's table, or code the program does not hold.
  */
 
-/** Property names from a parameter to an object; `*` is any key. */
-type EffectPath = readonly string[];
-
 interface UseBase {
     readonly node: ts.Node;
     /**
      * The object the use reaches, from the parameter; for a write, the
      * slot written (the written object's path and the key).
      */
-    readonly path: EffectPath;
+    readonly path: KeyPath;
     /**
      * The use may reach any object at or below `path`: a value a call
      * computed from the parameter's objects.
@@ -78,7 +125,7 @@ type ParameterUse = UseBase &
                * argument is the object, a key path inside a container
                * holding it otherwise.
                */
-              readonly at: EffectPath;
+              readonly at: KeyPath;
           }
         | {
               readonly kind:
@@ -124,117 +171,15 @@ export function isEffectFunction(
     );
 }
 
-/**
- * What a value holds of the parameter's objects: the object at `from` sits
- * at `at` inside the value (`at` empty: the value is that object). A
- * `derived` value is computed from the object: it may be, or hold, any
- * object at or below `from`.
- */
-interface Projection {
-    readonly at: EffectPath;
-    readonly from: EffectPath;
-    readonly derived: boolean;
-}
-
-const MAXIMUM_PATH = 6;
 const MAXIMUM_PROJECTIONS = 16;
-
-function compatible(left: string, right: string): boolean {
-    return left === right || left === "*" || right === "*";
-}
-
-function bounded(path: EffectPath): EffectPath {
-    return path.length > MAXIMUM_PATH ? path.slice(0, MAXIMUM_PATH) : path;
-}
-
-/** The projections of the value read at `key` inside a value holding `values`. */
-function project(
-    values: readonly Projection[],
-    key: string,
-): readonly Projection[] {
-    return values.flatMap((value) =>
-        value.at.length > 0
-            ? compatible(value.at[0]!, key)
-                ? [{ ...value, at: value.at.slice(1) }]
-                : []
-            : [{ ...value, from: bounded([...value.from, key]) }],
-    );
-}
-
-/** The projections of a container holding a value with `values` at `key`. */
-function nest(
-    values: readonly Projection[],
-    key: string,
-): readonly Projection[] {
-    return values.map((value) => ({
-        ...value,
-        at: bounded([key, ...value.at]),
-    }));
-}
-
-/** A value a call computed from one holding `values`. */
-function derive(values: readonly Projection[]): readonly Projection[] {
-    return values.map((value) => ({
-        at: [],
-        from: value.from,
-        derived: true,
-    }));
-}
 
 /** Whether a value of `type` can be or hold an object: not a primitive, nor an array of them. */
 function canHoldObjects(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (!typeCanCarryReference(type)) return false;
     if (!checker.isArrayLikeType(type) || type.isUnion()) return true;
-    const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    const element = arrayElementType(checker, type);
     return element === undefined || typeCanCarryReference(element);
 }
-
-/** The outermost wrapper around an expression that keeps its value. */
-function climb(node: ts.Expression): ts.Expression {
-    let current = node;
-    while (
-        ts.isParenthesizedExpression(current.parent) ||
-        ts.isNonNullExpression(current.parent) ||
-        ts.isAsExpression(current.parent) ||
-        ts.isTypeAssertionExpression(current.parent) ||
-        ts.isSatisfiesExpression(current.parent)
-    )
-        current = current.parent;
-    return current;
-}
-
-function accessKey(
-    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-): string {
-    if (ts.isPropertyAccessExpression(access))
-        return ts.isPrivateIdentifier(access.name)
-            ? `#${access.name.text}`
-            : access.name.text;
-    const key = unwrapExpression(access.argumentExpression);
-    return ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-        ? key.text
-        : "*";
-}
-
-/** Library methods that call the function they are handed before returning. */
-export const SYNCHRONOUS_CALLBACK_METHODS: ReadonlySet<string> = new Set([
-    "every",
-    "filter",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "flatMap",
-    "forEach",
-    "map",
-    "reduce",
-    "reduceRight",
-    "replace",
-    "replaceAll",
-    "some",
-    "sort",
-    "toSorted",
-]);
 
 /**
  * Library methods whose result holds what their callback returns (`map`,
@@ -321,15 +266,14 @@ function isRestBinding(binding: ts.Identifier): boolean {
  * destructured parameter.
  */
 function argumentBinding(
+    call: ts.CallExpression | ts.NewExpression,
     fn: EffectFunction,
     index: number,
 ): ts.Identifier | undefined {
-    const rest = fn.parameters.findIndex(
-        (parameter) => parameter.dotDotDotToken !== undefined,
-    );
-    const parameter = fn.parameters[rest >= 0 && index >= rest ? rest : index];
-    return parameter && ts.isIdentifier(parameter.name)
-        ? parameter.name
+    // A spread at or before it leaves its parameter to the run time.
+    const bound = parameterForArgument(call, fn, index);
+    return bound !== "unknown" && bound && ts.isIdentifier(bound.parameter.name)
+        ? bound.parameter.name
         : undefined;
 }
 
@@ -340,22 +284,14 @@ function summarize(
 ): ParameterEffects {
     const symbol = fn.body ? declaredSymbol(checker, binding) : undefined;
     if (!symbol) return OPAQUE;
-    const generator =
-        (ts.isFunctionDeclaration(fn) ||
-            ts.isFunctionExpression(fn) ||
-            ts.isMethodDeclaration(fn)) &&
-        fn.asteriskToken !== undefined;
     summarizing.add(fn);
     try {
         return {
             analyzable: true,
-            deferred:
-                generator ||
-                (ts.getCombinedModifierFlags(fn) & ts.ModifierFlags.Async) !==
-                    0,
+            deferred: functionKind(fn) !== "plain",
             // A rest parameter holds each argument as an element.
             uses: new EffectWalker(checker, fn).run(symbol, {
-                at: isRestBinding(binding) ? ["*"] : [],
+                at: isRestBinding(binding) ? [ANY_KEY] : [],
                 from: [],
                 derived: false,
             }),
@@ -390,23 +326,12 @@ class EffectWalker {
         private readonly fn: EffectFunction,
     ) {
         const targets = new Set<ts.Node>();
-        const add = (target: ts.Expression): void => {
-            targets.add(unwrapExpression(target));
-        };
         for (const root of this.roots())
             forEachAnalysisNode(
                 root,
                 (node) => {
-                    if (isAssignmentExpression(node))
-                        assignmentTargets(node.left).forEach(add);
-                    else if (isUpdateExpression(node)) add(node.operand);
-                    else if (ts.isDeleteExpression(node)) add(node.expression);
-                    else if (
-                        (ts.isForOfStatement(node) ||
-                            ts.isForInStatement(node)) &&
-                        !ts.isVariableDeclarationList(node.initializer)
-                    )
-                        assignmentTargets(node.initializer).forEach(add);
+                    for (const site of writeSites(node))
+                        targets.add(site.target);
                 },
                 { types: "skip" },
             );
@@ -495,29 +420,17 @@ class EffectWalker {
             this.bindSymbol(name, values);
             return;
         }
-        name.elements.forEach((element, position) => {
-            if (ts.isOmittedExpression(element)) return;
-            if (element.dotDotDotToken) {
-                // A rest is a new object or array of the remaining values.
-                if (ts.isObjectBindingPattern(name))
-                    this.emit("enumerated", node, values, scope);
-                this.bindPattern(
-                    element.name,
-                    nest(project(values, "*"), "*"),
-                    node,
-                    scope,
-                );
-                return;
-            }
-            const key = ts.isArrayBindingPattern(name)
-                ? String(position)
-                : element.propertyName
-                  ? (propertyNameText(element.propertyName) ?? "*")
-                  : ts.isIdentifier(element.name)
-                    ? element.name.text
-                    : "*";
-            this.bindPattern(element.name, project(values, key), node, scope);
-        });
+        for (const { target, read } of patternSlots(name)) {
+            // An object rest enumerates the remaining keys.
+            if (read.kind === "rest")
+                this.emit("enumerated", node, values, scope);
+            this.bindPattern(
+                target,
+                slotProjections(values, read),
+                node,
+                scope,
+            );
+        }
     }
 
     /** Whether code in `scope` runs only while the analysed function does. */
@@ -543,18 +456,13 @@ class EffectWalker {
     private libraryCallbackCall(scope: ts.Node): ts.CallExpression | undefined {
         if (!ts.isArrowFunction(scope) && !ts.isFunctionExpression(scope))
             return undefined;
-        const call = climb(scope).parent;
-        if (!ts.isCallExpression(call) || call.expression === climb(scope))
+        const call = outermostWrapper(scope).parent;
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression === outermostWrapper(scope)
+        )
             return undefined;
-        const callee = unwrapExpression(call.expression);
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
-        return declaration !== undefined &&
-            declarationInDefaultLibrary(declaration) &&
-            ts.isPropertyAccessExpression(callee) &&
-            (SYNCHRONOUS_CALLBACK_METHODS.has(callee.name.text) ||
-                (callee.name.text === "from" &&
-                    libraryGlobal(this.checker, callee.expression) === "Array"))
+        return callsArgumentInPlace(this.checker, call, outermostWrapper(scope))
             ? call
             : undefined;
     }
@@ -572,29 +480,15 @@ class EffectWalker {
                     ts.isVariableDeclaration(scope.parent) &&
                     scope.parent.initializer === scope &&
                     ts.isIdentifier(scope.parent.name) &&
-                    (ts.getCombinedNodeFlags(scope.parent) &
-                        ts.NodeFlags.Const) !==
-                        0
+                    variableKind(scope.parent) === "const"
                   ? scope.parent.name
                   : undefined;
-        const symbol = name && declaredSymbol(this.checker, name);
         const body = isEffectFunction(enclosing) ? enclosing.body : undefined;
-        if (!symbol || !body) return false;
-        let called = true;
-        forEachAnalysisNode(body, (node) => {
-            if (!called) return "skip";
-            if (
-                ts.isIdentifier(node) &&
-                node !== name &&
-                declaredSymbol(this.checker, node) === symbol
-            )
-                called =
-                    ts.isCallExpression(node.parent) &&
-                    node.parent.expression === node &&
-                    ts.findAncestor(node.parent, ts.isFunctionLike) ===
-                        enclosing;
-        });
-        return called;
+        return (
+            name !== undefined &&
+            body !== undefined &&
+            bindingIsOnlyCalledDirectly(this.checker, name, body, enclosing)
+        );
     }
 
     private emit(
@@ -639,7 +533,7 @@ class EffectWalker {
         let node = expression;
         let current = values;
         for (;;) {
-            const outer = climb(node);
+            const outer = outermostWrapper(node);
             const parent = outer.parent;
             if (!(
                 (ts.isPropertyAccessExpression(parent) ||
@@ -647,12 +541,12 @@ class EffectWalker {
                 parent.expression === outer
             ))
                 break;
-            const key = accessKey(parent);
+            const key = aliasKey(accessKey(parent));
             if (this.writeTargets.has(parent)) {
                 this.write(parent, current, key, scope);
                 return;
             }
-            const access = climb(parent);
+            const access = outermostWrapper(parent);
             if (
                 ts.isCallExpression(access.parent) &&
                 access.parent.expression === access
@@ -660,11 +554,11 @@ class EffectWalker {
                 this.method(access.parent, key, outer, current, scope);
                 return;
             }
-            current = project(current, key);
+            current = projectMember(current, key);
             if (current.length === 0) return;
             node = parent;
         }
-        const top = climb(node);
+        const top = outermostWrapper(node);
         const parent = top.parent;
         if (this.writeTargets.has(unwrapExpression(top))) {
             // The binding itself is assigned.
@@ -689,7 +583,7 @@ class EffectWalker {
             return;
         }
         if (!typeCanCarryReference(this.checker.getTypeAtLocation(top))) return;
-        this.flow(top, parent, current, scope);
+        this.flow(top, current, scope);
     }
 
     private write(
@@ -705,7 +599,7 @@ class EffectWalker {
                 this.uses.push({
                     kind: "write",
                     node: slot,
-                    path: bounded([...value.from, key]),
+                    path: boundedKeyPath([...value.from, key]),
                     derived: value.derived,
                     ...scope,
                 });
@@ -746,7 +640,7 @@ class EffectWalker {
                     ...scope,
                 });
         // An iterating method hands its callback the elements and receiver.
-        const elements = project(receiver, "*");
+        const elements = projectMember(receiver, ANY_KEY);
         const positions = callbackPositions(method);
         for (const argument of call.arguments) {
             const callback = unwrapExpression(argument);
@@ -794,14 +688,18 @@ class EffectWalker {
         if (ts.isSpreadAssignment(spread)) {
             // An object spread reads every own property and copies its value.
             this.emit("enumerated", spread, values, scope);
-            this.consume(consumer, nest(project(values, "*"), "*"), scope);
+            this.consume(
+                consumer,
+                nest(projectMember(values, ANY_KEY), ANY_KEY),
+                scope,
+            );
             return;
         }
-        const element = this.checker.getIndexTypeOfType(
+        const element = arrayElementType(
+            this.checker,
             this.checker.getTypeAtLocation(top),
-            ts.IndexKind.Number,
         );
-        const elements = project(values, "*");
+        const elements = projectMember(values, ANY_KEY);
         if (element && !typeCanCarryReference(element)) return;
         if (
             (ts.isCallExpression(consumer) || ts.isNewExpression(consumer)) &&
@@ -815,159 +713,145 @@ class EffectWalker {
                 scope,
             );
         else if (ts.isArrayLiteralExpression(consumer))
-            this.consume(consumer, nest(elements, "*"), scope);
+            this.consume(consumer, nest(elements, ANY_KEY), scope);
         else this.emit("escaped", spread, values, scope);
     }
 
-    /** Where a value holding `values` goes once read. */
+    /** Where a value holding `values` goes once read ({@link valueConsumer}). */
     private flow(
         top: ts.Expression,
-        parent: ts.Node,
         values: readonly Projection[],
         scope: Scope,
     ): void {
-        if (
-            (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-            parent.arguments?.includes(top)
-        ) {
-            this.argument(
-                parent,
-                parent.arguments.indexOf(top),
-                false,
-                values,
-                scope,
-            );
-            return;
-        }
-        if (ts.isVariableDeclaration(parent) && parent.initializer === top) {
-            this.bindPattern(parent.name, values, parent, scope);
-            return;
-        }
-        if (isAssignmentExpression(parent) && parent.right === top) {
-            // The assignment's own value is the assigned one.
-            this.assigned(parent.left, values, parent, scope);
-            this.consume(parent, values, scope);
-            return;
-        }
-        if (ts.isPropertyAssignment(parent) && parent.initializer === top) {
-            this.consume(
-                parent.parent,
-                nest(values, propertyNameText(parent.name) ?? "*"),
-                scope,
-            );
-            return;
-        }
-        if (ts.isShorthandPropertyAssignment(parent) && parent.name === top) {
-            this.consume(parent.parent, nest(values, parent.name.text), scope);
-            return;
-        }
-        if (ts.isArrayLiteralExpression(parent)) {
-            const position = parent.elements.indexOf(top);
-            const key = parent.elements
-                .slice(0, position)
-                .some(ts.isSpreadElement)
-                ? "*"
-                : String(position);
-            this.consume(parent, nest(values, key), scope);
-            return;
-        }
-        if (
-            (ts.isConditionalExpression(parent) && parent.condition !== top) ||
-            (ts.isBinaryExpression(parent) &&
-                (parent.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                    parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    parent.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken ||
-                    (parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
-                        parent.right === top)))
-        ) {
-            this.consume(parent, values, scope);
-            return;
-        }
-        if (
-            ts.isReturnStatement(parent) ||
-            (ts.isArrowFunction(parent) && parent.body === top)
-        ) {
-            this.returned(parent, values, scope);
-            return;
-        }
-        if (ts.isBinaryExpression(parent)) {
-            const operator = parent.operatorToken.kind;
-            if (
-                operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                operator === ts.SyntaxKind.EqualsEqualsToken ||
-                operator === ts.SyntaxKind.ExclamationEqualsToken
-            ) {
-                const other = parent.left === top ? parent.right : parent.left;
-                if (!isNullishLiteral(this.checker, other))
-                    this.emit("identity", parent, values, scope);
+        const parent = top.parent;
+        const consumer = valueConsumer(top);
+        switch (consumer.kind) {
+            case "argument":
+                this.argument(
+                    consumer.call,
+                    consumer.index,
+                    false,
+                    values,
+                    scope,
+                );
+                return;
+            case "initializer":
+                this.bindPattern(
+                    consumer.declaration.name,
+                    values,
+                    consumer.declaration,
+                    scope,
+                );
+                return;
+            case "assigned":
+                // The assignment's own value is the assigned one.
+                this.assigned(
+                    consumer.assignment.left,
+                    values,
+                    consumer.assignment,
+                    scope,
+                );
+                this.consume(consumer.assignment, values, scope);
+                return;
+            case "property":
+                this.consume(
+                    consumer.literal,
+                    nest(
+                        values,
+                        ts.isShorthandPropertyAssignment(parent)
+                            ? parent.name.text
+                            : aliasKey(propertyKey(consumer.name)),
+                    ),
+                    scope,
+                );
+                return;
+            case "element": {
+                const index = arrayLiteralSlots(consumer.literal).find(
+                    (slot) => slot.element === top,
+                )?.index;
+                this.consume(
+                    consumer.literal,
+                    nest(
+                        values,
+                        aliasKey(
+                            index === undefined ? undefined : String(index),
+                        ),
+                    ),
+                    scope,
+                );
                 return;
             }
-            if (operator === ts.SyntaxKind.InKeyword) {
-                if (parent.right === top)
-                    this.emit("enumerated", parent, values, scope);
+            case "operand":
+                // `&&` only tests an object it does not yield.
+                if (consumer.yielded?.has("truthy"))
+                    this.consume(consumer.selection, values, scope);
+                return;
+            case "returned":
+                this.returned(consumer.from, values, scope);
+                return;
+            case "compared":
+                // Comparing with null or undefined observes no identity.
+                if (!nullishComparison(this.checker, consumer.comparison))
+                    this.emit("identity", consumer.comparison, values, scope);
+                return;
+            case "operator": {
+                const operator = consumer.operator.operatorToken.kind;
+                if (operator === ts.SyntaxKind.InKeyword) {
+                    if (consumer.operator.right === top)
+                        this.emit("enumerated", parent, values, scope);
+                    return;
+                }
+                if (
+                    operator === ts.SyntaxKind.InstanceOfKeyword ||
+                    operator === ts.SyntaxKind.PlusToken ||
+                    operator === ts.SyntaxKind.LessThanToken ||
+                    operator === ts.SyntaxKind.GreaterThanToken ||
+                    operator === ts.SyntaxKind.LessThanEqualsToken ||
+                    operator === ts.SyntaxKind.GreaterThanEqualsToken
+                )
+                    return;
+                this.emit("escaped", parent, values, scope);
                 return;
             }
-            if (
-                operator === ts.SyntaxKind.InstanceOfKeyword ||
-                operator === ts.SyntaxKind.CommaToken ||
-                operator === ts.SyntaxKind.PlusToken ||
-                operator === ts.SyntaxKind.LessThanToken ||
-                operator === ts.SyntaxKind.GreaterThanToken ||
-                operator === ts.SyntaxKind.LessThanEqualsToken ||
-                operator === ts.SyntaxKind.GreaterThanEqualsToken
-            )
+            case "switched":
+                this.emit("identity", parent, values, scope);
                 return;
-            this.emit("escaped", parent, values, scope);
-            return;
-        }
-        if (ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) {
-            this.emit("identity", parent, values, scope);
-            return;
-        }
-        if (ts.isForOfStatement(parent) && parent.expression === top) {
-            const list = parent.initializer;
-            if (ts.isVariableDeclarationList(list))
-                for (const declaration of list.declarations)
-                    this.bindPattern(
-                        declaration.name,
-                        project(values, "*"),
-                        parent,
+            case "iterated": {
+                const list = consumer.loop.initializer;
+                if (ts.isVariableDeclarationList(list))
+                    for (const declaration of list.declarations)
+                        this.bindPattern(
+                            declaration.name,
+                            projectMember(values, ANY_KEY),
+                            consumer.loop,
+                            scope,
+                        );
+                else
+                    this.assigned(
+                        list,
+                        projectMember(values, ANY_KEY),
+                        consumer.loop,
                         scope,
                     );
-            else this.assigned(list, project(values, "*"), parent, scope);
-            return;
+                return;
+            }
+            case "enumerated":
+                this.emit("enumerated", parent, values, scope);
+                return;
+            case "stringified":
+            case "keyed":
+            case "tested":
+            case "discarded":
+                return;
+            case "written":
+                // `++` and `--` read a number out of it.
+                if (ts.isPrefixUnaryExpression(parent)) return;
+                this.emit("escaped", parent, values, scope);
+                return;
+            default:
+                // A tag function is handed the substituted values.
+                this.emit("escaped", parent, values, scope);
         }
-        if (ts.isForInStatement(parent) && parent.expression === top) {
-            this.emit("enumerated", parent, values, scope);
-            return;
-        }
-        if (
-            ts.isTemplateSpan(parent) &&
-            ts.isTaggedTemplateExpression(parent.parent.parent)
-        ) {
-            // A tag function is handed the substituted values.
-            this.emit("escaped", parent, values, scope);
-            return;
-        }
-        if (
-            ts.isTypeOfExpression(parent) ||
-            ts.isVoidExpression(parent) ||
-            ts.isPrefixUnaryExpression(parent) ||
-            ts.isExpressionStatement(parent) ||
-            ts.isTemplateSpan(parent) ||
-            ts.isIfStatement(parent) ||
-            ts.isWhileStatement(parent) ||
-            ts.isDoStatement(parent) ||
-            ts.isForStatement(parent) ||
-            (ts.isConditionalExpression(parent) && parent.condition === top) ||
-            (ts.isElementAccessExpression(parent) &&
-                parent.argumentExpression === top)
-        )
-            return;
-        this.emit("escaped", parent, values, scope);
     }
 
     /**
@@ -993,10 +877,9 @@ class EffectWalker {
             owner &&
             (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))
         ) {
-            const callee = unwrapExpression(call.expression);
-            const method = ts.isPropertyAccessExpression(callee)
-                ? callee.name.text
-                : "";
+            const method =
+                namedMember(this.checker, unwrapExpression(call.expression))
+                    ?.name ?? "";
             if (!COLLECTING_CALLBACK_METHODS.has(method)) return;
             // `reduce` hands its accumulator back to the callback.
             const accumulator =
@@ -1008,7 +891,7 @@ class EffectWalker {
             this.consume(
                 call,
                 method === "map" || method === "flatMap"
-                    ? nest(values, "*")
+                    ? nest(values, ANY_KEY)
                     : values,
                 scope,
             );
@@ -1039,38 +922,20 @@ class EffectWalker {
             else this.emit("stored", node, values, scope);
             return;
         }
-        if (ts.isArrayLiteralExpression(unwrapped)) {
-            unwrapped.elements.forEach((element, position) =>
+        if (
+            ts.isArrayLiteralExpression(unwrapped) ||
+            ts.isObjectLiteralExpression(unwrapped)
+        ) {
+            for (const { target, read } of patternSlots(unwrapped)) {
+                if (read.kind === "rest")
+                    this.emit("enumerated", node, values, scope);
                 this.assigned(
-                    ts.isSpreadElement(element) ? element.expression : element,
-                    project(
-                        values,
-                        ts.isSpreadElement(element) ? "*" : String(position),
-                    ),
+                    target,
+                    slotProjections(values, read),
                     node,
                     scope,
-                ),
-            );
-            return;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            for (const property of unwrapped.properties)
-                if (ts.isShorthandPropertyAssignment(property))
-                    this.assigned(
-                        property.name,
-                        project(values, property.name.text),
-                        node,
-                        scope,
-                    );
-                else if (ts.isPropertyAssignment(property))
-                    this.assigned(
-                        property.initializer,
-                        project(values, propertyNameText(property.name) ?? "*"),
-                        node,
-                        scope,
-                    );
-                else if (ts.isSpreadAssignment(property))
-                    this.assigned(property.expression, values, node, scope);
+                );
+            }
             return;
         }
         if (
@@ -1123,10 +988,10 @@ function mayReturnArgument(
 ): boolean {
     const target = callTarget(checker, call);
     if (target.kind === "library")
-        return libraryMayHold(checker, call, index, target.name);
+        return libraryResultMayHold(checker, call, index);
     if (target.kind === "unknown") return true;
     return target.bodies.some((body) => {
-        const binding = argumentBinding(body, index);
+        const binding = argumentBinding(call, body, index);
         if (!binding || summarizing.has(body)) return true;
         const effects = parameterEffects(target.checker, body, binding);
         return (
@@ -1141,83 +1006,6 @@ function mayReturnArgument(
     });
 }
 
-/** Typed-array and view constructors: a view of a buffer, a copy of anything else. */
-const BINARY_VIEWS: ReadonlySet<string> = new Set([
-    ...TYPED_ARRAY_KINDS.keys(),
-    "DataView",
-]);
-
-/**
- * Library methods whose result holds an argument: a new array or
- * collection holding it, or the receiver it was stored into.
- */
-const ARGUMENT_HOLDING_METHODS: ReadonlySet<string> = new Set([
-    "add",
-    "concat",
-    "fill",
-    "set",
-    "toSpliced",
-    "with",
-]);
-
-/** Library statics and globals whose result is computed, holding no argument. */
-const COMPUTING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Array.isArray",
-    "Boolean",
-    "Number",
-    "String",
-    "isFinite",
-    "isNaN",
-    "parseFloat",
-    "parseInt",
-    "JSON.parse",
-    "JSON.stringify",
-    "Object.getOwnPropertyNames",
-    "Object.hasOwn",
-    "Object.is",
-    "Object.keys",
-    "structuredClone",
-]);
-
-/**
- * Whether a default-library call's result may be or hold the object it is
- * handed at `index`: a binary view over a buffer, a method storing its
- * argument into a result or receiver it returns, or a static or global
- * other than those computing a new value (`Math`, `JSON`, ...).
- */
-function libraryMayHold(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression | ts.NewExpression,
-    index: number,
-    name: string | undefined,
-): boolean {
-    if (name === undefined) return true;
-    if (BINARY_VIEWS.has(name) || BINARY_VIEWS.has(name.split(".")[0]!)) {
-        // A view over a buffer shares it; one over values copies them.
-        const argument = call.arguments?.[index];
-        const type =
-            argument &&
-            checker.getNonNullableType(checker.getTypeAtLocation(argument));
-        return (
-            type === undefined ||
-            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
-            (type.isUnion() ? type.types : [type]).some((member) =>
-                ["ArrayBuffer", "SharedArrayBuffer"].includes(
-                    member.getSymbol()?.name ?? "",
-                ),
-            )
-        );
-    }
-    const callee = unwrapExpression(call.expression);
-    // A method of a library object: only the storing ones hand it back.
-    if (
-        ts.isPropertyAccessExpression(callee) &&
-        libraryGlobal(checker, callee.expression) === undefined
-    )
-        return ARGUMENT_HOLDING_METHODS.has(callee.name.text);
-    return !(COMPUTING_LIBRARY_CALLS.has(name) || name.startsWith("Math."));
-}
-
 /**
  * The code a call or construction runs, by the one policy every
  * per-parameter question shares: the bodies of a program function, method
@@ -1226,21 +1014,21 @@ function libraryMayHold(
  * code the program does not hold -- an ambient declaration, a function
  * value, an interface member -- otherwise.
  */
-type CallTarget =
+export type CallTarget =
     | {
           readonly kind: "bodies";
           readonly checker: ts.TypeChecker;
           readonly bodies: readonly EffectFunction[];
           readonly engine: boolean;
       }
-    | { readonly kind: "library"; readonly name: string | undefined }
+    | { readonly kind: "library" }
     | { readonly kind: "unknown" };
 
-function callTarget(
+export function callTarget(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): CallTarget {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (!declaration) return { kind: "unknown" };
     if (isEngineDeclaration(declaration)) {
         const engine = engineBodies();
@@ -1257,61 +1045,158 @@ function callTarget(
     }
     if (declaration.getSourceFile().isDeclarationFile)
         return declarationInDefaultLibrary(declaration)
-            ? { kind: "library", name: libraryCallName(checker, call) }
+            ? { kind: "library" }
             : { kind: "unknown" };
     return isEffectFunction(declaration) && declaration.body
         ? { kind: "bodies", checker, bodies: [declaration], engine: false }
         : { kind: "unknown" };
 }
 
-/** `Object.assign`, `Math.max`, a global's name, or a method's bare name. */
-function libraryCallName(
+/**
+ * The argument a library call writes into ({@link libraryArgumentEffect}:
+ * `Object.assign(target, ...)`, `Atomics.store(cells, ...)`, a Web IDL
+ * call filling a buffer), if any.
+ */
+export function libraryWrittenArgument(
     checker: ts.TypeChecker,
-    call: ts.CallExpression | ts.NewExpression,
-): string | undefined {
-    const callee = unwrapExpression(call.expression);
-    if (ts.isIdentifier(callee)) return callee.text;
-    if (!ts.isPropertyAccessExpression(callee)) return undefined;
-    const owner = libraryGlobal(checker, callee.expression);
-    return owner ? `${owner}.${callee.name.text}` : callee.name.text;
+    call: ts.CallExpression,
+): ts.Expression | undefined {
+    return call.arguments.find(
+        (_, index) => libraryArgumentEffect(checker, call, index) === "writes",
+    );
 }
 
-/** Default-library calls that write their first argument. */
-const WRITING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Object.assign",
-    "Object.defineProperty",
-    "Object.defineProperties",
-    "Object.setPrototypeOf",
-    "Reflect.set",
-    "Reflect.defineProperty",
-    "Reflect.deleteProperty",
-    "Reflect.setPrototypeOf",
-]);
+/** What a default-library call does to the object handed to it. */
+export type LibraryArgumentEffect = "reads" | "writes" | "unknown";
 
-/** Default-library functions that only read what they are handed. */
-const READING_LIBRARY_CALLS: ReadonlySet<string> = new Set([
-    "Array.isArray",
-    "Boolean",
-    "Number",
-    "String",
-    "isFinite",
-    "isNaN",
-    "parseFloat",
-    "parseInt",
-]);
+/**
+ * What a default-library call does to the object at argument `index`:
+ * `LIBRARY_CALL_FACTS` for the language library; a Web IDL function converts every
+ * argument at the call except a buffer source, which it receives by
+ * reference and may fill (`crypto.getRandomValues(bytes)`); a library method
+ * writes no argument (its receiver is the caller's concern). Anything else
+ * may write it.
+ */
+export function libraryArgumentEffect(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    index: number,
+): LibraryArgumentEffect {
+    // A library construction writes none of its arguments; a view built over
+    // a buffer holds it, which is what another owner keeps, not a write.
+    if (ts.isNewExpression(call)) return "reads";
+    const name = libraryCallName(checker, call);
+    const facts = name === undefined ? undefined : LIBRARY_CALL_FACTS.get(name);
+    if (facts?.arguments === "writes-first")
+        return index === 0 ? "writes" : "reads";
+    if (facts?.arguments === "reads") return "reads";
+    // Math's functions take numbers; a typed array's `from` / `of` copy.
+    const [owner, member] = name?.split(".") ?? [];
+    if (
+        owner === "Math" ||
+        (owner !== undefined &&
+            TYPED_ARRAY_KINDS.has(owner) &&
+            (member === "from" || member === "of"))
+    )
+        return "reads";
+    const declaration = calledDeclaration(checker, call);
+    if (declaration && declarationOrigin(declaration) === "dom") {
+        const argument = call.arguments?.[index];
+        return argument && isBufferSource(checker, argument)
+            ? "writes"
+            : "reads";
+    }
+    const forwarded = forwardedCall(checker, call);
+    if (forwarded) return forwardedArgumentEffect(checker, forwarded, index);
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    return callee && libraryGlobal(checker, callee.expression) === undefined
+        ? "reads"
+        : "unknown";
+}
 
-/** Whether a default-library call leaves its argument at `index` unwritten. */
-export function libraryArgumentIsReadOnly(
+/** A forwarded call ({@link forwardedCallShape}) of a program function. */
+interface ForwardedCall {
+    readonly fn: EffectFunction;
+    readonly shape: ForwardedCallShape;
+}
+
+function forwardedCall(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): ForwardedCall | undefined {
+    const shape = ts.isCallExpression(call)
+        ? forwardedCallShape(checker, call)
+        : undefined;
+    const value = shape && unwrapExpression(shape.target);
+    const declaration =
+        value && ts.isIdentifier(value)
+            ? resolvedSymbol(checker, value)?.valueDeclaration
+            : undefined;
+    const fn = declaration && functionOfDeclaration(declaration);
+    return shape && fn ? { fn, shape } : undefined;
+}
+
+/** What a forwarded call does to its argument at `index`: what the function does to it. */
+function forwardedArgumentEffect(
+    checker: ts.TypeChecker,
+    { fn, shape: { receiver, spread } }: ForwardedCall,
+    index: number,
+): LibraryArgumentEffect {
+    const readOnly = (parameter: ts.ParameterDeclaration | undefined) =>
+        parameter === undefined ||
+        (ts.isIdentifier(parameter.name) &&
+            parameterIsReadOnly(checker, fn, parameter.name));
+    if (index === receiver)
+        return functionWritesThis(checker, fn) ? "writes" : "reads";
+    if (index <= receiver) return "reads";
+    if (spread)
+        return index === receiver + 1 && !fn.parameters.every(readOnly)
+            ? "writes"
+            : "reads";
+    return readOnly(fn.parameters[index - receiver - 1]) ? "reads" : "writes";
+}
+
+/** A typed array, an ArrayBuffer or a DataView: what Web IDL passes by reference. */
+function isBufferSource(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return unionMembers(checker.getTypeAtLocation(expression)).some(
+        (member) => {
+            const name = libraryName(member);
+            return (
+                name !== undefined &&
+                (TYPED_ARRAY_KINDS.has(name) ||
+                    BIGINT_ARRAY_KINDS.has(name) ||
+                    BUFFER_VIEW_KINDS.has(name) ||
+                    name === "SharedArrayBuffer")
+            );
+        },
+    );
+}
+
+/** A library call that reads the argument and keeps nothing of it. */
+function libraryOnlyReads(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
 ): boolean {
-    const target = callTarget(checker, call);
     return (
-        target.kind === "library" &&
-        (index > 0 ||
-            target.name === undefined ||
-            !WRITING_LIBRARY_CALLS.has(target.name))
+        libraryArgumentEffect(checker, call, index) === "reads" &&
+        !isStoringDataCall(call, checker) &&
+        !callResultHoldsArguments(checker, call)
+    );
+}
+
+/** Whether a default-library call may write its argument at `index`. */
+export function libraryCallMayWriteArgument(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    return (
+        callTarget(checker, call).kind === "library" &&
+        libraryArgumentEffect(checker, call, index) !== "reads"
     );
 }
 
@@ -1380,6 +1265,7 @@ class PredicateMemo<T> {
 
 /** Each body's answer for the binding a call's argument at `index` lands in. */
 function everyArgumentBody(
+    call: ts.CallExpression | ts.NewExpression,
     target: Extract<CallTarget, { kind: "bodies" }>,
     index: number,
     answer: (
@@ -1389,7 +1275,7 @@ function everyArgumentBody(
     ) => boolean,
 ): boolean {
     return target.bodies.every((body) => {
-        const binding = argumentBinding(body, index);
+        const binding = argumentBinding(call, body, index);
         return binding !== undefined && answer(target.checker, body, binding);
     });
 }
@@ -1435,18 +1321,74 @@ function argumentWritesNothing(
     use: Extract<ParameterUse, { kind: "argument" }>,
 ): boolean {
     const target = callTarget(checker, use.call);
-    if (target.kind === "bodies" && !target.engine)
+    if (target.kind === "bodies")
         return (
             !use.spread &&
-            everyArgumentBody(target, use.index, parameterIsReadOnly)
+            everyArgumentBody(use.call, target, use.index, parameterIsReadOnly)
         );
     if (ts.isNewExpression(use.call)) return true;
     return (
         target.kind === "library" &&
-        ((use.index === 0 && target.name === "Object.keys") ||
-            (isStoringDataCall(use.call, checker) &&
-                !WRITING_LIBRARY_CALLS.has(target.name ?? "")))
+        libraryArgumentEffect(checker, use.call, use.index) === "reads"
     );
+}
+
+const leftIntactMemo = new PredicateMemo(true);
+
+/**
+ * Whether a call leaves a parameter binding's objects as they were and keeps
+ * none of them past it: {@link parameterIsReadOnly} without the stores,
+ * returns, escapes, constructions and storing methods that keep an object a
+ * later write can reach, in a run that ends with the call.
+ */
+function parameterLeftIntact(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): boolean {
+    return leftIntactMemo.answer(checker, binding, () => {
+        const effects = parameterEffects(checker, fn, binding);
+        return (
+            effects.analyzable &&
+            !effects.deferred &&
+            effects.uses.every((use) => {
+                switch (use.kind) {
+                    case "write":
+                    case "rebind":
+                    case "stored":
+                    case "returned":
+                    case "escaped":
+                        return false;
+                    case "method":
+                        return (
+                            readOnlyDataMethods.has(use.method) &&
+                            !storingDataMethods.has(use.method)
+                        );
+                    case "argument": {
+                        if (use.spread || ts.isNewExpression(use.call))
+                            return false;
+                        const target = callTarget(checker, use.call);
+                        return target.kind === "bodies"
+                            ? everyArgumentBody(
+                                  use.call,
+                                  target,
+                                  use.index,
+                                  parameterLeftIntact,
+                              )
+                            : target.kind === "library" &&
+                                  libraryArgumentEffect(
+                                      checker,
+                                      use.call,
+                                      use.index,
+                                  ) === "reads" &&
+                                  keptArguments(checker, use.call).length === 0;
+                    }
+                    default:
+                        return true;
+                }
+            })
+        );
+    });
 }
 
 const visiblyWrittenMemo = new PredicateMemo(false);
@@ -1505,12 +1447,28 @@ export function parameterMutatedPaths(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
-): readonly EffectPath[] {
-    return visibleWrites(checker, fn, binding).map((use) =>
-        use.kind === "write" || use.kind === "rebind" || use.derived
-            ? []
-            : use.path,
-    );
+): readonly KeyPath[] {
+    return visibleWrites(checker, fn, binding).flatMap((use) => {
+        if (use.kind === "rebind") return [[]];
+        // A write's path is the slot: the object written holds it.
+        const object = use.kind === "write" ? use.path.slice(0, -1) : use.path;
+        // A value computed from the object may be any object below it.
+        return use.derived ? [object, [...object, ANY_KEY]] : [object];
+    });
+}
+
+/**
+ * Whether a callee handed, as its parameter `binding`, a container holding
+ * an object at `at` visibly writes that object or one below it, a store
+ * keeping it included.
+ */
+export function parameterHeldObjectWritten(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+    at: KeyPath,
+): boolean {
+    return heldObjectWritten(checker, fn, binding, at, true);
 }
 
 /**
@@ -1552,7 +1510,7 @@ function argumentVisiblyWritten(
     use: Extract<ParameterUse, { kind: "argument" }>,
 ): boolean {
     if (isStoringDataCall(use.call, checker)) return true;
-    const declaration = checker.getResolvedSignature(use.call)?.declaration;
+    const declaration = calledDeclaration(checker, use.call);
     if (
         declaration &&
         isEngineDeclaration(declaration) &&
@@ -1563,15 +1521,12 @@ function argumentVisiblyWritten(
         return true;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return (
-            use.index === 0 &&
-            target.name !== undefined &&
-            WRITING_LIBRARY_CALLS.has(target.name)
-        );
+        return libraryArgumentEffect(checker, use.call, use.index) !== "reads";
     return (
         target.kind === "bodies" &&
         !use.spread &&
         !everyArgumentBody(
+            use.call,
             target,
             use.index,
             (bodyChecker, body, binding) =>
@@ -1586,17 +1541,6 @@ function argumentVisiblyWritten(
                     : target.engine
                       ? engineBodyWrites(bodyChecker, body, binding)
                       : parameterIsMutated(bodyChecker, body, binding)),
-        )
-    );
-}
-
-/** Whether `path` begins with `prefix`, `*` matching any key. */
-function startsWith(path: EffectPath, prefix: EffectPath): boolean {
-    return (
-        path.length >= prefix.length &&
-        prefix.every(
-            (key, index) =>
-                key === path[index] || key === "*" || path[index] === "*",
         )
     );
 }
@@ -1620,7 +1564,7 @@ function heldObjectWritten(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
-    at: EffectPath,
+    at: KeyPath,
     stores: boolean,
 ): boolean {
     const key = `${stores}:${JSON.stringify(at)}`;
@@ -1643,9 +1587,9 @@ function heldObjectWritten(
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;
             const below = use.derived
-                ? startsWith(at, object) || startsWith(object, at)
-                : startsWith(object, at);
-            const above = !below && startsWith(at, object);
+                ? pathsOverlap(at, object)
+                : pathStartsWith(object, at);
+            const above = !below && pathStartsWith(at, object);
             if (!below && !above) return false;
             switch (use.kind) {
                 case "write":
@@ -1668,9 +1612,11 @@ function heldObjectWritten(
                     const target = callTarget(checker, use.call);
                     if (target.kind === "library")
                         return (
-                            use.index === 0 &&
-                            target.name !== undefined &&
-                            WRITING_LIBRARY_CALLS.has(target.name)
+                            libraryArgumentEffect(
+                                checker,
+                                use.call,
+                                use.index,
+                            ) !== "reads"
                         );
                     // The object itself, or a container holding it, handed on.
                     const held = below
@@ -1680,6 +1626,7 @@ function heldObjectWritten(
                         target.kind === "bodies" &&
                         !use.spread &&
                         !everyArgumentBody(
+                            use.call,
                             target,
                             use.index,
                             (bodyChecker, body, inner) =>
@@ -1712,6 +1659,11 @@ function heldObjectWritten(
  * follows every store the parameter reaches, the other proves a parameter
  * it only reads unchanged.
  */
+/**
+ * Whether an engine body visibly writes through `binding`: a write it is seen
+ * to make that its own read-only proof does not discount (a write into an
+ * engine resource a member names changes no member).
+ */
 function engineBodyWrites(
     checker: ts.TypeChecker,
     body: EffectFunction,
@@ -1723,17 +1675,22 @@ function engineBodyWrites(
     );
 }
 
-/** Whether an engine call writes through the object it is handed at `index`. */
+/**
+ * Whether an engine call visibly writes through the object it is handed at
+ * `index`. What the engine keeps (a mesh's vertex arrays) is the keeping
+ * question (`keptArguments`), not a write here.
+ */
 export function engineCallMutatesArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    target: CallTarget = callTarget(checker, call),
 ): boolean {
-    const target = callTarget(checker, call);
     return (
         target.kind === "bodies" &&
         target.engine &&
         !everyArgumentBody(
+            call,
             target,
             index,
             (bodyChecker, body, binding) =>
@@ -1743,18 +1700,6 @@ export function engineCallMutatesArgument(
 }
 
 const fixedLengthMemo = new PredicateMemo<number | null>(0);
-
-/** A non-negative integer key. */
-function laneIndex(key: string | undefined): number | undefined {
-    const value = Number(key);
-    return key !== undefined &&
-        key !== "" &&
-        String(value) === key &&
-        Number.isSafeInteger(value) &&
-        value >= 0
-        ? value
-        : undefined;
-}
 
 /**
  * How many leading elements a call writes through an array parameter whose
@@ -1784,7 +1729,7 @@ export function fixedLengthParameterWrites(
                 case "write": {
                     const lane =
                         use.path.length === 1 && !use.derived
-                            ? laneIndex(use.path[0])
+                            ? keyIndex(use.path[0])
                             : undefined;
                     if (lane === undefined) return null;
                     lanes = Math.max(lanes, lane + 1);
@@ -1803,7 +1748,9 @@ export function fixedLengthParameterWrites(
                             return null;
                     } else if (
                         !lengthPreservingArrayMethods.has(use.method) ||
-                        !ts.isExpressionStatement(climb(use.call).parent)
+                        !ts.isExpressionStatement(
+                            outermostWrapper(use.call).parent,
+                        )
                     )
                         return null;
                     break;
@@ -1832,16 +1779,16 @@ function argumentFixedLengthWrites(
 ): number | undefined {
     const target = callTarget(checker, use.call);
     if (target.kind === "library") {
-        const callee = unwrapExpression(use.call.expression);
-        return ts.isPropertyAccessExpression(callee) &&
-            storingDataMethods.has(callee.name.text)
-            ? undefined
-            : 0;
+        const callee = namedMember(
+            checker,
+            unwrapExpression(use.call.expression),
+        );
+        return callee && storingDataMethods.has(callee.name) ? undefined : 0;
     }
     if (target.kind !== "bodies" || target.engine) return undefined;
     let lanes = 0;
     for (const body of target.bodies) {
-        const binding = argumentBinding(body, use.index);
+        const binding = argumentBinding(use.call, body, use.index);
         const nested =
             binding &&
             fixedLengthParameterWrites(target.checker, body, binding);
@@ -1888,11 +1835,11 @@ function onlyRead(
         );
         // Whether the object at `path` is one a copy duplicates; a derived
         // use reaches the objects below it too, which a copy shares.
-        const copied = (path: EffectPath): boolean =>
+        const copied = (path: KeyPath): boolean =>
             path.length === 0 ||
             (array &&
                 path.length === 1 &&
-                (path[0] === "*" || laneIndex(path[0]) !== undefined));
+                (path[0] === ANY_KEY || keyIndex(path[0]) !== undefined));
         return effects.uses.every((use) => {
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;
@@ -1927,24 +1874,25 @@ function argumentUseOnlyRead(
     if (ts.isNewExpression(use.call)) return false;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return (
-            target.name !== undefined && READING_LIBRARY_CALLS.has(target.name)
-        );
+        return libraryOnlyReads(checker, use.call, use.index);
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(target, use.index, onlyRead)
+        everyArgumentBody(use.call, target, use.index, onlyRead)
     );
 }
 
 /**
  * Whether one call provably leaves the argument at `index` unchanged: an
- * argument holding no object, `Object.keys`' argument, or a program
- * function's parameter it writes nothing through.
+ * argument holding no object, `Object.keys`' argument, or a function's
+ * parameter it writes nothing through. With `kept: "refused"`, a program
+ * body must also keep none of it past the call (`parameterLeftIntact`);
+ * what engine bodies keep stays `keptArguments`' question.
  */
 export function callArgumentIsReadOnly(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    kept: "allowed" | "refused" = "allowed",
 ): boolean {
     const argument = call.arguments[index];
     // `Math.hypot(a[0] - b[0], ...)` mentions the composite and hands the
@@ -1956,11 +1904,17 @@ export function callArgumentIsReadOnly(
         return true;
     const target = callTarget(checker, call);
     if (target.kind === "library")
-        return index === 0 && target.name === "Object.keys";
+        return libraryArgumentEffect(checker, call, index) === "reads";
     return (
         target.kind === "bodies" &&
-        !target.engine &&
-        everyArgumentBody(target, index, parameterIsReadOnly)
+        everyArgumentBody(
+            call,
+            target,
+            index,
+            kept === "refused" && !target.engine
+                ? parameterLeftIntact
+                : parameterIsReadOnly,
+        )
     );
 }
 
@@ -1989,7 +1943,8 @@ export function callOnlyReadsArgument(
 ): boolean {
     const target = callTarget(checker, call);
     return (
-        target.kind === "bodies" && everyArgumentBody(target, index, onlyRead)
+        target.kind === "bodies" &&
+        everyArgumentBody(call, target, index, onlyRead)
     );
 }
 
@@ -2005,6 +1960,112 @@ export function engineArgumentWritten(
 ): boolean {
     const target = callTarget(checker, call);
     return !(
-        target.kind === "bodies" && everyArgumentBody(target, index, onlyRead)
+        target.kind === "bodies" &&
+        everyArgumentBody(call, target, index, onlyRead)
     );
+}
+
+/** The function a call runs when the program declares it. */
+function programFunction(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): ts.SignatureDeclaration | undefined {
+    const declaration = calledDeclaration(checker, call);
+    return declaration !== undefined &&
+        !declaration.getSourceFile().isDeclarationFile &&
+        ts.isFunctionLike(declaration)
+        ? declaration
+        : undefined;
+}
+
+/**
+ * Whether a method call writes the object it is called on: a program
+ * method whose body writes through `this` or hands it on
+ * ({@link functionWritesThis}); a library method that writes a receiver of
+ * its type ({@link libraryMethodWritesReceiver}).
+ */
+export function callWritesReceiver(
+    checker: ts.TypeChecker,
+    method: string,
+    receiver: ts.Expression,
+    call: ts.CallExpression,
+    active?: Set<ts.Node>,
+): boolean {
+    const fn = programFunction(checker, call);
+    return fn
+        ? functionWritesThis(checker, fn, active)
+        : libraryMethodWritesReceiver(checker, receiver, method);
+}
+
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const thisWriters = new WeakMap<ts.Node, boolean>();
+
+/**
+ * Whether a function writes through `this` or hands it on: a write or a
+ * writing method call on `this` or a member of it, its own or an arrow's
+ * sharing it, a method of `this` that does, or `this` passed, stored or
+ * returned rather than read through or compared.
+ */
+export function functionWritesThis(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration,
+    active = new Set<ts.Node>(),
+): boolean {
+    const known = thisWriters.get(declaration);
+    if (known !== undefined) return known;
+    const body = "body" in declaration ? declaration.body : undefined;
+    if (!body || active.has(declaration)) return false;
+    active.add(declaration);
+    const isThis = (expression: ts.Expression): boolean =>
+        referenceBases(expression).some(
+            (base) => base.kind === ts.SyntaxKind.ThisKeyword,
+        );
+    const writes = someAnalysisNode(
+        body,
+        (node) => {
+            if (node.kind === ts.SyntaxKind.ThisKeyword) {
+                const position = outermostWrapper(node as ts.Expression);
+                const parent = position.parent;
+                if (
+                    !(
+                        isMemberAccess(parent) && parent.expression === position
+                    ) &&
+                    !(
+                        ts.isBinaryExpression(parent) &&
+                        equalityOperator(parent.operatorToken.kind) !==
+                            undefined
+                    )
+                )
+                    return true;
+            }
+            const sites = writeSites(node);
+            if (sites.length > 0)
+                return sites.some(({ target }) => isThis(target));
+            const target = mutatingCallTarget(
+                node,
+                (callee) => namedMember(checker, callee),
+                (method, receiver, call) =>
+                    callWritesReceiver(checker, method, receiver, call, active),
+                (call) => libraryWrittenArgument(checker, call),
+            );
+            return (
+                target !== undefined &&
+                typeCanCarryReference(checker.getTypeAtLocation(target)) &&
+                isThis(target)
+            );
+        },
+        // An ordinary function nested here has a `this` of its own.
+        {
+            skip: (node) =>
+                node !== body &&
+                ts.isFunctionLike(node) &&
+                !ts.isArrowFunction(node),
+            types: "skip",
+        },
+    );
+    active.delete(declaration);
+    // A write found holds whatever a cycle assumed; "none" only once no
+    // query in progress was assumed to write nothing.
+    if (writes || active.size === 0) thisWriters.set(declaration, writes);
+    return writes;
 }

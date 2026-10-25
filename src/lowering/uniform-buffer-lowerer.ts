@@ -4,11 +4,15 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import {
     bufferAlignmentCpp,
     assertMappedBufferAdapter,
 } from "./gpu-buffer-adapters.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-uniform-buffer.ts";
 
@@ -141,7 +145,7 @@ function factory(context: LoweringContext): string {
                 return [
                     `${indent}std::copy(source.bytes.begin(), source.bytes.end(), bytes.begin());`,
                 ];
-            if (call.expression.getText(file) !== "Object.defineProperties")
+            if (!sameSource(call.expression, "Object.defineProperties"))
                 return undefined;
             context.assertExpressionShape(
                 call.arguments[0]!,
@@ -366,23 +370,19 @@ export function lowerUniformBuffer(context: LoweringContext): LoweredSource {
         dispose.file,
         dispose.declaration.body!.statements,
         {
-            bindings: new Map(),
+            // Disposal walks the registry snapshot the native caller takes.
+            bindings: new Map([
+                [
+                    "[...(_buffers?.get(engine) ?? [])]",
+                    collectionBinding("snapshot"),
+                ],
+            ]),
             calls: new Map([
                 [
                     "disposeUniformBuffer",
                     (args) => `dispose_uniform_buffer(${args.join(", ")})`,
                 ],
             ]),
-            forOf(iterated, element) {
-                if (iterated !== "[...(_buffers?.get(engine) ?? [])]")
-                    return undefined;
-                return {
-                    range: "snapshot",
-                    bindings: new Map([
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
         },
     );
     return {

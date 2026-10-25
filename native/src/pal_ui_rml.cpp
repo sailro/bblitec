@@ -3259,7 +3259,12 @@ public:
         SDL_DestroyProperties(properties);
     }
 
-    double GetElapsedTime() override { return ::bbl::pal::performance_milliseconds() / 1000.0; }
+    /** A Window display's published capture time (`set_ui_rml_time`). */
+    std::optional<double> time_ms;
+
+    double GetElapsedTime() override {
+        return (time_ms ? *time_ms : ::bbl::pal::performance_milliseconds()) / 1000.0;
+    }
 
     void SetMouseCursor(const Rml::String& name) override {
         // A scene canvas may have hidden the cursor before this UI took over.
@@ -5431,7 +5436,7 @@ struct UiRmlRuntime {
                 context->Update();
             if (refresh_gradient_text())
                 context->Update();
-            if (update_gradient_text())
+            if (update_gradient_text().changed)
                 context->Update();
             static_cast<void>(sync_hover_states());
             if (sync_svg_current_colors()) {
@@ -7482,9 +7487,15 @@ struct UiRmlRuntime {
         return true;
     }
 
-    bool update_gradient_text() {
+    /** Whether this update changed a glyph color, and whether any ran animated. */
+    struct GradientTextUpdate {
+        bool changed = false;
+        bool animated = false;
+    };
+
+    GradientTextUpdate update_gradient_text() {
         if (gradient_text.empty())
-            return false;
+            return {};
         bool changed = false;
         double now = 0.0;
         bool sampled_time = false;
@@ -7565,7 +7576,7 @@ struct UiRmlRuntime {
                 changed = true;
             }
         }
-        return changed;
+        return {changed, sampled_time};
     }
 
     void sync_client_rects(bool all_elements) {
@@ -7907,6 +7918,17 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
     return result || (canvas_target && !runtime.default_prevented);
 }
 
+void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) {
+    runtime.system_interface.time_ms = milliseconds;
+}
+
+std::optional<UiRmlNextUpdate> ui_rml_next_update(const UiRmlRuntime& runtime) {
+    if (!runtime.system_interface.time_ms)
+        return std::nullopt;
+    return UiRmlNextUpdate{*runtime.system_interface.time_ms,
+                           runtime.context->GetNextUpdateDelay()};
+}
+
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height) {
     auto& cpu = runtime.render_interface.cpu;
     double checkpoint = cpu.now();
@@ -8015,8 +8037,12 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                               generated_changed);
         runtime.context->Update();
     }
-    if (runtime.update_gradient_text())
+    const auto gradient = runtime.update_gradient_text();
+    if (gradient.changed)
         runtime.context->Update();
+    // Animated gradient text changes with time, as RmlUi's own animations do.
+    if (gradient.animated)
+        runtime.context->RequestNextUpdate(0);
     cpu.split(cpu.sample.outlines, checkpoint);
 }
 

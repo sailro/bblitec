@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { exponentiationCall } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     PINNED_BOOLEAN_OPERATORS,
@@ -59,6 +60,7 @@ export function renderPinnedArithmetic(
     node: ts.Expression,
     render: (expression: ts.Expression) => RenderedCpp,
     spelling: PinnedExpressionSpelling = {},
+    staticNumber?: (expression: ts.Expression) => number | undefined,
 ): RenderedCpp | undefined {
     const style = spelling.parentheses ?? "grouped";
     const operand = (value: RenderedCpp, minimum: number): string =>
@@ -120,7 +122,11 @@ export function renderPinnedArithmetic(
     }
     if (kind === ts.SyntaxKind.AsteriskAsteriskToken) {
         return cppPrimary(
-            `std::pow(${render(node.left).text}, ${render(node.right).text})`,
+            exponentiationCall(
+                render(node.left).text,
+                render(node.right).text,
+                staticNumber?.(node.right),
+            ).cpp,
         );
     }
     const operator =

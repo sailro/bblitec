@@ -62,6 +62,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 
 import { recordAt, recordFind } from "../compiler/record-access.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
 const cameraModule = "src/camera/camera.ts";
@@ -1072,14 +1073,14 @@ function coneChangedWriter(context: LoweringContext): string {
             [light, { cpp: light, type: "opaque" }],
             ...clusteredLightMembers(light, `${light}.`),
             [
-                snapshot.name.getText(file),
+                soleBindingName(snapshot.name),
                 { cpp: "snapshot", type: "f32", mutable: true },
             ],
         ]),
         calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
-            node.text === snapshot.name.getText(file) &&
+            sameSource(snapshot.name, node.text) &&
             pinnedDeclaration(file, node) !== snapshot
                 ? context.contractError(
                       node,
@@ -1703,7 +1704,7 @@ function lowerRefresh(
             (local): local is ts.VariableDeclaration =>
                 local !== undefined &&
                 isGpuObject(context, file, local) &&
-                !RECORD_STORAGE.has(local.name.getText(file)),
+                !RECORD_STORAGE.has(soleBindingName(local.name)),
         );
     const bindings = new Map<string, PinnedBinding>([
         ...shared.bindings,
@@ -2063,7 +2064,7 @@ function containerAdder(context: LoweringContext): string {
         ) {
             built = local;
             return [
-                `${indent}const std::shared_ptr<ClusteredRefreshState> ${local.name.getText(file)} = ` +
+                `${indent}const std::shared_ptr<ClusteredRefreshState> ${soleBindingName(local.name)} = ` +
                     `upstream::build_clustered_light_gpu_state(${initializer.arguments
                         .map((argument) => lowerer.expression(argument))
                         .join(", ")});`,
@@ -2084,7 +2085,7 @@ function containerAdder(context: LoweringContext): string {
         ) {
             return [
                 `${indent}${recordAt("engine.clustered_light_containers", container)}.refresh = ` +
-                    `${built.name.getText(file)};`,
+                    `${soleBindingName(built.name)};`,
             ];
         }
         const call = statementCall(context, node);
@@ -2151,7 +2152,7 @@ function forwardsTo(
         call.arguments.every(
             (argument, index) =>
                 ts.isIdentifier(argument) &&
-                argument.text === arrow.parameters[index]!.name.getText(file),
+                sameSource(arrow.parameters[index]!.name, argument.text),
         )
     );
 }

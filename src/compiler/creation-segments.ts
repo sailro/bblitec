@@ -1,6 +1,12 @@
 import ts from "typescript";
 import { returnsOnly } from "./fresh-records.js";
-import { localSyncFunction, unwrapExpression } from "./syntax.js";
+import {
+    localSyncFunction,
+    unwrapExpression,
+    writeSites,
+    isSuspensionPoint,
+    variableKind,
+} from "./syntax.js";
 import type { CompilerSymbols } from "./symbols.js";
 
 interface CreationSegmentContext {
@@ -116,7 +122,7 @@ function isFreshCreation(
         return (
             bound !== undefined &&
             ts.isVariableDeclaration(bound) &&
-            (ts.getCombinedNodeFlags(bound) & ts.NodeFlags.Const) !== 0 &&
+            variableKind(bound) === "const" &&
             bound.initializer !== undefined &&
             ts.findAncestor(bound, ts.isFunctionLike) === fn &&
             isFreshCreation(context, bound.initializer, depth + 1)
@@ -129,19 +135,8 @@ function suspendsOrAssigns(
     names: ((node: ts.Node) => boolean) | undefined,
 ): boolean {
     if (ts.isFunctionLike(node)) return false;
-    if (
-        ts.isAwaitExpression(node) ||
-        ts.isYieldExpression(node) ||
-        (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
-    )
-        return true;
-    if (
-        names &&
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        names(unwrapExpression(node.left))
-    )
+    if (isSuspensionPoint(node, { yield: true })) return true;
+    if (names && writeSites(node).some(({ target }) => names(target)))
         return true;
     return (
         ts.forEachChild(node, (child) =>

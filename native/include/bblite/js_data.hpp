@@ -6,6 +6,7 @@
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/js_accessor.hpp>
+#include <bblite/js_case.hpp>
 #include <bblite/dom_event_state.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
@@ -258,14 +259,21 @@ private:
     bool shared_ = false;
 };
 
-/** ToIndex for numeric buffer-view arguments; validate after truncation. */
-[[nodiscard]] inline std::size_t buffer_view_index(double value) {
-    const double integer = std::isnan(value) ? 0.0 : std::trunc(value);
+/** ToIndex: NaN reads 0 and a fraction truncates; a negative or unsafe value is no index. */
+[[nodiscard]] inline std::optional<std::size_t> to_index(double value) {
+    const double integer = to_integer_or_infinity(value);
     if (integer < 0.0 || integer > 9007199254740991.0 ||
-        integer >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
-        throw std::runtime_error("TypedArray offset or length is outside ToIndex range.");
-    }
+        integer >= static_cast<double>(std::numeric_limits<std::size_t>::max()))
+        return std::nullopt;
     return static_cast<std::size_t>(integer);
+}
+
+/** ToIndex for numeric buffer-view arguments: out of range is a RangeError. */
+[[nodiscard]] inline std::size_t buffer_view_index(double value) {
+    const auto index = to_index(value);
+    if (!index)
+        throw NamedError("RangeError", "TypedArray offset or length is outside ToIndex range.");
+    return *index;
 }
 
 /** Numeric arrays share object identity when assigned, captured or returned.
@@ -2927,18 +2935,13 @@ struct ParsedDateTime {
 }
 
 /**
- * `Date.UTC`: MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped,
- * a year 0..99 meaning 1900..1999. Years and months beyond V8's ranges are NaN.
+ * MakeDate(MakeDay(year, month, date), MakeTime(...)) clipped. Years and
+ * months beyond V8's ranges are NaN.
  */
-[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
-                                     double minutes, double seconds, double milliseconds) {
+[[nodiscard]] inline double date_make(double year, double month, double date, double hours,
+                                      double minutes, double seconds, double milliseconds) {
     using namespace date_detail;
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    if (!std::isnan(year)) {
-        const double truncated = integer(year);
-        if (truncated >= 0.0 && truncated <= 99.0)
-            year = 1900.0 + truncated;
-    }
     if (!std::isfinite(hours) || !std::isfinite(minutes) || !std::isfinite(seconds) ||
         !std::isfinite(milliseconds))
         return nan;
@@ -2955,6 +2958,55 @@ struct ParsedDateTime {
     const double day = first + integer(date) - 1.0;
     const double value = day * milliseconds_per_day + time;
     return std::isfinite(value) ? date_time_clip(value) : nan;
+}
+
+/** `Date.UTC`: {@link date_make}, a year 0..99 meaning 1900..1999. */
+[[nodiscard]] inline double date_utc(double year, double month, double date, double hours,
+                                     double minutes, double seconds, double milliseconds) {
+    if (!std::isnan(year)) {
+        const double truncated = date_detail::integer(year);
+        if (truncated >= 0.0 && truncated <= 99.0)
+            year = 1900.0 + truncated;
+    }
+    return date_make(year, month, date, hours, minutes, seconds, milliseconds);
+}
+
+/**
+ * A time value with the fields from `first` on replaced by `given`, the
+ * others kept, all read in one zone: the `set<Field>` arithmetic. An invalid
+ * time stays invalid, except that a year setter starts from +0.
+ */
+[[nodiscard]] inline double date_with_fields(double time, DateField first,
+                                             std::initializer_list<double> given) {
+    if (first == DateField::weekday)
+        throw std::logic_error("A Date has no weekday setter.");
+    if (std::isnan(time)) {
+        if (first != DateField::year)
+            return time;
+        time = 0.0;
+    }
+    using namespace date_detail;
+    const auto [day, within_day] = day_time(time);
+    const auto civil = civil_from_days(day);
+    const std::int64_t hours = within_day / 3600000;
+    double fields[] = {static_cast<double>(civil.year),
+                       static_cast<double>(civil.month - 1),
+                       static_cast<double>(civil.day),
+                       static_cast<double>(hours),
+                       static_cast<double>(within_day / 60000 % 60),
+                       static_cast<double>(within_day / 1000 % 60),
+                       static_cast<double>(within_day % 1000)};
+    // The weekday sits between date and hours in DateField; no field stores it.
+    auto index = static_cast<std::size_t>(first) - (first > DateField::weekday ? 1 : 0);
+    for (const double value : given)
+        fields[index++] = value;
+    return date_make(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
+}
+
+/** `Date.prototype.setUTC<Field>`: stores and returns the new time value. */
+inline double date_set_utc(const Date& date, DateField first, std::initializer_list<double> given) {
+    *date = date_with_fields(*date, first, given);
+    return *date;
 }
 
 [[nodiscard]] inline std::string date_iso_string(const Date& date) {
@@ -3783,21 +3835,6 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return {begin, end};
 }
 
-[[nodiscard]] inline std::string string_slice(const std::string& value, double begin_value,
-                                              double end_value) {
-    const auto [begin, end] = relative_slice_bounds(value.size(), begin_value, end_value);
-    return value.substr(begin, end - begin);
-}
-
-[[nodiscard]] inline std::string string_upper(std::string value) {
-    for (char& character : value) {
-        if (character >= 'a' && character <= 'z') {
-            character = static_cast<char>(character - 'a' + 'A');
-        }
-    }
-    return value;
-}
-
 /** ASCII lowercase of one byte; other bytes, UTF-8 included, are unchanged. */
 [[nodiscard]] constexpr char ascii_lower(char character) {
     return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
@@ -3974,15 +4011,18 @@ infinity_at(std::string_view value, std::size_t index) {
 }
 
 /**
- * `Number.prototype.toString(radix)`: the integer part by repeated
- * division and the fraction by repeated multiplication, to the
- * precision a double carries; radix 10 is the ordinary spelling.
+ * `Number.prototype.toString(radix)`: the radix as an integer (NaN is 0),
+ * checked before anything else; the integer part by repeated division and
+ * the fraction by repeated multiplication, to the precision a double
+ * carries; radix 10 is the ordinary spelling.
  */
-[[nodiscard]] inline std::string number_to_string_radix(double value, int radix) {
+[[nodiscard]] inline std::string number_to_string_radix(double value, double radix_value) {
+    const double whole = std::isnan(radix_value) ? 0.0 : std::trunc(radix_value);
+    if (whole < 2.0 || whole > 36.0)
+        throw NamedError("RangeError", "toString() radix must be between 2 and 36");
+    const int radix = static_cast<int>(whole);
     if (radix == 10 || !std::isfinite(value))
         return number_to_string(value);
-    if (radix < 2 || radix > 36)
-        throw std::runtime_error("toString() radix must be between 2 and 36");
     const char* digits = "0123456789abcdefghijklmnopqrstuvwxyz";
     const bool negative = value < 0.0;
     double magnitude = std::fabs(value);
@@ -4035,23 +4075,6 @@ infinity_at(std::string_view value, std::size_t index) {
         offset += count;
     }
     return result;
-}
-
-[[nodiscard]] inline Array<std::string> string_split(const std::string& value,
-                                                     const std::string& separator) {
-    if (separator.empty())
-        return string_characters(value);
-    Array<std::string> result;
-    std::size_t begin = 0;
-    while (true) {
-        const std::size_t end = value.find(separator, begin);
-        if (end == std::string::npos) {
-            result.push_back(value.substr(begin));
-            return result;
-        }
-        result.push_back(value.substr(begin, end - begin));
-        begin = end + separator.size();
-    }
 }
 
 // UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
@@ -4114,6 +4137,96 @@ private:
     while (const auto unit = cursor.next())
         units.push_back(*unit);
     return units;
+}
+
+/** `String.prototype.split`; an empty separator splits between UTF-16 code units (a pair's halves too). */
+[[nodiscard]] inline Array<std::string> string_split(const std::string& value,
+                                                     const std::string& separator) {
+    Array<std::string> result;
+    if (separator.empty()) {
+        StringCodeUnitCursor cursor(value);
+        while (const auto unit = cursor.next())
+            result.push_back(string_from_code_units(std::u16string(1, *unit)));
+        return result;
+    }
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = value.find(separator, begin);
+        if (end == std::string::npos) {
+            result.push_back(value.substr(begin));
+            return result;
+        }
+        result.push_back(value.substr(begin, end - begin));
+        begin = end + separator.size();
+    }
+}
+
+/** `String.prototype.toUpperCase`: Unicode's full mapping (`ß` -> `SS`), locale-independent. */
+[[nodiscard]] inline std::string string_to_upper_case(const std::string& value) {
+    using namespace unicode_case;
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size();) {
+        const auto [point, length] = code_point_at(value, index);
+        if (const char* text = special_text(upper_specials, point))
+            result += text;
+        else if (const char32_t mapped = mapped_point(upper_runs, point); mapped != point)
+            append_utf8(result, mapped);
+        else
+            result.append(value, index, length);
+        index += length;
+    }
+    return result;
+}
+
+/**
+ * Unicode's Final_Sigma: a capital sigma ends a word when a cased letter
+ * precedes it and none follows (skipping case-ignorable points each way).
+ */
+[[nodiscard]] inline bool final_sigma(const std::string& value, std::size_t index,
+                                      std::size_t length) {
+    using namespace unicode_case;
+    bool preceded = false;
+    for (std::size_t at = index; at > 0;) {
+        std::size_t lead = at - 1;
+        while (lead > 0 && (static_cast<unsigned char>(value[lead]) & 0xc0u) == 0x80u)
+            --lead;
+        const char32_t point = code_point_at(value, lead).first;
+        at = lead;
+        if (in_ranges(case_ignorable_ranges, point))
+            continue;
+        preceded = in_ranges(cased_ranges, point);
+        break;
+    }
+    if (!preceded)
+        return false;
+    for (std::size_t at = index + length; at < value.size();) {
+        const auto [point, size] = code_point_at(value, at);
+        at += size;
+        if (!in_ranges(case_ignorable_ranges, point))
+            return !in_ranges(cased_ranges, point);
+    }
+    return true;
+}
+
+/** `String.prototype.toLowerCase`: Unicode's full mapping with Final_Sigma, locale-independent. */
+[[nodiscard]] inline std::string string_to_lower_case(const std::string& value) {
+    using namespace unicode_case;
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size();) {
+        const auto [point, length] = code_point_at(value, index);
+        if (point == 0x3a3 && final_sigma(value, index, length))
+            append_utf8(result, 0x3c2);
+        else if (const char* text = special_text(lower_specials, point))
+            result += text;
+        else if (const char32_t mapped = mapped_point(lower_runs, point); mapped != point)
+            append_utf8(result, mapped);
+        else
+            result.append(value, index, length);
+        index += length;
+    }
+    return result;
 }
 
 /** UTF-16 code units in canonical WTF-8 text: one per sequence, two per four-byte one. */
@@ -4299,6 +4412,18 @@ string_ends_with(const std::string& value, const std::string& suffix,
 
 [[nodiscard]] inline double string_length(const std::string& value) {
     return static_cast<double>(string_unit_count(value));
+}
+
+/** `String.prototype.slice`, over UTF-16 units; ASCII text slices its bytes. */
+[[nodiscard]] inline std::string string_slice(const std::string& value, double begin_value,
+                                              double end_value) {
+    if (string_unit_count(value) == value.size()) {
+        const auto [begin, end] = relative_slice_bounds(value.size(), begin_value, end_value);
+        return value.substr(begin, end - begin);
+    }
+    const auto units = string_code_units(value);
+    const auto [begin, end] = relative_slice_bounds(units.size(), begin_value, end_value);
+    return string_from_code_units(units.substr(begin, end - begin));
 }
 
 [[nodiscard]] inline std::string string_substring(const std::string& value, double start,
@@ -4573,22 +4698,33 @@ template <typename Range>
     return string_from_code_units(units);
 }
 
-// The padding `padStart`/`padEnd` adds: none once the value reaches the
+// The UTF-16 units `padStart`/`padEnd` add: none once the value reaches the
 // length or when the fill is empty.
 [[nodiscard]] inline std::size_t pad_needed(const std::string& value, double target_length_value,
                                             const std::string& fill) {
     const auto target_length =
         static_cast<std::size_t>(std::max(0.0, std::trunc(target_length_value)));
-    return value.size() >= target_length || fill.empty() ? 0 : target_length - value.size();
+    const std::size_t length = string_unit_count(value);
+    return length >= target_length || fill.empty() ? 0 : target_length - length;
 }
 
-// `fill` repeated to exactly `needed` bytes, appended in place.
+// `fill` repeated to exactly `needed` UTF-16 units, appended in place.
 inline void append_fill(std::string& target, std::size_t needed, const std::string& fill) {
-    const std::size_t end = target.size() + needed;
-    target.reserve(end);
-    while (target.size() < end)
-        target += fill;
-    target.resize(end);
+    if (string_unit_count(fill) == fill.size()) {
+        const std::size_t end = target.size() + needed;
+        target.reserve(end);
+        while (target.size() < end)
+            target += fill;
+        target.resize(end);
+        return;
+    }
+    const auto units = string_code_units(fill);
+    std::u16string padding;
+    padding.reserve(needed);
+    while (padding.size() < needed)
+        padding += units;
+    padding.resize(needed);
+    concat_append(target, string_from_code_units(padding));
 }
 
 [[nodiscard]] inline std::string
@@ -4599,7 +4735,7 @@ string_pad_start(const std::string& value, double target_length_value, const std
     std::string result;
     result.reserve(needed + value.size());
     append_fill(result, needed, fill);
-    result.append(value);
+    concat_append(result, value);
     return result;
 }
 
@@ -5117,9 +5253,14 @@ template <typename T> inline void array_splice_one(Array<T>& values, double inde
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
+/** `key in array` for a number key: an integral index below the length (`-0` is index 0). */
+[[nodiscard]] inline bool array_has_index(double length, double key) {
+    return key >= 0.0 && key < length && std::trunc(key) == key;
+}
+
 [[nodiscard]] inline std::size_t array_length_value(double count) {
     if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
-        throw std::runtime_error("Invalid array length.");
+        throw NamedError("RangeError", "Invalid array length");
     return array_index(count);
 }
 
@@ -5235,6 +5376,13 @@ template <typename T, std::size_t Extent>
 [[nodiscard]] inline const T& array_at_or_default(std::span<T, Extent> values, double index) {
     return array_has_index(values, index) ? values[accepted_index(index)]
                                           : missing_array_value_readonly<std::remove_const_t<T>>();
+}
+
+/** A generated constant array or a table's rows. */
+template <typename T, std::size_t N>
+[[nodiscard]] inline const T& array_at_or_default(const std::array<T, N>& values, double index) {
+    return array_has_index(values, index) ? values[accepted_index(index)]
+                                          : missing_array_value_readonly<T>();
 }
 
 [[noreturn]] inline void throw_index_error(const char* site, const char* operation, double index,
@@ -5701,8 +5849,16 @@ double atomics_compare_exchange(Values values, double index, double expected, do
     return integer == 1.0 || integer == 2.0 || integer == 4.0 || integer == 8.0;
 }
 
+/** ToIndex of a typed array's length: NaN reads 0, a negative or unsafe length throws a RangeError. */
+[[nodiscard]] inline std::size_t typed_array_length(double count) {
+    const auto length = to_index(count);
+    if (!length)
+        throw NamedError("RangeError", "Invalid typed array length: " + number_to_string(count));
+    return *length;
+}
+
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
-    return U8Array(static_cast<std::size_t>(count));
+    return U8Array(typed_array_length(count));
 }
 
 template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
@@ -5714,35 +5870,35 @@ template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Valu
 }
 
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
-    return F32Array(static_cast<std::size_t>(count), 0.0f);
+    return F32Array(typed_array_length(count), 0.0f);
 }
 
 [[nodiscard]] inline F64Array f64_array_sized(double count) {
-    return F64Array(static_cast<std::size_t>(count), 0.0);
+    return F64Array(typed_array_length(count), 0.0);
 }
 
 [[nodiscard]] inline U16Array u16_array_sized(double count) {
-    return U16Array(static_cast<std::size_t>(count), 0u);
+    return U16Array(typed_array_length(count), 0u);
 }
 
 [[nodiscard]] inline I16Array i16_array_sized(double count) {
-    return I16Array(static_cast<std::size_t>(count), 0);
+    return I16Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline I8Array i8_array_sized(double count) {
-    return I8Array(static_cast<std::size_t>(count), 0);
+    return I8Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline U32Array u32_array_sized(double count) {
-    return U32Array(static_cast<std::size_t>(count), 0u);
+    return U32Array(typed_array_length(count), 0u);
 }
 
 [[nodiscard]] inline I32Array i32_array_sized(double count) {
-    return I32Array(static_cast<std::size_t>(count), 0);
+    return I32Array(typed_array_length(count), 0);
 }
 
 [[nodiscard]] inline U8CArray u8c_array_sized(double count) {
-    return U8CArray(static_cast<std::size_t>(count), ClampedByte{});
+    return U8CArray(typed_array_length(count), ClampedByte{});
 }
 
 template <typename Output, typename Values, typename Convert>
@@ -6092,7 +6248,8 @@ template <bool Maximum>
         return value;
     }
     const double floored = std::floor(value);
-    return value - floored >= 0.5 ? floored + 1.0 : floored;
+    // A negative value that rounds to zero is -0 (`Math.round(-0.4)`).
+    return std::copysign(value - floored >= 0.5 ? floored + 1.0 : floored, value);
 }
 
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser

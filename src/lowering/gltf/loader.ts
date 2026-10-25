@@ -265,10 +265,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                         return false;
                     const argument = direct.arguments[1];
                     if (!argument) return false;
-                    const values = this.context.unwrapExpression(argument);
-                    const source = ts.isNonNullExpression(values)
-                        ? values.expression
-                        : values;
+                    const source = this.context.unwrapExpression(argument);
                     return (
                         ts.isPropertyAccessExpression(source) &&
                         ts.isIdentifier(source.expression) &&

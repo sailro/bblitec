@@ -10,6 +10,7 @@ import {
     pinnedRecordLiteral,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-shader.ts";
 const methods = {
@@ -190,7 +191,7 @@ function gpuScope(
                 node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        property.name.getText(file) === "entries",
+                        sameSource(property.name, "entries"),
                 ) ||
                 node.properties.some(
                     (property) =>
@@ -209,7 +210,7 @@ function gpuScope(
                 node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        property.name.getText(file) === "bindGroupLayouts",
+                        sameSource(property.name, "bindGroupLayouts"),
                 )
             )
                 schema = {
@@ -231,7 +232,7 @@ function gpuScope(
                 node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        property.name.getText(file) === "code",
+                        sameSource(property.name, "code"),
                 )
             )
                 schema = {
@@ -275,9 +276,10 @@ function gpuScope(
                     if (
                         !node.catchClause ||
                         node.finallyBlock ||
-                        node.catchClause.variableDeclaration?.name.getText(
-                            file,
-                        ) !== "error"
+                        !sameSource(
+                            node.catchClause.variableDeclaration?.name,
+                            "error",
+                        )
                     )
                         return context.contractError(
                             node,
@@ -342,8 +344,10 @@ function gpuScope(
                             );
                         if (
                             index === 0 &&
-                            argument.parameters[0]!.name.getText(file) !==
-                                "pipeline"
+                            !sameSource(
+                                argument.parameters[0]!.name,
+                                "pipeline",
+                            )
                         )
                             return context.contractError(
                                 argument,
@@ -427,7 +431,7 @@ function gpuScope(
             const callback = filter.arguments[0];
             if (
                 callback.parameters.length !== 1 ||
-                callback.parameters[0]!.name.getText(file) !== "decl" ||
+                !sameSource(callback.parameters[0]!.name, "decl") ||
                 ts.isBlock(callback.body)
             )
                 return context.contractError(

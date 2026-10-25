@@ -1,17 +1,14 @@
 import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
+import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { emitReachableStatements } from "./loop-control.js";
-import {
-    bindingIsOnlyCalledDirectly,
-    functionOfDeclaration,
-    tryResolveFunctionDeclaration,
-} from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
     CapturedClosure,
     ClosureCaptures,
     NativeCaptureBinding,
 } from "./closure-captures.js";
-import type { DataType } from "./data-types.js";
 import type { ForwardDeclaration } from "./declarations.js";
 import type { PlatformCalls } from "./platform-calls.js";
 import type {
@@ -29,6 +26,8 @@ import type {
     LoweringStatement,
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
+import { functionOfDeclaration, isBlockScopedVariable } from "./syntax.js";
+import { callSignatures } from "./type-facts.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -60,6 +59,7 @@ interface CallbackContext extends Pick<
     | "probeEmission"
     | "reachJsData"
     | "registerNativeBinding"
+    | "sharedClosures"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "statementTerminatesAfterLowering"
@@ -67,6 +67,7 @@ interface CallbackContext extends Pick<
     | "unwrap"
     | "useNativeValue"
     | "withRecordScopes"
+    | "withCallbackScopes"
 > {
     /** The emitted entry-body lines. */
     readonly body: NativeEmission[];
@@ -79,16 +80,6 @@ interface CallbackContext extends Pick<
     useNativeBinding(binding: NativeCaptureBinding): void;
 }
 
-/** A stored function every parameter of which may be omitted (optional or rest). */
-function callableWithoutArguments(
-    type: Extract<DataType, { kind: "function" }>,
-): boolean {
-    return type.parameters.every(
-        (parameter, index) =>
-            parameter.kind === "optional" || index === type.restParameter,
-    );
-}
-
 /**
  * Native callbacks: frame callbacks and their named and typed-array forms, platform event
  * callbacks with forward-hoisted bindings, and the physics collision, trigger and character
@@ -96,6 +87,20 @@ function callableWithoutArguments(
  */
 export class CallbackLowerer {
     constructor(private readonly context: CallbackContext) {}
+
+    /**
+     * Whether a callback copies what it captures: one the caller retains, any
+     * under workers, one inside a frame callback or under managed captures
+     * outlives the scope whose locals it reads.
+     */
+    private capturesByValue(retainCaptures: boolean): boolean {
+        return (
+            retainCaptures ||
+            !!this.context.options.workers ||
+            this.context.frameCallbackDepth > 0 ||
+            this.context.managedCaptures.length > 0
+        );
+    }
 
     /**
      * Collision listeners are registered before every startup assignment has
@@ -129,11 +134,10 @@ export class CallbackLowerer {
     ): string {
         this.hoistForwardCallbackBindings(expression);
         const unwrapped = this.context.unwrap(expression);
+        const noArguments = signature === "void" || signature === "interval";
         const asyncType =
             this.context.dataLowerer.promiseCallbackType(unwrapped);
         if (asyncType) {
-            const noArguments =
-                signature === "void" || signature === "interval";
             if (asyncType.parameters.length > (noArguments ? 0 : 1))
                 this.context.fail(
                     expression,
@@ -181,38 +185,48 @@ export class CallbackLowerer {
                 parameter ? [parameter] : [],
             );
         }
+        // A function value, a name holds or an expression computes
+        // (`f.bind(o)`, `fs[0]`), is read once, here; each run calls it
+        // with the frame's number.
+        const bound = ts.isIdentifier(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
+            : undefined;
+        if (
+            ts.isIdentifier(unwrapped)
+                ? bound?.kind === "data" && bound.dataType?.kind === "function"
+                : !ts.isArrowFunction(unwrapped) &&
+                  !ts.isFunctionExpression(unwrapped) &&
+                  callSignatures(
+                      this.context.checker,
+                      this.context.checker.getTypeAtLocation(unwrapped),
+                      "exact",
+                  ).length > 0
+        ) {
+            const parameter = noArguments
+                ? undefined
+                : {
+                      cppType: frameCallbackParameterType(signature),
+                      name: this.context.allocateTemporaryCppName(
+                          "frame_delta",
+                      ),
+                  };
+            return this.compilePlatformCallback(
+                unwrapped,
+                parameter,
+                parameter ? [{ kind: "number", cpp: parameter.name }] : [],
+                undefined,
+                true,
+                false,
+            ).cpp;
+        }
         if (ts.isIdentifier(unwrapped)) {
-            const bound =
-                signature === "void" || signature === "interval"
-                    ? this.context.bindings.lookupOptional(unwrapped)
-                    : undefined;
-            // A timer calls the stored function value it was given, with no
-            // arguments.
-            if (
-                bound?.kind === "data" &&
-                bound.dataType?.kind === "function" &&
-                callableWithoutArguments(bound.dataType)
-            ) {
-                return this.compilePlatformCallback(
-                    unwrapped,
-                    undefined,
-                    [],
-                    undefined,
-                    true,
-                    false,
-                ).cpp;
-            }
             if (signature === "void") {
                 if (
                     bound?.kind === "callback" &&
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue =
-                        retainCaptures ||
-                        !!this.context.options.workers ||
-                        this.context.frameCallbackDepth > 0 ||
-                        this.context.managedCaptures.length > 0;
+                    const captureByValue = this.capturesByValue(retainCaptures);
                     const emitBody = () => {
                         this.context.useNativeValue(bound);
                         this.context.emit({
@@ -256,22 +270,18 @@ export class CallbackLowerer {
         if (
             !ts.isArrowFunction(unwrapped) &&
             !ts.isFunctionExpression(unwrapped)
-        ) {
-            this.context.fail(
+        )
+            return this.context.fail(
                 unwrapped,
-                "A frame, timer or listener callback must be an inline function or a named local function.",
+                "A frame, timer or listener callback must be a function.",
             );
-        }
         if (unwrapped.parameters.length > 1) {
             this.context.fail(
                 unwrapped,
                 "onBeforeRender callback supports at most one deltaMs parameter.",
             );
         }
-        if (
-            (signature === "void" || signature === "interval") &&
-            unwrapped.parameters.length > 0
-        ) {
+        if (noArguments && unwrapped.parameters.length > 0) {
             this.context.fail(
                 unwrapped,
                 "A timer callback takes no parameters.",
@@ -306,11 +316,7 @@ export class CallbackLowerer {
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.context.beginNativeFunctionBody(undefined, true);
-        const captureByValue =
-            retainCaptures ||
-            !!this.context.options.workers ||
-            this.context.frameCallbackDepth > 0 ||
-            this.context.managedCaptures.length > 0;
+        const captureByValue = this.capturesByValue(retainCaptures);
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
@@ -467,11 +473,7 @@ export class CallbackLowerer {
                 this.context.bindings.variableScopes.length;
         }
         this.context.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
-        const captureByValue =
-            retainCaptures ||
-            !!this.context.options.workers ||
-            this.context.frameCallbackDepth > 0 ||
-            this.context.managedCaptures.length > 0;
+        const captureByValue = this.capturesByValue(retainCaptures);
         this.context.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {
@@ -645,10 +647,12 @@ export class CallbackLowerer {
         | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
         | undefined {
         const declaration = symbol.valueDeclaration;
+        // A `var` read before its declaration is undefined, not its initializer.
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
+            !isBlockScopedVariable(declaration) ||
             !ts.isVariableStatement(declaration.parent.parent) ||
             this.context.bindings.peekBinding(symbol)
         )
@@ -725,9 +729,17 @@ export class CallbackLowerer {
             );
             const snapshot =
                 this.context.allocateTemporaryCppName("platform_callback");
+            // The registration keeps the function the name holds now; a
+            // name nothing rebinds holds it for the registration already.
+            const named = this.context.unwrap(callback);
             this.context.emit({
                 kind: "declaration",
-                type: "const auto",
+                type:
+                    ts.isIdentifier(named) &&
+                    cppIdentifierPattern.test(stored.cpp) &&
+                    !this.context.sharedClosures.identifierIsRebound(named)
+                        ? "const auto&"
+                        : "const auto",
                 name: snapshot,
                 initializer: stored.cpp,
             });
@@ -917,12 +929,10 @@ export class CallbackLowerer {
                             values,
                             callback,
                         );
-                    const result = bound.callbackRecordOwner
-                        ? this.context.withRecordScopes(
-                              bound.callbackRecordOwner,
-                              compile,
-                          )
-                        : compile();
+                    const result = this.context.withCallbackScopes(
+                        bound,
+                        compile,
+                    );
                     consumeResult(result);
                 },
                 captureByValue ? false : "entry",

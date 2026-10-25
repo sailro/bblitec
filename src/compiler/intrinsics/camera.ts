@@ -10,6 +10,7 @@ import {
 import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { recordAt } from "../record-access.js";
+import { isNullable } from "../type-facts.js";
 
 export interface CameraIntrinsicContext
     extends
@@ -113,12 +114,7 @@ function typeMayBeAbsent(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
-    const type = checker.getTypeAtLocation(expression);
-    const members = type.isUnion() ? type.types : [type];
-    return members.some(
-        (member) =>
-            (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0,
-    );
+    return isNullable(checker.getTypeAtLocation(expression));
 }
 
 /**

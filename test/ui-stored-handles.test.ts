@@ -139,3 +139,117 @@ for (const mode of ["window", "window-with-engine", "scene"] as const) {
         );
     });
 }
+
+test("a shared class stores its canvas and 2D context and registers a listener per instance", () => {
+    const result = compileSource(`
+        class Overlay {
+            private readonly canvas: HTMLCanvasElement;
+            private readonly ctx: CanvasRenderingContext2D;
+            private constructor() {
+                const canvas = document.createElement("canvas");
+                document.body.appendChild(canvas);
+                this.canvas = canvas;
+                this.ctx = canvas.getContext("2d")!;
+                this.resize();
+                window.addEventListener("resize", () => this.resize());
+            }
+            static async create(): Promise<Overlay> {
+                await Promise.resolve();
+                return new Overlay();
+            }
+            resize(): void {
+                this.canvas.width = window.innerWidth;
+                const { ctx, canvas } = this;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillRect(0, 0, 1, 1);
+            }
+        }
+        void (async () => {
+            const overlay = await Overlay.create();
+            overlay.resize();
+            globalThis.close();
+        })();
+    `);
+    const slot = (field: string): string =>
+        `\\(\\*\\(\\w+->${field}\\)\\.first\\), \\(\\w+->${field}\\)\\.second`;
+    assert.match(
+        result.cpp,
+        /->canvas = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
+    );
+    assert.match(
+        result.cpp,
+        /->ctx = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`bbl::ui_canvas_set_width\\(${slot("canvas")}, `),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`bbl::ui_canvas_fill_rect\\(${slot("ctx")}, `),
+    );
+    assert.match(result.cpp, /bbl::ui_canvas_clear_rect\(/);
+    assert.match(
+        result.cpp,
+        /bbl::on_dom_pointer\([^;]*"resize", bbl::js::next_callback_identity\(\)/,
+    );
+});
+
+test("a 2D context maps to its canvas's handle wherever data stores it", () => {
+    const result = compileSource(`
+        class Overlay {
+            private ctx: CanvasRenderingContext2D | null = null;
+            private readonly canvas: HTMLCanvasElement;
+            constructor() {
+                const canvas = document.createElement("canvas");
+                document.body.appendChild(canvas);
+                this.canvas = canvas;
+            }
+            attach(): void {
+                this.ctx = this.canvas.getContext("2d");
+            }
+            draw(): void {
+                if (this.ctx) this.ctx.fillRect(0, 0, 1, 1);
+            }
+        }
+        const overlay = new Overlay();
+        overlay.attach();
+        requestAnimationFrame(() => overlay.draw());
+        const layers: { ctx: CanvasRenderingContext2D }[] = [];
+        const extra = document.createElement("canvas");
+        document.body.appendChild(extra);
+        layers.push({ ctx: extra.getContext("2d")! });
+        requestAnimationFrame(() => {
+            for (const layer of layers) layer.ctx.fillRect(1, 1, 2, 2);
+        });
+    `);
+    assert.match(
+        result.cpp,
+        /std::optional<std::pair<bbl::StoredEngine, bbl::UiElementHandle>>/,
+    );
+    assert.match(
+        result.cpp,
+        /std::pair<bbl::StoredEngine, bbl::UiElementHandle> ctx;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::ui_canvas_fill_rect\([^;]*, 0\.0, 0\.0, 1\.0, 1\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::ui_canvas_fill_rect\([^;]*->ctx[^;]*, 1\.0, 1\.0, 2\.0, 2\.0\)/,
+    );
+});
+
+test("a const 2D context names its canvas, whatever its nullable annotation", () => {
+    const result = compileSource(`
+        const canvas = document.createElement("canvas");
+        document.body.appendChild(canvas);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("no 2D context");
+        ctx.fillRect(0, 0, 1, 1);
+    `);
+    assert.match(result.cpp, /auto& v_ctx = v_canvas;/);
+    assert.doesNotMatch(result.cpp, /no 2D context/);
+    assert.match(result.cpp, /bbl::ui_canvas_fill_rect\([^;]*, v_ctx, /);
+});

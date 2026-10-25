@@ -9,6 +9,7 @@ import {
     declaredSymbol,
     resolvedSymbol,
 } from "./compiler/symbols.js";
+import { propertyKey } from "./compiler/syntax.js";
 
 interface ApiItem {
     id: string;
@@ -97,11 +98,10 @@ function visible(node: ts.Node): boolean {
 function memberName(node: ts.Node): string | undefined {
     const name = declarationName(node);
     if (!name) return undefined;
-    return ts.isIdentifier(name) ||
-        ts.isStringLiteralLike(name) ||
-        ts.isNumericLiteral(name)
-        ? name.text
-        : name.getText();
+    return (
+        (ts.isPropertyName(name) ? propertyKey(name) : undefined) ??
+        name.getText()
+    );
 }
 
 function kindOf(node: ts.Node): string | undefined {

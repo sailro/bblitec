@@ -23,7 +23,7 @@ import type { LoweringContext } from "./context.js";
  * pin can name any of them; the ones outside the reached slice cost nothing
  * to carry and mean a pin that starts using one still generates.
  */
-const compareEnumerators: Readonly<Record<string, string>> = {
+export const depthCompareByPin: Readonly<Record<string, string>> = {
     never: "never",
     less: "less",
     equal: "equal",
@@ -36,7 +36,7 @@ const compareEnumerators: Readonly<Record<string, string>> = {
 
 /** A WebGPU compare function as this runtime's own enumerator. */
 export function nativeDepthCompare(compare: string): string {
-    const mapped = compareEnumerators[compare];
+    const mapped = depthCompareByPin[compare];
     if (!mapped) {
         throw new Error(
             `Pinned depth uses compare '${compare}', which this runtime ` +

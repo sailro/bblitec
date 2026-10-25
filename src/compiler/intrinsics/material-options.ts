@@ -18,6 +18,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // derivation reads exactly these values back. The intrinsic lowerer
 // in material.ts calls these through its context.
 import ts from "typescript";
+import { knownCondition, staticBooleanOf } from "../values/model.js";
 import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
@@ -293,7 +294,7 @@ function requiredStaticFiniteNumber(
             `${label} must be a finite static number; the pinned material block is composed at generation.`,
         );
     }
-    return { cpp: context.compileNumber(expression), value };
+    return { cpp: context.compileNumber(expression, "float"), value };
 }
 
 /** Metallic/roughness factors are unconditional UBO lanes in the pin. */
@@ -304,7 +305,7 @@ function pbrUniformNumber(
 ): { cpp: string; value: number | undefined } {
     return expression
         ? {
-              cpp: context.compileNumber(expression),
+              cpp: context.compileNumber(expression, "float"),
               value: selectedStaticNumberValue(context, expression),
           }
         : { cpp: floatLiteral(fallback), value: fallback };
@@ -630,7 +631,7 @@ export function compilePbrMaterialOptions(
         );
     }
     const occlusionStrengthCpp = occlusionStrength
-        ? context.compileNumber(occlusionStrength)
+        ? context.compileNumber(occlusionStrength, "float")
         : pinnedDefaultFloatCpp("occlusionStrength");
     const staticMetallicF0Factor = metallicF0Factor
         ? staticNumberValue(context, metallicF0Factor)
@@ -645,7 +646,7 @@ export function compilePbrMaterialOptions(
         );
     }
     const metallicF0FactorCpp = metallicF0Factor
-        ? context.compileNumber(metallicF0Factor)
+        ? context.compileNumber(metallicF0Factor, "float")
         : pinnedDefaultFloatCpp("metallicF0Factor");
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
@@ -706,7 +707,7 @@ export function compilePbrMaterialOptions(
                 ? {}
                 : { metallicF0Factor: staticMetallicF0Factor }),
             ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
-            doubleSided: doubleSidedCpp === "true",
+            doubleSided: knownCondition(doubleSidedCpp) === true,
             ...(staticPhysicalLightFalloff
                 ? {}
                 : { usePhysicalLightFalloff: false }),
@@ -923,8 +924,7 @@ export function compileMetallicReflectanceOptions(
     );
     if (
         useOnly &&
-        (useOnly.kind !== "boolean" ||
-            (useOnly.cpp !== "true" && useOnly.cpp !== "false"))
+        (useOnly.kind !== "boolean" || staticBooleanOf(useOnly) === undefined)
     ) {
         context.fail(
             expression,
@@ -947,7 +947,10 @@ export function compileMetallicReflectanceOptions(
             hasMetallicTexture: texture !== undefined,
             hasReflectanceTexture: reflectanceTexture !== undefined,
             ...(useOnly
-                ? { useOnlyMetallicFromTexture: useOnly.cpp === "true" }
+                ? {
+                      useOnlyMetallicFromTexture:
+                          staticBooleanOf(useOnly) === true,
+                  }
                 : {}),
         },
     };
@@ -998,19 +1001,19 @@ export function compileClearCoatOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("clearcoatIntensity"),
         roughness: roughness
-            ? context.compileNumber(roughness)
+            ? context.compileNumber(roughness, "float")
             : pinnedDefaultFloatCpp("clearcoatRoughness"),
         indexOfRefraction: indexOfRefraction
-            ? context.compileNumber(indexOfRefraction)
+            ? context.compileNumber(indexOfRefraction, "float")
             : pinnedDefaultFloatCpp("clearcoatIndexOfRefraction"),
         bumpTextureScale: bumpTextureScale
-            ? context.compileNumber(bumpTextureScale)
+            ? context.compileNumber(bumpTextureScale, "float")
             : pinnedDefaultFloatCpp("clearcoatBumpTextureScale"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticIntensity !== undefined
                 ? { intensity: staticIntensity }
                 : {}),
@@ -1075,19 +1078,19 @@ export function compileIridescenceOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("iridescenceIntensity"),
         indexOfRefraction: indexOfRefraction
-            ? context.compileNumber(indexOfRefraction)
+            ? context.compileNumber(indexOfRefraction, "float")
             : pinnedDefaultFloatCpp("iridescenceIndexOfRefraction"),
         minimumThickness: minimumThickness
-            ? context.compileNumber(minimumThickness)
+            ? context.compileNumber(minimumThickness, "float")
             : pinnedDefaultFloatCpp("iridescenceMinimumThickness"),
         maximumThickness: maximumThickness
-            ? context.compileNumber(maximumThickness)
+            ? context.compileNumber(maximumThickness, "float")
             : pinnedDefaultFloatCpp("iridescenceMaximumThickness"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticIntensity !== undefined
                 ? { intensity: staticIntensity }
                 : {}),
@@ -1142,13 +1145,13 @@ export function compileAnisotropyOptions(
     return {
         enabled,
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("anisotropyIntensity"),
         direction: direction
             ? context.evaluator.compileVec2(direction)
             : pinnedDefaultVec2Cpp("anisotropyDirection"),
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             // Omitted where the scene computes the value: the composition
             // then replays the pin's own `?? 1.0` default, which is what the
             // variant reads. Nothing in the pinned `detect` selects on it.
@@ -1194,7 +1197,7 @@ export function compileSheenOptions(
     const albedoScalingValue = albedoScaling
         ? context.compileBoolean(albedoScaling)
         : "false";
-    if (albedoScalingValue !== "true" && albedoScalingValue !== "false") {
+    if (knownCondition(albedoScalingValue) === undefined) {
         context.fail(
             albedoScaling ?? object,
             "Sheen albedoScaling must be a static boolean; it selects the composed fragment.",
@@ -1211,22 +1214,22 @@ export function compileSheenOptions(
         ? staticNumberValue(context, intensity)
         : pinnedDefaultNumber("sheenIntensity");
     const texture = context.objectProperty(object, "texture");
-    const albedoScalingEnabled = albedoScalingValue === "true";
+    const albedoScalingEnabled = knownCondition(albedoScalingValue) === true;
     return {
         enabled,
         color: color
             ? context.compileColor3(color)
             : pinnedDefaultColor3Cpp("sheenColor"),
         roughness: roughness
-            ? context.compileNumber(roughness)
+            ? context.compileNumber(roughness, "float")
             : pinnedDefaultFloatCpp("sheenRoughness"),
         intensity: intensity
-            ? context.compileNumber(intensity)
+            ? context.compileNumber(intensity, "float")
             : pinnedDefaultFloatCpp("sheenIntensity"),
         texture,
         albedoScaling: albedoScalingEnabled,
         manifest: {
-            isEnabled: enabled === "true",
+            isEnabled: knownCondition(enabled) === true,
             ...(staticColor !== undefined ? { color: staticColor } : {}),
             ...(staticRoughness !== undefined
                 ? { roughness: staticRoughness }

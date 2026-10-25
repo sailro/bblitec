@@ -1,11 +1,13 @@
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import type { LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedCallSpelling,
-    PinnedNumericLowerer,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedCallSpelling,
+    type PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 
 const modulePath = "src/navigation/navigation.ts";
@@ -36,7 +38,7 @@ function mergedStorageStatement(
         cpp: name,
         type: positions ? "f32" : "u32",
         indexedStore: (owner, index, value) =>
-            `bbl::js::array_store_checked(${owner}, ${index}, "navigation source merge") = ${positions ? `static_cast<float>(${value})` : `bbl::js::to_uint32(${value})`}`,
+            `bbl::js::array_store_checked(${owner}, ${index}, "navigation source merge") = ${positions ? `static_cast<float>(${value})` : jsToUint32Call(value)}`,
     });
     const size = lowerer.portBinding(
         positions ? "totalVerts" : "totalIdx",
@@ -75,61 +77,59 @@ export function navigationMeshMergeDefinition(
         merge.file,
         merge.declaration.body!.statements,
         {
-            bindings: new Map([
-                ["meshes", { cpp: "meshes", type: "opaque" }],
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "meshes",
+                    collectionBinding("meshes", (element) => {
+                        const record = recordAt("engine.meshes", element);
+                        const streams = `navigation_mesh_cpu_streams(engine, ${element})`;
+                        return new Map<string, PinnedBinding>([
+                            [element, { cpp: element, type: "opaque" }],
+                            [
+                                `${element}.name`,
+                                { cpp: `${record}.name`, type: "string" },
+                            ],
+                            [
+                                `${element}._cpuPositions`,
+                                {
+                                    cpp: `${streams}.positions`,
+                                    type: "f32",
+                                    materializeAlias: true,
+                                    absentCpp: `!${streams}.positions`,
+                                    indexedRead: (owner, index) =>
+                                        `${owner}[static_cast<std::size_t>(${index})]`,
+                                },
+                            ],
+                            [
+                                `${element}._cpuIndices`,
+                                {
+                                    cpp: `${streams}.indices`,
+                                    type: "u32",
+                                    materializeAlias: true,
+                                    absentCpp: `!${streams}.indices`,
+                                    indexedRead: (owner, index) =>
+                                        `${owner}.source_at(static_cast<std::size_t>(${index}))`,
+                                },
+                            ],
+                            [
+                                `${element}.worldMatrix`,
+                                {
+                                    cpp: `upstream::mesh_world_matrix(engine, ${record})`,
+                                    type: "f32",
+                                    materializeAlias: true,
+                                    indexedRead: (owner, index) =>
+                                        `${owner}[static_cast<std::size_t>(${index})]`,
+                                },
+                            ],
+                        ]);
+                    }),
+                ],
                 [
                     "doNotReverseIndices",
                     { cpp: "false", type: "bool", staticBoolean: false },
                 ],
             ]),
             calls: new Map(),
-            forOf(iterated, element) {
-                if (iterated !== "meshes") return undefined;
-                const record = recordAt("engine.meshes", element);
-                const streams = `navigation_mesh_cpu_streams(engine, ${element})`;
-                return {
-                    range: "meshes",
-                    bindings: new Map<string, PinnedBinding>([
-                        [element, { cpp: element, type: "opaque" }],
-                        [
-                            `${element}.name`,
-                            { cpp: `${record}.name`, type: "string" },
-                        ],
-                        [
-                            `${element}._cpuPositions`,
-                            {
-                                cpp: `${streams}.positions`,
-                                type: "f32",
-                                materializeAlias: true,
-                                absentCpp: `!${streams}.positions`,
-                                indexedRead: (owner, index) =>
-                                    `${owner}[static_cast<std::size_t>(${index})]`,
-                            },
-                        ],
-                        [
-                            `${element}._cpuIndices`,
-                            {
-                                cpp: `${streams}.indices`,
-                                type: "u32",
-                                materializeAlias: true,
-                                absentCpp: `!${streams}.indices`,
-                                indexedRead: (owner, index) =>
-                                    `${owner}.source_at(static_cast<std::size_t>(${index}))`,
-                            },
-                        ],
-                        [
-                            `${element}.worldMatrix`,
-                            {
-                                cpp: `upstream::mesh_world_matrix(engine, ${record})`,
-                                type: "f32",
-                                materializeAlias: true,
-                                indexedRead: (owner, index) =>
-                                    `${owner}[static_cast<std::size_t>(${index})]`,
-                            },
-                        ],
-                    ]),
-                };
-            },
             statement: (node, lowerer, indent) =>
                 mergedStorageStatement(context, node, lowerer, indent),
             returnValue: (node, lowerer) =>
@@ -183,8 +183,35 @@ export function navigationSourceQueryDefinitions(
         merge.file,
         merge.declaration.body!.statements,
         {
-            bindings: new Map([
-                ["sources", { cpp: "sources", type: "opaque" }],
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "sources",
+                    collectionBinding(
+                        "sources",
+                        (element) =>
+                            new Map<string, PinnedBinding>([
+                                [element, { cpp: element, type: "opaque" }],
+                                [
+                                    `${element}.positions`,
+                                    {
+                                        cpp: `${element}.positions`,
+                                        type: "f64-list",
+                                        indexedRead: (owner, index) =>
+                                            `${owner}.load(static_cast<std::size_t>(${index}))`,
+                                    },
+                                ],
+                                [
+                                    `${element}.indices`,
+                                    {
+                                        cpp: `${element}.indices`,
+                                        type: "f64-list",
+                                        indexedRead: (owner, index) =>
+                                            `${owner}.load(static_cast<std::size_t>(${index}))`,
+                                    },
+                                ],
+                            ]),
+                    ),
+                ],
                 [
                     "doNotReverseIndices",
                     { cpp: "doNotReverseIndices", type: "bool" },
@@ -193,33 +220,6 @@ export function navigationSourceQueryDefinitions(
             calls: new Map(),
             statement: (node, lowerer, indent) =>
                 mergedStorageStatement(context, node, lowerer, indent),
-            forOf(iterated, element) {
-                if (iterated !== "sources") return undefined;
-                return {
-                    range: "sources",
-                    bindings: new Map<string, PinnedBinding>([
-                        [element, { cpp: element, type: "opaque" }],
-                        [
-                            `${element}.positions`,
-                            {
-                                cpp: `${element}.positions`,
-                                type: "f64-list",
-                                indexedRead: (owner, index) =>
-                                    `${owner}.load(static_cast<std::size_t>(${index}))`,
-                            },
-                        ],
-                        [
-                            `${element}.indices`,
-                            {
-                                cpp: `${element}.indices`,
-                                type: "f64-list",
-                                indexedRead: (owner, index) =>
-                                    `${owner}.load(static_cast<std::size_t>(${index}))`,
-                            },
-                        ],
-                    ]),
-                };
-            },
             returnValue: (node, lowerer) =>
                 mergedGeometryReturn(context, merge.declaration, node, lowerer),
         },

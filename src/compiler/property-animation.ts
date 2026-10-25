@@ -19,6 +19,19 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
 import { renderClosure } from "./closure-captures.js";
+import { knownCondition } from "./values/model.js";
+import { staticTableEntry, type TableOption } from "./table-options.js";
+
+const trackInterpolation: TableOption = {
+    table: {
+        linear: "bbl::PropertyAnimationInterpolation::linear",
+        step: "bbl::PropertyAnimationInterpolation::step",
+    },
+    refusal: (interpolation) =>
+        `Unsupported property animation interpolation '${interpolation}'.`,
+    name: "property animation interpolation",
+    label: "interpolation",
+};
 
 export interface PropertyAnimationContext extends Pick<
     LoweringServices,
@@ -30,6 +43,7 @@ export interface PropertyAnimationContext extends Pick<
     | "compileNumber"
     | "compileBoolean"
     | "compileStaticString"
+    | "compileStringLiteral"
     | "cppString"
     | "fail"
 > {}
@@ -549,7 +563,8 @@ export function compilePropertyAnimationClip(
             // honour, a value it cannot settle included: both must refuse,
             // because silently dropping the option is what leaves the two
             // sides interpolating differently.
-            context.compileBoolean(quaternionExpression) !== "false"
+            knownCondition(context.compileBoolean(quaternionExpression)) !==
+                false
         ) {
             context.fail(
                 quaternionExpression,
@@ -562,14 +577,12 @@ export function compilePropertyAnimationClip(
             "interpolation",
         );
         const interpolation = interpolationExpression
-            ? context.compileStaticString(interpolationExpression)
-            : "linear";
-        if (!["linear", "step"].includes(interpolation)) {
-            context.fail(
-                interpolationExpression!,
-                `Unsupported property animation interpolation '${interpolation}'.`,
-            );
-        }
+            ? staticTableEntry(
+                  context,
+                  trackInterpolation,
+                  interpolationExpression,
+              )
+            : trackInterpolation.table.linear!;
         const trackFrameRateExpression = context.objectProperty(
             track,
             "frameRate",
@@ -605,7 +618,7 @@ export function compilePropertyAnimationClip(
             // JavaScript numbers and stores the time into its Float32Array
             // `input`, rounding once.
             const time = timeExpression
-                ? context.compileNumber(timeExpression)
+                ? context.compileNumber(timeExpression, "float")
                 : `static_cast<float>(${context.compileNumber(frameExpression!, "double")} / ${trackFrameRate})`;
             const value = compilePropertyAnimationKeyValue(
                 context,
@@ -614,7 +627,7 @@ export function compilePropertyAnimationClip(
             );
             return `bbl::PropertyAnimationKey{${time}, ${value}}`;
         });
-        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, bbl::PropertyAnimationInterpolation::${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
+        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, ${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
     });
     const name = context.compileStaticString(nameExpression);
     return {
@@ -645,10 +658,12 @@ function compilePropertyAnimationKeyValue(
     const resolved = context.resolveStaticExpression(expression);
     const values =
         components === 1
-            ? [context.compileNumber(resolved)]
+            ? [context.compileNumber(resolved, "float")]
             : context
                   .expectStaticArrayLiteral(resolved)
-                  .elements.map((element) => context.compileNumber(element));
+                  .elements.map((element) =>
+                      context.compileNumber(element, "float"),
+                  );
     if (values.length !== components) {
         context.fail(
             resolved,

@@ -3,6 +3,7 @@ import { stringLiteral } from "../cpp-literals.js";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
+    collectionBinding,
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
@@ -11,6 +12,11 @@ import {
     pinnedRecordSchema,
     type PinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import {
+    sameSource,
+    propertyPath,
+    isOneOfSources,
+} from "../compiler/syntax.js";
 
 const modulePath = "src/engine/gpu-task-timer.ts";
 const recordSchema = pinnedRecordSchema("GpuTaskTimingRecord", {
@@ -123,6 +129,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             type: "scalar",
         });
         bindings.set("error", { cpp: "error", type: "opaque" });
+        bindings.set("pending.records", collectionBinding("pending.records"));
         const expression = (
             node: ts.Expression,
             lowerer: PinnedNumericLowerer,
@@ -138,10 +145,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             )
                 return "has_timestamp_writes";
             if (ts.isPropertyAccessExpression(node)) {
-                if (
-                    phase === "finish" &&
-                    node.getText(file) === "records.length"
-                )
+                if (phase === "finish" && sameSource(node, "records.length"))
                     return "static_cast<double>(frame_records.size())";
                 if (
                     ts.isIdentifier(node.expression) &&
@@ -160,7 +164,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             if (ts.isArrayLiteralExpression(node) && !node.elements.length)
                 return "std::vector<GpuTaskTimingEntry>{}";
             if (ts.isCallExpression(node)) {
-                const name = node.expression.getText(file);
+                const name = propertyPath(node.expression)?.join(".");
                 if (name === "Number" && node.arguments.length === 1)
                     return `static_cast<double>(${lowerer.expression(node.arguments[0]!)})`;
                 if (
@@ -211,11 +215,12 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                     const [timer, publisher, snapshot] = node.arguments;
                     if (
                         node.arguments.length !== 3 ||
-                        timer?.getText(file) !== "timer" ||
+                        !sameSource(timer, "timer") ||
                         !publisher ||
-                        !["publish", "pending.publish"].includes(
-                            publisher.getText(file),
-                        ) ||
+                        !isOneOfSources(publisher, [
+                            "publish",
+                            "pending.publish",
+                        ]) ||
                         !snapshot
                     )
                         return fail(node);
@@ -293,18 +298,6 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             foldConditions: false,
 
             expression,
-            forOf: (source, element) =>
-                source === "pending.records"
-                    ? {
-                          range: "pending.records",
-                          bindings: new Map([
-                              [
-                                  element,
-                                  { cpp: element, type: "opaque" as const },
-                              ],
-                          ]),
-                      }
-                    : undefined,
             returnValue: (value, lowerer) => {
                 if (phase !== "pass")
                     return value ? lowerer.expression(value) : "";
@@ -365,10 +358,8 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                 }
                 if (ts.isForOfStatement(node) && phase === "dispose") {
                     if (
-                        node.expression.getText(file) !==
-                            "timer.readbackPool" &&
-                        node.expression.getText(file) !==
-                            "timer.pendingReadbacks"
+                        !sameSource(node.expression, "timer.readbackPool") &&
+                        !sameSource(node.expression, "timer.pendingReadbacks")
                     )
                         return fail(node);
                     const block = ts.isBlock(node.statement)
@@ -642,8 +633,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             return false;
         if (
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(file) ===
-                "raw"
+            sameSource(statement.declarationList.declarations[0]?.name, "raw")
         )
             return false;
         return true;

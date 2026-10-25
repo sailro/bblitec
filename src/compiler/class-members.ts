@@ -1,12 +1,30 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
+    forEachAnalysisNode,
+    someAnalysisNode,
+    sourceFileNodes,
+} from "./analysis-walk.js";
+import {
+    accessedPropertySymbol,
+    calledDeclaration,
     declaredInDefaultLibrary,
+    declaredSymbol,
+    namedMember,
     resolvedSymbol,
-    symbolPropertyKey,
+    staticPropertyKey,
+    type NamedMember,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
-import { unwrapExpression, wrappedParent } from "./syntax.js";
+import { unionMembers } from "./type-facts.js";
+import {
+    unwrapExpression,
+    wrappedParent,
+    expressionHasEffects,
+    variableKind,
+    classBaseExpression,
+    bindingElementKey,
+    outermostWrapper,
+} from "./syntax.js";
 
 /**
  * The local class a name's symbol declares: a class declaration, or a
@@ -20,7 +38,7 @@ export function localClassOfSymbol(
         const initializer =
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.initializer
                 ? unwrapExpression(declaration.initializer)
                 : undefined;
@@ -70,7 +88,9 @@ export function classInstanceProperties(
 }
 
 /** A class body's own instance property declarations, named plainly. */
-export type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
+export type InstanceProperty = (
+    ts.PropertyDeclaration | ts.ParameterDeclaration
+) & {
     name: ts.MemberName;
 };
 
@@ -139,10 +159,28 @@ function isAbstractClass(declaration: ts.ClassLikeDeclaration): boolean {
 }
 
 /** A static property the program folds from its initializer at generation. */
+/**
+ * Whether a static field reads as its initializer wherever it is read: it
+ * is readonly, and evaluating the initializer again changes nothing and
+ * builds no fresh object (`next++`, `[]` or a function make it a field the
+ * class definition evaluates once).
+ */
 function isStaticConstant(member: ts.PropertyDeclaration): boolean {
+    const initializer = member.initializer;
     return (
-        member.initializer !== undefined &&
-        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !== 0
+        initializer !== undefined &&
+        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Readonly) !==
+            0 &&
+        !expressionHasEffects(initializer) &&
+        !someAnalysisNode(
+            initializer,
+            (node) =>
+                ts.isArrayLiteralExpression(node) ||
+                ts.isObjectLiteralExpression(node) ||
+                ts.isRegularExpressionLiteral(node) ||
+                ts.isFunctionLike(node) ||
+                ts.isClassLike(node),
+        )
     );
 }
 
@@ -167,9 +205,7 @@ function resolveHeritage(
     | { unsupported: ts.ExpressionWithTypeArguments }
     | { errorBase: string }
     | undefined {
-    const heritage = declaration.heritageClauses?.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types[0];
+    const heritage = classBaseExpression(declaration);
     if (!heritage) return undefined;
     const symbol = resolvedSymbol(checker, heritage.expression);
     if (
@@ -218,16 +254,14 @@ export function classMemberTable(
             staticElements.push(member);
             continue;
         }
-        // A method a unique symbol names (`*[Symbol.iterator]()`) is keyed
-        // by that symbol's property key.
+        // A method or accessor is keyed as its name declares it: `"a-b"()`,
+        // `1()`, `*[Symbol.iterator]()`. A field the class layout cannot
+        // name (computed or quoted) is refused there.
         const name = !member.name
             ? undefined
-            : ts.isMemberName(member.name)
-              ? member.name.text
-              : ts.isMethodDeclaration(member) &&
-                  ts.isComputedPropertyName(member.name)
-                ? symbolPropertyKey(checker, member.name.expression)
-                : undefined;
+            : ts.isPropertyDeclaration(member) && !ts.isMemberName(member.name)
+              ? undefined
+              : staticPropertyKey(checker, member.name);
         if (name === undefined) continue;
         if (ts.isMethodDeclaration(member)) {
             recordImplementation(
@@ -320,6 +354,22 @@ export function classChain(table: ClassMemberTable): ClassMemberTable[] {
         chain.push(current);
     }
     return chain;
+}
+
+/**
+ * The names an instance of `table`'s class inherits from its prototype
+ * chain: its classes' methods and accessors (fields are own properties).
+ */
+export function classPrototypeKeys(table: ClassMemberTable): Set<string> {
+    const keys = new Set<string>();
+    for (const link of classChain(table))
+        for (const name of [
+            ...link.methods.keys(),
+            ...Object.keys(link.getters),
+            ...Object.keys(link.setters),
+        ])
+            keys.add(name);
+    return keys;
 }
 
 /** Whether `table`'s class is `ancestor` or extends it. */
@@ -417,6 +467,51 @@ export function classChainInstanceProperties(
     return properties;
 }
 
+/** A constructor's direct write of one of its parameters to a field. */
+export interface ConstructorFieldParameter {
+    readonly field: string;
+    readonly parameter: number;
+    readonly assignment: ts.BinaryExpression;
+    readonly statement: ts.ExpressionStatement;
+}
+
+/**
+ * The constructor's top-level `this.field = parameter` statements, in
+ * source order, each with its parameter's index.
+ */
+export function constructorFieldParameters(
+    constructorDeclaration: ts.ConstructorDeclaration,
+): readonly ConstructorFieldParameter[] {
+    const parameters = new Map<string, number>();
+    constructorDeclaration.parameters.forEach((parameter, index) => {
+        if (ts.isIdentifier(parameter.name))
+            parameters.set(parameter.name.text, index);
+    });
+    const writes: ConstructorFieldParameter[] = [];
+    for (const statement of constructorDeclaration.body?.statements ?? []) {
+        if (!ts.isExpressionStatement(statement)) continue;
+        const assignment = unwrapExpression(statement.expression);
+        if (
+            !ts.isBinaryExpression(assignment) ||
+            assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(assignment.left) ||
+            assignment.left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+            !ts.isIdentifier(assignment.left.name) ||
+            !ts.isIdentifier(assignment.right)
+        )
+            continue;
+        const parameter = parameters.get(assignment.right.text);
+        if (parameter !== undefined)
+            writes.push({
+                field: assignment.left.name.text,
+                parameter,
+                assignment,
+                statement,
+            });
+    }
+    return writes;
+}
+
 /** The class whose constructor runs for `new` of `table`'s class, following implicit constructors. */
 export function effectiveConstructor(
     table: ClassMemberTable,
@@ -436,10 +531,13 @@ export function effectiveConstructor(
 export function staticClassMember(
     checker: ts.TypeChecker,
     owner: ts.Expression,
-    name: ts.MemberName,
+    access: NamedMember,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = resolvedSymbol(checker, name)?.declarations?.find(
+    const member = accessedPropertySymbol(
+        checker,
+        access.access,
+    )?.declarations?.find(
         (candidate): candidate is ts.ClassElement =>
             ts.isClassElement(candidate) &&
             ts.isClassLike(candidate.parent) &&
@@ -448,8 +546,235 @@ export function staticClassMember(
     if (!member || !ts.isClassLike(member.parent)) return undefined;
     return {
         table: classMemberTable(checker, member.parent),
-        name: name.text,
+        name: access.name,
     };
+}
+
+/** Methods the language calls on any object it is handed, by name. */
+const LANGUAGE_PROTOCOL_METHODS: ReadonlySet<string> = new Set([
+    "handleEvent",
+    "next",
+    "return",
+    "then",
+    "throw",
+    "toJSON",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+]);
+
+/** A key only the run time knows, read by an assignment pattern. */
+const RUN_TIME_KEY = "\0run-time key";
+
+/** Every member use of a program, by the name it reads. */
+interface MemberUses {
+    /** Member calls, with their receiver. */
+    readonly calls: Map<
+        string,
+        { readonly call: ts.CallExpression; readonly receiver: ts.Node }[]
+    >;
+    /** Members read as values, by receiver (a pattern's source). */
+    readonly values: Map<string, ts.Node[]>;
+    /** Receivers of a member read by a key only the run time knows. */
+    readonly dynamic: ts.Node[];
+    /** Keys an assignment pattern reads, whatever it reads them from. */
+    readonly patternKeys: Set<string>;
+    /**
+     * Values handed to library code: an argument of a declaration file's
+     * function (a literal's members included) or a value stored into a
+     * property it declares.
+     */
+    readonly sinks: ts.Expression[];
+}
+
+/** @unjournaled Derived from the program alone, on first use. */
+const memberUsesByProgram = new WeakMap<ts.Program, MemberUses>();
+
+function memberUses(checker: ts.TypeChecker, program: ts.Program): MemberUses {
+    const known = memberUsesByProgram.get(program);
+    if (known) return known;
+    const uses: MemberUses = {
+        calls: new Map(),
+        values: new Map(),
+        dynamic: [],
+        patternKeys: new Set(),
+        sinks: [],
+    };
+    const sink = (value: ts.Expression): void => {
+        const expression = unwrapExpression(value);
+        if (ts.isObjectLiteralExpression(expression))
+            for (const member of expression.properties) {
+                if (ts.isPropertyAssignment(member)) sink(member.initializer);
+                else if (ts.isShorthandPropertyAssignment(member))
+                    uses.sinks.push(member.name);
+                else if (ts.isSpreadAssignment(member)) sink(member.expression);
+            }
+        else if (ts.isArrayLiteralExpression(expression))
+            for (const element of expression.elements)
+                sink(
+                    ts.isSpreadElement(element) ? element.expression : element,
+                );
+        else uses.sinks.push(expression);
+    };
+    const inDeclarationFile = (declaration: ts.Node | undefined): boolean =>
+        declaration?.getSourceFile().isDeclarationFile === true;
+    const add = <T>(map: Map<string, T[]>, name: string, use: T): void => {
+        const list = map.get(name);
+        if (list) list.push(use);
+        else map.set(name, [use]);
+    };
+    for (const file of program.getSourceFiles()) {
+        if (
+            file.isDeclarationFile ||
+            program.isSourceFileFromExternalLibrary(file)
+        )
+            continue;
+        for (const node of sourceFileNodes(file)) {
+            if (
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)
+            ) {
+                const member = namedMember(checker, node);
+                if (!member) {
+                    uses.dynamic.push(node.expression);
+                    continue;
+                }
+                const position = outermostWrapper(node);
+                const call = position.parent;
+                if (ts.isCallExpression(call) && call.expression === position)
+                    add(uses.calls, member.name, {
+                        call,
+                        receiver: member.expression,
+                    });
+                else add(uses.values, member.name, member.expression);
+            } else if (
+                (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+                inDeclarationFile(calledDeclaration(checker, node))
+            ) {
+                for (const argument of node.arguments ?? [])
+                    sink(
+                        ts.isSpreadElement(argument)
+                            ? argument.expression
+                            : argument,
+                    );
+            }
+            if (
+                ts.isBindingElement(node) &&
+                ts.isObjectBindingPattern(node.parent)
+            ) {
+                const key = bindingElementKey(node);
+                if (key === undefined) uses.dynamic.push(node.parent);
+                else add(uses.values, key, node.parent);
+            } else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ) {
+                patternKeys(checker, node.left, uses.patternKeys);
+                const target = namedMember(
+                    checker,
+                    unwrapExpression(node.left),
+                );
+                const declarations =
+                    target &&
+                    accessedPropertySymbol(checker, target.access)
+                        ?.declarations;
+                if (
+                    declarations?.length &&
+                    declarations.every(inDeclarationFile)
+                )
+                    sink(node.right);
+            } else if (
+                (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                !ts.isVariableDeclarationList(node.initializer)
+            )
+                patternKeys(checker, node.initializer, uses.patternKeys);
+        }
+    }
+    memberUsesByProgram.set(program, uses);
+    return uses;
+}
+
+/** The keys an assignment pattern reads (`({ m } = o)`), nested ones included. */
+function patternKeys(
+    checker: ts.TypeChecker,
+    pattern: ts.Expression,
+    keys: Set<string>,
+): void {
+    const target = unwrapExpression(pattern);
+    if (ts.isArrayLiteralExpression(target))
+        for (const element of target.elements)
+            patternKeys(
+                checker,
+                ts.isSpreadElement(element) ? element.expression : element,
+                keys,
+            );
+    else if (ts.isObjectLiteralExpression(target))
+        for (const property of target.properties) {
+            if (ts.isShorthandPropertyAssignment(property))
+                keys.add(property.name.text);
+            else if (ts.isPropertyAssignment(property)) {
+                keys.add(
+                    staticPropertyKey(checker, property.name) ?? RUN_TIME_KEY,
+                );
+                patternKeys(checker, property.initializer, keys);
+            } else if (ts.isSpreadAssignment(property))
+                patternKeys(checker, property.expression, keys);
+        }
+    else if (
+        ts.isBinaryExpression(target) &&
+        target.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    )
+        patternKeys(checker, target.left, keys);
+}
+
+/**
+ * Whether a value of type `receiver` may be `holder`'s: a type `holder` is
+ * assignable to, or one the checker leaves open.
+ */
+function mayHold(
+    checker: ts.TypeChecker,
+    receiver: ts.Type,
+    holder: ts.Type,
+): boolean {
+    return unionMembers(checker.getNonNullableType(receiver)).some((member) => {
+        if (
+            member.flags &
+            (ts.TypeFlags.Any |
+                ts.TypeFlags.Unknown |
+                ts.TypeFlags.NonPrimitive)
+        )
+            return true;
+        if (member.flags & ts.TypeFlags.TypeParameter) {
+            const constraint = checker.getBaseConstraintOfType(member);
+            return (
+                !constraint ||
+                constraint === member ||
+                mayHold(checker, constraint, holder)
+            );
+        }
+        return checker.isTypeAssignableTo(holder, member);
+    });
+}
+
+/**
+ * Whether the library code a value is handed to may call its member
+ * `name`: the type it is handed as declares one. Through `any` a library
+ * calls only the language's protocols.
+ */
+function libraryTypeDeclares(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+    name: string,
+): boolean {
+    const expected = checker.getContextualType(value);
+    return (
+        expected !== undefined &&
+        unionMembers(expected).some(
+            (member) =>
+                (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
+                    0 && member.getProperty(name) !== undefined,
+        )
+    );
 }
 
 /**
@@ -474,6 +799,59 @@ export class ClassHierarchy {
 
     public table(declaration: ts.ClassLikeDeclaration): ClassMemberTable {
         return classMemberTable(this.checker, declaration);
+    }
+
+    /**
+     * The calls that may run `method`, a local class's method: dispatch
+     * inverted over the whole program. A member call named like it may run
+     * it when its receiver may hold an instance of the class (the class
+     * itself for a static method), whatever type the receiver is read
+     * through: a base class, an interface, a structurally compatible type,
+     * `this`, `super` or `any`. Undefined when a use no call names may run
+     * it: the member read as a value (passed, bound, destructured), read by
+     * a run-time key, a protocol the language calls itself (`then`,
+     * `toString`), or a library type an instance may be handed to as.
+     */
+    public methodCallers(
+        method: ts.MethodDeclaration,
+    ): readonly ts.CallExpression[] | undefined {
+        const owner = method.parent;
+        if (!ts.isClassLike(owner) || owner.getSourceFile().isDeclarationFile)
+            return undefined;
+        const name = staticPropertyKey(this.checker, method.name);
+        if (name === undefined || LANGUAGE_PROTOCOL_METHODS.has(name))
+            return undefined;
+        const symbol = owner.name
+            ? declaredSymbol(this.checker, owner.name)
+            : undefined;
+        if (!symbol) return undefined;
+        const holder = isStaticMember(method)
+            ? this.checker.getTypeOfSymbol(symbol)
+            : this.checker.getDeclaredTypeOfSymbol(symbol);
+        const uses = memberUses(this.checker, this.program);
+        const known = new Map<ts.Type, boolean>();
+        const reaches = (receiver: ts.Node): boolean => {
+            const type = this.checker.getTypeAtLocation(receiver);
+            let answer = known.get(type);
+            if (answer === undefined)
+                known.set(type, (answer = mayHold(this.checker, type, holder)));
+            return answer;
+        };
+        if (
+            uses.patternKeys.has(name) ||
+            uses.patternKeys.has(RUN_TIME_KEY) ||
+            uses.dynamic.some(reaches) ||
+            (uses.values.get(name) ?? []).some(reaches) ||
+            uses.sinks.some(
+                (value) =>
+                    reaches(value) &&
+                    libraryTypeDeclares(this.checker, value, name),
+            )
+        )
+            return undefined;
+        return (uses.calls.get(name) ?? []).flatMap(({ call, receiver }) =>
+            reaches(receiver) ? [call] : [],
+        );
     }
 
     /** The classes that name `declaration` in their `extends` clause, in source order. */

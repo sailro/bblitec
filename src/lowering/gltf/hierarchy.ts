@@ -24,6 +24,17 @@ export function lowerGltfHierarchy(context: LoweringContext): string {
                 cpp: "children",
                 type: "opaque",
                 absentCpp: "(!children || !children->truthy())",
+                // Each child is a node index in the JSON array.
+                elements: {
+                    range: "children->as_array()",
+                    element: (name) =>
+                        new Map([
+                            [
+                                name,
+                                { cpp: `${name}.as_number()`, type: "scalar" },
+                            ],
+                        ]),
+                },
             },
         ],
     ]);
@@ -31,19 +42,6 @@ export function lowerGltfHierarchy(context: LoweringContext): string {
         bindings: mapBindings,
         calls: new Map(),
 
-        forOf(iterated, element) {
-            return iterated === "children"
-                ? {
-                      range: "children->as_array()",
-                      bindings: new Map([
-                          [
-                              element,
-                              { cpp: `${element}.as_number()`, type: "scalar" },
-                          ],
-                      ]),
-                  }
-                : undefined;
-        },
         expression(node, lowerer) {
             if (context.expressionMatchesShape(node, "json.nodes ?? []"))
                 return 'gltf_array_or_empty(json, "nodes")';

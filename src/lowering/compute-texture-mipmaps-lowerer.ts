@@ -4,9 +4,14 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { computeTextureSamplingCpp } from "./compute-texture-descriptor.js";
+import { sameSource, declaredKey } from "../compiler/syntax.js";
 
 /** Source validation, level iteration and task closures over PAL-owned mip bindings. */
 export function lowerComputeTextureMipmaps(
@@ -126,8 +131,6 @@ export function lowerComputeTextureMipmaps(
     for (const name of [
         "engine",
         "name",
-        "textures",
-        "prepared",
         "resource",
         "pipeline",
         "bindGroup",
@@ -140,6 +143,9 @@ export function lowerComputeTextureMipmaps(
             cpp: name === "bindGroup" ? "bind_group" : name,
             type: "opaque",
         });
+    // The texture and prepared-level lists, walked element by element.
+    for (const list of ["textures", "prepared"])
+        bindings.set(list, collectionBinding(list, memberElement(bindings)));
     bindings.set("drawCount", { cpp: "draw_count", type: "scalar" });
     bindings.set("count", { cpp: "count", type: "scalar" });
     const calls = new Map<string, (args: readonly string[]) => string>([
@@ -187,22 +193,6 @@ export function lowerComputeTextureMipmaps(
                     return `${owner}[static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})]`;
             }
             return undefined;
-        },
-        forOf(_iterated, element, _binding, syntax) {
-            const iterated = context.matchingExpressionShape(
-                syntax.expression,
-                ["textures", "prepared"],
-            );
-            if (iterated === undefined) return undefined;
-            return {
-                range: iterated,
-                bindings: new Map([
-                    ...[...bindings].filter(([name]) =>
-                        name.startsWith(`${element}.`),
-                    ),
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
         },
         statement(node, lowerer, indent) {
             if (ts.isExpressionStatement(node)) {
@@ -354,7 +344,7 @@ export function lowerComputeTextureMipmaps(
     const methods = new Map<string, ts.MethodDeclaration>();
     for (const member of returned.properties) {
         if (ts.isMethodDeclaration(member))
-            methods.set(member.name.getText(factory.file), member);
+            methods.set(declaredKey(member.name), member);
         else if (
             ts.isShorthandPropertyAssignment(member) &&
             ["name", "engine"].includes(member.name.text)
@@ -362,7 +352,7 @@ export function lowerComputeTextureMipmaps(
             continue;
         else if (
             ts.isPropertyAssignment(member) &&
-            member.name.getText(factory.file) === "_passes"
+            sameSource(member.name, "_passes")
         )
             context.assertExpressionShape(
                 member.initializer,

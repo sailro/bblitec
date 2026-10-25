@@ -8,7 +8,10 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { proceduralSkyModule } from "./procedural-sky-atmosphere.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -82,7 +85,10 @@ export function lowerProceduralSkyUpdate(
                 "environment._bindGroup",
                 "environment->gpu->dispatch.groups.at(0).group",
             );
-            bind("environment._mipmaps", "environment->mipmaps");
+            bindings.set(
+                "environment._mipmaps",
+                collectionBinding("environment->mipmaps"),
+            );
             bind("scene", "environment->scene");
             bind("engine", "environment->engine");
             bind("device", "environment->engine->offscreen_run->device()");
@@ -174,21 +180,6 @@ export function lowerProceduralSkyUpdate(
                 calls,
 
                 foldConditions: false,
-                forOf(_iterated, element, _binding, syntax) {
-                    if (
-                        !context.expressionMatchesShape(
-                            syntax.expression,
-                            "environment._mipmaps",
-                        )
-                    )
-                        return undefined;
-                    return {
-                        range: "environment->mipmaps",
-                        bindings: new Map([
-                            [element, { cpp: element, type: "opaque" }],
-                        ]),
-                    };
-                },
                 expression(node, lowerer) {
                     if (ts.isAwaitExpression(node))
                         return `(co_await ${lowerer.expression(node.expression)})`;

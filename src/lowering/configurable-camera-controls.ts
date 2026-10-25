@@ -3,10 +3,11 @@ import ts from "typescript";
 import { type LoweringContext, type LoweredSource } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type {
-    PinnedBinding,
-    PinnedCallSpelling,
-    PinnedNumericScope,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedCallSpelling,
+    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { nestedFunctionDeclaration } from "./pinned-function-lowerer.js";
 import {
@@ -436,18 +437,9 @@ export function lowerConfigurableCameraControls(
     if (!ts.isArrowFunction(hasAny) || !ts.isBlock(hasAny.body))
         context.contractError(hasAny, "Expected the pinned key predicate.");
     const predicate = lowerPinnedBody(file, hasAny.body.statements, {
-        bindings: new Map(),
+        bindings: new Map([["codes", collectionBinding("codes")]]),
         calls: freeCameraCalls(),
         expression: stringLiteral,
-        forOf: (source, element) =>
-            source === "codes"
-                ? {
-                      range: "codes",
-                      bindings: new Map([
-                          [element, { type: "opaque", cpp: element }],
-                      ]),
-                  }
-                : undefined,
         returnValue: (node, lowerer) =>
             node
                 ? lowerer.expression(node)

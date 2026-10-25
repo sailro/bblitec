@@ -14,10 +14,11 @@ import {
     type Value,
 } from "../types.js";
 
-import { pickedMeshHandleCpp } from "../properties.js";
+import { pickedMeshHandle } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import type { LoweringServices } from "../lowering-services.js";
+import { variableKind } from "../syntax.js";
 
 /**
  * Whether Texture2D data storage (`bbl::StoredTexture`) represents the value:
@@ -147,7 +148,7 @@ function expressionHandle(
                     ts.isVariableDeclaration(constInitializer) &&
                     constInitializer.initializer &&
                     ts.isVariableDeclarationList(constInitializer.parent) &&
-                    (constInitializer.parent.flags & ts.NodeFlags.Const) !== 0
+                    variableKind(constInitializer.parent) === "const"
                   ? constInitializer.initializer
                   : undefined;
         if (atlasExpression) {
@@ -353,7 +354,7 @@ function valueResource(
         dataType.handle === "mesh" &&
         value.kind === "picked-node"
     ) {
-        return pickedMeshHandleCpp(lowerer.context, value, node);
+        return pickedMeshHandle(lowerer.context, value, node).cpp;
     }
     if (
         dataType.kind === "handle" &&

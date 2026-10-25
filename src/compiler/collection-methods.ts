@@ -3,6 +3,8 @@ import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { compileJsonPropertyKey, isJsonValue } from "./json-bridge.js";
+import { namedMember } from "./symbols.js";
+import { localCallback } from "./syntax.js";
 
 /** Construct from a present iterable; both absent values create an empty owner. */
 export function compileCollectionIterable(
@@ -107,15 +109,14 @@ export function compileCollectionForEach(
             "Collection.forEach requires one callback and no thisArg.",
         );
     const callback = lowerer.context.unwrap(call.arguments[0]!);
-    if (
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    )
-        lowerer.context.fail(
-            callback,
-            "Collection.forEach requires a local function or function literal.",
-        );
+    // A local callback is inlined per entry; another function value is read once.
+    const operand = lowerer.callbackOperand(
+        callback,
+        localCallback(callback)
+            ? undefined
+            : lowerer.prepareCallbackValue(callback, "foreach"),
+        "Collection.forEach",
+    );
     const source =
         lowerer.context.allocateTemporaryCppName("foreach_collection");
     const entry = lowerer.context.allocateTemporaryCppName("foreach_entry");
@@ -147,22 +148,24 @@ export function compileCollectionForEach(
                 ? lowerer.leafValue(`${entry}.first`, type.key)
                 : value;
         const entryCaptures = [lowerer.context.registerNativeBinding(entry)];
-        const result = lowerer.context.compileCallbackWithValues(
-            callback,
-            [
-                { ...value, nativeCaptures: entryCaptures },
-                { ...key, nativeCaptures: entryCaptures },
-                {
-                    ...owner,
-                    cpp: source,
-                    nativeCaptures: [
-                        lowerer.context.registerNativeBinding(source),
-                    ],
-                },
-            ],
-            call,
-            true,
-        );
+        const values: Value[] = [
+            { ...value, nativeCaptures: entryCaptures },
+            { ...key, nativeCaptures: entryCaptures },
+            {
+                ...owner,
+                cpp: source,
+                nativeCaptures: [lowerer.context.registerNativeBinding(source)],
+            },
+        ];
+        const result =
+            "stored" in operand
+                ? lowerer.compileFunctionValueCall(operand.stored, values, call)
+                : lowerer.context.compileCallbackWithValues(
+                      operand.local,
+                      values,
+                      call,
+                      true,
+                  );
         lowerer.context.emitDiscardedValue(result);
     } finally {
         lowerer.context.leaveRuntimeControlFlow();
@@ -200,12 +203,12 @@ export function compileCollectionEntries(
 ): Value {
     const input = lowerer.context.unwrap(expression);
     const callee = ts.isCallExpression(input)
-        ? lowerer.context.unwrap(input.expression)
+        ? namedMember(
+              lowerer.context.checker,
+              lowerer.context.unwrap(input.expression),
+          )
         : undefined;
-    const owner =
-        callee && ts.isPropertyAccessExpression(callee)
-            ? lowerer.context.unwrap(callee.expression)
-            : undefined;
+    const owner = callee && lowerer.context.unwrap(callee.expression);
     const staticOwner =
         owner &&
         (ts.isArrayLiteralExpression(owner) ||
@@ -216,9 +219,7 @@ export function compileCollectionEntries(
         (type &&
         !type.dictionary &&
         ts.isCallExpression(input) &&
-        callee &&
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "map" &&
+        callee?.name === "map" &&
         !staticOwner
             ? lowerer.compileDataMethodCall(input, {
                   kind: "vector",
@@ -457,7 +458,7 @@ export function compileEntryCollection(
                     type: "const auto",
                     name: value,
                     initializer: lowerer.compileLaneForSink(
-                        recordLane(lowerer, lanes[1], collectionType.value),
+                        lanes[1],
                         collectionType.value,
                         input,
                     ),
@@ -516,42 +517,6 @@ function storedPairLanes(
             code: `if (${pinned.cpp}.size() < 2) throw std::runtime_error("Collection entry requires a key and value");`,
         });
     return nativePairLanes(lowerer, pinned, node);
-}
-
-/**
- * A pair array types both its lanes as one union (`[key, record]` as
- * `(string | Rec)[]`): the value lane of a slot storing another record type
- * is the union's one record member, read checked (`std::get` throws on
- * another member) and converted from there.
- */
-function recordLane(
-    lowerer: DataLowerer,
-    lane: Value,
-    target: DataType,
-): Value {
-    const type = lane.dataType;
-    const union = type?.kind === "optional" ? type.inner : type;
-    if (target.kind !== "struct" || union?.kind !== "union") return lane;
-    const records = union.members.flatMap((member, index) =>
-        member.kind === "struct" ? [{ member, index }] : [],
-    );
-    if (records.length !== 1) return lane;
-    const { member, index } = records[0]!;
-    // The slot's own record already selects its member.
-    if (member.name === target.name) return lane;
-    if (type?.kind !== "optional")
-        return lowerer.leafValue(`std::get<${index}>(${lane.cpp})`, member);
-    // A reference record is nullable storage of its own.
-    const absent: DataType = lowerer.context.dataTypes.isReferenceStruct(
-        member.name,
-    )
-        ? member
-        : { kind: "optional", inner: member };
-    const cppType = lowerer.context.dataTypes.cppType(absent);
-    return lowerer.leafValue(
-        `(${optionalPresentCpp(lane.cpp)} ? ${cppType}{std::get<${index}>(${optionalValueCpp(lane.cpp)})} : ${cppType}{})`,
-        absent,
-    );
 }
 
 /**

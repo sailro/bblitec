@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedStatements } from "./pinned-body-lowerer.js";
 import {
+    collectionBinding,
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
@@ -25,6 +26,13 @@ export function lowerSceneNodeRemoval(context: LoweringContext): string {
                 "kids?.length",
                 { cpp: "static_cast<double>(kids.size())", type: "scalar" },
             ],
+            // Removal walks a snapshot of the children.
+            [
+                "[...kids]",
+                collectionBinding(
+                    "js::array_from_iterable<SceneNodeHandle>(kids)",
+                ),
+            ],
         ]),
         calls: new Map([
             [
@@ -32,15 +40,6 @@ export function lowerSceneNodeRemoval(context: LoweringContext): string {
                 (args) => `remove_from_scene(${args.join(", ")})`,
             ],
         ]),
-        forOf(iterated, element) {
-            if (iterated !== "[...kids]") return undefined;
-            return {
-                range: "js::array_from_iterable<SceneNodeHandle>(kids)",
-                bindings: new Map([
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
-        },
     });
     const remove = context.functionDeclaration(module, "removeFromScene");
     const removeBody = new PinnedNumericLowerer(remove.file, {

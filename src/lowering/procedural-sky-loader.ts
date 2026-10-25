@@ -15,6 +15,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { proceduralSkyModule } from "./procedural-sky-atmosphere.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Source lifetime/cancellation with native resource and captured-cell representations. */
 export function lowerProceduralSkyLoader(
@@ -695,7 +696,7 @@ function lowerBrdfImage(context: LoweringContext): string {
                 const entry = node.declarationList.declarations[0];
                 if (
                     entry &&
-                    entry.name.getText(file) === "response" &&
+                    sameSource(entry.name, "response") &&
                     entry.initializer
                 )
                     return [

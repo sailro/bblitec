@@ -1,4 +1,13 @@
 import ts from "typescript";
+import {
+    derive,
+    nest,
+    pathsOverlap,
+    projectMember,
+    slotProjections,
+    type KeyPath,
+    type Projection,
+} from "./projections.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { readOnlyDataMethods } from "./receiver-methods.js";
@@ -6,49 +15,41 @@ import { pinnedSourceHandleKind } from "./data-types.js";
 import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
-    accessedPropertySymbol,
     declarationInDefaultLibrary,
     declaredSymbol,
+    calledDeclaration,
+    memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
-    assignmentTargets,
     isAssignmentExpression,
-    isUpdateExpression,
+    isOperandSelection,
     objectProperty,
-    propertyNameText,
+    propertyKey,
     unwrapExpression,
+    valueOperands,
+    writeSites,
+    ANY_KEY,
+    accessKey,
+    aliasKey,
+    keysMayMatch,
+    arrayLiteralSlots,
+    patternSlots,
+    plainDataMembers,
+    parameterForArgument,
+    isSuspensionPoint,
+    isSupportedFunction,
+    isFunctionWithBody,
+    objectLiteralMembers,
 } from "./syntax.js";
-import { typeCanCarryReference } from "./type-facts.js";
-import { isSupportedFunction } from "./user-functions.js";
+import {
+    typeCanCarryReference,
+    arrayElementType,
+    callSignatures,
+    inheritsFrom,
+} from "./type-facts.js";
 import { concreteArgumentIdentityPaths } from "./concrete-argument-identities.js";
-
-type Path = readonly string[];
-
-/** A reference at `at` in a local value aliases `from` in the parameter. */
-interface Projection {
-    readonly at: Path;
-    readonly from: Path;
-}
-
-function compatible(left: string, right: string): boolean {
-    return left === right || left === "*" || right === "*";
-}
-
-function overlaps(left: Path, right: Path): boolean {
-    return left
-        .slice(0, right.length)
-        .every((key, i) => compatible(key, right[i]!));
-}
-
-function project(values: readonly Projection[], key: string): Projection[] {
-    return values.flatMap((value) =>
-        value.at.length > 0
-            ? compatible(value.at[0]!, key)
-                ? [{ at: value.at.slice(1), from: value.from }]
-                : []
-            : [{ at: [], from: [...value.from, key] }],
-    );
-}
+import { callResultCanHoldReceiver } from "./kept-values.js";
 
 const results = new EmissionWeakMap<
     ts.TypeChecker,
@@ -62,6 +63,7 @@ const optionalCallNames = new WeakMap<
 >();
 
 function optionalCalls(
+    checker: ts.TypeChecker,
     declaration: ts.FunctionLikeDeclaration,
 ): ReadonlySet<string> {
     const cached = optionalCallNames.get(declaration);
@@ -71,9 +73,11 @@ function optionalCalls(
         declaration,
         (node) => {
             if (!ts.isCallExpression(node) || !node.questionDotToken) return;
-            const callee = unwrapExpression(node.expression);
-            if (ts.isPropertyAccessExpression(callee))
-                names.add(callee.name.text);
+            const callee = namedMember(
+                checker,
+                unwrapExpression(node.expression),
+            );
+            if (callee) names.add(callee.name);
         },
         { types: "skip" },
     );
@@ -90,7 +94,7 @@ export function callArgumentProjectionIsReadOnly(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
-    path: Path,
+    path: KeyPath,
 ): boolean {
     return callProjection(checker, call, index, path, new Set());
 }
@@ -108,7 +112,7 @@ export function visitMutableArgumentReferences(
     if (!argument) return;
     const concreteIdentities = new Map<
         ts.Expression,
-        readonly Path[] | undefined
+        readonly KeyPath[] | undefined
     >();
     const visit = (
         value: ts.Expression,
@@ -144,14 +148,7 @@ export function visitMutableArgumentReferences(
         const current = unwrapExpression(value);
         if (
             ts.isObjectLiteralExpression(current) &&
-            current.properties.every(
-                (property) =>
-                    (ts.isPropertyAssignment(property) ||
-                        ts.isShorthandPropertyAssignment(property)) &&
-                    (ts.isIdentifier(property.name) ||
-                        ts.isStringLiteralLike(property.name) ||
-                        ts.isNumericLiteral(property.name)),
-            )
+            plainDataMembers(current) !== undefined
         ) {
             for (const property of current.properties) {
                 if (
@@ -162,7 +159,7 @@ export function visitMutableArgumentReferences(
                         ts.isPropertyAssignment(property)
                             ? property.initializer
                             : property.name,
-                        [...path, propertyNameText(property.name)!],
+                        [...path, propertyKey(property.name)!],
                         consumer,
                         parameterIndex,
                     );
@@ -199,9 +196,10 @@ export function visitMutableArgumentReferences(
                 part.arguments.forEach((argument, argumentIndex) =>
                     visit(argument, [], part, argumentIndex),
                 );
-                forEachAnalysisNode(part.expression, collect, {
-                    functions: "skip",
-                });
+                if (callResultCanHoldReceiver(checker, part))
+                    forEachAnalysisNode(part.expression, collect, {
+                        functions: "skip",
+                    });
                 return "skip";
             }
             if (
@@ -222,7 +220,7 @@ export function parameterProjectionIsReadOnly(
     checker: ts.TypeChecker,
     declaration: ts.Node,
     index: number,
-    path: Path,
+    path: KeyPath,
     independentFields = false,
     argument?: ts.Expression,
     capturedScalarFacts = false,
@@ -235,12 +233,7 @@ export function parameterProjectionIsReadOnly(
         if (
             !freshOwner ||
             !ts.isObjectLiteralExpression(freshOwner) ||
-            !freshOwner.properties.every(
-                (member) =>
-                    (ts.isPropertyAssignment(member) ||
-                        ts.isShorthandPropertyAssignment(member)) &&
-                    !ts.isComputedPropertyName(member.name),
-            )
+            plainDataMembers(freshOwner) === undefined
         ) {
             freshOwner = undefined;
             break;
@@ -252,16 +245,8 @@ export function parameterProjectionIsReadOnly(
         independentFields &&
         literal &&
         ts.isObjectLiteralExpression(literal) &&
-        literal.properties.every(
-            (property) =>
-                (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)) &&
-                !ts.isComputedPropertyName(property.name) &&
-                propertyNameText(property.name) !== "__proto__",
-        )
-            ? literal.properties.map((property) =>
-                  propertyNameText(property.name!)!,
-              )
+        plainDataMembers(literal) !== undefined
+            ? literal.properties.map((property) => propertyKey(property.name!)!)
             : undefined;
     return parameterProjection(
         checker,
@@ -283,11 +268,11 @@ function callProjection(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
     index: number,
-    path: Path,
+    path: KeyPath,
     active: Set<ts.FunctionLikeDeclaration>,
-    identityPaths?: readonly Path[],
+    identityPaths?: readonly KeyPath[],
 ): boolean {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (!declaration) return false;
     const engine = isEngineDeclaration(declaration)
         ? engineBodies()
@@ -296,17 +281,26 @@ function callProjection(
     return (
         bodies !== undefined &&
         bodies.length > 0 &&
-        bodies.every((body) =>
-            parameterProjection(
-                engine ? engine.checkerFor(body) : checker,
-                body,
-                index,
-                path,
-                active,
-                false,
-                identityPaths,
-            ),
-        )
+        bodies.every((body) => {
+            // An argument a spread shifts, or a rest collects, binds no
+            // one parameter to prove.
+            if (!isSupportedFunction(body)) return false;
+            const bound = parameterForArgument(call, body, index);
+            return (
+                bound !== undefined &&
+                bound !== "unknown" &&
+                !bound.rest &&
+                parameterProjection(
+                    engine ? engine.checkerFor(body) : checker,
+                    body,
+                    index,
+                    path,
+                    active,
+                    false,
+                    identityPaths,
+                )
+            );
+        })
     );
 }
 
@@ -314,14 +308,14 @@ function parameterProjection(
     checker: ts.TypeChecker,
     declaration: ts.Node,
     index: number,
-    path: Path,
+    path: KeyPath,
     active: Set<ts.FunctionLikeDeclaration>,
     independentFields = false,
-    identityPaths?: readonly Path[],
+    identityPaths?: readonly KeyPath[],
     ownKeys?: readonly string[],
     freshScalarCapture = false,
 ): boolean {
-    if (!isSupportedFunction(declaration) || !declaration.body) return false;
+    if (!isFunctionWithBody(declaration)) return false;
     const parameter = declaration.parameters[index];
     if (
         !parameter ||
@@ -343,7 +337,7 @@ function parameterProjection(
     let known = functions?.get(declaration);
     const cached = known?.get(cacheKey);
     if (cached !== undefined) return cached;
-    const typeAt = (selected: Path): ts.Type | undefined => {
+    const typeAt = (selected: KeyPath): ts.Type | undefined => {
         let projectedType: ts.Type | undefined = checker.getTypeAtLocation(
             parameter.name,
         );
@@ -354,11 +348,7 @@ function parameterProjection(
                 projectedType && checker.getPropertyOfType(projectedType, key);
             projectedType = property
                 ? checker.getTypeOfSymbolAtLocation(property, parameter.name)
-                : projectedType &&
-                  checker.getIndexTypeOfType(
-                      projectedType,
-                      ts.IndexKind.Number,
-                  );
+                : projectedType && arrayElementType(checker, projectedType);
         }
         return projectedType;
     };
@@ -376,7 +366,7 @@ function parameterProjection(
     // Only absence used to prune an optional call is a dependency. Other
     // missing reference fields do not alias the scalar projection being proved.
     const optionalCallAbsence = absent.length
-        ? absent.filter((key) => optionalCalls(declaration).has(key))
+        ? absent.filter((key) => optionalCalls(checker, declaration).has(key))
         : [];
     const selected = (
         identityPaths ?? [path, ...optionalCallAbsence.map((key) => [key])]
@@ -397,26 +387,26 @@ function parameterProjection(
     const nativeHandle = (
         type: ts.Type,
     ): ReturnType<typeof pinnedSourceHandleKind> => {
-        const candidate = checker.getNonNullableType(type);
-        const direct = pinnedSourceHandleKind(candidate);
-        if (direct) return direct;
-        if (
-            !candidate.symbol?.declarations?.every(
-                (item) =>
-                    isEngineDeclaration(item) ||
-                    isPinnedSource(item.getSourceFile()),
-            )
-        )
-            return undefined;
-        for (const base of candidate.getBaseTypes() ?? []) {
-            const inherited = nativeHandle(base);
-            if (inherited) return inherited;
-        }
-        return undefined;
+        let handle: ReturnType<typeof pinnedSourceHandleKind>;
+        inheritsFrom(
+            checker.getNonNullableType(type),
+            (candidate) =>
+                (handle = pinnedSourceHandleKind(candidate)) !== undefined,
+            {
+                // Only an engine type's bases are engine handles.
+                through: (candidate) =>
+                    candidate.symbol?.declarations?.every(
+                        (item) =>
+                            isEngineDeclaration(item) ||
+                            isPinnedSource(item.getSourceFile()),
+                    ) === true,
+            },
+        );
+        return handle;
     };
 
     const aliases = new Map<ts.Symbol, readonly Projection[]>([
-        [symbol, [{ at: [], from: [] }]],
+        [symbol, [{ at: [], from: [], derived: false }]],
     ]);
     const roots = [
         ...declaration.parameters.flatMap((item) =>
@@ -427,13 +417,13 @@ function parameterProjection(
     // Every consumer must keep the same conservative alias relation: a
     // sibling retained here cannot be discarded later by a path-only check.
     const mayAffectSelection = (
-        from: Path,
+        from: KeyPath,
         entry: (typeof selected)[number],
     ): boolean => {
-        if (overlaps(from, entry.path)) return true;
+        if (pathsOverlap(from, entry.path)) return true;
         if (independentFields || identityPaths) return false;
         const divergent = from.findIndex(
-            (key, i) => !compatible(key, entry.path[i]!),
+            (key, i) => !keysMayMatch(key, entry.path[i]!),
         );
         const sibling = typeAt(from.slice(0, divergent + 1));
         if (!sibling || typeCanCarryReference(sibling)) {
@@ -451,22 +441,18 @@ function parameterProjection(
             selected.some((entry) => mayAffectSelection(value.from, entry)),
         );
     const receiver = (node: ts.CallExpression): ts.Expression | undefined => {
-        const callee = unwrapExpression(node.expression);
-        return ts.isPropertyAccessExpression(callee)
-            ? callee.expression
-            : undefined;
+        return namedMember(checker, unwrapExpression(node.expression))
+            ?.expression;
     };
     const arrayMethod = (node: ts.CallExpression): string | undefined => {
-        const called = checker.getResolvedSignature(node)?.declaration;
+        const called = calledDeclaration(checker, node);
         const owner = called?.parent;
         return called &&
             declarationInDefaultLibrary(called) &&
             owner &&
             ts.isInterfaceDeclaration(owner) &&
-            (owner.name.text === "Array" ||
-                owner.name.text === "ReadonlyArray") &&
-            ts.isPropertyAccessExpression(node.expression)
-            ? node.expression.name.text
+            (owner.name.text === "Array" || owner.name.text === "ReadonlyArray")
+            ? namedMember(checker, node.expression)?.name
             : undefined;
     };
     const carries = (node: ts.Expression): boolean =>
@@ -476,121 +462,104 @@ function parameterProjection(
         if (!carries(node)) return [];
         if (ts.isIdentifier(node))
             return aliases.get(declaredSymbol(checker, node)!) ?? [];
-        if (ts.isPropertyAccessExpression(node))
-            return project(flow(node.expression), node.name.text);
-        if (ts.isElementAccessExpression(node)) {
-            const key = unwrapExpression(node.argumentExpression);
-            return project(
-                flow(node.expression),
-                ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                    ? key.text
-                    : "*",
-            );
-        }
-        if (ts.isConditionalExpression(node))
-            return [...flow(node.whenTrue), ...flow(node.whenFalse)];
         if (
-            ts.isBinaryExpression(node) &&
-            [
-                ts.SyntaxKind.QuestionQuestionToken,
-                ts.SyntaxKind.BarBarToken,
-                ts.SyntaxKind.AmpersandAmpersandToken,
-            ].includes(node.operatorToken.kind)
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
         )
-            return [...flow(node.left), ...flow(node.right)];
+            return projectMember(
+                flow(node.expression),
+                aliasKey(accessKey(node)),
+            );
+        if (isOperandSelection(node)) return valueOperands(node).flatMap(flow);
         if (ts.isObjectLiteralExpression(node))
-            return node.properties.flatMap((property): Projection[] => {
-                if (ts.isSpreadAssignment(property)) {
-                    const source = flow(property.expression);
-                    const type = checker.getNonNullableType(
-                        checker.getTypeAtLocation(property.expression),
-                    );
-                    const properties = checker.getPropertiesOfType(type);
-                    if (
-                        (type.flags &
-                            (ts.TypeFlags.Any |
-                                ts.TypeFlags.Unknown |
-                                ts.TypeFlags.TypeParameter)) !==
-                            0 ||
-                        properties.some((member) =>
-                            member.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ),
-                        )
-                    )
-                        return [...source];
-                    // A shallow copy carries reference-valued children, not
-                    // its source object or copied scalar fields.
-                    const keys = properties
-                        .filter((member) =>
-                            typeCanCarryReference(
-                                checker.getTypeOfSymbolAtLocation(
-                                    member,
-                                    property.expression,
+            return objectLiteralMembers(node).flatMap(
+                (member): Projection[] => {
+                    const property = member.node;
+                    if (ts.isSpreadAssignment(property)) {
+                        const source = flow(property.expression);
+                        const type = checker.getNonNullableType(
+                            checker.getTypeAtLocation(property.expression),
+                        );
+                        const properties = checker.getPropertiesOfType(type);
+                        if (
+                            (type.flags &
+                                (ts.TypeFlags.Any |
+                                    ts.TypeFlags.Unknown |
+                                    ts.TypeFlags.TypeParameter)) !==
+                                0 ||
+                            properties.some((member) =>
+                                member.declarations?.some(
+                                    ts.isGetAccessorDeclaration,
                                 ),
-                            ),
+                            )
                         )
-                        .map((member) => member.name);
-                    if (
-                        checker
-                            .getIndexInfosOfType(type)
-                            .some((index) => typeCanCarryReference(index.type))
-                    )
-                        keys.push("*");
-                    return keys.flatMap((key) =>
-                        project(source, key).map((entry) => ({
-                            at: [key, ...entry.at],
-                            from: entry.from,
-                        })),
+                            return [...source];
+                        // A shallow copy carries reference-valued children, not
+                        // its source object or copied scalar fields.
+                        const keys = properties
+                            .filter((member) =>
+                                typeCanCarryReference(
+                                    checker.getTypeOfSymbolAtLocation(
+                                        member,
+                                        property.expression,
+                                    ),
+                                ),
+                            )
+                            .map((member) => member.name);
+                        if (
+                            checker
+                                .getIndexInfosOfType(type)
+                                .some((index) =>
+                                    typeCanCarryReference(index.type),
+                                )
+                        )
+                            keys.push(ANY_KEY);
+                        return keys.flatMap((key) =>
+                            nest(projectMember(source, key), key),
+                        );
+                    }
+                    // A prototype the literal sets is held under its own key.
+                    if (member.value === undefined) return [];
+                    return nest(
+                        flow(member.value),
+                        aliasKey(
+                            member.kind === "proto" ? "__proto__" : member.key,
+                        ),
                     );
-                }
-                if (
-                    !ts.isPropertyAssignment(property) &&
-                    !ts.isShorthandPropertyAssignment(property)
-                )
-                    return [];
-                const value = ts.isPropertyAssignment(property)
-                    ? property.initializer
-                    : property.name;
-                return flow(value).map((entry) => ({
-                    at: [propertyNameText(property.name) ?? "*", ...entry.at],
-                    from: entry.from,
-                }));
-            });
+                },
+            );
         if (ts.isArrayLiteralExpression(node))
-            return node.elements.flatMap((element, i): Projection[] => {
-                if (ts.isOmittedExpression(element)) return [];
-                const values = ts.isSpreadElement(element)
-                    ? project(flow(element.expression), "*")
-                    : flow(element);
-                const elementType = ts.isSpreadElement(element)
-                    ? checker.getIndexTypeOfType(
-                          checker.getTypeAtLocation(element.expression),
-                          ts.IndexKind.Number,
-                      )
-                    : undefined;
-                if (elementType && !typeCanCarryReference(elementType))
-                    return [];
-                return values.map((entry) => ({
-                    at: [
-                        ts.isSpreadElement(element) ? "*" : String(i),
-                        ...entry.at,
-                    ],
-                    from: entry.from,
-                }));
-            });
+            return arrayLiteralSlots(node).flatMap(
+                ({ element, index }): Projection[] => {
+                    if (ts.isOmittedExpression(element)) return [];
+                    const values = ts.isSpreadElement(element)
+                        ? projectMember(flow(element.expression), ANY_KEY)
+                        : flow(element);
+                    const elementType = ts.isSpreadElement(element)
+                        ? arrayElementType(
+                              checker,
+                              checker.getTypeAtLocation(element.expression),
+                          )
+                        : undefined;
+                    if (elementType && !typeCanCarryReference(elementType))
+                        return [];
+                    return nest(
+                        values,
+                        aliasKey(
+                            index === undefined ? undefined : String(index),
+                        ),
+                    );
+                },
+            );
         if (ts.isCallExpression(node) && arrayMethod(node) === "slice") {
             const owner = receiver(node)!;
-            const element = checker.getIndexTypeOfType(
+            const element = arrayElementType(
+                checker,
                 checker.getTypeAtLocation(owner),
-                ts.IndexKind.Number,
             );
             return element && !typeCanCarryReference(element)
                 ? []
-                : project(flow(owner), "*").map((entry) => ({
-                      at: ["*", ...entry.at],
-                      from: entry.from,
-                  }));
+                : nest(projectMember(flow(owner), ANY_KEY), ANY_KEY);
         }
         // Calls with a relevant input must separately prove no escape. Their
         // result cannot alias that input when this proof succeeds.
@@ -599,13 +568,7 @@ function parameterProjection(
         // Keep it opaque rather than dropping an await/comma/assignment alias.
         const opaque: Projection[] = [];
         ts.forEachChild(node, (child) => {
-            if (ts.isExpression(child))
-                opaque.push(
-                    ...flow(child).map((value) => ({
-                        at: [],
-                        from: value.from,
-                    })),
-                );
+            if (ts.isExpression(child)) opaque.push(...derive(flow(child)));
         });
         return opaque;
     };
@@ -630,20 +593,12 @@ function parameterProjection(
             }
             return;
         }
-        name.elements.forEach((element, i) => {
-            if (ts.isOmittedExpression(element)) return;
-            const key = ts.isArrayBindingPattern(name)
-                ? String(i)
-                : element.propertyName
-                  ? (propertyNameText(element.propertyName) ?? "*")
-                  : ts.isIdentifier(element.name)
-                    ? element.name.text
-                    : "*";
-            bind(element.name, [
-                ...(element.dotDotDotToken ? values : project(values, key)),
-                ...(element.initializer ? flow(element.initializer) : []),
+        // A rest is a new collection of the remaining members.
+        for (const { target, read, fallback } of patternSlots(name))
+            bind(target, [
+                ...slotProjections(values, read),
+                ...(fallback ? flow(fallback) : []),
             ]);
-        });
     };
     // Alias declarations form a finite graph. A repeated declaration or
     // self-referential projection cannot establish a finite source path.
@@ -675,7 +630,7 @@ function parameterProjection(
                         for (const item of node.initializer.declarations)
                             bind(
                                 item.name,
-                                project(flow(node.expression), "*"),
+                                projectMember(flow(node.expression), ANY_KEY),
                             );
                 },
                 {
@@ -695,13 +650,10 @@ function parameterProjection(
             !ts.isElementAccessExpression(node)
         )
             return false;
-        const key = ts.isPropertyAccessExpression(node)
-            ? node.name.text
-            : ts.isStringLiteralLike(node.argumentExpression) ||
-                ts.isNumericLiteral(node.argumentExpression)
-              ? node.argumentExpression.text
-              : "*";
-        return project(flow(node.expression), key).some((value) =>
+        return projectMember(
+            flow(node.expression),
+            aliasKey(accessKey(node)),
+        ).some((value) =>
             selected.some(
                 (entry) =>
                     mayAffectSelection(value.from, entry) &&
@@ -719,40 +671,25 @@ function parameterProjection(
             expression.parent.expression === expression
         ) {
             const access = expression.parent;
-            const property = accessedPropertySymbol(checker, access);
             if (
-                property?.declarations?.some(
-                    (item) =>
-                        ts.isGetAccessorDeclaration(item) ||
-                        ts.isSetAccessorDeclaration(item),
-                ) ||
+                memberAccessors(checker, access, "either").length > 0 ||
                 (!independentFields &&
                     ts.isCallExpression(access.parent) &&
                     access.parent.expression === access)
             )
                 return relevant(values).length > 0;
-            const key = ts.isPropertyAccessExpression(access)
-                ? access.name.text
-                : unwrapExpression(access.argumentExpression);
-            values = project(
-                values,
-                typeof key === "string"
-                    ? key
-                    : ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-                      ? key.text
-                      : "*",
-            );
+            values = projectMember(values, aliasKey(accessKey(access)));
             expression = access;
         }
         return relevant(values).length > 0;
     };
     const absentOptionalCall = (node: ts.Node): boolean => {
         if (!ts.isCallExpression(node) || !node.questionDotToken) return false;
-        const callee = unwrapExpression(node.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(checker, unwrapExpression(node.expression));
+        if (!callee) return false;
         const owners = flow(callee.expression);
         return (
-            absent.includes(callee.name.text) &&
+            absent.includes(callee.name) &&
             owners.length > 0 &&
             owners.every(
                 (owner) => owner.at.length === 0 && owner.from.length === 0,
@@ -803,15 +740,13 @@ function parameterProjection(
                         if (!capturesSelection) return "skip";
                         if (!inspectCaptures) return true;
                     }
-                    if (isAssignmentExpression(node)) {
+                    // A pattern default's value flows into its leaf too.
+                    const writes = writeSites(node);
+                    if (writes.length > 0 || isAssignmentExpression(node))
                         return (
-                            assignmentTargets(node.left).some(stores) ||
-                            uses(node.right)
+                            writes.some(({ target }) => stores(target)) ||
+                            (isAssignmentExpression(node) && uses(node.right))
                         );
-                    }
-                    if (isUpdateExpression(node)) return stores(node.operand);
-                    if (ts.isDeleteExpression(node))
-                        return stores(node.expression);
                     if (
                         (ts.isReturnStatement(node) ||
                             ts.isThrowStatement(node)) &&
@@ -822,7 +757,7 @@ function parameterProjection(
                     // A fresh scalar projection has no external owner alias;
                     // captured writes and escapes are checked throughout the body.
                     if (
-                        (ts.isAwaitExpression(node) && !inspectCaptures) ||
+                        (isSuspensionPoint(node) && !inspectCaptures) ||
                         ts.isYieldExpression(node)
                     )
                         return true;
@@ -841,14 +776,7 @@ function parameterProjection(
                             ts.isElementAccessExpression(node)) &&
                         flow(node.expression).length > 0
                     ) {
-                        const property = accessedPropertySymbol(checker, node);
-                        if (
-                            property?.declarations?.some(
-                                (item) =>
-                                    ts.isGetAccessorDeclaration(item) ||
-                                    ts.isSetAccessorDeclaration(item),
-                            )
-                        )
+                        if (memberAccessors(checker, node, "either").length > 0)
                             return true;
                     }
                     // Independent fields reach a constructor as they reach a
@@ -880,9 +808,9 @@ function parameterProjection(
                         ((!independentFields && !identityPaths) || uses(owner))
                     ) {
                         const method = arrayMethod(node);
-                        const element = checker.getIndexTypeOfType(
+                        const element = arrayElementType(
+                            checker,
                             checker.getTypeAtLocation(owner),
-                            ts.IndexKind.Number,
                         );
                         if (
                             !method ||
@@ -890,9 +818,11 @@ function parameterProjection(
                             (carries(node) && method !== "slice") ||
                             (node.arguments.some(
                                 (argument) =>
-                                    checker
-                                        .getTypeAtLocation(argument)
-                                        .getCallSignatures().length > 0,
+                                    callSignatures(
+                                        checker,
+                                        checker.getTypeAtLocation(argument),
+                                        "exact",
+                                    ).length > 0,
                             ) &&
                                 (!uses(owner) ||
                                     !element ||

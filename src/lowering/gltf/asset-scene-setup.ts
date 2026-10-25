@@ -1,7 +1,11 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
-import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "../pinned-numeric-lowerer.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 const module = "src/loader-gltf/load-gltf.ts";
 const registryModule = "src/loader-gltf/gltf-feature-registry.ts";
@@ -51,21 +55,12 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
             "_sceneSetup",
             { cpp: "_sceneSetup", type: "opaque", absentCpp: "!_sceneSetup" },
         ],
+        ["assetFragments", collectionBinding("assetFragments")],
     ]);
     const body = lowerPinnedBody(file, [loop], {
         bindings,
         calls: new Map(),
 
-        forOf(iterated, element) {
-            if (iterated !== "assetFragments" || element !== "frag")
-                return undefined;
-            return {
-                range: "assetFragments",
-                bindings: new Map([
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
-        },
         statement(statement, lowerer, indent) {
             // Entity registration and the other fragment fields execute in the
             // mesh planner or their feature adapter. This projection owns only
@@ -168,8 +163,10 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
                     callback.parameters.length !== 2 ||
                     callback.parameters.some(
                         (parameter, index) =>
-                            parameter.name.getText(file) !==
-                                ["scene", "target"][index] ||
+                            !sameSource(
+                                parameter.name,
+                                ["scene", "target"][index],
+                            ) ||
                             parameter.initializer ||
                             parameter.dotDotDotToken,
                     )

@@ -28,13 +28,21 @@ import {
 import {
     CompilerSymbols,
     isNullishLiteral,
-    type LibraryGlobal,
+    namedMember,
+    libraryGlobal,
+    type NamedMember,
+    isLibraryStatic,
 } from "./symbols.js";
 import {
     argumentAt,
     expressionHasEffects,
     identifierText,
     unwrapExpression as unwrapWalkExpression,
+    isExpressionWrapper,
+    equalityOperator,
+    functionKind,
+    isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -67,6 +75,8 @@ import {
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
+import { arrayElementType, unionMembers } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * One engine handle collection an expression names.
@@ -135,7 +145,7 @@ export function emitHandleCollectionLoop<
             ts.isVariableDeclaration(declaration) &&
             ts.isVariableDeclarationList(declaration.parent) &&
             ts.isForOfStatement(declaration.parent.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+            variableKind(declaration.parent) === "const";
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
@@ -181,7 +191,7 @@ interface AssetOwnerMapProof {
 function assetOwnerMapBuilder(
     declaration: ts.FunctionDeclaration,
     resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): AssetOwnerMapProof | undefined {
     const parameters = (
         fn: ts.FunctionDeclaration,
@@ -189,11 +199,8 @@ function assetOwnerMapBuilder(
     ): ts.Identifier[] | undefined => {
         if (
             !fn.body ||
-            fn.asteriskToken ||
+            functionKind(fn) !== "plain" ||
             fn.typeParameters?.length ||
-            fn.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-            ) ||
             fn.parameters.length !== count ||
             fn.parameters.some(
                 (parameter) =>
@@ -216,9 +223,9 @@ function assetOwnerMapBuilder(
     ): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
         if (
             !ts.isForOfStatement(statement) ||
-            statement.awaitModifier ||
+            isSuspensionPoint(statement) ||
             !ts.isVariableDeclarationList(statement.initializer) ||
-            !(statement.initializer.flags & ts.NodeFlags.Const) ||
+            variableKind(statement.initializer) !== "const" ||
             statement.initializer.declarations.length !== 1
         )
             return undefined;
@@ -237,7 +244,7 @@ function assetOwnerMapBuilder(
         !rootLoop ||
         map.name.text === params[0]!.text ||
         !ts.isNewExpression(map.initializer) ||
-        libraryGlobal(map.initializer.expression) !== "Map" ||
+        libraryGlobal(checker, map.initializer.expression) !== "Map" ||
         (map.initializer.arguments?.length ?? 0) !== 0 ||
         !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
         !ts.isReturnStatement(returned!) ||
@@ -252,7 +259,7 @@ function assetOwnerMapBuilder(
     if (
         !rootGuard ||
         !guardedBy(rootGuard.test, rootLoop.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, libraryGlobal),
+            isChildrenPresenceGuard(fn, checker),
         )
     )
         return undefined;
@@ -299,7 +306,7 @@ function assetOwnerMapBuilder(
             isRenderablePresenceGuard,
         ) ||
         !guardedBy(descend.test, children.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, libraryGlobal),
+            isChildrenPresenceGuard(fn, checker),
         )
     )
         return undefined;
@@ -464,6 +471,26 @@ interface HandleCollectionMember {
     index: number;
 }
 
+/**
+ * A glTF container's root node. `sole` when the root is the container's one
+ * entity (no punctual light appended one), so it stands for the container.
+ */
+function gltfRoot(
+    owner: Value<"asset">,
+    engineCpp: string,
+    cpp: string,
+    sole: boolean,
+): Value {
+    return {
+        ...containerIdentity(owner),
+        kind: "asset-root",
+        cpp,
+        assetKind: "gltf",
+        engineCpp,
+        ...(sole ? { soleAssetEntity: true as const } : {}),
+    };
+}
+
 /** A container's identity facts, without the storage that holds the container itself. */
 function containerIdentity<T extends Value>(
     owner: T,
@@ -497,8 +524,10 @@ export class HandleCollections {
         };
         const declaration = resolve(identifier);
         if (!declaration || call.arguments.length !== 1) return undefined;
-        const proof = assetOwnerMapBuilder(declaration, resolve, (callee) =>
-            this.context.libraryGlobal(callee),
+        const proof = assetOwnerMapBuilder(
+            declaration,
+            resolve,
+            this.context.checker,
         );
         if (!proof) return undefined;
         const owner = this.context.compileValue(argumentAt(call, 0));
@@ -612,32 +641,22 @@ export class HandleCollections {
         expression: ts.Expression,
         unwrapped: ts.Expression,
     ): boolean {
-        const transparent = (
-            node: ts.Node,
-        ): node is
-            | ts.ParenthesizedExpression
-            | ts.NonNullExpression
-            | ts.AsExpression
-            | ts.TypeAssertion
-            | ts.SatisfiesExpression =>
-            ts.isParenthesizedExpression(node) ||
-            ts.isNonNullExpression(node) ||
-            ts.isAsExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isSatisfiesExpression(node);
         let node: ts.Node = expression;
         while (node !== unwrapped) {
             if (ts.isAwaitExpression(node)) return true;
-            if (transparent(node)) {
+            if (isExpressionWrapper(node)) {
                 node = node.expression;
-            } else if (ts.isBinaryExpression(node)) {
+            } else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            ) {
                 node = node.left;
             } else {
                 break;
             }
         }
         let above: ts.Node | undefined = unwrapped.parent;
-        while (above && (transparent(above) || ts.isAwaitExpression(above))) {
+        while (above && isExpressionWrapper(above, { await: true })) {
             if (ts.isAwaitExpression(above)) return true;
             above = above.parent;
         }
@@ -752,10 +771,7 @@ export class HandleCollections {
                 `'${unwrapped.name.text}' is a promise of its collection; read it under await.`,
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            awaited,
-            ts.IndexKind.Number,
-        );
+        const elementType = arrayElementType(this.context.checker, awaited);
         if (!elementType) {
             this.context.fail(
                 unwrapped,
@@ -990,7 +1006,7 @@ export class HandleCollections {
         if (
             !loop ||
             !ts.isForOfStatement(loop) ||
-            loop.awaitModifier ||
+            isSuspensionPoint(loop) ||
             !ts.isVariableDeclarationList(loop.initializer) ||
             loop.initializer.declarations.length !== 1
         ) {
@@ -1030,9 +1046,7 @@ export class HandleCollections {
         const walk = resolve(visit.expression);
         if (
             !walk ||
-            !isRecursiveMeshFlattenVisitor(walk, resolve, (callee) =>
-                this.context.libraryGlobal(callee),
-            )
+            !isRecursiveMeshFlattenVisitor(walk, resolve, this.context.checker)
         ) {
             return undefined;
         }
@@ -1069,11 +1083,9 @@ export class HandleCollections {
                 "The asset handle table does not expose its mesh collection.",
             );
         }
-        const elementType = this.context.checker.getIndexTypeOfType(
-            this.context.checker.getNonNullableType(
-                this.context.checker.getTypeAtLocation(expression),
-            ),
-            ts.IndexKind.Number,
+        const elementType = arrayElementType(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
         );
         const element = elementType
             ? this.context.dataTypes.fromTsType(elementType, expression)
@@ -1252,14 +1264,12 @@ export class HandleCollections {
             // Its entities are its root alone exactly when it is a glTF
             // load that appended no punctual light, which the read checks.
             const engineCpp = this.context.requireEngine(owner, unwrapped);
-            return {
-                ...containerIdentity(owner),
-                kind: "asset-root",
-                cpp: `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
-                assetKind: "gltf",
-                soleAssetEntity: true,
+            return gltfRoot(
+                owner,
                 engineCpp,
-            };
+                `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
+                true,
+            );
         }
         if ((owner.asset?.kind ?? owner.assetKind) !== "gltf") {
             this.context.fail(
@@ -1273,14 +1283,7 @@ export class HandleCollections {
         // `entities[0]` reads it.
         // A document generation cannot read keeps the entity walk.
         if (owner.asset && this.soleGltfRoot(owner.asset, unwrapped))
-            return {
-                ...containerIdentity(owner),
-                kind: "asset-root",
-                cpp: owner.cpp,
-                assetKind: "gltf",
-                soleAssetEntity: true,
-                engineCpp,
-            };
+            return gltfRoot(owner, engineCpp, owner.cpp, true);
         return {
             ...containerIdentity(owner),
             kind: "asset-entity",
@@ -1349,8 +1352,8 @@ export class HandleCollections {
             this.context.checker.getTypeAtLocation(collection.expression),
         );
         if (
-            !(ownerType.isUnion() ? ownerType.types : [ownerType]).some(
-                (part) => isPinnedType(part, ["AssetContainer"]),
+            !unionMembers(ownerType).some((part) =>
+                isPinnedType(part, ["AssetContainer"]),
             )
         )
             return undefined;
@@ -1373,21 +1376,15 @@ export class HandleCollections {
             );
         }
         const engine = this.context.requireEngine(owner, collection);
-        return {
-            ...containerIdentity(owner),
-            kind: "asset-root",
-            cpp:
-                assetKind === "gltf"
-                    ? owner.cpp
-                    : `bbl::asset_container_root(${engine}, ${owner.cpp})`,
-            assetKind: "gltf",
-            engineCpp: engine,
-            // A document without punctual lights has its root as its one
-            // entity: the root stands for the whole container.
-            ...(owner.asset && this.soleGltfRoot(owner.asset, collection)
-                ? { soleAssetEntity: true as const }
-                : {}),
-        };
+        return gltfRoot(
+            owner,
+            engine,
+            assetKind === "gltf"
+                ? owner.cpp
+                : `bbl::asset_container_root(${engine}, ${owner.cpp})`,
+            owner.asset !== undefined &&
+                this.soleGltfRoot(owner.asset, collection),
+        );
     }
 
     /**
@@ -1622,16 +1619,14 @@ export class HandleCollections {
      */
     public compileSceneLightPush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "lights"
-        ) {
-            return undefined;
-        }
-        const scene = this.context.compileValue(callee.expression.expression);
+        const lights =
+            callee.name === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (lights?.name !== "lights") return undefined;
+        const scene = this.context.compileValue(lights.expression);
         if (scene.kind !== "scene") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const light = this.context.compileValue(argumentAt(call, 0));
@@ -1663,16 +1658,14 @@ export class HandleCollections {
      */
     public compileParticleSystemsPush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "systems"
-        ) {
-            return undefined;
-        }
-        const set = this.context.compileValue(callee.expression.expression);
+        const systems =
+            callee.name === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (systems?.name !== "systems") return undefined;
+        const set = this.context.compileValue(systems.expression);
         if (set.kind !== "node-particle-set") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const system = this.context.compileValue(argumentAt(call, 0));
@@ -1746,9 +1739,9 @@ export class HandleCollections {
      */
     public compileHandleTuplePush(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "push") return undefined;
+        if (callee.name !== "push") return undefined;
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
         const tuple = this.context.bindings.lookupOptional(owner);
@@ -1844,9 +1837,9 @@ export class HandleCollections {
      */
     public compileFind(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "find") {
+        if (callee.name !== "find") {
             return undefined;
         }
         const root = this.findAssetRoot(call, callee.expression);
@@ -1905,9 +1898,9 @@ export class HandleCollections {
      */
     public compileFilter(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value | undefined {
-        if (callee.name.text !== "filter") return undefined;
+        if (callee.name !== "filter") return undefined;
         const target = this.iterationTarget(callee.expression);
         const handle = target?.elementKind;
         if (!target || !handle || !isHandleKind(handle)) return undefined;
@@ -2005,7 +1998,11 @@ export class HandleCollections {
                 predicate.parameters[0]!.name,
                 root,
             );
-            if (context.conditions.compileCondition(predicate.body) !== "true")
+            if (
+                knownCondition(
+                    context.conditions.compileCondition(predicate.body),
+                ) !== true
+            )
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
@@ -2030,14 +2027,12 @@ export class HandleCollections {
           }
         | undefined {
         const mapCall = this.context.unwrap(expression);
-        if (
-            !ts.isCallExpression(mapCall) ||
-            !ts.isPropertyAccessExpression(mapCall.expression) ||
-            mapCall.expression.name.text !== "map"
-        ) {
+        if (!ts.isCallExpression(mapCall)) return undefined;
+        const map = namedMember(this.context.checker, mapCall.expression);
+        if (map?.name !== "map") {
             return undefined;
         }
-        const target = this.iterationTarget(mapCall.expression.expression);
+        const target = this.iterationTarget(map.expression);
         if (!target) return undefined;
         this.context.expectArgumentCount(mapCall, 1, 1);
         const selector = this.context.unwrap(argumentAt(mapCall, 0));
@@ -2634,10 +2629,7 @@ export class HandleCollections {
         const resolved = this.context.unwrap(
             this.context.resolveStaticExpression(expression),
         );
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
@@ -2829,12 +2821,8 @@ export class HandleCollections {
         expression: ts.BinaryExpression,
     ): string | undefined {
         const operator = expression.operatorToken.kind;
-        if (
-            operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-        ) {
-            return undefined;
-        }
+        const equality = equalityOperator(operator);
+        if (!equality || equality.loose) return undefined;
         const leftKind = this.handleOperandKind(expression.left);
         const rightKind = this.handleOperandKind(expression.right);
         if (!leftKind || leftKind !== rightKind) {
@@ -3059,10 +3047,7 @@ function isAssetDescendantNameSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -3104,7 +3089,7 @@ function isAssetDescendantNameSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1 ||
         !isPropertyReadOf(walk.expression, root, "children")
     ) {
@@ -3132,7 +3117,7 @@ function isAssetDescendantNameSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0
+        variableKind(loopStatements[0].declarationList) !== "const"
     ) {
         return false;
     }
@@ -3202,10 +3187,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
-        declaration.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        ) ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3250,7 +3232,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !ts.isForOfStatement(walk!) ||
         !ts.isVariableDeclarationList(walk.initializer) ||
-        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(walk.initializer) !== "const" ||
         walk.initializer.declarations.length !== 1
     ) {
         return false;
@@ -3281,7 +3263,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         !hit ||
         !ts.isVariableStatement(loopStatements[0]!) ||
-        (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        variableKind(loopStatements[0].declarationList) !== "const" ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
         )
@@ -3744,7 +3726,7 @@ function isClosureMeshFlattenCollector(
 ): boolean {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
@@ -3797,7 +3779,7 @@ function isClosureMeshFlattenCollector(
     // from every root, so the walk covers the whole container.
     if (
         !ts.isForOfStatement(loop!) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {
@@ -3870,7 +3852,7 @@ function isClosureMeshFlattenCollector(
     const recursion = inner[0]!;
     if (
         !ts.isForOfStatement(recursion) ||
-        recursion.awaitModifier ||
+        isSuspensionPoint(recursion) ||
         !ts.isVariableDeclarationList(recursion.initializer) ||
         recursion.initializer.declarations.length !== 1
     ) {
@@ -3925,10 +3907,11 @@ function isNotNullProbe(
     parameter: ts.Identifier,
 ): boolean {
     const current = unwrapWalkExpression(expression);
+    if (!ts.isBinaryExpression(current)) return false;
+    const equality = equalityOperator(current.operatorToken.kind);
     return (
-        ts.isBinaryExpression(current) &&
-        current.operatorToken.kind ===
-            ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        equality?.loose === false &&
+        equality.negated &&
         isIdentifierRead(current.left, parameter) &&
         unwrapWalkExpression(current.right).kind === ts.SyntaxKind.NullKeyword
     );
@@ -3944,17 +3927,19 @@ function isNotNullProbe(
 function isChildrenArrayProbe(
     expression: ts.Expression,
     parameter: ts.Identifier,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     const current = unwrapWalkExpression(expression);
     if (!ts.isCallExpression(current) || current.arguments.length !== 1) {
         return false;
     }
-    const callee = unwrapWalkExpression(current.expression);
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "isArray" ||
-        libraryGlobal(callee.expression) !== "Array"
+        !isLibraryStatic(
+            checker,
+            unwrapWalkExpression(current.expression),
+            "Array",
+            "isArray",
+        )
     ) {
         return false;
     }
@@ -3967,7 +3952,7 @@ function typeGuardConjunction(
 ): { parameter: ts.Identifier; operands: ts.Expression[] } | undefined {
     if (
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         declaration.body.statements.length !== 1
@@ -4044,7 +4029,7 @@ function isRenderablePresenceGuard(
  */
 function isChildrenPresenceGuard(
     declaration: ts.FunctionDeclaration,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     const conjunction = typeGuardConjunction(declaration);
     if (!conjunction) return false;
@@ -4058,7 +4043,7 @@ function isChildrenPresenceGuard(
             children = true;
             continue;
         }
-        if (isChildrenArrayProbe(operand, parameter, libraryGlobal)) {
+        if (isChildrenArrayProbe(operand, parameter, checker)) {
             array = true;
             continue;
         }
@@ -4132,12 +4117,12 @@ function guardedBy(
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,
     resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    libraryGlobal: LibraryGlobal,
+    checker: ts.TypeChecker,
 ): boolean {
     if (
         !declaration.name ||
         !declaration.body ||
-        declaration.asteriskToken ||
+        functionKind(declaration) !== "plain" ||
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 2 ||
         declaration.parameters.some(
@@ -4196,7 +4181,7 @@ function isRecursiveMeshFlattenVisitor(
     const loop = descend
         ? names.some((name) =>
               guardedBy(descend.test, name, resolve, (candidate) =>
-                  isChildrenPresenceGuard(candidate, libraryGlobal),
+                  isChildrenPresenceGuard(candidate, checker),
               ),
           )
             ? singleStatement(descend.body, ts.isForOfStatement)
@@ -4211,7 +4196,7 @@ function isRecursiveMeshFlattenVisitor(
         !loop ||
         !children ||
         !names.some((name) => isPropertyReadOf(children, name, "children")) ||
-        loop.awaitModifier ||
+        isSuspensionPoint(loop) ||
         !ts.isVariableDeclarationList(loop.initializer) ||
         loop.initializer.declarations.length !== 1
     ) {
@@ -4244,7 +4229,7 @@ function constAliasOf(
     const declaration = singleConstDeclaration(statement);
     return declaration &&
         ts.isVariableStatement(statement) &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(statement.declarationList) === "const" &&
         isIdentifierRead(declaration.initializer, node)
         ? declaration.name
         : undefined;

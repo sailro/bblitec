@@ -1,15 +1,46 @@
 import ts from "typescript";
+import { isValueReference } from "./syntax.js";
 
 interface AnalysisWalkPolicy {
     includeRoot?: boolean;
     functions?: "skip";
     loops?: "skip";
     types?: "skip";
-    memberNames?: "skip";
+    /**
+     * Visit an identifier only where it reads or writes a binding
+     * ({@link isValueReference}). A root name is the walk's subject and
+     * stands for its binding wherever it sits (`const later = ...`).
+     */
+    names?: "references";
     skip?: (node: ts.Node) => boolean;
 }
 
 type AnalysisMatch = boolean | "skip";
+
+/** @unjournaled Parsed syntax is immutable: each file's node list, kept. */
+const fileNodes = new WeakMap<ts.SourceFile, readonly ts.Node[]>();
+
+/**
+ * Every node of a parsed source file in preorder, types left out: the
+ * per-file index a whole-file scan iterates instead of walking the tree
+ * again on each pass.
+ */
+export function sourceFileNodes(file: ts.SourceFile): readonly ts.Node[] {
+    let nodes = fileNodes.get(file);
+    if (!nodes) {
+        const list: ts.Node[] = [];
+        forEachAnalysisNode(
+            file,
+            (node) => {
+                list.push(node);
+            },
+            { includeRoot: false, types: "skip" },
+        );
+        nodes = list;
+        fileNodes.set(file, nodes);
+    }
+    return nodes;
+}
 
 /** Preorder analysis with explicit boundaries and early termination. */
 export function findAnalysisNode<T extends ts.Node>(
@@ -49,6 +80,10 @@ export function findAnalysisNodeWithState<State>(
             (policy.functions === "skip" && ts.isFunctionLike(node)) ||
             (policy.loops === "skip" && ts.isIterationStatement(node, false)) ||
             (policy.types === "skip" && ts.isTypeNode(node)) ||
+            (policy.names === "references" &&
+                node !== root &&
+                ts.isIdentifier(node) &&
+                !isValueReference(node)) ||
             policy.skip?.(node)
         )
             return undefined;
@@ -56,11 +91,6 @@ export function findAnalysisNodeWithState<State>(
         if (result === true) return node;
         if (result === "skip") return undefined;
         const next = childState(node, state);
-        if (
-            policy.memberNames === "skip" &&
-            ts.isPropertyAccessExpression(node)
-        )
-            return visit(node.expression, next);
         return ts.forEachChild(node, (child) => visit(child, next));
     };
     return policy.includeRoot === false

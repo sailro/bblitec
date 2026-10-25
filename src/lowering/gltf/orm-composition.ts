@@ -2,6 +2,7 @@ import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { sourceEntry } from "../../compiler/syntax.js";
 
 /** The pixel loop comes from the pin; Canvas2D calls use the native image adapter. */
 export function lowerGltfOrmComposition(context: LoweringContext): string {
@@ -193,7 +194,7 @@ export function lowerGltfOrmComposition(context: LoweringContext): string {
         const operand = context.unwrapExpression(update.operand);
         if (
             ts.isElementAccessExpression(operand) &&
-            bindings.get(operand.expression.getText(file))?.type === "u8"
+            sourceEntry(bindings, operand.expression)?.type === "u8"
         )
             context.contractError(update, "Unsupported image data update.");
     }

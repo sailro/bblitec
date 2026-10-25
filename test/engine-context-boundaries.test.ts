@@ -518,3 +518,49 @@ test("retained shader factories use their represented engine and bounded shader 
     assert.match(cpp, /set_shader_uniform_value\(/);
     assert.equal(manifest.shaderVariants.length, 1);
 });
+
+test("an engine field's engine is decided before emission from every store to its name", () => {
+    // Owner.engine (a parameter property every construction passes main's
+    // engine) and Deps.engine (a literal's) hold one engine: one context.
+    const prelude = `
+        import { createEngine, createStandardMaterial, type EngineContext } from "@babylonjs/lite";
+        class Owner {
+            constructor(readonly engine: EngineContext) {}
+        }
+        interface Deps {
+            engine: EngineContext;
+            owner: Owner;
+        }
+        function build(deps: Deps): number {
+            const material = createStandardMaterial();
+            material.alpha = 0.25;
+            return deps.owner.engine === deps.engine ? 1 : 0;
+        }
+        const builders: Array<typeof build> = [build];
+    `;
+    const main = `
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            builders[0]!({ engine, owner: new Owner(engine) });
+        }
+        void main();
+    `;
+    assert.match(
+        compileSource(prelude + main).cpp,
+        /bbl::create_standard_material\(/,
+    );
+    // A store of an engine the analysis cannot name leaves the field's
+    // engine unknown wherever that store sits in the program.
+    const later = `
+        function later(other: EngineContext): Deps {
+            return { engine: other, owner: new Owner(other) };
+        }
+        const laters: Array<typeof later> = [later];
+        if (laters.length !== 1) throw new Error("retained");
+    `;
+    for (const source of [prelude + main + later, prelude + later + main])
+        assert.throws(
+            () => compileSource(source),
+            /An implicit resource constructor requires one unambiguous engine context/,
+        );
+});

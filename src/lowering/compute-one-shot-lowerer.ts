@@ -18,6 +18,7 @@ import {
     pinnedRecordLiteral,
     pinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { soleBindingName, declaredKey } from "../compiler/syntax.js";
 
 const path = "src/compute/compute-one-shot.ts";
 const shotSchema = pinnedRecordSchema("ComputeOneShot", {
@@ -66,7 +67,6 @@ function bodyScope(
         "states",
         "engine",
         "encoder",
-        "batch",
         "completions",
         "resolve",
         "reject",
@@ -75,6 +75,18 @@ function bodyScope(
     ])
         bind(name, name);
     bind("generation", "generation", "scalar");
+    // A completion batch holds `[oneShot, generation]` pairs.
+    bindings.set("batch", {
+        cpp: "batch",
+        type: "opaque",
+        elements: {
+            range: "*batch",
+            tuple: [
+                (name) => ({ cpp: name, type: "opaque" }),
+                (name) => ({ cpp: name, type: "scalar" }),
+            ],
+        },
+    });
     for (const [source, cpp, type] of [
         ["oneShot._generation", "oneShot->generation", "scalar"],
         ["oneShot._armed", "oneShot->armed", "bool"],
@@ -179,20 +191,6 @@ function bodyScope(
         calls,
 
         foldConditions: false,
-        forOf(_iterated, element, _binding, syntax) {
-            if (
-                !context.expressionMatchesShape(syntax.expression, "batch") ||
-                element !== "[oneShot, generation]"
-            )
-                return undefined;
-            return {
-                range: "*batch",
-                bindings: new Map([
-                    ["oneShot", { cpp: "oneShot", type: "opaque" }],
-                    ["generation", { cpp: "generation", type: "scalar" }],
-                ]),
-            };
-        },
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node))
                 return `std::string{${stringLiteral(node.text)}}`;
@@ -248,7 +246,9 @@ function bodyScope(
             }
             if (ts.isObjectLiteralExpression(node)) {
                 const names = node.properties.map((property) =>
-                    property.name?.getText(file),
+                    property.name === undefined
+                        ? undefined
+                        : declaredKey(property.name),
                 );
                 if (names.includes("task"))
                     return `js::make_gc_shared<ComputeOneShot>(${pinnedRecordLiteral(context, lowerer, node, shotSchema)})`;
@@ -263,7 +263,7 @@ function bodyScope(
                 )
                     return "js::Callback<void()>([](){})";
                 const names = node.parameters.map((parameter) =>
-                    parameter.name.getText(file),
+                    soleBindingName(parameter.name),
                 );
                 if (names.length === 1 && names[0] === "encoder")
                     return closure(
@@ -340,10 +340,9 @@ function bodyScope(
                                 callback,
                                 "Expected completion record destructuring.",
                             );
-                        const field =
-                            each.parameters[0]!.name.elements[0]?.name.getText(
-                                file,
-                            );
+                        const field = soleBindingName(
+                            each.parameters[0]!.name.elements[0]?.name,
+                        );
                         if (field !== (index === 0 ? "resolve" : "reject"))
                             return context.contractError(
                                 each,

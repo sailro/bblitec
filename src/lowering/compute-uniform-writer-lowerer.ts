@@ -8,9 +8,10 @@ import {
 } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type {
-    PinnedBinding,
-    PinnedNumericScope,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 
 const path = "src/compute/compute-uniform-writer.ts";
@@ -137,6 +138,23 @@ function scope(context: LoweringContext, name: string): PinnedNumericScope {
         type: "opaque",
         absentCpp: "field == nullptr",
     });
+    // The layout's fields walk the native map's entries.
+    bindings.set(
+        "layout._fields.values()",
+        collectionBinding(
+            "layout->fields",
+            (element) =>
+                new Map(
+                    Object.entries(fields).map(([key, cpp]) => [
+                        `${element}.${key}`,
+                        {
+                            cpp: `${element}.second.${cpp}`,
+                            type: key === "type" ? "opaque" : "scalar",
+                        },
+                    ]),
+                ),
+        ),
+    );
     bindings.set("f16Scratch", {
         cpp: "f16Scratch",
         type: "opaque",
@@ -248,27 +266,6 @@ function scope(context: LoweringContext, name: string): PinnedNumericScope {
                 return `${type}(data.buffer(), ${node.expression.text === "DV" ? "data.byte_offset()" : "static_cast<double>(data.byte_offset())"}, ${node.expression.text === "DV" ? "data.byte_length()" : "static_cast<double>(data.byte_length()) / 4.0"})`;
             }
             return undefined;
-        },
-        forOf(_iterated, element, _binding, syntax) {
-            if (
-                !context.expressionMatchesShape(
-                    syntax.expression,
-                    "layout._fields.values()",
-                )
-            )
-                return undefined;
-            return {
-                range: "layout->fields",
-                bindings: new Map(
-                    Object.entries(fields).map(([key, cpp]) => [
-                        `${element}.${key}`,
-                        {
-                            cpp: `${element}.second.${cpp}`,
-                            type: key === "type" ? "opaque" : "scalar",
-                        } as const,
-                    ]),
-                ),
-            };
         },
         statement(node, lowerer, indent) {
             if (

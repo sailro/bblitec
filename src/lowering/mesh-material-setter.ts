@@ -3,6 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Native handles use an engine-local map; weak owners follow SceneState lifetime. */
 export function lowerMeshMaterialSetter(context: LoweringContext): string {
@@ -41,7 +42,7 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
         methods.length !== 1 ||
         !setter?.body ||
         setter.parameters.length !== 1 ||
-        setter.parameters[0]!.name.getText() !== "v"
+        !sameSource(setter.parameters[0]!.name, "v")
     )
         context.contractError(
             install.declaration,
@@ -133,8 +134,10 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
                         const shape =
                             declaration === setter
                                 ? "_meshScenes?.get(mesh)"
-                                : declaration.name?.getText() ===
-                                    "registerMeshScene"
+                                : sameSource(
+                                        declaration.name,
+                                        "registerMeshScene",
+                                    )
                                   ? "map.get(mesh)"
                                   : "_meshScenes?.get(mesh)";
                         context.assertExpressionShape(
@@ -154,8 +157,10 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
                     if (
                         !ts.isVariableDeclarationList(statement.initializer) ||
                         statement.initializer.declarations.length !== 1 ||
-                        statement.initializer.declarations[0]!.name.getText() !==
-                            "scene"
+                        !sameSource(
+                            statement.initializer.declarations[0]!.name,
+                            "scene",
+                        )
                     )
                         context.contractError(
                             statement,

@@ -10,6 +10,8 @@ import { pinOperand } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { expressionMayRunCode, isUpdateExpression } from "./syntax.js";
 import { isStringValue, type Value } from "./types.js";
+import { valueKinds } from "./type-facts.js";
+import { libraryStaticMember } from "./symbols.js";
 
 type BigIntContext = Pick<
     LoweringServices,
@@ -78,12 +80,8 @@ export function isBigIntTyped(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
-    const type = checker.getTypeAtLocation(expression);
-    return (
-        (type.isUnion() ? type.types : [type]).every(
-            (member) => (member.flags & ts.TypeFlags.BigIntLike) !== 0,
-        ) && (type.flags & ts.TypeFlags.Never) === 0
-    );
+    const kinds = valueKinds(checker.getTypeAtLocation(expression));
+    return kinds.size === 1 && kinds.has("bigint");
 }
 
 /** A literal's value as C++: an int64 when it fits, else its decimal digits. */
@@ -195,11 +193,8 @@ function compileBigIntCall(
     call: ts.CallExpression,
 ): Value | undefined {
     const callee = context.unwrap(call.expression);
-    const method =
-        ts.isPropertyAccessExpression(callee) &&
-        context.libraryGlobal(callee.expression) === "BigInt"
-            ? callee.name.text
-            : undefined;
+    const member = libraryStaticMember(context.checker, callee);
+    const method = member?.owner === "BigInt" ? member.name : undefined;
     if (context.libraryGlobal(callee) !== "BigInt" && method === undefined)
         return undefined;
     context.reachJsData();

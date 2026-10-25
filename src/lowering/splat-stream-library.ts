@@ -56,6 +56,7 @@ import {
     recordOf as record,
     recordScalars,
 } from "./record-shapes.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const LOAD = "src/loader-splat-stream/load-gaussian-splat-stream.ts";
 const GPU = "src/loader-splat-stream/splat-stream-gpu.ts";
@@ -708,7 +709,7 @@ function nativePrelude(context: LoweringContext): string {
     );
     const set = quaternion.members.find(
         (node): node is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(node) && node.name.getText(file) === "set",
+            ts.isMethodDeclaration(node) && sameSource(node.name, "set"),
     );
     if (!set?.body)
         context.contractError(quaternion, "Expected ObservableQuat.set.");

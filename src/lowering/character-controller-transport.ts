@@ -13,6 +13,7 @@ import {
     type KernelSchema,
     type KernelValue,
 } from "./character-kernel-lowerer.js";
+import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 export const queryResultType = tupleOf([
     recordScalars.number,
@@ -44,7 +45,7 @@ export function characterTransportSchema(
         return body;
     };
     const collector = (expression: ts.Expression): string => {
-        const path = expression.getText(expression.getSourceFile());
+        const path = propertyPath(expression)?.join(".");
         if (path === "this._startCollector") return "_start_hits()";
         if (path === "this._castCollector") return "_cast_hits()";
         return context.contractError(
@@ -65,11 +66,7 @@ export function characterTransportSchema(
                 declaration.name.text !== "hknp"
             )
                 return;
-            if (
-                declaration.initializer?.getText(
-                    declaration.getSourceFile(),
-                ) === "world._hknp"
-            )
+            if (sameSource(declaration.initializer, "world._hknp"))
                 context.assertStatementShapes(
                     node,
                     [node],
@@ -87,9 +84,7 @@ export function characterTransportSchema(
         },
         expression(node, _expected, lowerer) {
             if (ts.isPropertyAccessExpression(node)) {
-                if (
-                    node.getText(node.getSourceFile()) === "this._world._bodies"
-                )
+                if (sameSource(node, "this._world._bodies"))
                     return {
                         cpp: "_world_bodies()",
                         type: arrayOf(recordOf("PhysicsBody")),
@@ -156,7 +151,7 @@ export function characterTransportSchema(
                     ts.isPropertyAccessExpression(node.expression.expression)
                 ) {
                     const call = node.expression,
-                        path = call.expression.getText(call.getSourceFile());
+                        path = propertyPath(call.expression)?.join(".") ?? "";
                     const name = (
                         call.expression as ts.PropertyAccessExpression
                     ).name.text;
@@ -241,10 +236,10 @@ export function characterTransportSchema(
                 }
             }
             if (ts.isCallExpression(node)) {
-                const path = node.expression.getText(node.getSourceFile());
+                const path = propertyPath(node.expression)?.join(".") ?? "";
                 const thin = new Map<string, readonly [string, RecordShape]>([
                     [
-                        "this._world._thin?.resolve",
+                        "this._world._thin.resolve",
                         [
                             "_thin_resolve",
                             optionalOf(
@@ -256,9 +251,9 @@ export function characterTransportSchema(
                             ),
                         ],
                     ],
-                    ["this._world._thin?.com", ["_thin_com", recordOf("Vec3")]],
+                    ["this._world._thin.com", ["_thin_com", recordOf("Vec3")]],
                     [
-                        "this._world._thin?.matrix",
+                        "this._world._thin.matrix",
                         [
                             "_thin_matrix",
                             optionalOf(arrayOf(recordScalars.number)),
@@ -273,8 +268,7 @@ export function characterTransportSchema(
                 if (
                     path === "worldStepSeconds" &&
                     node.arguments.length === 1 &&
-                    node.arguments[0]!.getText(node.getSourceFile()) ===
-                        "this._world"
+                    sameSource(node.arguments[0], "this._world")
                 )
                     return {
                         cpp: "_world_step_seconds()",

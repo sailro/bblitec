@@ -40,6 +40,8 @@ import {
 } from "./pinned-function-lowerer.js";
 import {
     absentBinding,
+    collectionBinding,
+    opaqueElement,
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
@@ -48,6 +50,7 @@ import {
     shaderUniformRecoveryPublication,
     shaderUniformRecoveryReset,
 } from "./shader-uniforms.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const recoveryModule = "src/engine/device-lost-recovery.ts";
 const testingModule = "src/engine/device-lost-recovery-testing.ts";
@@ -184,7 +187,7 @@ function arrowBody(
     }
     return {
         parameters: arrow.parameters.map((parameter) =>
-            parameter.name.getText(),
+            soleBindingName(parameter.name),
         ),
         statements: arrow.body.statements,
     };
@@ -364,7 +367,7 @@ function continuationsCpp(context: LoweringContext): string {
     const { lost, recovered, failed, failedParameter } = armClosures(context);
     const inFlight: [string, PinnedBinding] = [
         "registrations",
-        { cpp: "state.in_flight", type: "opaque" },
+        collectionBinding("state.in_flight"),
     ];
     // `const registrations = [...state._registrations]`: the snapshot the
     // two continuations close over, which is why it lives on the record.
@@ -392,19 +395,6 @@ function continuationsCpp(context: LoweringContext): string {
         lowerer.bindPorts([["registrations", inFlight[1]]], entry);
         return [`${indent}state.in_flight = state.registrations;`];
     };
-    const forOf: NonNullable<PinnedNumericScope["forOf"]> = (
-        iterated,
-        element,
-        list,
-    ) =>
-        iterated === "registrations" && list
-            ? {
-                  range: list.cpp,
-                  bindings: new Map([
-                      [element, { cpp: element, type: "opaque" }],
-                  ]),
-              }
-            : undefined;
     const body = (
         statements: readonly ts.Statement[],
         bindings: readonly [string, PinnedBinding][],
@@ -417,7 +407,6 @@ function continuationsCpp(context: LoweringContext): string {
         return lowerPinnedBody(file, statements, {
             ...scope,
             bindings: memberBindings,
-            forOf,
         });
     };
     // `device` is the device the handler was armed for: the one being lost.
@@ -746,28 +735,36 @@ function contextKindAssertionCpp(context: LoweringContext): string {
         {
             cppName: "assert_every_active_context_kind_is_recoverable",
             returns: "void",
-            forOf: (iterated, element) => {
-                if (iterated === "engine.surfaces") {
-                    return {
-                        range: "std::views::single(&engine)",
-                        bindings: new Map([
-                            [element, { cpp: element, type: "opaque" }],
-                        ]),
-                    };
-                }
-                if (iterated.endsWith("._renderingContexts")) {
-                    return {
-                        range: `${iterated.slice(0, -"._renderingContexts".length)}->rendering_contexts`,
-                        bindings: new Map([
-                            [
-                                `${element}._kind`,
-                                { cpp: `${element}.kind`, type: "string" },
-                            ],
-                        ]),
-                    };
-                }
-                return undefined;
-            },
+            // The native engine is its own single surface, and each surface's
+            // contexts are read through their kinds.
+            memberBindings: new Map([
+                [
+                    "engine.surfaces",
+                    collectionBinding(
+                        "std::views::single(&engine)",
+                        (surface) =>
+                            new Map([
+                                ...opaqueElement(surface),
+                                [
+                                    `${surface}._renderingContexts`,
+                                    collectionBinding(
+                                        `${surface}->rendering_contexts`,
+                                        (context) =>
+                                            new Map([
+                                                [
+                                                    `${context}._kind`,
+                                                    {
+                                                        cpp: `${context}.kind`,
+                                                        type: "string",
+                                                    },
+                                                ],
+                                            ]),
+                                    ),
+                                ],
+                            ]),
+                    ),
+                ],
+            ]),
             methods: new Map([
                 [
                     "has",

@@ -1,7 +1,12 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { jsToUint32Call } from "../lowering/pinned-operators.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { isGlobalUndefined, isSymbolPropertyKey } from "./symbols.js";
+import {
+    isGlobalUndefined,
+    isSymbolPropertyKey,
+    namedMember,
+} from "./symbols.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -10,6 +15,7 @@ import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { isNullable } from "./type-facts.js";
+import { isHostAccessor } from "./host-globals.js";
 
 export interface WorkerLoweringContext
     extends
@@ -380,31 +386,32 @@ export function isNativeWorkerExpression(
         return true;
     if (ts.isCallExpression(node)) node = context.unwrap(node.expression);
     if (ts.isNewExpression(node)) node = context.unwrap(node.expression);
-    if (ts.isPropertyAccessExpression(node)) {
-        const type = context.dataLowerer.dataTypeAt(node.expression);
+    const member = namedMember(context.checker, node);
+    if (member) {
+        const type = context.dataLowerer.dataTypeAt(member.expression);
         const inner = type?.kind === "optional" ? type.inner : type;
         if (inner?.kind === "handle" && inner.handle === "worker-media-query")
             return true;
     }
     if (
-        ts.isPropertyAccessExpression(node) &&
-        (node.name.text === "reload" ||
-            node.name.text === "assign" ||
+        member &&
+        (member.name === "reload" ||
+            member.name === "assign" ||
             (context.options.runtimeLocationSearch &&
-                (node.name.text === "search" || node.name.text === "href"))) &&
-        context.libraryGlobal(node.expression) === "location"
+                (member.name === "search" || member.name === "href"))) &&
+        context.libraryGlobal(member.expression) === "location"
     )
         return true;
     const globalMember = context.libraryGlobal(node);
     if (
         globalMember !== undefined &&
-        ts.isPropertyAccessExpression(node) &&
+        member !== undefined &&
         (nativeRealmFunctions.has(globalMember) ||
+            isHostAccessor(globalMember) ||
             [
                 "Worker",
                 "OffscreenCanvas",
                 "ResizeObserver",
-                "devicePixelRatio",
                 "isSecureContext",
             ].includes(globalMember))
     )
@@ -555,20 +562,19 @@ export function compileWorkerValue(
     }
     if (!ts.isCallExpression(node)) return undefined;
     const callee = context.unwrap(node.expression);
-    const member = ts.isPropertyAccessExpression(callee)
-        ? callee.name.text
+    const named = namedMember(context.checker, callee);
+    const member = named
+        ? named.name
         : ts.isIdentifier(callee)
           ? callee.text
           : undefined;
-    const owner = ts.isPropertyAccessExpression(callee)
-        ? scope(callee.expression)
-        : undefined;
+    const owner = named ? scope(named.expression) : undefined;
     const global = context.libraryGlobal(callee) !== undefined;
     if (
         global &&
         context.options.workers.namespace &&
-        ts.isPropertyAccessExpression(callee) &&
-        context.libraryGlobal(callee.expression) === "window"
+        named &&
+        context.libraryGlobal(named.expression) === "window"
     ) {
         return context.fail(
             callee,
@@ -746,7 +752,7 @@ export function compileWorkerValue(
         context.reachJsData();
         return {
             kind: "void",
-            cpp: `${loop}.cancel_animation_frame(bbl::js::to_uint32(${context.compileNumber(argumentAt(node, 0), "double")}))`,
+            cpp: `${loop}.cancel_animation_frame(${jsToUint32Call(context.compileNumber(argumentAt(node, 0), "double"))})`,
         };
     }
     if (

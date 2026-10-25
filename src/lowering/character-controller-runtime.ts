@@ -4,6 +4,7 @@ import {
     characterControllerModule,
     lowerCharacterControllerKernel,
 } from "./character-controller-lowerer.js";
+import { sameSource, soleBindingName } from "../compiler/syntax.js";
 
 /** The pinned controller class above the existing physics/node APIs. */
 export function characterControllerHeader(
@@ -37,7 +38,7 @@ export function characterControllerHeader(
         createNode.parameters
             .slice(4)
             .map((parameter) => [
-                parameter.name.getText(),
+                soleBindingName(parameter.name),
                 context.floatLiteral(
                     context.numericValue(
                         parameter.initializer!,
@@ -102,8 +103,7 @@ export function characterCollisionObservableSource(
     ]) {
         const declaration = observable.members.find(
             (member): member is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(member) &&
-                member.name.getText() === name,
+                ts.isMethodDeclaration(member) && sameSource(member.name, name),
         )!;
         context.assertStatementShapes(
             declaration,
@@ -115,7 +115,7 @@ export function characterCollisionObservableSource(
     const subs = observable.members.find(
         (member): member is ts.PropertyDeclaration =>
             ts.isPropertyDeclaration(member) &&
-            member.name.getText() === "_subs",
+            sameSource(member.name, "_subs"),
     )!;
     context.assertExpressionShape(
         subs.initializer!,

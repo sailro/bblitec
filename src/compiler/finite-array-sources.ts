@@ -1,7 +1,13 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
-import { isLogicalAssignmentOperator, unwrapExpression } from "./syntax.js";
+import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
+import {
+    isLogicalAssignmentOperator,
+    unwrapExpression,
+    accessKey,
+    propertyKey,
+    variableKind,
+} from "./syntax.js";
 import { contextualProperty } from "./type-facts.js";
 
 type Slot = ts.Declaration;
@@ -16,13 +22,11 @@ interface Binding {
 
 function nameOf(node: ts.Node): string | undefined {
     if (ts.isIdentifier(node)) return node.text;
-    if (ts.isPropertyAccessExpression(node)) return node.name.text;
-    if (ts.isElementAccessExpression(node)) {
-        const key = unwrapExpression(node.argumentExpression);
-        return ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
-            ? key.text
-            : undefined;
-    }
+    if (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+    )
+        return accessKey(node);
     if (
         (ts.isVariableDeclaration(node) ||
             ts.isPropertySignature(node) ||
@@ -35,11 +39,10 @@ function nameOf(node: ts.Node): string | undefined {
             ts.isPropertyAssignment(node) ||
             ts.isShorthandPropertyAssignment(node)) &&
         node.name &&
-        (ts.isIdentifier(node.name) ||
-            ts.isStringLiteralLike(node.name) ||
-            ts.isNumericLiteral(node.name))
+        !ts.isObjectBindingPattern(node.name) &&
+        !ts.isArrayBindingPattern(node.name)
     )
-        return node.name.text;
+        return propertyKey(node.name);
     return undefined;
 }
 
@@ -83,13 +86,14 @@ export class FiniteArraySources {
                 (node) => {
                     if (ts.isCallExpression(node)) {
                         add(this.calls, nameOf(node.expression), node);
-                        const callee = unwrapExpression(node.expression);
-                        if (!ts.isPropertyAccessExpression(callee)) return;
-                        const start = ["push", "unshift"].includes(
-                            callee.name.text,
-                        )
+                        const callee = namedMember(
+                            this.checker,
+                            unwrapExpression(node.expression),
+                        );
+                        if (!callee) return;
+                        const start = ["push", "unshift"].includes(callee.name)
                             ? 0
-                            : callee.name.text === "splice"
+                            : callee.name === "splice"
                               ? 2
                               : undefined;
                         if (start === undefined) return;
@@ -244,7 +248,7 @@ export class FiniteArraySources {
                 !ts.isVariableDeclaration(declaration) ||
                 !declaration.initializer ||
                 !ts.isVariableDeclarationList(declaration.parent) ||
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0
+                variableKind(declaration.parent) !== "const"
             )
                 break;
             node = unwrapExpression(declaration.initializer);

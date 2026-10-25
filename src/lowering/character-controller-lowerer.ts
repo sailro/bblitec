@@ -11,6 +11,9 @@ import { forEachAnalysisNode } from "../compiler/analysis-walk.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    sameSource,
+    soleBindingName,
+    declaredKey,
 } from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
@@ -98,7 +101,7 @@ export function lowerCharacterControllerKernel(
         ? controller.members.find(
               (member): member is ts.PropertyDeclaration =>
                   ts.isPropertyDeclaration(member) &&
-                  member.name.getText(file) === "_orientation",
+                  sameSource(member.name, "_orientation"),
           )
         : undefined;
     // Every record is named before any field is typed, since a field's
@@ -205,7 +208,7 @@ export function lowerCharacterControllerKernel(
                 record.name.text === "Contact" &&
                 member.name.text === "nativeBody"
             ) {
-                if (member.type?.getText(file) !== "any | null")
+                if (!sameSource(member.type, "any | null"))
                     return context.contractError(
                         member,
                         "Contact native handle type changed.",
@@ -273,7 +276,7 @@ export function lowerCharacterControllerKernel(
         );
     const methods = methodNames.map(method);
     const methodName = (declaration: KernelDeclaration): string =>
-        declaration.name!.getText(file);
+        declaredKey(declaration.name!);
     const signature = (declaration: KernelDeclaration): KernelFunction => {
         const name = methodName(declaration);
         if (!declaration.type)
@@ -282,7 +285,7 @@ export function lowerCharacterControllerKernel(
                 "Pinned controller function requires a return type.",
             );
         for (const parameter of declaration.parameters) {
-            if (parameter.name.getText(file) === "nativeBody") {
+            if (sameSource(parameter.name, "nativeBody")) {
                 if (parameter.initializer)
                     context.assertExpressionShape(
                         parameter.initializer,
@@ -329,7 +332,7 @@ export function lowerCharacterControllerKernel(
         const node = controller.members.find(
             (member): member is ts.PropertyDeclaration =>
                 ts.isPropertyDeclaration(member) &&
-                member.name.getText(file) === "_node",
+                sameSource(member.name, "_node"),
         )!;
         // `TransformNode.position.set`, found through the node's own type.
         const position = checker.getPropertyOfType(
@@ -364,7 +367,7 @@ export function lowerCharacterControllerKernel(
         const notify = observable.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                member.name.getText(file) === "notify",
+                sameSource(member.name, "notify"),
         );
         if (!notify)
             return context.contractError(
@@ -640,10 +643,10 @@ export function lowerCharacterControllerKernel(
                         const value = parameter.initializer
                             ? body.value(parameter.initializer, type).cpp
                             : "{}";
-                        return `    ${lowerer.storage(type)} ${parameter.name.getText(file)} = ${value};`;
+                        return `    ${lowerer.storage(type)} ${soleBindingName(parameter.name)} = ${value};`;
                     });
                 overloads.push(
-                    `${prototype(declaration, false, count)} {\n${initializers.join("\n")}\n    return ${name}(${declaration.parameters.map((parameter) => parameter.name.getText(file)).join(", ")});\n}`,
+                    `${prototype(declaration, false, count)} {\n${initializers.join("\n")}\n    return ${name}(${declaration.parameters.map((parameter) => soleBindingName(parameter.name)).join(", ")});\n}`,
                 );
             }
         return `// ${context.provenance(characterControllerModule, ts.isMethodDeclaration(declaration) ? `PhysicsCharacterController.${name}` : name)}\n${prototype(declaration, ts.isMethodDeclaration(declaration))} {\n${source}\n}\n${overloads.join("\n")}`;

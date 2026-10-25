@@ -23,7 +23,6 @@ import type {
     GeometryTextureTypeName,
     Value,
 } from "../types.js";
-import { optionalPresentCpp, optionalValueCpp } from "../types.js";
 import {
     compileOptionalStaticBoolean,
     compilePositiveInteger,
@@ -35,6 +34,65 @@ import {
     type PositiveIntegerContext,
     type StaticBooleanContext,
 } from "../option-helpers.js";
+import { knownCondition } from "../values/model.js";
+import {
+    staticTableEntry,
+    staticTableOption,
+    tableEntry,
+    type OptionTable,
+    type TableOption,
+} from "../table-options.js";
+
+const spelled = (
+    entries: Iterable<readonly [string, string]>,
+    prefix: string,
+): OptionTable =>
+    Object.fromEntries(
+        [...entries].map(([pin, native]) => [pin, prefix + native]),
+    );
+
+const renderTargetColorFormat: TableOption = {
+    table: spelled(nativeTextureFormats, "bbl::TextureFormatClass::"),
+    refusal: (format) => `Unsupported render target color format '${format}'.`,
+    name: "render target color format",
+    label: "color_format",
+};
+
+const renderTargetDepthFormat: TableOption = {
+    table: spelled(
+        [
+            ["depth16unorm", "depth16_unorm"],
+            ["depth24plus", "depth24_plus"],
+            ["depth24plus-stencil8", "depth24_plus_stencil8"],
+            ["depth32float", "depth32_float"],
+        ],
+        "bbl::DepthTextureFormat::",
+    ),
+    refusal: (format) => `Unsupported render target depth format '${format}'.`,
+    name: "render target depth format",
+    label: "depth_format",
+};
+
+/** A render target accepts the pin's own default comparison only. */
+function renderTargetDepthCompare(): TableOption {
+    return {
+        table: {
+            [pinnedReverseDepthCompare(sharedPinnedContext())]:
+                `bbl::DepthCompare::${nativeDepthCompare(pinnedReverseDepthCompare(sharedPinnedContext()))}`,
+        },
+        refusal: "Render targets require the pinned default depthCompare.",
+        name: "render target depth compare",
+        label: "depth_compare",
+    };
+}
+
+const geometryTextureFormat: TableOption = {
+    table: { r16float: "bbl::GeometryTextureFormat::r16_float" },
+    refusal: (format) =>
+        `Unsupported geometry texture format override '${format}'.`,
+    name: "geometry texture format",
+    label: "geometry_format",
+};
 
 export interface EngineOptionContext
     extends
@@ -104,15 +162,9 @@ export function compileRenderTargetOptions(
     );
     const depthCompare = context.objectProperty(object, "depthCompare");
     const depthClear = context.objectProperty(object, "depthClearValue");
-    if (
+    const depthCompareCpp =
         depthCompare &&
-        context.compileStringLiteral(depthCompare) !==
-            pinnedReverseDepthCompare(sharedPinnedContext())
-    )
-        context.fail(
-            depthCompare,
-            "Render targets require the pinned default depthCompare.",
-        );
+        staticTableEntry(context, renderTargetDepthCompare(), depthCompare);
     if (
         depthClear &&
         compileStaticNumber(context, depthClear, "depthClearValue") !==
@@ -200,38 +252,22 @@ export function compileRenderTargetOptions(
         format.name.text === "format" &&
         ts.isIdentifier(context.unwrap(format.expression)) &&
         context.compileValue(format.expression).kind === "engine";
-    const depthFormats = new Map([
-        ["depth16unorm", "depth16_unorm"],
-        ["depth24plus", "depth24_plus"],
-        ["depth24plus-stencil8", "depth24_plus_stencil8"],
-        ["depth32float", "depth32_float"],
-    ]);
-    const depth = depthFormat
-        ? context.compileStringLiteral(depthFormat)
-        : undefined;
-    const color =
-        colorFormat && !surfaceFormat
-            ? context.compileStringLiteral(colorFormat)
+    const depth =
+        depthFormat &&
+        staticTableOption(context, renderTargetDepthFormat, depthFormat);
+    const depthClass =
+        depthFormat && depth
+            ? tableEntry(context, renderTargetDepthFormat, depth, depthFormat)
             : undefined;
     const colorClass =
-        color === undefined ? undefined : nativeTextureFormats.get(color);
-    const depthClass =
-        depth === undefined ? undefined : depthFormats.get(depth);
-    if (color !== undefined && !colorClass)
-        context.fail(
-            colorFormat!,
-            `Unsupported render target color format '${color}'.`,
-        );
-    if (depth !== undefined && !depthClass)
-        context.fail(
-            depthFormat!,
-            `Unsupported render target depth format '${depth}'.`,
-        );
+        colorFormat && !surfaceFormat
+            ? staticTableEntry(context, renderTargetColorFormat, colorFormat)
+            : undefined;
     let cpp = `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
-    if (depthCompare)
-        cpp = `[&]() { auto options = ${cpp}; options.depth_compare = bbl::DepthCompare::${nativeDepthCompare(pinnedReverseDepthCompare(sharedPinnedContext()))}; return options; }()`;
+    if (depthCompareCpp)
+        cpp = `[&]() { auto options = ${cpp}; options.depth_compare = ${depthCompareCpp}; return options; }()`;
     if (colorClass || depthClass) {
-        cpp = `[&]() { auto options = ${cpp}; ${colorClass ? `options.format = bbl::TextureFormatClass::${colorClass}; options.has_format = true;` : ""} ${depthClass ? `options.depth_format = bbl::DepthTextureFormat::${depthClass};` : ""} return options; }()`;
+        cpp = `[&]() { auto options = ${cpp}; ${colorClass ? `options.format = ${colorClass}; options.has_format = true;` : ""} ${depthClass ? `options.depth_format = ${depthClass};` : ""} return options; }()`;
     }
     if (scale !== undefined && surface) {
         cpp = `[&]() { auto options = ${cpp}; const double scale = ${scale}; (void)bbl::resolve_surface_render_target_size(1.0, 1.0, scale); options.scale_source = bbl::swapchain_render_target(${surface.cpp}); options.width_ratio = scale; options.height_ratio = scale; options.resolve_surface_size = bbl::resolve_surface_render_target_size; return options; }()`;
@@ -294,7 +330,7 @@ export function compileRenderTaskOptions(
     // The single-sample target an MSAA colour attachment resolves into. The
     // pin ignores it when `rt` is single-sample rather than refusing it, so
     // this carries the handle and lets the backend apply the same rule.
-    const resolve = optionalRenderTarget(context, object, "rst");
+    const resolve = optionalRenderTarget(context, object, "rst", false, true);
     if (resolve.value) {
         context.expectSameEngine(target, resolve.value, object);
     }
@@ -415,14 +451,8 @@ export function compileGeometryTaskOptions(
         attachments.push(type);
         const formatExpression = context.objectProperty(description, "format");
         const format = formatExpression
-            ? context.compileStringLiteral(formatExpression)
-            : "";
-        if (format && format !== "r16float") {
-            context.fail(
-                formatExpression!,
-                `Unsupported geometry texture format override '${format}'.`,
-            );
-        }
+            ? staticTableEntry(context, geometryTextureFormat, formatExpression)
+            : "bbl::GeometryTextureFormat::automatic";
         // An attachment's clear value is the pin's own, per lane
         // (`GEOMETRY_TEXTURE_DESCRIPTIONS`), and the runtime already carries
         // that table. A descriptor may restate it -- scene 148 spells out
@@ -450,7 +480,7 @@ export function compileGeometryTaskOptions(
                 }
             }
         }
-        return `bbl::GeometryTextureDescription{bbl::GeometryTextureType::${geometryEnumMember(type)}, ${format === "r16float" ? "bbl::GeometryTextureFormat::r16_float" : "bbl::GeometryTextureFormat::automatic"}}`;
+        return `bbl::GeometryTextureDescription{bbl::GeometryTextureType::${geometryEnumMember(type)}, ${format}}`;
     });
     const targetExpression = context.objectProperty(object, "targetTexture");
     const target = targetExpression
@@ -586,7 +616,7 @@ export function requiredObjectNumber(
     context: RequiredObjectNumberContext,
     object: ts.ObjectLiteralExpression,
     name: string,
-    precision: "float" | "double" = "float",
+    precision: "float" | "double",
 ): string {
     const value = context.objectProperty(object, name);
     if (!value) {
@@ -604,13 +634,15 @@ export function requiredObjectNumber(
  * Four task options are written this way -- a copy task's target and its
  * resolve, a render task's resolve, a post-process pass's target -- and each
  * means the same thing: a target when the scene named one, and the invalid
- * handle when it did not.
+ * handle when it did not. With `runtimeAbsence`, the option may also be held
+ * as optional data, which names its target only at run time.
  */
 export function optionalRenderTarget(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     property: string,
     nullable = false,
+    runtimeAbsence = false,
 ): { cpp: string; value?: Value } {
     const expression = context.objectProperty(object, property);
     if (!expression) {
@@ -619,15 +651,20 @@ export function optionalRenderTarget(
     const value = context.compileValue(expression);
     if (nullable && value.kind === "json-null")
         return { cpp: "bbl::RenderTargetHandle{}" };
-    // A target held as optional data: absent is no target.
     const inner =
         value.kind === "data" && value.dataType?.kind === "optional"
             ? value.dataType.inner
             : undefined;
-    if (inner?.kind === "handle" && inner.handle === "render-target")
-        return {
-            cpp: `([&]() { const auto& target = ${value.cpp}; return ${optionalPresentCpp("target")} ? ${optionalValueCpp("target")} : bbl::RenderTargetHandle{}; }())`,
-        };
+    if (inner?.kind === "handle" && inner.handle === "render-target") {
+        // A target held as optional data is decided at run time: absent is
+        // no target. A pass composed at generation needs to know which.
+        if (!runtimeAbsence)
+            context.fail(
+                expression,
+                `Option '${property}' held as optional data requires a target known at generation.`,
+            );
+        return { cpp: `${value.cpp}.value_or(bbl::RenderTargetHandle{})` };
+    }
     context.expectKind(value, "render-target", expression);
     return { cpp: value.cpp, value };
 }
@@ -740,10 +777,10 @@ export function compileSceneDefaultRenderTask(
         return true;
     }
     const compiled = context.compileBoolean(value);
-    if (compiled !== "true" && compiled !== "false") {
+    if (knownCondition(compiled) === undefined) {
         context.fail(value, "defaultRenderTask must be a static boolean.");
     }
-    return compiled === "true";
+    return knownCondition(compiled) === true;
 }
 
 /**

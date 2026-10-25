@@ -229,7 +229,7 @@ function compileLiteralComputeTextureOptions(
         ) {
             context.emit({
                 kind: "expression",
-                code: `${target}.${key === "depthOrArrayLayers" ? "depth" : key} = ${context.compileNumber(value)};`,
+                code: `${target}.${key === "depthOrArrayLayers" ? "depth" : key} = ${context.compileNumber(value, "double")};`,
             });
         } else if (
             key === "mipMaps" ||

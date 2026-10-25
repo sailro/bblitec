@@ -4,8 +4,14 @@ import type { LoweringServices } from "./lowering-services.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import { argumentAt } from "./syntax.js";
-import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    namedMember,
+    resolvedSymbol,
+    type NamedMember,
+} from "./symbols.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
 import { isStringValue, type Feature, type Value } from "./types.js";
@@ -35,6 +41,17 @@ import {
     PANNER_PROPERTIES,
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
+import { presentMembers, callableParameterCount } from "./type-facts.js";
+import { staticTableValue, type TableOption } from "./table-options.js";
+
+/** `oscillator.type` and `filter.type`: the reached Web Audio spellings. */
+const audioNodeType: TableOption = {
+    table: Object.fromEntries([...OSCILLATOR_WAVES, ...BIQUAD_FILTER_KINDS]),
+    refusal: (spelling) =>
+        `'${spelling}' is not a reached oscillator or filter type. A custom periodic wave is not lowered.`,
+    name: "Web Audio oscillator or filter type",
+    label: "node_type",
+};
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -187,7 +204,7 @@ export function audioPrototypeValue(
         recordProperties: Object.fromEntries(
             Object.keys(UNAVAILABLE_CONTEXT_METHODS).map((name) => [
                 name,
-                { kind: "json-null" as const, cpp: "std::nullopt" },
+                undefinedValue(),
             ]),
         ),
     };
@@ -428,7 +445,7 @@ function emitAudioNode(context: AudioCallContext, initializer: string): Value {
 function orderedOperands(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
     argument: (expression: ts.Expression, index: number) => string,
 ): { owner: string; args: string[] } {
@@ -449,9 +466,9 @@ function orderedOperands(
 export function compileAudioMethodCall(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
-    if (callee.questionDotToken) {
+    if (callee.access.questionDotToken) {
         const kind = domAudioHandleKind(
             context.checker.getNonNullableType(
                 context.checker.getTypeAtLocation(callee.expression),
@@ -485,8 +502,10 @@ export function compileAudioMethodCall(
     const receiverExpression = context.unwrap(callee.expression);
     const chainedConnect =
         ts.isCallExpression(receiverExpression) &&
-        ts.isPropertyAccessExpression(receiverExpression.expression) &&
-        receiverExpression.expression.name.text === "connect"
+        namedMember(
+            context.checker,
+            context.unwrap(receiverExpression.expression),
+        )?.name === "connect"
             ? context.compileValue(receiverExpression)
             : undefined;
     const receiver =
@@ -510,7 +529,7 @@ export function compileAudioMethodCall(
 function compileAudioListener(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
     event: (type: string) => string | undefined,
     refusals: { type: string; payload: string },
@@ -535,11 +554,9 @@ function compileAudioListener(
     if (type === undefined) return context.fail(call, refusals.type);
     const callback = argumentAt(call, 1);
     context.callbacks.hoistForwardCallbackBindings(callback);
-    const removing = callee.name.text === "removeEventListener";
+    const removing = callee.name === "removeEventListener";
     const callbackType = context.checker.getTypeAtLocation(callback);
-    const absent =
-        (callbackType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-        0;
+    const absent = presentMembers(callbackType).length === 0;
     let identity = "0u",
         listener = "";
     if (!absent) {
@@ -559,11 +576,7 @@ function compileAudioListener(
                 callback,
             );
         } else {
-            if (
-                callbackType
-                    .getCallSignatures()
-                    .some((signature) => signature.parameters.length > 0)
-            )
+            if (callableParameterCount(context.checker, callback) > 0)
                 context.fail(callback, refusals.payload);
             const compiled = context.callbacks.compilePlatformCallback(
                 callback,
@@ -606,10 +619,10 @@ function compileAudioListener(
 function compileAudioElementMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     context.reachFeature("audio:media-element", call);
     if (method === "addEventListener" || method === "removeEventListener")
         return compileAudioListener(
@@ -664,10 +677,10 @@ function compileAudioElementMethod(
 function compileAudioReceiverMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     // Stored and deferred-produced handles can reach operations without
     // a context constructor in this translation unit.
     context.reachFeature("audio:engine", call);
@@ -950,10 +963,10 @@ function compileAudioDecode(
 function compileAudioContextMethod(
     context: AudioCallContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
-    const method = callee.name.text;
+    const method = callee.name;
     const spell = webAudioMemberCall;
     const factory = AUDIO_NODE_FACTORIES.find(([name]) => name === method);
     if (factory) {
@@ -1165,26 +1178,16 @@ function audioWriteValue(
         };
     if (property === "type")
         return {
-            value: () => {
-                const spelling = context.compileValue(right).staticString;
-                if (spelling === undefined)
-                    context.fail(
+            // The composed set of types is closed at generation.
+            value: () =>
+                context.cppString(
+                    staticTableValue(
+                        context,
+                        audioNodeType,
+                        context.compileValue(right),
                         right,
-                        "An oscillator or filter type must be a static string; the " +
-                            "pin's own types are string enums and the composed set is " +
-                            "closed at generation.",
-                    );
-                if (
-                    !OSCILLATOR_WAVES.some(([name]) => name === spelling) &&
-                    !BIQUAD_FILTER_KINDS.some(([name]) => name === spelling)
-                )
-                    context.fail(
-                        right,
-                        `'${spelling}' is not a reached oscillator or filter type. A ` +
-                            "custom periodic wave is not lowered.",
-                    );
-                return context.cppString(spelling);
-            },
+                    ),
+                ),
         };
     return undefined;
 }
@@ -1226,15 +1229,8 @@ export function emitAudioPropertyAssignment(
             left.expression,
         );
         const callbackType = context.checker.getTypeAtLocation(right);
-        const absent =
-            (callbackType.flags &
-                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-            0;
-        if (
-            callbackType
-                .getCallSignatures()
-                .some((signature) => signature.parameters.length > 0)
-        )
+        const absent = presentMembers(callbackType).length === 0;
+        if (callableParameterCount(context.checker, right) > 0)
             context.fail(
                 right,
                 "Audio ended event payloads are not represented yet.",

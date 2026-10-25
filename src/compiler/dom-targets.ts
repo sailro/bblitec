@@ -3,6 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { documentEngine } from "./window-events.js";
 import { declaredInDomLibrary } from "./symbols.js";
+import { inheritsFrom } from "./type-facts.js";
 
 /** Identify a declared DOM receiver without evaluating it. */
 export function isDomReceiver(
@@ -17,25 +18,14 @@ export function isDomReceiver(
               ? "window"
               : undefined;
     if (global && context.libraryGlobal(expression) === global) return true;
-    const seen = new Map<ts.Type, boolean>();
-    const visit = (type: ts.Type): boolean => {
-        const cached = seen.get(type);
-        if (cached !== undefined) return cached;
-        seen.set(type, false);
-        const result = type.isIntersection()
-            ? type.types.some(visit)
-            : type.isUnion()
-              ? type.types.every(visit)
-              : (type.symbol?.name === interfaceName &&
-                    declaredInDomLibrary(type.symbol)) ||
-                (type.getBaseTypes() ?? []).some(visit);
-        seen.set(type, result);
-        return result;
-    };
-    return visit(
+    return inheritsFrom(
         context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(expression),
         ),
+        (type) =>
+            type.symbol?.name === interfaceName &&
+            declaredInDomLibrary(type.symbol),
+        { unions: "every" },
     );
 }
 

@@ -3,7 +3,6 @@ import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
     isAbsentSpreadProperty,
-    propertyIsReadOnly,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -15,14 +14,12 @@ import {
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import { CompileError } from "../compile-error.js";
-import { propertyNeverObserved } from "../unread-properties.js";
+import { compiledUnlessUnobserved } from "../unread-properties.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
-import { UNKNOWN_PROPERTIES } from "../absent-record-properties.js";
 import { recordPropertyKeys } from "../object-statics.js";
 import {
     completeLiteralSelf,
@@ -31,8 +28,21 @@ import {
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
+import { recordCopyObservation } from "../record-observations.js";
+import { classHandsOutThis } from "../kept-values.js";
+import {
+    yieldsFreshObject,
+    yieldsFreshRecordElements,
+} from "../fresh-records.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import { ANY_KEY } from "../syntax.js";
+import {
+    arrayElementType,
+    classInstanceDeclaration,
+    unionMembers,
+} from "../type-facts.js";
+import { knownCondition } from "../values/model.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -44,10 +54,7 @@ function expressionEnum(
     if (resolved !== unwrapped) {
         return lowerer.compileForSink(resolved, dataType);
     }
-    if (
-        ts.isStringLiteral(unwrapped) ||
-        ts.isNoSubstitutionTemplateLiteral(unwrapped)
-    ) {
+    if (ts.isStringLiteralLike(unwrapped)) {
         return lowerer.context.dataTypes.enumMemberCpp(
             dataType,
             unwrapped.text,
@@ -276,7 +283,7 @@ function requireCopiedOwnUndefinedFields(
     );
     if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
         return;
-    const members = source.isUnion() ? source.types : [source];
+    const members = unionMembers(source);
     const storedFields = storedSource
         ? new Map(
               lowerer.context.dataTypes
@@ -340,7 +347,7 @@ function valueStruct(
         sourceType?.kind === "struct" &&
         sourceType.name !== dataType.name &&
         lowerer.context.dataTypes.isReferenceStruct(sourceType.name) &&
-        presenceCpp(value) !== "true";
+        knownCondition(presenceCpp(value)) !== true;
     if (
         sourceType &&
         (wrapped || flattened) &&
@@ -384,13 +391,13 @@ function valueStruct(
         lowerer.context.dataTypes.cppType(dataType);
         return value.ownedCpp ?? value.cpp;
     }
-    if (
-        lowerer.context.dataTypes.isClassStruct(dataType.name) &&
-        value.kind === "record"
-    ) {
-        const declaration = lowerer.context.classOf(value);
-        if (declaration)
-            lowerer.context.dataTypes.requireClassStruct(declaration);
+    const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (sharedClass && value.kind === "record") {
+        // A probe declines on the refusal; a committed store replays shared.
+        if (!lowerer.context.speculating)
+            lowerer.context.dataTypes.requireSharedClass(
+                sharedClass.declaration,
+            );
         lowerer.context.fail(
             node,
             `An instance of '${dataType.name}' constructed before ` +
@@ -433,6 +440,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        refuseClassRecordCopy(lowerer, dataType, value, node);
         requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
@@ -450,26 +458,9 @@ function valueStruct(
                 accessorGetter(lowerer, dataType, field, value, node);
         if (
             lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
-            !lowerer.context.bindings.containsPlatformEvent(value) &&
-            ts.isExpression(node)
-        ) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                node,
-            );
-            // A binding already given its own storage is still a record
-            // only when lowering its initializer into that storage refused.
-            if (
-                declaration &&
-                lowerer.context.dynamicBindings.get(declaration) !== undefined
-            )
-                lowerer.context.fail(
-                    node,
-                    `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
-                );
-            if (declaration)
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+            !lowerer.context.bindings.containsPlatformEvent(value)
+        )
+            requireHeldRecordStorage(lowerer.context, value, node);
         lowerer.context.dataTypes.cppType(dataType);
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
@@ -528,9 +519,12 @@ function valueStruct(
                             method,
                         );
                         const functionType = field.type;
-                        let callback: string;
-                        try {
-                            callback = lowerer.context.probeEmission(
+                        // A method nothing can read is stored empty when
+                        // its body refuses: no call can reach it.
+                        const callback =
+                            compiledUnlessUnobserved(
+                                lowerer.context,
+                                field.sourceName,
                                 () =>
                                     lowerer.context.compileStoredDataFunction(
                                         method,
@@ -540,22 +534,8 @@ function valueStruct(
                                             ts.isClassLike(method.parent),
                                         homeReceiver(self, method),
                                     ),
-                                () => true,
-                            );
-                        } catch (error) {
-                            // A method nothing can read is stored empty
-                            // when its body refuses: no call can reach it.
-                            if (
-                                !(error instanceof CompileError) ||
-                                !propertyNeverObserved(
-                                    lowerer.context.program,
-                                    lowerer.context.checker,
-                                    field.sourceName,
-                                )
-                            )
-                                throw error;
-                            callback = `${lowerer.context.dataTypes.cppType(field.type)}{}`;
-                        }
+                            ) ??
+                            lowerer.context.dataTypes.absentValue(field.type);
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
                             callback,
@@ -783,9 +763,7 @@ function valueStruct(
             node,
             "accessors",
         );
-        lowerer.context.dataTypes.noteRecordConversion(dataType, [
-            UNKNOWN_PROPERTIES,
-        ]);
+        lowerer.context.dataTypes.noteRecordConversion(dataType, [ANY_KEY]);
         for (const field of fields)
             lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
         // A parsed entry converts, checked, to a scalar field type.
@@ -967,7 +945,6 @@ function accessorGetter(
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
     if (!field.accessor) {
-        refuseClassFieldCopy(lowerer, dataType, record, node);
         lowerer.context.dataTypes.requireAccessorSlot(
             dataType,
             field.sourceName,
@@ -979,39 +956,86 @@ function accessorGetter(
 }
 
 /**
- * A class instance stored as a record type is one object: its accessors
- * and methods stay bound to it, but a mutable field the record stores as
- * data would be a copy.
+ * A class instance stored as another record type is a copy of its fields
+ * whose methods and accessors stay bound to the instance; JavaScript keeps
+ * one object, so the store refuses wherever the program can tell the copy
+ * apart (`recordCopyObservation`). The class's own records keep their
+ * storage rules.
  */
-function refuseClassFieldCopy(
+function refuseClassRecordCopy(
     lowerer: DataSinkHost,
     dataType: DataType<"struct">,
     record: Value,
     node: ts.Node,
 ): void {
+    const checker = lowerer.context.checker;
     const declaration = record.classDeclaration;
     const symbol = declaration?.name
-        ? declaredSymbol(lowerer.context.checker, declaration.name)
+        ? declaredSymbol(checker, declaration.name)
         : undefined;
-    if (!symbol) return;
-    const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
-    for (const field of lowerer.context.dataTypes.structFields(
-        dataType.name,
-        node,
-        "accessors",
-    )) {
-        const property = instance.getProperty(field.sourceName);
-        if (
-            field.type.kind !== "function" &&
-            record.recordProperties?.[field.sourceName] &&
-            property &&
-            !propertyIsReadOnly(property)
+    if (!symbol || !declaration) return;
+    const { type: target, fresh } = storedRecord(lowerer, node);
+    if (target && classInstanceDeclaration(target) === declaration) return;
+    const instance = checker.getDeclaredTypeOfSymbol(symbol);
+    const kept = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .filter(
+            (field) =>
+                field.type.kind !== "function" &&
+                record.recordProperties?.[field.sourceName] !== undefined,
         )
-            lowerer.context.fail(
-                node,
-                `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${field.sourceName}'; JavaScript keeps one object.`,
-            );
-    }
+        .map((field) => field.sourceName);
+    const observed = target
+        ? recordCopyObservation(
+              lowerer.context,
+              instance,
+              target,
+              kept,
+              instance
+                  .getProperties()
+                  .some((property) => !kept.includes(property.name)),
+              recordExpression(lowerer, record, node),
+              // A fresh instance whose class never hands out `this` has no
+              // other handle: the copy's identity is the object's.
+              fresh && !classHandsOutThis(checker, declaration)
+                  ? "sole"
+                  : "shared",
+          )
+        : "its record type has no checked source";
+    if (observed)
+        lowerer.context.fail(
+            node,
+            `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+        );
+}
+
+/**
+ * The checked record type a conversion stores into: the converted
+ * expression's contextual type (its own without one), or the element type
+ * of the array it is an element of, without null or undefined; and whether
+ * that expression or every element yields a fresh object.
+ */
+function storedRecord(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+): { type: ts.Type | undefined; fresh: boolean } {
+    const checker = lowerer.context.checker;
+    const stored = lowerer.convertedExpression(node);
+    if (stored)
+        return {
+            type: checker.getNonNullableType(
+                checker.getContextualType(stored) ??
+                    checker.getTypeAtLocation(stored),
+            ),
+            fresh: yieldsFreshObject(checker, stored),
+        };
+    const array = lowerer.convertedElementOf(node);
+    const arrayType = array && checker.getContextualType(array);
+    const element = arrayType && arrayElementType(checker, arrayType);
+    return {
+        type: element && checker.getNonNullableType(element),
+        fresh: array !== undefined && yieldsFreshRecordElements(checker, array),
+    };
 }
 
 /**

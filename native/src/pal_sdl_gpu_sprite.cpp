@@ -12,12 +12,13 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text_renderer.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/text_gpu.hpp>
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -27,6 +28,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "pal_platform_events.hpp"
@@ -35,6 +37,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
+#include "pal_sdl_gpu_presentation.hpp"
 #if BBLITE_HAS_TEXT_RENDERER
 #include "pal_sdl_gpu_text_renderer.hpp"
 #endif
@@ -42,7 +45,7 @@
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include "pal_sdl_gpu_sprite_ui.hpp"
 #endif
 
@@ -53,6 +56,7 @@ namespace bbl::pal {
 namespace {
 class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     SdlGpuDevice gpu{};
+    SdlFramePresentation presentation;
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
     SDL_GPUTexture* color = nullptr;
@@ -65,7 +69,7 @@ class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
     UiSdlReadableSurface readable_surface;
@@ -145,7 +149,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer.reset();
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         if (device) {
             release_sprite_ui_sdl_gpu_resources(device, ui_resources);
             readable_surface.release(device);
@@ -178,8 +182,7 @@ public:
                 "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
         }
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_sdl_gpu_device(engine.options, device_options, gpu);
-        sync_engine_canvas_size(window, engine);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, gpu);
         swapchain_format = gpu.swapchain_format;
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer =
@@ -193,7 +196,7 @@ public:
 #if BBLITE_HAS_SPRITE_RENDERER
         buffer_uploads = std::make_unique<GpuBufferUploadBatch>(device);
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime =
             create_ui_rml_runtime(engine, window, static_cast<std::uint32_t>(engine.options.width),
                                   static_cast<std::uint32_t>(engine.options.height));
@@ -210,7 +213,7 @@ public:
     SDL_Window* sdl_window() const { return window; }
     std::string driver() const { return SDL_GetGPUDeviceDriver(device); }
     void poll_events() {
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
@@ -220,13 +223,11 @@ public:
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
-        // The window's own pixel size is the surface every context
-        // lays out and draws into this frame; the swapchain acquired
-        // below reports the same extent.
-        surface_width = 0;
-        surface_height = 0;
-        SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
-#if BBLITE_HAS_UI
+        // The surface's pixel size (the window's, or the realm endpoint
+        // canvas's) is the extent every context lays out and draws into
+        // this frame; the image acquired below reports the same extent.
+        std::tie(surface_width, surface_height) = presentation.extent(offscreen, window, engine);
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame -- the same slot the
         // scene loops and the Dawn host give it, ahead of every sprite
@@ -246,7 +247,8 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!command.acquire_swapchain(window, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, offscreen, window, engine, &swapchain, &width,
+                                  &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -305,7 +307,7 @@ public:
 #endif
     }
     void encode() {
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
         auto* present_swapchain = swapchain;
         swapchain =
@@ -351,7 +353,7 @@ public:
         }
 #endif
 
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
             render_sprite_ui_sdl_gpu_frame(device, command, color, swapchain_format, ui_resources,
@@ -375,7 +377,7 @@ public:
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
         }
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         if (!ui_in_capture) {
             render_sprite_ui_sdl_gpu_frame(device, command, swapchain, swapchain_format,
                                            ui_resources, ui_frame);
@@ -388,7 +390,7 @@ public:
             save_texture_png(device, command, color, swapchain_format, width, height,
                              frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!command.submit()) {
+        } else if (!presentation.submit(command, offscreen)) {
             gpu_error("SDL_SubmitGPUCommandBuffer sprite");
         }
     }

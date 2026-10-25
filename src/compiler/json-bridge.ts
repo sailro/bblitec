@@ -15,9 +15,10 @@ import { authoredErrorValue } from "./error-values.js";
 // `JSON.parse` and by reads that descend into one, and it converts at a
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { undefinedValue, absenceOfNull } from "./values/model.js";
+import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { isNullishLiteral } from "./symbols.js";
+import { isNullishLiteral, namedMember } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -117,9 +118,7 @@ export function compileJsonPropertyKey(
     if (value.kind === "boolean" || value.dataType?.kind === "boolean")
         return `(${value.cpp} ? "true" : "false")`;
     if (value.kind === "json-null")
-        return context.cppString(
-            value.cpp === "std::nullopt" ? "undefined" : "null",
-        );
+        return context.cppString(absenceOfNull(value));
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
     if (value.dataType) {
         const cpp = context.dataTypes.jsonValueCpp(
@@ -265,7 +264,7 @@ function compileStringify(
     const represented = context.compileValue(argument);
     if (isUndefinedDataType(represented.dataType)) {
         context.emitDiscardedValue(represented);
-        return { kind: "json-null", cpp: "std::nullopt" };
+        return undefinedValue();
     }
     const dataType = containsJsonValue(represented)
         ? jsonType
@@ -344,22 +343,22 @@ export function compileJsonCall(
     context: JsonBridgeContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        !isJsonGlobal(context, context.unwrap(callee.expression))
-    ) {
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || !isJsonGlobal(context, context.unwrap(callee.expression))) {
         return undefined;
     }
-    if (callee.name.text === "stringify") {
+    if (callee.name === "stringify") {
         return compileStringify(context, call);
     }
-    if (callee.name.text === "parse") {
+    if (callee.name === "parse") {
         return compileParse(context, call);
     }
     context.fail(
-        callee.name,
-        `JSON.${callee.name.text} is not lowered; the bridge implements ` +
+        callee.key,
+        `JSON.${callee.name} is not lowered; the bridge implements ` +
             "stringify and parse.",
     );
 }
@@ -381,11 +380,7 @@ function representedReadType(
     if (parent?.kind === "map") return parent.value;
     if (parent?.kind === "vector" || parent?.kind === "span")
         return parent.element;
-    const key = ts.isPropertyAccessExpression(source)
-        ? source.name.text
-        : ts.isStringLiteral(source.argumentExpression)
-          ? source.argumentExpression.text
-          : undefined;
+    const key = accessKey(source);
     return parent?.kind === "struct" && key !== undefined
         ? context.dataTypes.findStructField(parent.name, key, source)?.type
         : parent?.kind === "json"

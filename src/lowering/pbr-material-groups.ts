@@ -1,7 +1,10 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { lowerRebuildTransaction } from "./pbr-transmission-transaction.js";
 
 import {
@@ -629,6 +632,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
         ["group", { cpp: "group", type: "opaque", absentCpp: "!group" }],
         ["rebuild", { cpp: "rebuild", type: "bool" }],
         ["q[0]", { cpp: "!queue.empty()", type: "bool" }],
+        ["q", collectionBinding("queue")],
         [
             "scene._runtimeBuilds?.w",
             { cpp: "false", type: "bool", staticallyAbsent: true },
@@ -673,15 +677,6 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
             bindings,
             calls: new Map(),
 
-            forOf: (iterated, element) =>
-                iterated === "q"
-                    ? {
-                          range: "queue",
-                          bindings: new Map([
-                              [element, { cpp: element, type: "opaque" }],
-                          ]),
-                      }
-                    : undefined,
             returnValue: (expression) => {
                 if (expression)
                     context.assertExpressionShape(
@@ -873,6 +868,7 @@ function lowerPbrGroupReconciliation(context: LoweringContext): string {
         ["list", { cpp: "list", type: "opaque", absentCpp: "!list" }],
         ["group.length", { cpp: "group->meshes.size()", type: "scalar" }],
         ["next.length", { cpp: "next.size()", type: "scalar" }],
+        ["scene.meshes", collectionBinding("scene.meshes")],
     ]);
     const lower = (
         statements: readonly ts.Statement[],
@@ -885,15 +881,6 @@ function lowerPbrGroupReconciliation(context: LoweringContext): string {
                 bindings,
                 calls: new Map(),
 
-                forOf: (iterated, element) =>
-                    iterated === "scene.meshes"
-                        ? {
-                              range: "scene.meshes",
-                              bindings: new Map([
-                                  [element, { cpp: element, type: "opaque" }],
-                              ]),
-                          }
-                        : undefined,
                 expression(node) {
                     if (
                         context.expressionMatchesShape(
@@ -1451,20 +1438,12 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
             "Expected runtime build request traversal.",
         );
     const dispatch = lowerPinnedBody(c.file, [loop], {
-        bindings: new Map([
+        bindings: new Map<string, PinnedBinding>([
             ["pair", { cpp: "pair", type: "bool" }],
             ["mesh", { cpp: "mesh", type: "opaque" }],
+            ["meshes", collectionBinding("meshes")],
         ]),
         calls: new Map(),
-        forOf: (iterated, element) =>
-            iterated === "meshes"
-                ? {
-                      range: "meshes",
-                      bindings: new Map([
-                          [element, { cpp: element, type: "opaque" }],
-                      ]),
-                  }
-                : undefined,
         statement(node, _numeric, indent) {
             if (ts.isVariableStatement(node)) {
                 const variable = node.declarationList.declarations[0];

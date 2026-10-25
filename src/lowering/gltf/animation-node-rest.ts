@@ -2,6 +2,7 @@ import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** The complete node-rest construction section of parseAnimationData. */
 export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
@@ -111,7 +112,7 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                     );
                 if (
                     ts.isArrayLiteralExpression(initializer) &&
-                    variable.type?.getText(file) === "NodeRest[]"
+                    sameSource(variable.type, "NodeRest[]")
                 ) {
                     if (initializer.elements.length)
                         context.contractError(

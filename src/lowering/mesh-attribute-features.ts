@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
@@ -79,7 +80,7 @@ function lowerSelectedMeshFeatures(
                     declaration,
                     "Expected a mesh feature word.",
                 );
-            return `static_cast<std::uint32_t>(${numeric.expression(expression)})`;
+            return jsToUint32Call(numeric.expression(expression));
         },
         statement(node) {
             if (

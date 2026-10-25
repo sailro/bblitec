@@ -24,17 +24,22 @@ writeFileSync(
     }),
 );
 
-const compile = (body: string) =>
+const compile = (
+    body: string,
+    options: Parameters<typeof compileSource>[1] = {
+        fileName: resolve(output, "input.ts"),
+    },
+) =>
     compileSource(
         `
-        import { createEngine, loadGltf } from "@babylonjs/lite";
+        import { addToScene, createEngine, createSceneContext, loadGltf, type TransformNode } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             ${body}
         }
     `,
-        { fileName: resolve(output, "input.ts") },
+        options,
     );
 
 test("loads the packaged file a fetched response's bytes come from", () => {
@@ -81,23 +86,18 @@ test("a public file's fetched bytes load from that file and add their root", () 
     mkdirSync(resolve(app, "public/assets"), { recursive: true });
     mkdirSync(resolve(app, "src/entry"), { recursive: true });
     copyFileSync(
-        resolve("examples/assets/regression/gltf-uv-sets.gltf"),
+        resolve(output, "embedded.gltf"),
         resolve(app, "public/assets/model.gltf"),
     );
-    const result = compileSource(
+    const result = compile(
         `
-        import { addToScene, createEngine, createSceneContext, loadGltf, type TransformNode } from "@babylonjs/lite";
-
-        async function main() {
-            const engine = await createEngine({});
             const scene = createSceneContext(engine);
             const response = await fetch("/assets/model.gltf");
             if (!response.ok) throw new Error("missing");
             const loaded = await loadGltf(engine, await response.arrayBuffer());
             const root = loaded.entities[0] as TransformNode;
             addToScene(scene, root);
-        }
-    `,
+        `,
         {
             fileName: resolve(app, "src/entry/main.ts"),
             publicDir: resolve(app, "public"),

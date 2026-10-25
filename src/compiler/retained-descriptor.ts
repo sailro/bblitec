@@ -2,12 +2,13 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callArgumentProjectionIsReadOnly } from "./parameter-projection-effects.js";
-import { accessedPropertySymbol } from "./symbols.js";
+import { memberAccessors } from "./symbols.js";
 import {
-    isAssignmentExpression,
-    propertyNameText,
+    propertyKey,
     rootIdentifier,
     unwrapExpression,
+    writeSites,
+    variableKind,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import type { Value } from "./types.js";
@@ -131,14 +132,10 @@ export function requireStableRetainedDescriptor(
                     )
                         return true;
                     if (
-                        writesThroughTrackedRoot(
-                            node,
-                            namesRoot,
-                            undefined,
+                        writesThroughTrackedRoot(node, namesRoot, {
                             checker,
-                        ) ||
-                        (ts.isDeleteExpression(node) &&
-                            namesRoot(node.expression))
+                            typed: true,
+                        })
                     )
                         return true;
                     if (
@@ -153,10 +150,13 @@ export function requireStableRetainedDescriptor(
                     )
                         return true;
                     if (
-                        isAssignmentExpression(node) &&
-                        references(node.right) &&
-                        containsAlias(node.right, scan) &&
-                        !ts.isIdentifier(node.left)
+                        writeSites(node).some(
+                            ({ target, from }) =>
+                                !ts.isIdentifier(target) &&
+                                from !== undefined &&
+                                references(from) &&
+                                containsAlias(from, scan),
+                        )
                     )
                         return true;
                     if (
@@ -179,14 +179,7 @@ export function requireStableRetainedDescriptor(
                             ts.isElementAccessExpression(node)) &&
                         namesRoot(node)
                     ) {
-                        const property = accessedPropertySymbol(checker, node);
-                        if (
-                            property?.declarations?.some(
-                                (declaration) =>
-                                    ts.isGetAccessorDeclaration(declaration) ||
-                                    ts.isSetAccessorDeclaration(declaration),
-                            )
-                        )
+                        if (memberAccessors(checker, node, "either").length > 0)
                             return true;
                     }
                     if (ts.isNewExpression(node))
@@ -234,7 +227,7 @@ export function requireStableRetainedDescriptor(
                 (ts.getCombinedModifierFlags(declaration) &
                     ts.ModifierFlags.Export) !==
                     0 ||
-                (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+                variableKind(declaration.parent) !== "const" ||
                 active.has(symbol)
             )
                 fail(node);
@@ -255,7 +248,7 @@ export function requireStableRetainedDescriptor(
                     !ts.isShorthandPropertyAssignment(property)
                 )
                     fail(property);
-                const name = propertyNameText(property.name);
+                const name = propertyKey(property.name);
                 const member =
                     name === undefined ? undefined : properties[name];
                 if (!name || !member) fail(property);

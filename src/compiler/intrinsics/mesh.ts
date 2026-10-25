@@ -6,7 +6,7 @@ import {
 } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, objectLiteralMembers } from "../syntax.js";
 import { compileBakedMesh } from "../baked-mesh.js";
 
 import { isStringValue, valueForKind, type Value } from "../types.js";
@@ -55,6 +55,7 @@ import { writeVec3Lanes } from "./vec3-write.js";
 import { emitPresentOption, retainedOptions } from "./retained-options.js";
 import { constructedFieldPresent } from "../constructed-fields.js";
 import { creationInSegment } from "../creation-segments.js";
+import { knownCondition } from "../values/model.js";
 
 /** Attribute uploads change existing buffers without recording composition facts. */
 export const runtimeOnlyMeshIntrinsics: ReadonlySet<string> = new EmissionSet([
@@ -1294,11 +1295,11 @@ function compileMeshOptionalStreams(
         if (!argument || context.symbols.isGlobalUndefined(argument))
             return { cpp: "std::nullopt", present: false };
         const value = context.compileValue(argument);
-        if (value.optionalFoundCpp === "false")
+        if (knownCondition(value.optionalFoundCpp) === false)
             return { cpp: "std::nullopt", present: false };
         const optional =
             value.dataType?.kind === "optional" &&
-            value.optionalFoundCpp !== "true" &&
+            knownCondition(value.optionalFoundCpp) !== true &&
             !constructedFieldPresent(context, argument);
         const type: DataType = {
             kind: "optional",
@@ -1868,12 +1869,16 @@ function compileCreateHierarchyInstancePool(
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const root = context.compileValue(argumentAt(call, 0));
-    if (root.kind !== "asset-root" || !root.assetRootClone) {
-        context.fail(
-            argumentAt(call, 0),
-            "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
-        );
-    }
+    // A widened clone checks its concrete handle at run time.
+    const container =
+        root.kind === "asset-root" && root.assetRootClone
+            ? root.cpp
+            : root.kind === "scene-node" && root.sceneNodeClone
+              ? `bbl::cloned_asset_container(${root.cpp})`
+              : context.fail(
+                    argumentAt(call, 0),
+                    "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
+                );
     context.assetRegistry.assertAssetRootWritable(root, call);
     const capacity = context.compileNumber(argumentAt(call, 1), "double");
     const engine = context.requireEngine(root, call);
@@ -1889,7 +1894,7 @@ function compileCreateHierarchyInstancePool(
         kind: "declaration",
         type: `const ${handleCppType("hierarchy-instance-pool")}`,
         name: pool,
-        initializer: `bbl::create_hierarchy_instance_pool(${engine}, ${root.cpp}, ${capacity})`,
+        initializer: `bbl::create_hierarchy_instance_pool(${engine}, ${container}, ${capacity})`,
     });
     return {
         kind: "hierarchy-instance-pool",
@@ -2304,7 +2309,7 @@ function compileEnableThinInstanceGpuCulling(
         );
     }
     if (
-        enabled === "false" &&
+        knownCondition(enabled) === false &&
         !context.sceneManifest.meshMayHaveThinInstanceGpuCulling(mesh)
     ) {
         // `_gpuCullingEnabled` starts false and nothing reached so
@@ -2399,7 +2404,7 @@ function compileCreateBox(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.intrinsicOptions.compileBoxOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileBoxOptions(call.arguments[1], "float")
         : ["1.0f", "1.0f", "1.0f"];
     context.reachFeature("mesh:box", call);
     return {
@@ -2721,17 +2726,14 @@ function compileCreateMorphTargets(
         );
     }
     const target = context.expectObjectLiteral(targets.elements[0]!);
-    for (const property of target.properties) {
+    for (const member of objectLiteralMembers(target)) {
         const name =
-            (ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)) &&
-            (ts.isIdentifier(property.name) ||
-                ts.isStringLiteral(property.name))
-                ? property.name.text
+            member.kind === "property" || member.kind === "shorthand"
+                ? member.key
                 : undefined;
         if (name !== "positions" && name !== "normals") {
             context.fail(
-                property,
+                member.node,
                 "Morph targets support positions and normals.",
             );
         }
@@ -2755,7 +2757,7 @@ function compileCreateMorphTargets(
                 "Direct createMorphTargets requires one initial weight.",
             );
         }
-        weight = context.compileNumber(values.elements[0]!);
+        weight = context.compileNumber(values.elements[0]!, "float");
     }
     context.reachFeature("mesh:morph-targets", call);
     return {
@@ -2768,7 +2770,7 @@ function compileCreateMorphTargets(
                 "f32array",
             ),
             normalsCpp: normalValue,
-            vertexCountCpp: context.compileNumber(argumentAt(call, 2)),
+            vertexCountCpp: context.compileNumber(argumentAt(call, 2), "float"),
             weightCpp: weight,
         },
     };

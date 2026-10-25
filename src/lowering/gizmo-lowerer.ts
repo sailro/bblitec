@@ -75,6 +75,7 @@ import {
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -1271,10 +1272,10 @@ export class GizmoLowerer {
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === member &&
-                // Matched by TEXT rather than as an identifier: the cage
+                // Matched by shape rather than as an identifier: the cage
                 // clears the flag on `c.meshes[1]!`, an element access,
                 // where the widgets clear it on a plain local.
-                node.left.expression.getText(node.getSourceFile()) === local &&
+                sameSource(node.left.expression, local) &&
                 node.right.kind === ts.SyntaxKind.FalseKeyword
             ) {
                 found = true;
@@ -2089,9 +2090,8 @@ EditGizmoHandle push_edit_gizmo(
                     const widget =
                         ts.isCallExpression(call) &&
                         ts.isIdentifier(call.expression)
-                            ? EDIT_MODULES.find(
-                                  ({ factory }) =>
-                                      factory === call.expression.getText(file),
+                            ? EDIT_MODULES.find(({ factory }) =>
+                                  sameSource(call.expression, factory),
                               )
                             : undefined;
                     if (!widget || !ts.isCallExpression(call)) {
@@ -2303,7 +2303,7 @@ ${body}
         this.context.hasNode(factory, (node) => {
             if (
                 ts.isCallExpression(node) &&
-                node.expression.getText(file) === "buildArrow" &&
+                sameSource(node.expression, "buildArrow") &&
                 node.arguments[5]?.kind === ts.SyntaxKind.TrueKeyword
             )
                 colliderThickness = node.arguments[4];
@@ -2948,7 +2948,6 @@ ${
         local: string,
         member: string,
     ): string {
-        const file = scope.getSourceFile();
         let found: ts.Expression | undefined;
         const visit = (node: ts.Node): void => {
             if (found) return;
@@ -2957,7 +2956,7 @@ ${
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === member &&
-                node.left.expression.getText(file) === local
+                sameSource(node.left.expression, local)
             ) {
                 found = this.context.unwrapExpression(node.right);
             }
@@ -3117,7 +3116,6 @@ ${
      * read from that template rather than restated.
      */
     private loopMeshName(scope: ts.Node, local: string): string {
-        const file = scope.getSourceFile();
         let found: ts.Expression | undefined;
         const visit = (node: ts.Node): void => {
             if (found) return;
@@ -3126,7 +3124,7 @@ ${
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isPropertyAccessExpression(node.left) &&
                 node.left.name.text === "name" &&
-                node.left.expression.getText(file) === local
+                sameSource(node.left.expression, local)
             ) {
                 found = this.context.unwrapExpression(node.right);
             }
@@ -3850,9 +3848,11 @@ std::array<float, 16> bbox_mat4_from_quat(
             !ts.isIdentifier(toWorld.body.expression) ||
             toWorld.body.expression.text !== "rotatePoint" ||
             toWorld.body.arguments.length !== 2 ||
-            toWorld.body.arguments[0]!.getText(file) !== "q" ||
-            toWorld.body.arguments[1]!.getText(file) !==
-                (toWorld.parameters[0]!.name as ts.Identifier).text
+            !sameSource(toWorld.body.arguments[0], "q") ||
+            !sameSource(
+                toWorld.body.arguments[1],
+                (toWorld.parameters[0]!.name as ts.Identifier).text,
+            )
         ) {
             this.context.contractError(
                 layout,
@@ -3899,9 +3899,21 @@ std::array<float, 16> bbox_mat4_from_quat(
                     "faceBoxSize",
                     { cpp: "record.face_box_size", type: "scalar" },
                 ],
-                ["xs", { cpp: "xs", type: "scalar" }],
-                ["ys", { cpp: "ys", type: "scalar" }],
-                ["zs", { cpp: "zs", type: "scalar" }],
+                // One axis's two bounds, the native array the edge and
+                // anchor sweeps walk bound by bound.
+                ...["xs", "ys", "zs"].map((axis): [string, PinnedBinding] => [
+                    axis,
+                    {
+                        cpp: axis,
+                        type: "scalar",
+                        elements: {
+                            element: (bound) =>
+                                new Map([
+                                    [bound, { cpp: bound, type: "scalar" }],
+                                ]),
+                        },
+                    },
+                ]),
                 ...placementBindings,
             ]),
         );
@@ -3917,12 +3929,6 @@ std::array<float, 16> bbox_mat4_from_quat(
             ...(layoutScope.recordCalls ?? []),
             ["toWorld", ["x", "y", "z"]],
         ]);
-        layoutScope.forOf = (iterated, element) => ({
-            range: iterated,
-            bindings: new Map<string, PinnedBinding>([
-                [element, { cpp: element, type: "scalar" }],
-            ]),
-        });
         layoutScope.methods = new Map([
             ...(layoutScope.methods ?? []),
             [

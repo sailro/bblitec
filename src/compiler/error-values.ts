@@ -1,9 +1,12 @@
 import ts from "typescript";
+import { undefinedValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
-import { expressionMayRunCode } from "./syntax.js";
+import { expressionMayRunCode, objectLiteralMembers } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 import type { DataStructField } from "./data-types.js";
+import { isJsonValue } from "./json-bridge.js";
+import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 
 export const ERROR_CLASS_FIELDS: readonly DataStructField[] = [
     { sourceName: "message", name: "message", type: { kind: "string" } },
@@ -165,7 +168,7 @@ export function errorValue(
                           staticString: name,
                       },
             // Native exceptions do not carry a JavaScript engine's optional stack string.
-            stack: { kind: "json-null", cpp: "std::nullopt" },
+            stack: undefinedValue(),
         },
     };
 }
@@ -287,7 +290,9 @@ function compileAggregateError(
               args[0]!,
           );
     const list = context.allocateTemporaryCppName("aggregate_errors");
-    const snapshotsErrors = args.slice(1).some(expressionMayRunCode);
+    const snapshotsErrors = args
+        .slice(1)
+        .some((argument) => expressionMayRunCode(argument));
     context.emit(
         snapshotsErrors
             ? `const auto ${list} = bbl::js::snapshot_value(${errors});`
@@ -360,25 +365,16 @@ function compileErrorCause(
                 options,
                 "Error options require a cause record.",
             );
-        for (const property of options.properties) {
-            const name =
-                (ts.isPropertyAssignment(property) ||
-                    ts.isShorthandPropertyAssignment(property)) &&
-                ts.isIdentifier(property.name)
-                    ? property.name.text
-                    : undefined;
+        for (const member of objectLiteralMembers(options)) {
             if (
-                name !== "cause" ||
-                (!ts.isPropertyAssignment(property) &&
-                    !ts.isShorthandPropertyAssignment(property))
+                (member.kind !== "property" && member.kind !== "shorthand") ||
+                member.key !== "cause"
             )
                 return context.fail(
-                    property,
+                    member.node,
                     "Error options only represent an error cause.",
                 );
-            const value = ts.isPropertyAssignment(property)
-                ? property.initializer
-                : property.name;
+            const value = member.value;
             const compiled = context.dataLowerer.compileForSink(value, {
                 kind: "error",
             });
@@ -392,6 +388,70 @@ function compileErrorCause(
         }
     }
     return cause;
+}
+
+/**
+ * What a thrown or rejected value raises: an Error keeps its identity, a
+ * string or dynamic value its payload. `pointer` marks a
+ * `std::exception_ptr`, otherwise an exception object.
+ */
+export function thrownException(
+    context: Pick<
+        LoweringServices,
+        | "thrownValueKinds"
+        | "reachJson"
+        | "fail"
+        | "cppString"
+        | "dataLowerer"
+        | "dataTypes"
+    >,
+    thrown: Value,
+    node: ts.Node,
+    refusal: { node: ts.Node; message: string },
+): { cpp: string; pointer: boolean } {
+    const error = authoredErrorValue(context, thrown) ?? thrown;
+    if (isJsonValue(error)) {
+        if (!context.thrownValueKinds.has("string"))
+            throw new ThrownValueStorageRequired("string");
+        context.reachJson();
+        return {
+            cpp: `bbl::js::thrown_exception(${error.cpp})`,
+            pointer: true,
+        };
+    }
+    if (error.dataType?.kind === "error")
+        return {
+            cpp: context.dataLowerer.compileKnownValueForSink(
+                error,
+                { kind: "error" },
+                node,
+            ),
+            pointer: true,
+        };
+    const value = thrownMessage(error);
+    if (!value) return context.fail(refusal.node, refusal.message);
+    if (value.staticString === undefined && !isStringValue(value))
+        return context.fail(node, "A thrown Error message must be a string.");
+    if (!error.nativeError && !context.thrownValueKinds.has("string"))
+        throw new ThrownValueStorageRequired("string");
+    return {
+        cpp: `${error.nativeError ? "std::runtime_error" : "bbl::js::ThrownString"}(${
+            value.staticString !== undefined
+                ? context.cppString(value.staticString)
+                : value.cpp
+        })`,
+        pointer: false,
+    };
+}
+
+/** A {@link thrownException} as a `std::exception_ptr`. */
+export function exceptionPointer(exception: {
+    cpp: string;
+    pointer: boolean;
+}): string {
+    return exception.pointer
+        ? exception.cpp
+        : `std::make_exception_ptr(${exception.cpp})`;
 }
 
 /** The message a thrown value carries, or undefined when it carries none. */

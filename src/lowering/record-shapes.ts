@@ -1,6 +1,7 @@
 import { CPP_ELEMENT, CPP_SCALAR } from "./cpp-types.js";
 import ts from "typescript";
 import type { MemberSpec, RecordSpec } from "./pinned-record-lowerer.js";
+import { valueKindOf } from "../compiler/type-facts.js";
 
 /** The represented shape of a pinned value, independent of its native owner. */
 export type RecordShape =
@@ -63,12 +64,9 @@ export function primitiveRecordShape(
     types: readonly ts.Type[],
 ): RecordShape | undefined {
     if (!types.length) return undefined;
-    if (types.every((type) => type.flags & ts.TypeFlags.NumberLike))
-        return recordScalars.number;
-    if (types.every((type) => type.flags & ts.TypeFlags.BooleanLike))
-        return recordScalars.boolean;
-    if (types.every((type) => type.flags & ts.TypeFlags.StringLike))
-        return recordScalars.string;
+    for (const kind of ["number", "boolean", "string"] as const)
+        if (types.every((type) => valueKindOf(type) === kind))
+            return recordScalars[kind];
     return undefined;
 }
 

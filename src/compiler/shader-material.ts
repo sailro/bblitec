@@ -6,7 +6,9 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
-import { nativeBlendFactor } from "../lowering/pinned-blend-table.js";
+import { blendFactorByPin } from "../lowering/pinned-blend-table.js";
+import { depthCompareByPin } from "../lowering/pinned-depth-state.js";
+import { staticTableOption, type TableOption } from "./table-options.js";
 import {
     pinnedErrorCode,
     pinnedErrorMessageCpp,
@@ -40,6 +42,30 @@ import type {
 } from "./types.js";
 import { isTypedArrayType, tupleComponents } from "./data-types.js";
 import { presenceCpp } from "./types.js";
+import { knownCondition } from "./values/model.js";
+
+/** A shader material's depth comparison, which its pipeline reads at generation. */
+const shaderDepthCompare: TableOption = {
+    table: depthCompareByPin,
+    refusal: (compare) => `Unsupported shader depthCompare '${compare}'.`,
+    name: "shader depthCompare",
+    label: "depth_compare",
+};
+
+const shaderBlendFactor: TableOption = {
+    table: blendFactorByPin,
+    refusal: (factor) =>
+        `Pinned blend uses factor '${factor}', which this runtime has no enumerator for.`,
+    name: "shader blend factor",
+    label: "blend_factor",
+};
+
+const shaderBlendOperation: TableOption = {
+    table: { add: "add" },
+    refusal: "Shader blend supports the add operation only.",
+    name: "shader blend operation",
+    label: "blend_operation",
+};
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -98,7 +124,10 @@ function absentShaderOption(
             )
                 return false;
             const value = context.compileValue(resolved);
-            if (value.kind !== "json-null" && presenceCpp(value) !== "false")
+            if (
+                value.kind !== "json-null" &&
+                knownCondition(presenceCpp(value)) !== false
+            )
                 return false;
             context.emitDiscardedValue(value);
             return true;
@@ -336,25 +365,8 @@ export function compileShaderMaterialOptions(
         "depthCompare",
     );
     const depthCompare = depthCompareExpression
-        ? context.compileStringLiteral(depthCompareExpression)
+        ? staticTableOption(context, shaderDepthCompare, depthCompareExpression)
         : undefined;
-    if (
-        depthCompare !== undefined &&
-        ![
-            "never",
-            "less",
-            "equal",
-            "less-equal",
-            "greater",
-            "not-equal",
-            "greater-equal",
-            "always",
-        ].includes(depthCompare)
-    )
-        context.fail(
-            depthCompareExpression!,
-            `Unsupported shader depthCompare '${depthCompare}'.`,
-        );
     const depthBiasOptions: {
         depthBias?: number;
         depthBiasSlopeScale?: number;
@@ -516,28 +528,15 @@ function compileShaderBlend(
             "Shader blend components accept operation, srcFactor and dstFactor.",
         );
         const operation = context.objectProperty(literal, "operation");
-        if (operation && context.compileStaticString(operation) !== "add") {
-            context.fail(
-                operation,
-                "Shader blend supports the add operation only.",
-            );
-        }
+        if (operation)
+            staticTableOption(context, shaderBlendOperation, operation);
         const factor = (name: "srcFactor" | "dstFactor"): string => {
             const field = context.objectProperty(literal, name);
-            const text = field
-                ? context.compileStaticString(field)
+            return field
+                ? staticTableOption(context, shaderBlendFactor, field)
                 : name === "srcFactor"
                   ? "one"
                   : "zero";
-            try {
-                nativeBlendFactor(text);
-            } catch (error) {
-                context.fail(
-                    field ?? literal,
-                    error instanceof Error ? error.message : String(error),
-                );
-            }
-            return text;
         };
         return [factor("srcFactor"), factor("dstFactor")];
     };
@@ -846,10 +845,7 @@ function compileShaderUniformSignatures(
     }> = [];
     const signatures = elements.map((element) => {
         const resolved = context.resolveStaticLiteral(element);
-        if (
-            ts.isStringLiteral(resolved) ||
-            ts.isNoSubstitutionTemplateLiteral(resolved)
-        ) {
+        if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
         if (!ts.isObjectLiteralExpression(resolved)) {
@@ -1163,7 +1159,7 @@ export function compileShaderUniformComponents(
 ): string[] {
     const { count } = uniform;
     if (count === 1) {
-        return [context.compileNumber(expression)];
+        return [context.compileNumber(expression, "float")];
     }
     const resolved = context.resolveStaticExpression(expression);
     if (
@@ -1172,7 +1168,7 @@ export function compileShaderUniformComponents(
         !resolved.elements.some(ts.isSpreadElement)
     ) {
         return resolved.elements.map((element) =>
-            context.compileNumber(element),
+            context.compileNumber(element, "float"),
         );
     }
     // `[...lanes]` copies one array-like: the writer reads the same lanes
@@ -1227,7 +1223,7 @@ export function compileShaderUniformComponents(
         value.dataType?.kind === "tuple" &&
         value.dataType.arity === count
     ) {
-        return tupleComponents(value.cpp, count);
+        return tupleComponents(value.cpp, count, "float");
     }
     const numericArray =
         value.dataType?.kind === "vector" &&

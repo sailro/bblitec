@@ -15,41 +15,68 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 
 /** The checked Object identity functions also retain their input as callbacks. */
 export function isObjectIdentityFunction(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isPropertyAccessExpression(node) &&
-        OBJECT_IDENTITY_CALLS.has(node.name.text) &&
-        libraryGlobal(node.expression) === "Object"
-    );
+    const member = libraryStaticMember(checker, unwrapExpression(expression));
+    return member?.owner === "Object" && OBJECT_IDENTITY_CALLS.has(member.name);
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
+/** `isWrittenThrough` answers: a function of the checked program. */
+const writtenLiteralBags = new WeakMap<ts.VariableDeclaration, boolean>();
+
 export function objectIdentityCallArgument(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
-        !isObjectIdentityFunction(expression.expression, libraryGlobal)
+        !isObjectIdentityFunction(checker, expression.expression)
     ) {
         return undefined;
     }
     return expression.arguments[0];
 }
+
+/**
+ * The expression whose identity a reader sees: wrappers stripped (`await`
+ * too when asked), and `Object.freeze(x)` is `x`.
+ */
+export function unwrapObjectIdentity(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    options: { readonly await?: boolean } = {},
+): ts.Expression {
+    let current = unwrapExpression(expression, options);
+    for (
+        let frozen = objectIdentityCallArgument(checker, current);
+        frozen;
+        frozen = objectIdentityCallArgument(checker, current)
+    )
+        current = unwrapExpression(frozen, options);
+    return current;
+}
 import { EmissionSet, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { isStringValue, presenceCpp, type Value } from "./types.js";
 import { CompileError } from "./compile-error.js";
-import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
+import {
+    foldNumberFormat,
+    numberConstant,
+    numberConstantValue,
+    numberFormatOf,
+} from "./number-intrinsics.js";
 import {
     declaredSymbol,
     isGlobalUndefined,
     libraryGlobal,
     type LibraryGlobal,
+    calledDeclaration,
+    namedMember,
+    type MemberReader,
+    libraryStaticMember,
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
@@ -65,11 +92,19 @@ import {
     type StaticFoldContext,
 } from "./option-helpers.js";
 import {
+    aliasedMutationScan,
     resolveFunctionDeclaration,
-    type SupportedFunction,
+    type AliasedMutationScan,
 } from "./user-functions.js";
+import { heldReferenceBases } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
-import { absenceKind, excludesObjectColour, isNullable } from "./type-facts.js";
+import {
+    absenceKind,
+    excludesObjectColour,
+    isNullable,
+    stringPlusOperands,
+    valueKindOf,
+} from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -82,19 +117,31 @@ import {
     hasNonNullAssertion,
     unwrapExpression,
     argumentAt,
+    isMemberAccess,
+    referenceBases,
     soleReturnedExpression,
+    isTypeAssertion,
+    wrappersUnder,
+    writeSites,
+    expressionHasEffects,
+    functionKind,
+    type SupportedFunction,
+    variableKind,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
     PINNED_ARITHMETIC_OPERATORS,
+    exponentiationCall,
     jsBitwiseCall,
+    jsBitwiseNotCall,
+    pinnedRemainderCall,
 } from "../lowering/pinned-operators.js";
 import {
-    exponentiationCall,
     MATH_MEMBERS,
     mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
+import { knownCondition } from "./values/model.js";
 
 /**
  * The function a module-scope declaration names: a `function` or a `const`
@@ -108,7 +155,7 @@ function isModuleScopeFunction(declaration: SupportedFunction): boolean {
     return (
         ts.isVariableDeclaration(binding) &&
         ts.isVariableDeclarationList(binding.parent) &&
-        (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        variableKind(binding.parent) === "const" &&
         ts.isVariableStatement(binding.parent.parent) &&
         ts.isSourceFile(binding.parent.parent.parent)
     );
@@ -123,7 +170,7 @@ function isModuleConstant(symbol: ts.Symbol): boolean {
         ts.isVariableStatement(statement) &&
         ts.isSourceFile(statement.parent) &&
         !statement.parent.isDeclarationFile &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+        variableKind(statement.declarationList) === "const"
     );
 }
 
@@ -306,6 +353,13 @@ export class StaticEvaluator {
         private readonly inlinedArgumentText: (
             identifier: ts.Identifier,
         ) => string | undefined,
+        /**
+         * `DataLowerer.compileGuardableElementAccess`: an element read whose
+         * absence the source tests, past the end a falsy value.
+         */
+        private readonly testedElement: (
+            access: ts.ElementAccessExpression,
+        ) => Value | undefined,
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -334,6 +388,10 @@ export class StaticEvaluator {
     private readonly libraryGlobal: LibraryGlobal = (expression) =>
         libraryGlobal(this.checker, expression);
 
+    /** See `namedMember` (symbols.ts). */
+    private readonly member: MemberReader = (node) =>
+        namedMember(this.checker, node);
+
     /**
      * `precision` selects the native vector the components land in. The
      * camera is the one sink that asks for `double`: upstream keeps its
@@ -343,7 +401,7 @@ export class StaticEvaluator {
      */
     public compileVec3(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
         value?: Value,
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
@@ -413,7 +471,7 @@ export class StaticEvaluator {
     public vec3FromRecord(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
         const lanes = ["x", "y", "z"].map((name) => {
@@ -434,7 +492,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 2, resolved);
         if (tuple) {
             return `bbl::Vec2{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -442,7 +500,7 @@ export class StaticEvaluator {
             unwrapped.elements.length === 2
         ) {
             return `bbl::Vec2{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Vec2 array [x, y].");
@@ -456,7 +514,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4, resolved);
         if (tuple) {
             return `bbl::Vec4{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -464,7 +522,7 @@ export class StaticEvaluator {
             unwrapped.elements.length === 4
         ) {
             return `bbl::Vec4{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Vec4 array [x, y, z, w].");
@@ -479,17 +537,17 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `bbl::Color3{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
-        const data = this.dataTupleComponents(unwrapped, resolved);
+        const data = this.dataTupleComponents(unwrapped, resolved, "float");
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
         const spreadTuple = this.spreadTupleElements(unwrapped, 3);
         if (spreadTuple) {
             return `bbl::Color3{${spreadTuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -497,13 +555,15 @@ export class StaticEvaluator {
             unwrapped.elements.length === 3
         ) {
             return `bbl::Color3{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
             return `bbl::Color3{${["r", "g", "b"]
-                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .map((channel) =>
+                    this.requiredObjectNumber(unwrapped, channel, "float"),
+                )
                 .join(", ")}}`;
         }
         this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
@@ -545,7 +605,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4);
         if (tuple) {
             return `bbl::Color4{${tuple
-                .map((value) => this.numberValue(value, unwrapped))
+                .map((value) => this.numberValue(value, unwrapped, "float"))
                 .join(", ")}}`;
         }
         if (
@@ -553,14 +613,16 @@ export class StaticEvaluator {
             unwrapped.elements.length === 4
         ) {
             return `bbl::Color4{${unwrapped.elements
-                .map((element) => this.compileNumber(element))
+                .map((element) => this.compileNumber(element, "float"))
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
             const channels = ["r", "g", "b", "a"];
             this.requireObjectColour(expression, unwrapped, channels);
             return `bbl::Color4{${channels
-                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .map((channel) =>
+                    this.requiredObjectNumber(unwrapped, channel, "float"),
+                )
                 .join(", ")}}`;
         }
         this.fail(
@@ -580,9 +642,9 @@ export class StaticEvaluator {
         }
         if (ts.isConditionalExpression(unwrapped)) {
             const condition = this.compileCondition(unwrapped.condition);
-            if (condition === "true" || condition === "false")
+            if (knownCondition(condition) !== undefined)
                 return this.compileBoolean(
-                    condition === "true"
+                    knownCondition(condition) === true
                         ? unwrapped.whenTrue
                         : unwrapped.whenFalse,
                 );
@@ -627,12 +689,12 @@ export class StaticEvaluator {
         // expression the same way.
         //
         // Only a SETTLED answer is taken. Callers here read the returned
-        // text as a decision -- the line family selects a variant on
-        // `=== "true"` -- so handing one an unsettled comparison would read
-        // as a silent `false` where the refusal below names the expression.
+        // text as a decision -- the line family selects a variant on its
+        // knownCondition -- so handing one an unsettled comparison would
+        // read as a silent `false` where the refusal below names it.
         if (ts.isBinaryExpression(unwrapped)) {
             const condition = this.compileCondition(unwrapped);
-            if (condition === "true" || condition === "false") {
+            if (knownCondition(condition) !== undefined) {
                 return condition;
             }
         }
@@ -641,7 +703,7 @@ export class StaticEvaluator {
 
     public compileNumber(
         expression: ts.Expression,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         traceSourceNode(expression);
         let nonNullAssertion: boolean | undefined;
@@ -697,13 +759,8 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         };
-        let assertion: ts.Expression = expression;
-        while (ts.isParenthesizedExpression(assertion))
-            assertion = assertion.expression;
-        if (
-            ts.isAsExpression(assertion) ||
-            ts.isTypeAssertionExpression(assertion)
-        ) {
+        const assertion = wrappersUnder(expression).find(isTypeAssertion);
+        if (assertion) {
             // JavaScript erases the assertion: a value that may be absent
             // reads as ToNumber reads it, NaN for undefined and 0 for null.
             if (
@@ -778,9 +835,7 @@ export class StaticEvaluator {
         }
         if (
             numericGlobal &&
-            (this.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.NumberLike) !==
-                0
+            valueKindOf(this.checker.getTypeAtLocation(unwrapped)) === "number"
         )
             return this.castNumber(this.resolveValue(unwrapped), precision);
         if (ts.isPostfixUnaryExpression(unwrapped)) {
@@ -805,10 +860,9 @@ export class StaticEvaluator {
                 );
             }
             if (unwrapped.operator === ts.SyntaxKind.TildeToken) {
-                const compiled = `bbl::js::bitwise_not(${this.compileNumber(
-                    unwrapped.operand,
-                    "double",
-                )})`;
+                const compiled = jsBitwiseNotCall(
+                    this.compileNumber(unwrapped.operand, "double"),
+                );
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
@@ -913,21 +967,37 @@ export class StaticEvaluator {
                     `'||' in a numeric position must select a number, received ${value.kind}.`,
                 );
             }
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
-                // Numeric `a || b`: JavaScript falls through on 0 and NaN,
-                // and evaluates the right operand only then.
-                const left = this.compileNumber(unwrapped.left, "double");
+            const logical = unwrapped.operatorToken.kind;
+            if (
+                logical === ts.SyntaxKind.BarBarToken ||
+                logical === ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                // Numeric `a || b` and `a && b`: 0 and NaN are falsy, and
+                // JavaScript evaluates the right operand only when the left
+                // is falsy (`||`) or truthy (`&&`). An element past the end
+                // is undefined, so the left reads guarded.
+                const or = logical === ts.SyntaxKind.BarBarToken;
+                const leftNode = this.unwrap(unwrapped.left);
+                const tested = ts.isElementAccessExpression(leftNode)
+                    ? this.testedElement(leftNode)
+                    : undefined;
+                const left =
+                    tested && isNumericValue(tested)
+                        ? this.castNumber(tested, "double")
+                        : this.compileNumber(unwrapped.left, "double");
                 const right = this.arms.compileArm(() =>
                     this.compileNumber(unwrapped.right, "double"),
                 );
                 const compiled =
-                    right.lines.length === 0
+                    or &&
+                    right.lines.length === 0 &&
+                    !expressionHasEffects(unwrapped.right)
                         ? `bbl::js::or_number(${left}, ${right.value})`
                         : this.arms.armExpression(
                               unwrapped.right,
                               [
                                   `const double left = ${left};`,
-                                  "if (bbl::js::number_truthy(left)) return left;",
+                                  `if (${or ? "" : "!"}bbl::js::number_truthy(left)) return left;`,
                                   ...right.lines,
                               ],
                               right.value,
@@ -939,9 +1009,8 @@ export class StaticEvaluator {
                     : compiled;
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.PercentToken) {
-                // JavaScript % keeps the dividend sign, exactly like fmod.
                 const [left, right] = this.numericOperands(unwrapped);
-                const compiled = `std::fmod(${left}, ${right})`;
+                const compiled = pinnedRemainderCall(left, right);
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
@@ -995,13 +1064,21 @@ export class StaticEvaluator {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant = mathConstantAccess(unwrapped, this.libraryGlobal);
+        const constant = mathConstantAccess(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         if (constant) {
             return precision === "float"
                 ? (constant.floatCpp ?? cppFloatLiteral(constant.value))
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -1068,6 +1145,11 @@ export class StaticEvaluator {
         }
         if (ts.isConditionalExpression(unwrapped)) {
             return this.castNumber(this.resolveValue(unwrapped), precision);
+        }
+        // A function's number receiver (`f.call(2)`, `f.bind(2)`).
+        if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
+            const value = this.resolveValue(unwrapped);
+            if (isNumericValue(value)) return this.castNumber(value, precision);
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
@@ -1186,7 +1268,11 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         return (
             ts.isNumericLiteral(unwrapped) ||
             ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||
@@ -1215,7 +1301,8 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            mathConstantAccess(unwrapped, this.libraryGlobal) !== undefined ||
+            mathConstantAccess(unwrapped, this.libraryGlobal, this.member) !==
+                undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }
@@ -1321,10 +1408,7 @@ export class StaticEvaluator {
     }
 
     private foldStringLiteral(unwrapped: ts.Expression): string {
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isIdentifier(unwrapped)) {
@@ -1355,10 +1439,24 @@ export class StaticEvaluator {
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
         ) {
-            return (
-                this.compileStringLiteral(unwrapped.left) +
-                this.compileStringLiteral(unwrapped.right)
+            // A string `+` joins its operands' texts; a numeric `+` -- one
+            // operand of it, or the whole -- is its sum's text.
+            const operands = stringPlusOperands(
+                this.checker,
+                unwrapped,
+                (expression) => this.unwrap(expression),
             );
+            return operands
+                ? operands
+                      .map((operand) =>
+                          valueKindOf(
+                              this.checker.getTypeAtLocation(operand),
+                          ) === "string"
+                              ? this.compileStringLiteral(operand)
+                              : this.staticText(operand),
+                      )
+                      .join("")
+                : this.staticText(unwrapped);
         }
         if (ts.isTemplateExpression(unwrapped)) {
             let result = unwrapped.head.text;
@@ -1369,15 +1467,15 @@ export class StaticEvaluator {
             }
             return result;
         }
+        const join = ts.isCallExpression(unwrapped)
+            ? this.member(unwrapped.expression)
+            : undefined;
         if (
             ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.expression.name.text === "join" &&
+            join?.name === "join" &&
             unwrapped.arguments.length <= 1
         ) {
-            const owner = this.resolveStaticExpression(
-                unwrapped.expression.expression,
-            );
+            const owner = this.resolveStaticExpression(join.expression);
             if (ts.isArrayLiteralExpression(owner)) {
                 const separator = unwrapped.arguments[0]
                     ? this.compileStringLiteral(unwrapped.arguments[0])
@@ -1472,7 +1570,7 @@ export class StaticEvaluator {
                     return undefined;
                 }
                 const resolvedField = this.resolveProperty(left);
-                if (resolvedField?.optionalFoundCpp === "false") {
+                if (knownCondition(resolvedField?.optionalFoundCpp) === false) {
                     return expression.right;
                 }
                 if (
@@ -1543,7 +1641,7 @@ export class StaticEvaluator {
         if (
             !ts.isVariableDeclaration(declaration) ||
             !ts.isVariableDeclarationList(declaration.parent) ||
-            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+            variableKind(declaration.parent) !== "const"
         ) {
             return undefined;
         }
@@ -1574,7 +1672,8 @@ export class StaticEvaluator {
     }
 
     /**
-     * Whether anything in the binding's scope writes through it.
+     * Whether anything writes through the binding or a name holding its
+     * object or a member of it (`aliasedMutationScan`).
      *
      * `const` freezes the BINDING, not the object: `const p = {n: 1}`
      * followed by `p.n = 2`, `p.n++`, `delete p.n` or `reset(p)` all leave
@@ -1596,48 +1695,57 @@ export class StaticEvaluator {
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
     public isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
-        const symbol = ts.isIdentifier(declaration.name)
-            ? declaredSymbol(this.checker, declaration.name)
-            : undefined;
-        if (symbol === undefined) {
-            return true;
-        }
-        let scope: ts.Node = declaration;
-        while (scope.parent && !ts.isFunctionLike(scope)) {
-            scope = scope.parent;
-        }
-        const namesBinding = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) &&
-            declaredSymbol(this.checker, node) === symbol;
-        const throughBinding = (node: ts.Node): boolean =>
-            (ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)) &&
-            namesBinding(node.expression);
-
-        const written = someAnalysisNode(scope, (node) => {
-            const parent = node.parent;
-            if (throughBinding(node)) {
-                const assigned =
-                    isAssignmentExpression(parent) && parent.left === node;
-                const stepped = isUpdateExpression(parent);
-                const deleted = ts.isDeleteExpression(parent);
-                const called =
-                    ts.isCallExpression(parent) && parent.expression === node;
-                if (assigned || stepped || deleted || called) {
-                    return true;
-                }
-            }
-            if (
-                ts.isCallExpression(node) &&
-                node.arguments.some(namesBinding) &&
-                this.callReachesABody(node)
-            ) {
-                return true;
-            }
-            return false;
-        });
-
+        let written = writtenLiteralBags.get(declaration);
+        if (written === undefined)
+            writtenLiteralBags.set(
+                declaration,
+                (written = this.scanWritesThrough(declaration)),
+            );
         return written;
+    }
+
+    private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
+        if (!ts.isIdentifier(declaration.name)) return true;
+        // A name holding the object or a member of it: the binding, an
+        // alias, a destructured or iterated leaf, a literal holding one.
+        const holds = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean =>
+            heldReferenceBases(this.checker, expression).some(scan.namesAlias);
+        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
+        const throughAlias = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
+            const target = unwrapExpression(expression);
+            return (
+                isMemberAccess(target) &&
+                referenceBases(target).some(scan.namesAlias)
+            );
+        };
+        return aliasedMutationScan(
+            declaration.name,
+            (identifier) => declaredSymbol(this.checker, identifier),
+            {
+                aliasingInitializer: holds,
+                aliasingMember: (source, _leaf, scan) => holds(source, scan),
+                aliasingIteration: (source, _leaf, scan) => holds(source, scan),
+                mutates: (node, scan) =>
+                    writeSites(node).some(({ target }) =>
+                        throughAlias(target, scan),
+                    ) ||
+                    (ts.isCallExpression(node) &&
+                        (throughAlias(node.expression, scan) ||
+                            (node.arguments.some(
+                                (argument) =>
+                                    scan.namesAlias(
+                                        unwrapExpression(argument),
+                                    ) || throughAlias(argument, scan),
+                            ) &&
+                                this.callReachesABody(node)))),
+            },
+        );
     }
 
     /**
@@ -1647,8 +1755,7 @@ export class StaticEvaluator {
      * body for the inliner to reach; anything declared in source does.
      */
     private callReachesABody(call: ts.CallExpression): boolean {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(this.checker, call);
         return (
             declaration !== undefined &&
             !declaration.getSourceFile().isDeclarationFile
@@ -1749,12 +1856,9 @@ export class StaticEvaluator {
         if (
             !declaration?.body ||
             declaration.parameters.length !== call.arguments.length ||
-            declaration.asteriskToken ||
+            functionKind(declaration) !== "plain" ||
             declaration.getSourceFile().isDeclarationFile ||
-            !isModuleScopeFunction(declaration) ||
-            ts
-                .getModifiers(declaration)
-                ?.some(({ kind }) => kind === ts.SyntaxKind.AsyncKeyword)
+            !isModuleScopeFunction(declaration)
         ) {
             return undefined;
         }
@@ -1934,7 +2038,7 @@ export class StaticEvaluator {
     private dataTupleComponents(
         expression: ts.Expression,
         value: Value | undefined,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
         length = 3,
     ): string[] | undefined {
         if (!value || !isDataTuple(value, length)) {
@@ -1952,7 +2056,7 @@ export class StaticEvaluator {
     private numberValue(
         value: Value,
         node: ts.Node,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         if (value.kind !== "number") {
             this.fail(
@@ -2008,6 +2112,7 @@ export class StaticEvaluator {
 
     private staticFoldContext(): StaticFoldContext {
         return {
+            checker: this.checker,
             libraryGlobal: this.libraryGlobal,
             resolveStaticExpression: (value: ts.Expression) =>
                 this.resolveStaticExpression(value),
@@ -2040,10 +2145,7 @@ export class StaticEvaluator {
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return "true";
         if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return "false";
         if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             return unwrapped.text;
         }
         if (ts.isNumericLiteral(unwrapped)) {
@@ -2060,47 +2162,22 @@ export class StaticEvaluator {
         }
         const numeric = this.staticNumberThroughRecords(unwrapped);
         if (numeric !== undefined) return String(numeric);
-        if (
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ["toFixed", "toPrecision", "toExponential"].includes(
-                unwrapped.expression.name.text,
-            ) &&
-            unwrapped.arguments.length <= 1
-        ) {
-            const number = this.staticNumberValue(
-                unwrapped.expression.expression,
-            );
+        const formatter =
+            ts.isCallExpression(unwrapped) && unwrapped.arguments.length <= 1
+                ? this.member(unwrapped.expression)
+                : undefined;
+        const format = formatter && numberFormatOf(formatter.name);
+        if (format && formatter && ts.isCallExpression(unwrapped)) {
+            const number = this.staticNumberValue(formatter.expression);
             const digits = unwrapped.arguments[0]
                 ? this.staticNumberValue(unwrapped.arguments[0])
                 : undefined;
-            const method = unwrapped.expression.name.text;
-            if (number !== undefined && unwrapped.arguments.length === 0) {
-                return method === "toFixed"
-                    ? number.toFixed()
-                    : method === "toPrecision"
-                      ? number.toPrecision()
-                      : number.toExponential();
-            }
-            if (
-                number !== undefined &&
-                digits !== undefined &&
-                Number.isInteger(digits)
-            ) {
-                if (method === "toFixed" && digits >= 0 && digits <= 100) {
-                    return number.toFixed(digits);
-                }
-                if (method === "toPrecision" && digits >= 1 && digits <= 100) {
-                    return number.toPrecision(digits);
-                }
-                if (
-                    method === "toExponential" &&
-                    digits >= 0 &&
-                    digits <= 100
-                ) {
-                    return number.toExponential(digits);
-                }
-            }
+            const text =
+                number === undefined ||
+                (unwrapped.arguments.length > 0 && digits === undefined)
+                    ? undefined
+                    : foldNumberFormat(format, number, digits);
+            if (text !== undefined) return text;
         }
         if (
             ts.isIdentifier(unwrapped) ||
@@ -2148,9 +2225,7 @@ export class StaticEvaluator {
         }
         if (
             ts.isCallExpression(unwrapped) &&
-            (this.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.checker.getTypeAtLocation(unwrapped)) === "string"
         ) {
             try {
                 return this.generationText(unwrapped);
@@ -2209,9 +2284,7 @@ export class StaticEvaluator {
         const number = this.staticNumberThroughRecords(resolved);
         if (number !== undefined) return String(number);
         if (
-            (this.checker.getTypeAtLocation(resolved).flags &
-                ts.TypeFlags.StringLike) !==
-            0
+            valueKindOf(this.checker.getTypeAtLocation(resolved)) === "string"
         ) {
             return this.compileStringLiteral(resolved);
         }
@@ -2227,7 +2300,7 @@ export class StaticEvaluator {
     private requiredObjectNumber(
         object: ts.ObjectLiteralExpression,
         name: string,
-        precision: "float" | "double" = "float",
+        precision: "float" | "double",
     ): string {
         const value = objectProperty(this.objectProperties(object), name);
         if (!value) {
@@ -2239,11 +2312,14 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
-    public unwrap(expression: ts.Expression): ts.Expression {
+    public unwrap(
+        expression: ts.Expression,
+        options: { readonly await?: boolean } = {},
+    ): ts.Expression {
         let current = expression;
         for (;;) {
             current = unwrapExpression(current, {
-                await: true,
+                await: options.await ?? true,
                 onAwait: this.onAwait,
             });
             // The pin's `wgsl` tag is the identity over its template.
@@ -2256,10 +2332,7 @@ export class StaticEvaluator {
             // it adds is the checker's `Readonly<T>`, which every reader
             // already honours, so the call is the identity over its
             // argument exactly as the tag above is over its template.
-            const frozen = objectIdentityCallArgument(
-                current,
-                this.libraryGlobal,
-            );
+            const frozen = objectIdentityCallArgument(this.checker, current);
             if (frozen) {
                 current = frozen;
                 continue;

@@ -74,6 +74,7 @@ import {
     floatingOriginStructs,
     havokFloatingOriginModule,
 } from "./physics-floating-origin-lowerer.js";
+import { bindingElementKey, sameSource } from "../compiler/syntax.js";
 
 /**
  * The five geometry lanes both pinned bags declare, as a struct body.
@@ -330,8 +331,8 @@ export class PhysicsLowerer {
         const firstBound = declaration.body.statements.findIndex(
             (statement) =>
                 ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations.some(
-                    (local) => local.name.getText(file) === "min",
+                statement.declarationList.declarations.some((local) =>
+                    sameSource(local.name, "min"),
                 ),
         );
         const prelude = lowerPinnedBody(
@@ -362,11 +363,11 @@ export class PhysicsLowerer {
                             "Aggregate scale source",
                         );
                         return local.name.elements.map((element) => {
-                            const axis = element.propertyName!.getText(file);
-                            const field = PRELUDE_SCALARS.find(
-                                ([name]) => name === element.name.getText(file),
+                            const axis = bindingElementKey(element);
+                            const field = PRELUDE_SCALARS.find(([name]) =>
+                                sameSource(element.name, name),
                             )?.[1];
-                            if (!field)
+                            if (!field || axis === undefined)
                                 return this.context.contractError(
                                     element,
                                     "Unknown aggregate scale lane.",
@@ -374,7 +375,7 @@ export class PhysicsLowerer {
                             return `${indent}shape.${field} = static_cast<double>(scaling.${axis});`;
                         });
                     }
-                    if (local.name.getText(file) === "scaleYMagnitude")
+                    if (sameSource(local.name, "scaleYMagnitude"))
                         return [
                             `${indent}shape.scale_y_magnitude = ${numeric.expression(local.initializer!)};`,
                         ];
@@ -1908,6 +1909,7 @@ struct PhysicsTriggerInfo {
     Vec3d hit_point{};
     Vec3d hit_normal{};
     double hit_distance = 0.0;
+    double triangle_index = -1.0;
     js::Nullable<PhysicsBody> body{};
     double body_index = -1.0;
 };
@@ -3025,6 +3027,7 @@ ${
         Vec3d{hit.point[0], hit.point[1], hit.point[2]},
         Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
         distance,
+        static_cast<double>(hit.triangle_index),
         std::move(body),
         body_index,
     };

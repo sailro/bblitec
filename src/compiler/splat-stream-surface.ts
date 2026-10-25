@@ -13,7 +13,8 @@ import { cppIdentifier, snakeCase } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { isPinnedType } from "./data-types.js";
-import { resolvedSymbol } from "./symbols.js";
+import { resolvedSymbol, libraryName } from "./symbols.js";
+import { valueKindOf, holdsOnly, unionMembers } from "./type-facts.js";
 
 interface SplatStreamSurfaceContext extends Pick<
     LoweringServices,
@@ -68,8 +69,7 @@ function publicMember(
     };
 }
 
-const isNumber = (type: ts.Type): boolean =>
-    (type.flags & ts.TypeFlags.NumberLike) !== 0;
+const isNumber = (type: ts.Type): boolean => valueKindOf(type) === "number";
 
 /** A stats value's data type: a number, a phase string, or a nullable number or error. */
 function statsValue(
@@ -80,8 +80,8 @@ function statsValue(
 ): Value {
     if (isNumber(type))
         return context.dataLowerer.leafValue(read, { kind: "number" });
-    const members = type.isUnion() ? type.types : [type];
-    if (members.every((member) => member.flags & ts.TypeFlags.StringLike))
+    const members = unionMembers(type);
+    if (holdsOnly(type, ["string"]))
         return context.dataLowerer.leafValue(read, { kind: "string" });
     const present = members.filter(
         (member) => !(member.flags & ts.TypeFlags.Null),
@@ -93,7 +93,7 @@ function statsValue(
                 inner: { kind: "number" },
             });
         // The record stores `Error | null` as an empty js::Error for null.
-        if (present[0]!.getSymbol()?.name === "Error")
+        if (libraryName(present[0]) === "Error")
             return context.dataLowerer.leafValue(
                 `bbl::splat_stream::stats_error(${read})`,
                 { kind: "optional", inner: { kind: "error" } },
@@ -144,7 +144,7 @@ export function readSplatStreamProperty(
         };
     if (isNumber(member.type))
         return { kind: "number", cpp: `(${owner.cpp})->${member.field}` };
-    const promised = member.type.getSymbol()?.name === "Promise";
+    const promised = libraryName(member.type) === "Promise";
     if (promised)
         return {
             kind: "promise",

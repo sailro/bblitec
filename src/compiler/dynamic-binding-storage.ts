@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import type { BindingScopes } from "./binding-scopes.js";
 import {
@@ -5,9 +7,15 @@ import {
     type RecordObservationContext,
 } from "./record-observations.js";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
-import { nullability } from "./type-facts.js";
+import {
+    nullability,
+    arrayElementType,
+    classInstanceDeclaration,
+    unionMembers,
+} from "./type-facts.js";
+import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
 import {
     NativeRecordStorageRequired,
@@ -25,12 +33,35 @@ export type DynamicBindingStorage =
     | { nativeType: ts.Type; node: ts.Expression };
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
-export class DynamicBindingStorageRequired extends Error {
+export class DynamicBindingStorageRequired extends StorageDemand {
     constructor(
         readonly declaration: ts.VariableDeclaration,
         readonly storage?: DynamicBindingStorage,
     ) {
         super("A lexical record binding requires dynamic object storage.");
+    }
+
+    get request(): StorageRequest {
+        return {
+            kind: "dynamic",
+            declaration: this.declaration,
+            storage: this.storage,
+        };
+    }
+}
+
+/**
+ * A parameter whose record a store keeps as one object: the compile
+ * replays with the parameter holding its argument as a native object
+ * rather than as separate field storage.
+ */
+export class ParameterObjectStorageRequired extends StorageDemand {
+    constructor(readonly declaration: ts.ParameterDeclaration) {
+        super("A record parameter requires its own native object.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "parameter-object", declaration: this.declaration };
     }
 }
 
@@ -48,6 +79,42 @@ export interface DemandedStorageContext {
         | "nullableType"
         | "withDynamicJsonTypes"
     >;
+}
+
+/**
+ * The class instance type a binding holds when a class instance initializes
+ * it and nothing rebinds it, whatever record type annotates it: JavaScript
+ * keeps one object, and its reads and calls go through the class.
+ */
+export function heldClassInstanceType(
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+): ts.Type | undefined {
+    const initializer = declaration.initializer;
+    if (!declaration.type || !initializer || !ts.isIdentifier(declaration.name))
+        return undefined;
+    const type = checker.getTypeAtLocation(initializer);
+    const instance = classInstanceDeclaration(type);
+    // Only record types: an open one (`unknown`, `object`) is a dynamic view.
+    const records = unionMembers(
+        checker.getTypeFromTypeNode(declaration.type),
+    ).filter(
+        (member) =>
+            (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0,
+    );
+    const symbol = declaredSymbol(checker, declaration.name);
+    return instance &&
+        symbol &&
+        records.length > 0 &&
+        records.every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+                    0 && classInstanceDeclaration(member) !== instance,
+        ) &&
+        !isRebound(checker, [declaration.getSourceFile()], symbol)
+        ? type
+        : undefined;
 }
 
 /**
@@ -71,10 +138,7 @@ export function demandedStorageType(
     }
     if (storage === "array")
         return dataTypes.withDynamicJsonTypes(true, () => {
-            const indexed = checker.getIndexTypeOfType(
-                source,
-                ts.IndexKind.Number,
-            );
+            const indexed = arrayElementType(checker, source);
             const element =
                 indexed &&
                 (dataTypes.fromStoredTsType(indexed, declaration) ??
@@ -118,12 +182,13 @@ export function demandedStorageType(
     // carrier; it does not turn that object or its aliases into the native
     // owner. Later values must still pass the retained carrier's sink.
     const actualSource =
-        storage === "source" &&
+        heldClassInstanceType(checker, declaration) ??
+        (storage === "source" &&
         initializer &&
         ts.isObjectLiteralExpression(initializer) &&
         dataTypes.hasNativeRecordView(source)
             ? checker.getTypeAtLocation(initializer)
-            : undefined;
+            : undefined);
     return (
         dataTypes.fromStoredTsType(
             actualSource ?? source,
@@ -173,6 +238,53 @@ export interface OneObjectContext
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+}
+
+/** What keeping a stored record's object reads of the compiler. */
+export interface HeldRecordContext {
+    readonly bindings: Pick<BindingScopes, "recordHolder">;
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+    readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
+    fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * A compile-time record stored where it stays one object: the binding that
+ * holds it, itself or nested in its fields -- found by its members, whatever
+ * node the store reads it from (a spread operand, a member, the name) --
+ * takes native storage, a variable's or a parameter's object, so the store
+ * keeps that object rather than a copy. `expression` is
+ * the store's source expression, where there is one: an unbound container
+ * name there stands in for a nested record it holds.
+ */
+export function requireHeldRecordStorage(
+    context: HeldRecordContext,
+    value: Value,
+    node: ts.Node,
+    expression: ts.Expression | undefined = ts.isExpression(node)
+        ? node
+        : undefined,
+): void {
+    if (value.kind !== "record") return;
+    const declaration = context.bindings.recordHolder(value, expression);
+    if (!declaration) return;
+    // A parameter's record held as field storage has no object yet.
+    if (ts.isParameter(declaration)) {
+        if (!context.parameterObjects.has(declaration))
+            throw new ParameterObjectStorageRequired(declaration);
+        return;
+    }
+    // A binding already given its own storage is still a record only when
+    // lowering its initializer into that storage refused.
+    if (context.dynamicBindings.get(declaration) !== undefined)
+        context.fail(
+            node,
+            `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,
+        );
+    throw new DynamicBindingStorageRequired(declaration, "source");
 }
 
 /** Replay a mutable compile-time array using its declared or represented source storage. */

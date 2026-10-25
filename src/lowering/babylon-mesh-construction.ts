@@ -1,9 +1,11 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedNumericLowerer,
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+    type PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { babylonNodeTransformScope } from "./babylon-node-transforms.js";
 import { babylonSubmeshMaterialScope } from "./babylon-submesh-material.js";
@@ -98,6 +100,10 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
             type: "opaque",
             absentCpp: `!babylon_json_truthy(md, ${JSON.stringify(field)})`,
         });
+    bindings.set(
+        "data.meshes",
+        collectionBinding("mesh_sources", memberElement(bindings)),
+    );
     const upload = context.callExpression(loop, "uploadMeshToGPU");
     const cpuAttributes = new Map([
         ["_cpuPositions", upload.arguments[1]!],
@@ -133,25 +139,6 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                     },
                 ],
             ]),
-            forOf(iterated, element) {
-                const range =
-                    iterated === "data.meshes"
-                        ? "mesh_sources"
-                        : iterated === "subMeshes"
-                          ? "subMeshes"
-                          : undefined;
-                return range
-                    ? {
-                          range,
-                          bindings: new Map([
-                              [element, { cpp: element, type: "opaque" }],
-                              ...[...bindings].filter(([port]) =>
-                                  port.startsWith(`${element}.`),
-                              ),
-                          ]),
-                      }
-                    : undefined;
-            },
             expression(node, lowerer) {
                 if (
                     ts.isBinaryExpression(node) &&
@@ -356,7 +343,15 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                     }
                     if (name === "subMeshes") {
                         lowerer.bindPorts(
-                            [[name, { cpp: name, type: "opaque" }]],
+                            [
+                                [
+                                    name,
+                                    collectionBinding(
+                                        name,
+                                        memberElement(bindings),
+                                    ),
+                                ],
+                            ],
                             statement,
                         );
                         return [

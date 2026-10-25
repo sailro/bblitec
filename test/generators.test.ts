@@ -194,3 +194,24 @@ test("unsupported generator protocol and retained iterator cycles refuse explici
     ] as const)
         assert.throws(() => compileSource(source), message);
 });
+
+test("an entry whose only suspension is a top-level for await runs as a coroutine", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const result = compileSource(`
+        async function* values(): AsyncGenerator<number, void, unknown> { yield 1; yield 2; }
+        let sum = 0;
+        for await (const value of values()) sum += value;
+        if (sum !== 3) throw new Error("sum");
+        globalThis.close();
+        export {};
+    `);
+    runGeneratedProgram(tools, "top-level-for-await", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});

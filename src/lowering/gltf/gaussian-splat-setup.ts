@@ -1,7 +1,12 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "../pinned-numeric-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { sameSource } from "../../compiler/syntax.js";
 
 /** Source scene setup over prepared row buffers and the synchronous native upload. */
 export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
@@ -19,24 +24,15 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
             "Expected the Gaussian-splat scene setup body.",
         );
     const body = lowerPinnedBody(file, setup.body.statements, {
-        bindings: new Map([
+        bindings: new Map<string, PinnedBinding>([
             ["mesh", { cpp: "mesh", type: "opaque" }],
             [
                 "Math.PI",
                 { cpp: String(Math.PI), type: "scalar", staticNumber: Math.PI },
             ],
+            ["prepared", collectionBinding("prepared")],
         ]),
         calls: new Map(),
-        forOf(iterated, element) {
-            return iterated === "prepared" && element === "item"
-                ? {
-                      range: "prepared",
-                      bindings: new Map([
-                          ["item", { cpp: "item", type: "opaque" }],
-                      ]),
-                  }
-                : undefined;
-        },
         returnValue: (value, lowerer) =>
             value ? lowerer.expression(value) : "",
         statement(statement, lowerer, indent) {
@@ -91,7 +87,7 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
             if (
                 !ts.isArrowFunction(callback) ||
                 callback.parameters.length !== 1 ||
-                callback.parameters[0]!.name.getText(file) !== "mesh" ||
+                !sameSource(callback.parameters[0]!.name, "mesh") ||
                 !ts.isBlock(callback.body)
             )
                 context.contractError(

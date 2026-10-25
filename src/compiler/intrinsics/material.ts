@@ -18,7 +18,7 @@ import {
 } from "./storage-buffer.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, unwrapExpression } from "../syntax.js";
 import { float32Literal, floatLiteral } from "../../cpp-literals.js";
 import {
     compileLocalCubemapIntrinsic,
@@ -56,6 +56,8 @@ import type {
 import { recordAt } from "../record-access.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
+import { knownCondition } from "../values/model.js";
+import { namedMember } from "../symbols.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -134,9 +136,10 @@ function compileMeshNamePredicate(
     binding: string,
     expression: ts.Expression,
 ): SceneMeshNamePredicate {
-    const node = context.resolveStaticExpression(expression);
-    if (ts.isParenthesizedExpression(node)) {
-        return compileMeshNamePredicate(context, binding, node.expression);
+    const resolved = context.resolveStaticExpression(expression);
+    const node = unwrapExpression(resolved);
+    if (node !== resolved) {
+        return compileMeshNamePredicate(context, binding, node);
     }
     if (
         ts.isPrefixUnaryExpression(node) &&
@@ -201,12 +204,14 @@ function compileMeshNamePredicate(
             }
         }
     }
+    const startsWith = ts.isCallExpression(node)
+        ? namedMember(context.checker, node.expression)
+        : undefined;
     if (
         ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === "startsWith" &&
+        startsWith?.name === "startsWith" &&
         node.arguments.length === 1 &&
-        readsName(node.expression.expression)
+        readsName(startsWith.expression)
     ) {
         const value = literal(argumentAt(node, 0));
         if (value !== undefined) return { kind: "startsWith", value };
@@ -637,7 +642,7 @@ function compileCreateSolidTexture2D(
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const channels = call.arguments
         .slice(1)
-        .map((argument) => context.compileNumber(argument));
+        .map((argument) => context.compileNumber(argument, "float"));
     if (channels.length === 3) {
         channels.push("1.0f");
     }
@@ -1091,9 +1096,11 @@ function compileCreateShaderMaterial(
         const condition = context.conditions.compileCondition(
             selection.condition,
         );
-        if (condition === "true" || condition === "false")
+        if (knownCondition(condition) !== undefined)
             return compile(
-                condition === "true" ? selection.whenTrue : selection.whenFalse,
+                knownCondition(condition) === true
+                    ? selection.whenTrue
+                    : selection.whenFalse,
             );
         const arm = (options: ts.ObjectLiteralExpression): Value => {
             let value!: Value;
@@ -1196,7 +1203,7 @@ function compileUpdateStorageBuffer(
     );
     const engineCpp = context.requireEngine(buffer, call);
     const byteOffset = call.arguments[3]
-        ? context.compileNumber(argumentAt(call, 3))
+        ? context.compileNumber(argumentAt(call, 3), "float")
         : "0.0f";
     context.reachFeature("material:shader-storage", call);
     return {
@@ -2293,7 +2300,7 @@ function compileRebuildMaterial(
             const property = context.objectProperty(options, name);
             if (!property) continue;
             const value = context.compileBoolean(property);
-            if (value !== "true" && value !== "false") {
+            if (knownCondition(value) === undefined) {
                 context.fail(property, `${name} must be a static boolean.`);
             }
         }

@@ -1,4 +1,4 @@
-import { cppIdentifiers } from "./cpp-identifiers.js";
+import { cppIdentifiers, renameCppIdentifiers } from "./cpp-identifiers.js";
 import {
     nativeDeclarationFacts,
     type NativeDeclaration,
@@ -132,7 +132,13 @@ export function outlineEmittedBody(options: {
     readonly body: readonly NativeEmission[];
     readonly parameters: readonly NativeLocal[];
     readonly bindingType: (name: string) => string | undefined;
-    readonly allocateName: () => string;
+    /**
+     * Names a helper from its shape: its signature types and its lines with
+     * parameters and the locals it declares renamed by position.
+     */
+    readonly allocateName: (shape: string) => string;
+    /** Whether a name is local to the body (declared in it), which a shape renames. */
+    readonly isLocal?: (name: string) => boolean;
     readonly source: string;
     readonly callNamespace?: string;
 }): {
@@ -179,12 +185,31 @@ export function outlineEmittedBody(options: {
         };
         const createSegment = (
             names: readonly string[],
+            declared: readonly string[],
             lines: readonly string[],
             source: string,
             type = "void",
             types: ReadonlyMap<string, string | undefined> = frame,
         ): string => {
-            const name = options.allocateName();
+            const canonical = new Map<string, string>();
+            names.forEach((local, index) => canonical.set(local, `$p${index}`));
+            for (const local of declared)
+                if (!canonical.has(local))
+                    canonical.set(local, `$d${canonical.size}`);
+            const shape = [
+                type,
+                ...names.map((local) => types.get(local)!),
+                renameCppIdentifiers(lines.join("\n"), (token, qualified) => {
+                    if (qualified) return undefined;
+                    let renamed = canonical.get(token);
+                    if (renamed === undefined && options.isLocal?.(token)) {
+                        renamed = `$l${canonical.size}`;
+                        canonical.set(token, renamed);
+                    }
+                    return renamed;
+                }),
+            ].join("\n");
+            const name = options.allocateName(shape);
             const parameters = names
                 .map((name) => `[[maybe_unused]] ${types.get(name)!}& ${name}`)
                 .join(", ");
@@ -206,6 +231,16 @@ export function outlineEmittedBody(options: {
                 const free = [...new Set(run.flatMap((row) => row.free))];
                 const call = createSegment(
                     free,
+                    events.flatMap(({ statement }) =>
+                        statement.kind === "declaration"
+                            ? [statement.name]
+                            : statement.kind === "open" ||
+                                statement.kind === "branch"
+                              ? (statement.locals ?? []).map(
+                                    (local) => local.name,
+                                )
+                              : [],
+                    ),
                     events.map(renderNativeEmission),
                     events[0]!.source ?? options.source,
                 );
@@ -239,6 +274,7 @@ export function outlineEmittedBody(options: {
                 } else {
                     const call = createSegment(
                         names,
+                        [],
                         [renderNativeEmission(statement)],
                         statement.source ?? options.source,
                         "void",
@@ -281,6 +317,7 @@ export function outlineEmittedBody(options: {
                 if (free) {
                     const initializer = createSegment(
                         free,
+                        [],
                         [`    return ${declaration.initializer};`],
                         statement.source ?? options.source,
                         type!.replace(/^const /, ""),

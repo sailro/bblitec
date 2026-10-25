@@ -11,6 +11,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { isAssignmentOperator, sameSource } from "../compiler/syntax.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -316,8 +317,7 @@ export class CameraMutationLowerer {
                     ts.isCallExpression(node) &&
                     this.context.propertyPath(node.expression)?.join(".") ===
                         "Object.defineProperty" &&
-                    node.arguments[1]?.getText(freeFile) ===
-                        stringLiteral(field),
+                    sameSource(node.arguments[1], stringLiteral(field)),
             )[0];
             const descriptor = define?.arguments[2];
             if (!descriptor || !ts.isObjectLiteralExpression(descriptor))
@@ -439,12 +439,7 @@ ${bulkBody}
                                     [value],
                                 );
                             }
-                            if (
-                                node.operatorToken.kind >=
-                                    ts.SyntaxKind.FirstAssignment &&
-                                node.operatorToken.kind <=
-                                    ts.SyntaxKind.LastAssignment
-                            ) {
+                            if (isAssignmentOperator(node.operatorToken.kind)) {
                                 this.context.contractError(
                                     node,
                                     "Camera control setter gained an unsupported compound assignment.",

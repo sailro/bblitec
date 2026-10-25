@@ -11,6 +11,7 @@
  * body reaches it, so every library composes the whole table.
  */
 import ts from "typescript";
+import { jsToUint32Call } from "./pinned-operators.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { isUtf8Label } from "../compiler/text-codecs.js";
 import {
@@ -589,7 +590,7 @@ const channelCopy = (direction: "FromChannel" | "ToChannel"): MemberSpec =>
     spelled(
         fn([{ kind: "typed", element: "f32" }, number, number], none),
         (owner, [samples, channel, offset]) =>
-            `${AUDIO}::audio_buffer_copy(${owner}, ${samples}, bbl::js::to_uint32(${channel}), ${offset === undefined ? "0u" : `bbl::js::to_uint32(${offset})`}, ${AUDIO}::AudioBufferCopy::${direction})`,
+            `${AUDIO}::audio_buffer_copy(${owner}, ${samples}, ${jsToUint32Call(channel!)}, ${offset === undefined ? "0u" : jsToUint32Call(offset)}, ${AUDIO}::AudioBufferCopy::${direction})`,
     );
 
 /** A member table's scalar shape. */

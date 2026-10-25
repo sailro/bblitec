@@ -36,13 +36,46 @@ int main() {
         }
         return found;
     };
+    // The Window announces gamepads from SDL's device events, which the
+    // frame loop's event drain dispatches to its document listeners.
+    std::string announced;
+    const auto log = [&](const char* sign) {
+        return [&announced, sign](const bbl::PlatformGamepadEvent& event) {
+            announced += sign + std::to_string(event.gamepad.index);
+        };
+    };
+    bbl::on_dom_gamepad(engine, bbl::DomEventTarget::window(), "gamepadconnected", 1, log("+"));
+    bbl::on_dom_gamepad(engine, bbl::DomEventTarget::window(), "gamepaddisconnected", 2, log("-"));
+    const auto drain = [&](bool test_pass = false) {
+        bool running = true;
+        bbl::pal::poll_platform_events(engine, running, test_pass);
+    };
     const auto id = SDL_AttachVirtualJoystick(&desc);
     assert(id);
     auto* joystick = SDL_OpenJoystick(id);
     assert(joystick);
+    drain();
+    // A connected pad stays hidden until a gamepad user gesture.
+    const auto hidden = bbl::platform_gamepads(engine);
+    assert(hidden.size() == 1 && !hidden[0] && announced.empty());
+    // A deterministic test pass drops live gamepad input, gestures included.
+    assert(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+    drain(true);
+    assert(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+    drain(true);
+    assert(!bbl::platform_gamepads(engine)[0] && announced.empty());
+    // A stick tilted under half its travel is no gesture; past half it is.
+    assert(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, 12000));
+    drain();
+    assert(announced.empty());
+    assert(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, 20000));
+    drain();
+    assert(announced == "+0");
+    assert(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, 0));
+    drain();
     const auto pads = bbl::platform_gamepads(engine);
     const bbl::GamepadHandle handle = find_pad(pads, id);
-    assert(handle.instance_id == id);
+    assert(handle.instance_id == id && handle.index == 0);
     const auto buttons = bbl::gamepad_buttons(engine, handle);
     assert(bbl::gamepad_buttons(engine, handle) == buttons);
     for (const auto mapping :
@@ -70,8 +103,11 @@ int main() {
     assert(axes[2] == -1.0);
     assert(bbl::gamepad_axes(engine, handle) == changed_axes);
 
+    // After the gesture, connections announce as they happen.
     const auto second_id = SDL_AttachVirtualJoystick(&desc);
     assert(second_id);
+    drain();
+    assert(announced == "+0+1");
     const auto two_pads = bbl::platform_gamepads(engine);
     const bbl::GamepadHandle first_with_second = find_pad(two_pads, id);
     const bbl::GamepadHandle second = find_pad(two_pads, second_id);
@@ -80,6 +116,8 @@ int main() {
 
     SDL_CloseJoystick(joystick);
     assert(SDL_DetachVirtualJoystick(id));
+    drain();
+    assert(announced == "+0+1-0");
     const auto after_disconnect = bbl::platform_gamepads(engine);
     assert(after_disconnect.size() > second.index);
     assert(!after_disconnect[handle.index]);
@@ -89,6 +127,7 @@ int main() {
 
     const auto replacement_id = SDL_AttachVirtualJoystick(&desc);
     assert(replacement_id);
+    drain();
     const auto replaced_hole = bbl::platform_gamepads(engine);
     const bbl::GamepadHandle replacement = find_pad(replaced_hole, replacement_id);
     const bbl::GamepadHandle stable_second = find_pad(replaced_hole, second_id);
@@ -96,6 +135,9 @@ int main() {
     assert(stable_second.index == second.index);
     assert(SDL_DetachVirtualJoystick(second_id));
     assert(SDL_DetachVirtualJoystick(replacement_id));
+    drain();
+    assert(announced == "+0+1-0+0-1-0");
+    assert(bbl::platform_gamepads(engine).empty());
 
     int downs = 0, ups = 0, ui = 0, camera = 0;
     engine.key_down_callbacks.add(1, [&](const bbl::PlatformKeyboardEvent& event) {

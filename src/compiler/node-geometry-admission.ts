@@ -2,7 +2,8 @@ import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
-import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
+import { writeSites, accessKey } from "./syntax.js";
+import { namedMember } from "./symbols.js";
 
 interface Context extends Pick<
     LoweringServices,
@@ -76,30 +77,16 @@ export function checkNodeGeometryMutation(
         );
     };
     const node = context.unwrap(expression);
-    const assignment = isAssignmentExpression(node);
-    const increment = isUpdateExpression(node);
-    const target = assignment
-        ? node.left
-        : increment
-          ? node.operand
-          : ts.isDeleteExpression(node)
-            ? node.expression
-            : undefined;
-    if (target) {
-        const left = context.unwrap(target);
+    for (const { target: left } of writeSites(node)) {
         if (
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
         ) {
-            const name = ts.isPropertyAccessExpression(left)
-                ? left.name.text
-                : ts.isStringLiteralLike(left.argumentExpression)
-                  ? left.argumentExpression.text
-                  : undefined;
+            const name = accessKey(left);
+            // A dynamic key may name a transform.
             if (
                 importedVector(left.expression) ||
-                (name !== undefined &&
-                    transforms.has(name) &&
+                ((name === undefined || transforms.has(name)) &&
                     unprovenMesh(left.expression))
             ) {
                 context.admissions.noteNodeGeometryMutation(node);
@@ -117,17 +104,18 @@ export function checkNodeGeometryMutation(
         unprovenMesh(node.arguments[0])
     )
         context.admissions.noteNodeGeometryMutation(node);
-    if (!ts.isPropertyAccessExpression(callee)) return;
-    if (callee.name.text === "set" && importedVector(callee.expression))
+    const member = namedMember(context.checker, callee);
+    if (!member) return;
+    if (member.name === "set" && importedVector(member.expression))
         context.admissions.noteNodeGeometryMutation(node);
     if (
-        context.libraryGlobal(callee.expression) === "Object" &&
+        context.libraryGlobal(member.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
             "defineProperties",
             "setPrototypeOf",
-        ].includes(callee.name.text) &&
+        ].includes(member.name) &&
         node.arguments[0] &&
         (unprovenMesh(node.arguments[0]) || importedVector(node.arguments[0]))
     )

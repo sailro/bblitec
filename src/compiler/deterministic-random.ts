@@ -45,6 +45,12 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 // random functions retain their JavaScript identity and captured state.
 import ts from "typescript";
 import { transpileForBrowser } from "../typescript-transpile.js";
+import {
+    isTypeOnlyWrapper,
+    bindingNameIdentifiers,
+    isValueReference,
+    isAsyncFunction,
+} from "./syntax.js";
 
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
@@ -74,13 +80,7 @@ function refuseTypeSyntax(
     arrow: ts.ArrowFunction,
 ): void {
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isAsExpression(node) ||
-            ts.isSatisfiesExpression(node) ||
-            ts.isTypeAssertionExpression(node) ||
-            ts.isNonNullExpression(node) ||
-            ts.isTypeNode(node)
-        ) {
+        if (isTypeOnlyWrapper(node) || ts.isTypeNode(node)) {
             context.fail(
                 node,
                 "A deterministic Math.random arrow travels to generation as " +
@@ -122,11 +122,7 @@ function seedFactoryDeclaration(
         );
     }
     const factory = declaration;
-    if (
-        factory.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
-    ) {
+    if (isAsyncFunction(factory)) {
         context.fail(
             callee,
             "A deterministic Math.random factory is not async; the driver " +
@@ -173,16 +169,13 @@ function capturedDeclarations(
     }> = [];
     const declared = new EmissionSet<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-            const symbol = declaredSymbol(checker, node.name);
-            if (symbol) declared.add(symbol);
-        }
         // A factory's parameters are bound by the call, and its own name
         // binds the declaration itself; neither is closed over.
-        if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
-            const symbol = declaredSymbol(checker, node.name);
-            if (symbol) declared.add(symbol);
-        }
+        if (ts.isVariableDeclaration(node) || ts.isParameter(node))
+            for (const name of bindingNameIdentifiers(node.name)) {
+                const symbol = declaredSymbol(checker, name);
+                if (symbol) declared.add(symbol);
+            }
         if (ts.isFunctionDeclaration(node) && node.name) {
             const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
@@ -192,11 +185,8 @@ function capturedDeclarations(
     collectDeclared(arrow);
 
     const visit = (node: ts.Node): void => {
-        if (ts.isPropertyAccessExpression(node)) {
-            visit(node.expression);
-            return;
-        }
         if (ts.isIdentifier(node)) {
+            if (!isValueReference(node)) return;
             if (context.libraryGlobal(node) === "Math") return;
             // The arrow's own lexical locals: an imported name is not a
             // declaration beside it the driver can re-declare.

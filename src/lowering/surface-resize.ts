@@ -2,6 +2,8 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
+import { realmHostAccessorCpp } from "../compiler/host-globals.js";
 
 /**
  * The pin's `resizeSurface` and `setSurfaceSize` over a Window realm canvas:
@@ -50,14 +52,14 @@ export function lowerSurfaceResize(
             "canvas.clientHeight",
             { cpp: "engine.canvas_client_height", type: "scalar" },
         ],
-        // The realm global's own value: a Window host provides it, a
-        // realm without one (a worker global) reads undefined.
+        // The realm global's own value, read once (a defined getter runs per
+        // read): a Window host provides it, a worker global reads undefined,
+        // which the pin's only test (`|| 1`) treats as it treats NaN.
         [
             "globalThis.devicePixelRatio",
             {
-                cpp: "static_cast<double>(*bbl::pal::realm_device_pixel_ratio())",
+                cpp: `${realmHostAccessorCpp("devicePixelRatio")}.value_or(std::numeric_limits<double>::quiet_NaN())`,
                 type: "scalar",
-                nullish: "!bbl::pal::realm_device_pixel_ratio().has_value()",
             },
         ],
         [
@@ -93,8 +95,7 @@ export function lowerSurfaceResize(
     ]);
     const canvasRead = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations[0]!.name.getText(file) ===
-            "canvas";
+        sameSource(statement.declarationList.declarations[0]!.name, "canvas");
     const resizeBody = lowerPinnedBody(
         file,
         resizeStatements.filter((statement) => !canvasRead(statement)),

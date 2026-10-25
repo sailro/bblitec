@@ -6,6 +6,8 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { notJson, staticJsonValue } from "./option-helpers.js";
 import { resolvedSymbol } from "./symbols.js";
+import { valueKindOf } from "./type-facts.js";
+import { knownCondition } from "./values/model.js";
 
 interface StaticDocumentContext extends Pick<
     LoweringServices,
@@ -29,11 +31,7 @@ export function staticDocumentText(
     context: StaticDocumentContext,
     expression: ts.Expression,
 ): string | undefined {
-    if (
-        (context.checker.getTypeAtLocation(expression).flags &
-            ts.TypeFlags.StringLike) ===
-        0
-    )
+    if (valueKindOf(context.checker.getTypeAtLocation(expression)) !== "string")
         return undefined;
     const active = new Set<ts.Node>();
     const decline = Symbol("dynamic document");
@@ -84,7 +82,7 @@ export function staticDocumentText(
                             (child) =>
                                 ts.isIdentifier(child) &&
                                 symbolAt(child) === symbol,
-                            { types: "skip", memberNames: "skip" },
+                            { types: "skip", names: "references" },
                         );
                     const statements = (statement: ts.Statement): boolean => {
                         if (
@@ -103,10 +101,10 @@ export function staticDocumentText(
                                     ),
                                 () => false,
                             );
-                            if (condition !== "true" && condition !== "false")
+                            if (knownCondition(condition) === undefined)
                                 return false;
                             const branch =
-                                condition === "true"
+                                knownCondition(condition) === true
                                     ? statement.thenStatement
                                     : statement.elseStatement;
                             return !branch || statements(branch);

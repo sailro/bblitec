@@ -10,7 +10,7 @@ import {
     stringLiteralText,
     unwrapExpression,
 } from "./syntax.js";
-import { babylonPackages } from "./symbols.js";
+import { babylonPackages, namedMember } from "./symbols.js";
 import { sharedTextRecordModel } from "../lowering/text-records.js";
 
 export type TextTransform =
@@ -313,16 +313,19 @@ export function compileTextMutation(
     expression: ts.Expression,
 ): Value | undefined {
     const node = context.unwrap(expression);
+    const callee = ts.isCallExpression(node)
+        ? namedMember(context.checker, node.expression)
+        : undefined;
     if (
         ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        context.libraryGlobal(node.expression.expression) === "Object" &&
+        callee &&
+        context.libraryGlobal(callee.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
             "defineProperties",
             "setPrototypeOf",
-        ].includes(node.expression.name.text) &&
+        ].includes(callee.name) &&
         node.arguments[0] &&
         ownerValue(context, node.arguments[0])
     )
@@ -330,17 +333,13 @@ export function compileTextMutation(
             node,
             "Reflective text property mutation is not represented.",
         );
-    if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === "set"
-    ) {
-        const vector = ownerValue(context, node.expression.expression);
+    if (ts.isCallExpression(node) && callee?.name === "set") {
+        const vector = ownerValue(context, callee.expression);
         if (!vector || vector.kind !== "text-vector") return undefined;
         const owner = context.bindings.pinValueToTemporary(
             vector,
             "text_owner",
-            node.expression.expression,
+            callee.expression,
         );
         const count = axes(owner.textTransform!).length;
         if (node.arguments.length !== count)

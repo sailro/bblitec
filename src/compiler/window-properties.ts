@@ -8,10 +8,11 @@ import {
     declaredInDomLibrary,
     resolvedSymbol,
 } from "./symbols.js";
-import { nullability } from "./type-facts.js";
+import { nullability, inheritsFrom } from "./type-facts.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { isAbsentWindowMember } from "./browser-erasure.js";
 import { boundRecordValue } from "./bound-record-value.js";
+import { isTypeAssertion, wrappersAround } from "./syntax.js";
 
 type Context = Pick<
     LoweringServices,
@@ -63,17 +64,18 @@ export class WindowProperties {
     >();
     constructor(private readonly context: Context) {}
 
-    private targetType(type: ts.Type, seen = new Set<ts.Type>()): boolean {
-        if (seen.has(type)) return false;
-        seen.add(type);
-        if (type.isUnion() || type.isIntersection())
-            return type.types.some((member) => this.targetType(member, seen));
-        if (declaredInDomLibrary(type.symbol))
-            return ["Window", "Document", "EventTarget"].includes(
-                type.symbol.name,
-            );
-        return (type.getBaseTypes() ?? []).some((base) =>
-            this.targetType(base, seen),
+    private targetType(type: ts.Type): boolean {
+        return inheritsFrom(
+            type,
+            (candidate) =>
+                declaredInDomLibrary(candidate.symbol) &&
+                ["Window", "Document", "EventTarget"].includes(
+                    candidate.symbol.name,
+                ),
+            {
+                unions: "some",
+                through: (candidate) => !declaredInDomLibrary(candidate.symbol),
+            },
         );
     }
 
@@ -175,16 +177,9 @@ export class WindowProperties {
     private declaredField(target: ts.PropertyAccessExpression) {
         let sourceType = this.context.checker.getTypeAtLocation(target);
         if ((sourceType.flags & ts.TypeFlags.Unknown) !== 0) {
-            let view: ts.Node = target;
-            while (ts.isParenthesizedExpression(view.parent))
-                view = view.parent;
-            if (
-                ts.isAsExpression(view.parent) ||
-                ts.isTypeAssertionExpression(view.parent)
-            )
-                sourceType = this.context.checker.getTypeAtLocation(
-                    view.parent,
-                );
+            const assertion = wrappersAround(target).find(isTypeAssertion);
+            if (assertion)
+                sourceType = this.context.checker.getTypeAtLocation(assertion);
         }
         if (!nullability(sourceType).undefined) return undefined;
         const type = this.context.dataTypes.fromStoredTsType(

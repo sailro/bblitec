@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { declarationOwners, sourceFacts, sourcePaths } from "./source-facts.js";
+import {
+    declarationOwners,
+    sourceFacts,
+    sourcePaths,
+    sourceText,
+} from "./source-facts.js";
 
 test("resolves renamed imports through semantic symbols", () => {
     const body = (create: string, scene: string): string =>
@@ -246,4 +251,1781 @@ test("split lowerer barrels contain exports and families own their declarations"
             ["src/lowering/" + path + ".ts"],
             name,
         );
+});
+
+test("operand selection is read through syntax.ts", () => {
+    // `?:`, `??`, `||`, `&&` and `,` yield one of their operands; syntax.ts
+    // says which, and with which values (operandYield, yieldedOperands).
+    // A pending file still inspects the operators itself and leaves this
+    // list when it migrates; no other file may start.
+    const inspects = (path: string): boolean => {
+        const facts = sourceFacts(path);
+        return (
+            [
+                "QuestionQuestionToken",
+                "BarBarToken",
+                "AmpersandAmpersandToken",
+                "whenTrue",
+                "whenFalse",
+            ].some((member) => facts.members.has(member)) ||
+            facts.calls.has("ts.isConditionalExpression")
+        );
+    };
+    const pending = [
+        "src/compiler.ts",
+        "src/compiler/assignments.ts",
+        "src/compiler/browser-erasure.ts",
+        "src/compiler/canvas-instrumentation.ts",
+        "src/compiler/classes.ts",
+        "src/compiler/compressed-json.ts",
+        "src/compiler/conditions.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/data-methods.ts",
+        "src/compiler/data-sinks/structures.ts",
+        "src/compiler/declarations.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/handle-collections.ts",
+        "src/compiler/intrinsics/engine.ts",
+        "src/compiler/intrinsics/material.ts",
+        "src/compiler/intrinsics/particle.ts",
+        "src/compiler/intrinsics/physics.ts",
+        "src/compiler/intrinsics/sprite.ts",
+        "src/compiler/material-plugin.ts",
+        "src/compiler/option-helpers.ts",
+        "src/compiler/properties.ts",
+        "src/compiler/resource-loops.ts",
+        "src/compiler/runtime-case-split.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/static-evaluator.ts",
+        "src/compiler/string-domain.ts",
+        "src/compiler/ui-projection.ts",
+        "src/lowering/animation-lowerer.ts",
+        "src/lowering/animation-property-playback.ts",
+        "src/lowering/babylon-camera.ts",
+        "src/lowering/babylon-lowerer.ts",
+        "src/lowering/babylon-mesh-construction.ts",
+        "src/lowering/babylon-node-transforms.ts",
+        "src/lowering/babylon-scene-data.ts",
+        "src/lowering/babylon-submesh-indices.ts",
+        "src/lowering/babylon-submesh-material.ts",
+        "src/lowering/babylon-textures.ts",
+        "src/lowering/camera-lowerer.ts",
+        "src/lowering/character-kernel-lowerer.ts",
+        "src/lowering/compressed-texture-lowerer.ts",
+        "src/lowering/compute-binding-decl-lowerer.ts",
+        "src/lowering/compute-buffer-binding-lowerer.ts",
+        "src/lowering/compute-dispatch-descriptor.ts",
+        "src/lowering/compute-shader-lowerer.ts",
+        "src/lowering/compute-task-execution-lowerer.ts",
+        "src/lowering/compute-task-recording.ts",
+        "src/lowering/compute-texture-descriptor.ts",
+        "src/lowering/compute-texture-lowerer.ts",
+        "src/lowering/compute-uniform-arena-lowerer.ts",
+        "src/lowering/configurable-camera-controls.ts",
+        "src/lowering/context.ts",
+        "src/lowering/deformed-vertex.ts",
+        "src/lowering/environment-lowerer.ts",
+        "src/lowering/factory/material-factories.ts",
+        "src/lowering/geometry-output-lowerer.ts",
+        "src/lowering/gizmo-lowerer.ts",
+        "src/lowering/gltf/accessor-shape.ts",
+        "src/lowering/gltf/animation-group-factory.ts",
+        "src/lowering/gltf/animation-mask.ts",
+        "src/lowering/gltf/animation-node-rest.ts",
+        "src/lowering/gltf/animation-playback.ts",
+        "src/lowering/gltf/animation-pose.ts",
+        "src/lowering/gltf/cpp-expression.ts",
+        "src/lowering/gltf/extension-images.ts",
+        "src/lowering/gltf/flow-graph-lifecycle.ts",
+        "src/lowering/gltf/hierarchy.ts",
+        "src/lowering/gltf/loader.ts",
+        "src/lowering/gltf/material-assembly.ts",
+        "src/lowering/gltf/material-object-lowerer.ts",
+        "src/lowering/gltf/material-textures.ts",
+        "src/lowering/gltf/parser-json.ts",
+        "src/lowering/gltf/shared.ts",
+        "src/lowering/gltf/texture-cache.ts",
+        "src/lowering/gltf/vat-playback.ts",
+        "src/lowering/gltf/weighted-animation-runtime.ts",
+        "src/lowering/gltf/weighted-animation-targets.ts",
+        "src/lowering/gpu-retirement-lowerer.ts",
+        "src/lowering/gpu-task-timing-lowerer.ts",
+        "src/lowering/line-lowerer.ts",
+        "src/lowering/linear-depth-lowerer.ts",
+        "src/lowering/mesh-geometry-access.ts",
+        "src/lowering/mesh-geometry-resize.ts",
+        "src/lowering/mesh-geometry-updates.ts",
+        "src/lowering/navigation-wrappers.ts",
+        "src/lowering/particle-sprite-sync.ts",
+        "src/lowering/pbr-scene-hooks.ts",
+        "src/lowering/physics-constraint-lowerer.ts",
+        "src/lowering/physics-container-lowerer.ts",
+        "src/lowering/picking-lowerer.ts",
+        "src/lowering/pinned-csm.ts",
+        "src/lowering/pinned-depth-state.ts",
+        "src/lowering/pinned-material-defaults.ts",
+        "src/lowering/pinned-numeric-expression.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-operators.ts",
+        "src/lowering/pinned-partial-evaluator.ts",
+        "src/lowering/pinned-record-literal.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/pinned-surface.ts",
+        "src/lowering/pinned-ubo-writer-lowerer.ts",
+        "src/lowering/procedural-sky-loader.ts",
+        "src/lowering/procedural-sky-update.ts",
+        "src/lowering/render-bucket.ts",
+        "src/lowering/render-target-lowerer.ts",
+        "src/lowering/renderer-lowerer.ts",
+        "src/lowering/shader-uniforms.ts",
+        "src/lowering/shadow-lowerer.ts",
+        "src/lowering/storage-buffer-lowerer.ts",
+        "src/lowering/taa-post-process-lowerer.ts",
+        "src/pinned-address-modes.ts",
+        "src/pinned-mesh-defaults.ts",
+        "src/pinned-standard-variants.ts",
+        "src/shader-builtins-utility.ts",
+    ];
+    const inspecting = sourcePaths.filter(inspects);
+    assert.deepEqual(
+        inspecting.filter(
+            (path) =>
+                path !== "src/compiler/syntax.ts" && !pending.includes(path),
+        ),
+        [],
+    );
+    assert.deepEqual(
+        pending.filter((path) => !inspecting.includes(path)),
+        [],
+    );
+});
+
+test("wrapper transparency is decided in syntax.ts", () => {
+    // Which of `()`, `as`, `<T>`, `!` and `satisfies` keep a value, its
+    // type, or neither is syntax.ts's (unwrapExpression, outermostWrapper,
+    // isTypeAssertion, isTypePreservingWrapper, wrappersUnder/Around). The
+    // files below test a wrapper kind for its own meaning (`!` asserts
+    // presence, `satisfies` keeps the operand's type) or lower that node;
+    // no other file may.
+    const wrapperTests = [
+        "ts.isParenthesizedExpression",
+        "ts.isAsExpression",
+        "ts.isSatisfiesExpression",
+        "ts.isTypeAssertionExpression",
+        "ts.isNonNullExpression",
+    ];
+    const ownMeaning = [
+        "src/compiler/data-methods.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/home-object-methods.ts",
+        "src/compiler/native-inert-calls.ts",
+        "src/lowering/compute-shader-gpu-lowerer.ts",
+        "src/lowering/gltf/weighted-animation-targets.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/renderer-lowerer.ts",
+    ];
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/syntax.ts" &&
+                    wrapperTests.some((call) =>
+                        sourceFacts(path).calls.has(call),
+                    ),
+            )
+            .sort(),
+        ownMeaning,
+    );
+});
+
+test("name roles are read through syntax.ts", () => {
+    // Whether a name declares (declarationNamed), names a member
+    // (namesMember) or reads a binding (isValueReference, referenceSite)
+    // is syntax.ts's. The pending files test a shorthand `{ x }`'s value
+    // slot by hand; each leaves the list when object literal slots get
+    // their owner, and no other file may start.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).nameRoleTests > 0)
+            .sort(),
+        [
+            "src/compiler/absence-tag-storage.ts",
+            "src/compiler/numeric-slot-storage.ts",
+            "src/compiler/symbols.ts",
+            "src/compiler/syntax.ts",
+        ],
+    );
+});
+
+test("property keys are read through one owner per layer", () => {
+    // The key a name spells is propertyKey / accessKey / literalKey
+    // (syntax.ts), staticPropertyKey / staticAccessKey with the checker
+    // (symbols.ts), and Compiler.propertyName at generation. The pinned
+    // files test an expression's shape, not a name's key.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).keyRuleTests > 0).sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/syntax.ts",
+            "src/lowering/pinned-ubo-writer-lowerer.ts",
+            "src/unused-exports.ts",
+        ],
+    );
+});
+
+test("destructuring slots and specifier names are read through syntax.ts", () => {
+    // What a pattern element reads is patternSlots / bindingElementKey, an
+    // array literal element's index arrayLiteralSlots, and a specifier's
+    // source-side name specifierSourceName.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).propertyNameRules > 0),
+        ["src/compiler/syntax.ts"],
+    );
+});
+
+test("object literal members are read through syntax.ts", () => {
+    // Which member decides a key is lastWriter / objectProperty /
+    // plainDataMembers (a `__proto__:` setter is no own key). The pending
+    // files match pinned upstream shapes by hand; they leave the list with
+    // the text-matching unit (L5), and no other file may start.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).memberScans > 0).sort(),
+        [
+            "src/gltf-mesh-plan.ts",
+            "src/lowering/animation-property-playback.ts",
+            "src/lowering/babylon-textures.ts",
+            "src/lowering/camera-mutation-lowerer.ts",
+            "src/lowering/flow-graph-lowerer.ts",
+            "src/lowering/gltf/animation-playback.ts",
+            "src/lowering/gltf/animation-pose.ts",
+            "src/lowering/light-lowerer.ts",
+            "src/lowering/light-parameters.ts",
+            "src/lowering/mesh-recovery.ts",
+            "src/lowering/node-particle-live-lowerer.ts",
+            "src/lowering/physics-event-lowerer.ts",
+            "src/lowering/physics-thin-advanced-lowerer.ts",
+            "src/lowering/physics-thin-instance-lowerer.ts",
+            "src/lowering/pinned-blend-table.ts",
+            "src/lowering/pinned-euler-proxy.ts",
+            "src/lowering/post-process-lowerer.ts",
+            "src/lowering/shadow-enabled.ts",
+            "src/lowering/storage-buffer-lowerer.ts",
+            "src/lowering/vat-lowerer.ts",
+            "src/pinned-standard-variants.ts",
+        ],
+    );
+});
+
+test("equality operators and nullish comparisons have one owner", () => {
+    // equalityOperator (syntax.ts) reads `===`/`!==`/`==`/`!=`;
+    // nullishLiteral / nullishComparison (symbols.ts) what a test compares
+    // against. The pending files lower equality to C++ or match pinned
+    // shapes; each leaves with the L4 equality or L5 text-matching unit.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return (
+                    members.has("ExclamationEqualsEqualsToken") ||
+                    members.has("ExclamationEqualsToken")
+                );
+            })
+            .sort(),
+        [
+            "src/compiler/comparisons.ts",
+            "src/compiler/compressed-json.ts",
+            "src/compiler/intrinsics/material.ts",
+            "src/compiler/particle-buffer.ts",
+            "src/compiler/syntax.ts",
+            "src/lowering/babylon-camera.ts",
+            "src/lowering/babylon-material.ts",
+            "src/lowering/babylon-mesh-construction.ts",
+            "src/lowering/babylon-scene-data.ts",
+            "src/lowering/babylon-textures.ts",
+            "src/lowering/character-kernel-lowerer.ts",
+            "src/lowering/compute-binding-decl-lowerer.ts",
+            "src/lowering/gltf/loader.ts",
+            "src/lowering/gltf/material-object-lowerer.ts",
+            "src/lowering/gltf/material-textures.ts",
+            "src/lowering/gltf/sampler-resolver.ts",
+            "src/lowering/gltf/texture-cache.ts",
+            "src/lowering/mesh-geometry-updates.ts",
+            "src/lowering/pinned-csm.ts",
+            "src/lowering/pinned-numeric-expression.ts",
+            "src/lowering/pinned-numeric-lowerer.ts",
+            "src/lowering/pinned-operators.ts",
+            "src/lowering/pinned-partial-evaluator.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+            "src/lowering/pinned-ubo-writer-lowerer.ts",
+        ],
+    );
+});
+
+test("function kinds and suspension points are read through syntax.ts", () => {
+    // functionKind / isAsyncFunction / isGeneratorFunction read `async` and
+    // `*`; isSuspensionPoint / containsSuspension what suspends an
+    // activation (`await`, `for await`, `yield`). The others rebuild or strip
+    // syntax: AST updates pass the tokens through, the browser transpile
+    // drops `async` and `await` by span, and compiler.ts lowers `yield*`.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return (
+                    members.has("AsyncKeyword") ||
+                    members.has("Async") ||
+                    members.has("asteriskToken") ||
+                    members.has("awaitModifier")
+                );
+            })
+            .sort(),
+        [
+            "src/compiler.ts",
+            "src/compiler/syntax.ts",
+            "src/gltf-animation-bindings.ts",
+            "src/gltf-ibl-plan.ts",
+            "src/gltf-mesh-plan.ts",
+            "src/lowering/babylon-material-maps.ts",
+            "src/lowering/pbr-material-groups.ts",
+            "src/typescript-transpile.ts",
+        ],
+    );
+});
+
+test("where a value goes is one forward classifier in syntax.ts", () => {
+    // valueConsumer names a value's consumer one step; valueUse climbs the
+    // selections and literals that yield it, valueDestination the results
+    // that can hold it. parameter-effects.ts and array-length-growth.ts read
+    // the consumer itself.
+    for (const name of ["valueConsumer", "valueUse"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("valueDestination"), [
+        "src/compiler/kept-values.ts",
+    ]);
+});
+
+test("a thrown or rejected value raises through one rule", () => {
+    // thrownException (error-values.ts): `throw` and Promise.reject carry
+    // an Error, a string or a dynamic value alike.
+    assert.deepEqual(declarationOwners("thrownException"), [
+        "src/compiler/error-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /ThrownString|thrown_exception\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/error-values.ts"],
+    );
+});
+
+test("a void result reads as undefined through one rule", () => {
+    // readsErasedVoid / undefinedFromVoid (undefined-values.ts): a void
+    // annotation alone does not make a result undefined. async.ts proves a
+    // reaction's completion and forwards the mark; compiler.ts checks a
+    // stored intrinsic callback's.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).calls.has("provenUndefinedValue"),
+            )
+            .sort(),
+        ["src/compiler/async.ts", "src/compiler/undefined-values.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("erasedVoidCompletion"),
+            )
+            .sort(),
+        [
+            "src/compiler.ts",
+            "src/compiler/async.ts",
+            "src/compiler/undefined-values.ts",
+        ],
+    );
+    // A call, property or element read takes its receiver through
+    // voidReceiver; an absent receiver's TypeError is absentReceiverRead's
+    // (data-methods.ts adds a primitive's missing method), and its message
+    // absentReceiverMessage's.
+    assert.deepEqual(declarationOwners("voidReceiver"), [
+        "src/compiler/undefined-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /public absentReceiverRead\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes("absent_receiver_read"))
+            .sort(),
+        ["src/compiler/data-methods.ts", "src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /properties of \$\{|method on a nullish receiver/.test(
+                sourceText(path),
+            ),
+        ),
+        ["src/compiler/properties.ts"],
+    );
+});
+
+test("a type's absent members are read through type-facts.ts", () => {
+    // undefinedOnly, isVoid, holdsNoPayload, nullability, presentMembers
+    // and isNullable read `void`.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).members.has("Void"))
+            .sort(),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
+test("a type's value kinds are read through type-facts.ts", () => {
+    // valueKindOf / valueKinds / holdsOnly classify a member once (a branded
+    // primitive is its primitive); data-types.ts maps each kind to storage,
+    // and symbols.ts sits below type-facts.ts.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const members = sourceFacts(path).members;
+                return [
+                    "NumberLike",
+                    "StringLike",
+                    "BooleanLike",
+                    "BigIntLike",
+                    "ESSymbolLike",
+                ].some((flag) => members.has(flag));
+            })
+            .sort(),
+        [
+            "src/compiler/data-types.ts",
+            "src/compiler/symbols.ts",
+            "src/compiler/type-facts.ts",
+        ],
+    );
+});
+
+test("array element types are read through type-facts.ts", () => {
+    // arrayElementType (present members' number index) and arrayShape
+    // (element, mutable, tuple); data-types.ts maps them to storage, and the
+    // other two read a dictionary's string index.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("getIndexTypeOfType"),
+            )
+            .sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/data-types.ts",
+            "src/compiler/record-components.ts",
+            "src/compiler/type-facts.ts",
+        ],
+    );
+});
+
+test("library types are identified through symbols.ts", () => {
+    // libraryName: a type's or symbol's name only when the default, DOM or
+    // WebGPU library declares it, so a scene's own `File` or `Promise` is
+    // never taken for the library one.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).symbolNameTests > 0),
+        [],
+    );
+});
+
+test("pinned imports and type-only imports have one reader", () => {
+    // CompilerSymbols.pinnedExport walks re-exports to the pinned package;
+    // moduleImportKind decides a type-only import; syntax.ts reads an
+    // export specifier's own type-only flag for a name's role.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).members.has("isTypeOnly"))
+            .sort(),
+        [
+            "src/compiler/symbols.ts",
+            "src/compiler/syntax.ts",
+            "src/module-imports.ts",
+        ],
+    );
+});
+
+test("enum constants are read through symbols.ts", () => {
+    // enumMemberConstant reads a member access, computedEnumMember finds the
+    // member that needs a run-time enum object; enum-objects.ts lays out an
+    // enum object's members and the pinned record model reads const enums.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).members.has("getConstantValue"))
+            .sort(),
+        [
+            "src/compiler/enum-objects.ts",
+            "src/compiler/symbols.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+        ],
+    );
+});
+
+test("jumps bind their targets through syntax.ts", () => {
+    // jumpBinding (the language's rule), jumpsTo and labeledBody: a case's
+    // final break ends it only when it jumps to that switch.
+    for (const name of ["jumpBinding", "jumpsTo", "labeledBody"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+});
+
+test("what an expression's evaluation runs is read through syntax.ts", () => {
+    // expressionHasEffects (calls, tags, constructions, suspensions, writes
+    // and deletes; a nested function is a value) and expressionMayRunCode
+    // (plus property reads); symbols.ts names the library number formatters
+    // that run nothing of the program's.
+    for (const name of [
+        "containsEvaluatedCall",
+        "expressionHasObservableEvaluation",
+        "PURE_NUMBER_FORMATTERS",
+    ])
+        assert.deepEqual(declarationOwners(name), [], name);
+});
+
+test("whether an import runs its module has one reader", () => {
+    // isRuntimeImport (module-imports.ts): TypeScript's elision, an import
+    // used only as a type does not run its module. The executed graph's
+    // package test and the bake's import test read the syntactic kind.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).calls.has("moduleImportKind"))
+            .sort(),
+        [
+            "src/compiler/browser-texture-function.ts",
+            "src/executed-module-graph.ts",
+            "src/module-imports.ts",
+        ],
+    );
+});
+
+test("write sites are read through syntax.ts", () => {
+    // What a node writes (assignment and pattern leaves, compound, logical,
+    // update, delete, loop targets) is writeSites/writeSiteOf. The
+    // assignment-operator range belongs to syntax.ts; statements.ts reads
+    // it only to class non-assignment operators.
+    assert.deepEqual(
+        sourcePaths.filter((path) => {
+            const facts = sourceFacts(path);
+            return (
+                facts.members.has("FirstAssignment") ||
+                facts.members.has("LastAssignment")
+            );
+        }),
+        ["src/compiler/statements.ts", "src/compiler/syntax.ts"],
+    );
+    // These still test `delete`, `++` or `--` themselves, to lower those
+    // forms or match a pinned shape; each leaves the list as its lowering
+    // moves to one owner, and no other file may start.
+    // counted-loops.ts reads a loop's step: the counted-loop parser's own form.
+    const pending = [
+        "src/compiler.ts",
+        "src/compiler/bigint-values.ts",
+        "src/compiler/counted-loops.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/node-input-surface.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/static-evaluator.ts",
+        "src/compiler/text-surface.ts",
+        "src/lowering/factory/material-factories.ts",
+        "src/lowering/gltf/material-object-lowerer.ts",
+        "src/lowering/gltf/orm-composition.ts",
+        "src/lowering/pbr-transmission-transaction.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/scene-lowerer.ts",
+    ];
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const facts = sourceFacts(path);
+                return (
+                    path !== "src/compiler/syntax.ts" &&
+                    (facts.calls.has("ts.isDeleteExpression") ||
+                        facts.members.has("PlusPlusToken") ||
+                        facts.members.has("MinusMinusToken"))
+                );
+            })
+            .sort(),
+        pending,
+    );
+});
+
+test("a call's target is read through symbols.ts", () => {
+    // calledDeclaration names the declaration a call resolves to and
+    // calledFunction the authored body it runs (a `const` callee's literal
+    // whatever annotates it); syntax.ts owns the function shapes.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) => sourceFacts(path).resolvedDeclarationReads > 0,
+        ),
+        ["src/compiler/symbols.ts"],
+    );
+    for (const name of ["calledDeclaration", "calledFunction"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/symbols.ts"],
+            name,
+        );
+    for (const name of [
+        "SupportedFunction",
+        "isSupportedFunction",
+        "isFunctionWithBody",
+        "functionOfDeclaration",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    // The rest read a resolved signature's parameters, return type or type
+    // arguments; no other file may start.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("getResolvedSignature"),
+            )
+            .sort(),
+        [
+            "src/api-usage.ts",
+            "src/compiler.ts",
+            "src/compiler/data-lowering.ts",
+            "src/compiler/deferred-capabilities.ts",
+            "src/compiler/intrinsics/physics.ts",
+            "src/compiler/intrinsics/splat-stream.ts",
+            "src/compiler/symbols.ts",
+            "src/compiler/type-arguments.ts",
+            "src/compiler/undefined-values.ts",
+            "src/compiler/user-functions.ts",
+            "src/lowering/pinned-record-lowerer.ts",
+        ],
+    );
+});
+
+test("a variable's keyword is read through syntax.ts", () => {
+    // variableKind reads `var` / `let` / `const` (`using` binds like const)
+    // off a declaration list, a declaration or a binding element of one;
+    // namespace-declarations.ts reads a const enum's modifier.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => {
+                const facts = sourceFacts(path);
+                return (
+                    facts.calls.has("ts.getCombinedNodeFlags") ||
+                    ["Const", "Let", "BlockScoped", "Using"].some((flag) =>
+                        facts.members.has(flag),
+                    )
+                );
+            })
+            .sort(),
+        ["src/compiler/namespace-declarations.ts", "src/compiler/syntax.ts"],
+    );
+    assert.deepEqual(declarationOwners("variableKind"), [
+        "src/compiler/syntax.ts",
+    ]);
+});
+
+test("a binding's rebinds are read through binding-rebinds.ts", () => {
+    // fileRebinds indexes every write that gives a name a new value, once
+    // per file; bindingRebinds and isRebound read it for a binding (its
+    // module, or every source for a global).
+    for (const name of ["fileRebinds", "bindingRebinds", "isRebound"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/binding-rebinds.ts"],
+            name,
+        );
+    for (const name of [
+        "collectReboundSymbols",
+        "reboundSymbolsByFile",
+        "writeBinding",
+    ])
+        assert.deepEqual(declarationOwners(name), [], name);
+    // The evaluation order asks the index too, rather than walking its own.
+    assert.ok(
+        sourceFacts("src/compiler/evaluation-order.ts").calls.has("isRebound"),
+    );
+});
+
+test("call signatures are read through type-facts.ts", () => {
+    // callSignatures names each site's rule for an absent member: "present"
+    // reads a value's signatures once present (an optional callback is
+    // callable), "exact" gives a nullable type none.
+    assert.deepEqual(
+        sourcePaths.filter((path) => {
+            const facts = sourceFacts(path);
+            return (
+                facts.members.has("getCallSignatures") ||
+                facts.members.has("getSignaturesOfType")
+            );
+        }),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
+test("class instances and inheritance are read through type-facts.ts", () => {
+    // classInstanceDeclaration: the class a type's instances belong to (not
+    // `typeof C`, which shares its symbol); inheritsFrom: a type or anything
+    // it extends, with each site's union rule.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).members.has("getBaseTypes"),
+        ),
+        ["src/compiler/type-facts.ts"],
+    );
+    for (const name of ["classInstanceDeclaration", "inheritsFrom"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/type-facts.ts"],
+            name,
+        );
+});
+
+test("a union's members are read through type-facts.ts", () => {
+    // unionMembers: a union's members, or the type itself.
+    assert.deepEqual(
+        sourcePaths.filter((path) => sourceFacts(path).unionMemberRules > 0),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
+test("what another owner keeps is read through kept-values.ts", () => {
+    // literalHeldValues (a literal's values at any depth), keptArguments
+    // (a construction, a storing call), callResultCanHoldReceiver (a
+    // method's result keeping its receiver) and callResultHoldsArguments (a
+    // library result keeping its arguments) serve every scan of what
+    // another owner keeps: an object written after its initializer, a
+    // callback that shares the bindings it captures.
+    for (const name of [
+        "literalHeldValues",
+        "keptArguments",
+        "constructionKeepsArguments",
+        "callResultCanHoldReceiver",
+        "callResultHoldsArguments",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/kept-values.ts"],
+            name,
+        );
+});
+
+test("a runtime index reads static storage through runtimeIndexedOwner", () => {
+    // Static tables, constant arrays and compile-time tuples materialize
+    // under a runtime index in one place, which the plain, guarded and
+    // materialized element reads share: a second chain is how `T[i] ?? d`
+    // lost its guard while `T[i]` read the table. The other two calls read
+    // a constant array whole (for-of, spread). Ratchet: never more.
+    const calls = sourcePaths.flatMap((path) =>
+        [
+            ...sourceText(path).matchAll(/this[.]materializeConstantArray[(]/g),
+        ].map(() => path),
+    );
+    assert.equal(calls.length, 3, calls.join());
+    assert.ok(
+        calls.every((path) => path === "src/compiler/data-lowering.ts"),
+        calls.join(),
+    );
+});
+
+test("a library call's effect on an argument is read from one table", () => {
+    // libraryArgumentEffect reads the language library's writers and readers
+    // from LIBRARY_CALL_FACTS and owns the Web IDL rule; every argument-effect
+    // question asks it.
+    assert.deepEqual(declarationOwners("libraryArgumentEffect"), [
+        "src/compiler/parameter-effects.ts",
+    ]);
+});
+
+test("the language library's call facts are one table", () => {
+    // LIBRARY_CALL_FACTS answers argument effects, what a result holds and
+    // which answers only convert their arguments; no other file lists them.
+    assert.deepEqual(declarationOwners("LIBRARY_CALL_FACTS"), [
+        "src/compiler/library-call-facts.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes('"Object.getOwnPropertyNames"'),
+        ),
+        ["src/compiler/library-call-facts.ts"],
+    );
+});
+
+test("library schedulers are named in schedulers.ts", () => {
+    // schedulerOf / cancelledSchedulerOf resolve a callee as a library global
+    // (a user method named setTimeout is none). The worker realm's own list
+    // names the functions it provides, schedulers among them.
+    const lists = sourcePaths.filter((path) => {
+        const text = sourceText(path);
+        return text.includes('"setTimeout"') && text.includes('"setInterval"');
+    });
+    assert.deepEqual(lists, [
+        "src/compiler/schedulers.ts",
+        "src/compiler/workers.ts",
+    ]);
+});
+
+test("a body's final return is read through loop-control.ts", () => {
+    // finalReturn answers "the return a block body ends with" for every
+    // inlining, outlining and shape question. The other last-statement reads
+    // ask about a switch clause, a try block or a pinned body's shape.
+    // Ratchet: never more.
+    assert.deepEqual(declarationOwners("finalReturn"), [
+        "src/compiler/loop-control.ts",
+    ]);
+    const reads = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [...sourceText(path).matchAll(/statements[.]at[(]-1[)]/g)].length,
+        0,
+    );
+    assert.ok(reads <= 28, `statements.at(-1) reads: ${reads}`);
+});
+
+test("a counted loop's shape is parsed by counted-loops.ts", () => {
+    // countedLoopShape reads `for (let i = start; i < bound; i++)` once; the
+    // static unroller, the native integer counter, the bounds-check facts and
+    // the length-growth proof each apply only their own policy to it.
+    assert.deepEqual(declarationOwners("countedLoopShape"), [
+        "src/compiler/counted-loops.ts",
+    ]);
+    for (const path of [
+        "src/compiler/resource-loops.ts",
+        "src/compiler/integer-loops.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/array-length-growth.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("countedLoopShape"), path);
+});
+
+test("a Promise static call is recognized by promises.ts", () => {
+    // promiseStatic names Promise.all / allSettled / any / race / reject /
+    // resolve with the callee resolved as the library global; the immediate
+    // and the worker realm each lower the kinds they support.
+    assert.deepEqual(declarationOwners("promiseStatic"), [
+        "src/compiler/promises.ts",
+    ]);
+    assert.ok(sourceFacts("src/compiler/async.ts").calls.has("promiseStatic"));
+});
+
+test("Math is folded, spelled and resolved through math-intrinsics.ts", () => {
+    // MATH_MEMBERS / MATH_CONSTANTS are the one table for scene code and
+    // pinned bodies, foldMathCall the one generation-time fold, and a
+    // pinned body resolves `Math` through pinnedLibraryGlobal.
+    for (const name of [
+        "MATH_MEMBERS",
+        "MATH_CONSTANTS",
+        "foldMathCall",
+        "mathExtremeCall",
+        "mathMemberIsImpure",
+        "spelledMathCall",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/math-intrinsics.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("pinnedLibraryGlobal"), [
+        "src/pinned-program.ts",
+    ]);
+    for (const path of [
+        "src/compiler/browser-erasure.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/option-helpers.ts",
+        "src/lowering/flow-graph-lowerer.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("foldMathCall"), path);
+    for (const path of [
+        "src/compiler/canvas-readback.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/native-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("mathMemberIsImpure"), path);
+    // A pinned body's `Math` is read through the table's recognizers, handed
+    // pinnedLibraryGlobal.
+    for (const [path, recognizer] of [
+        ["src/lowering/context.ts", "mathConstantAccess"],
+        ["src/lowering/gltf/cpp-expression.ts", "mathMemberAccess"],
+        ["src/lowering/pinned-numeric-lowerer.ts", "mathMemberAccess"],
+    ] as const)
+        assert.ok(sourceFacts(path).calls.has(recognizer), path);
+    for (const path of [
+        "src/lowering/gltf/cpp-expression.ts",
+        "src/lowering/navigation-build-plan.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("spelledMathCall"), path);
+});
+
+test("exponentiation, remainder and complement are spelled once", () => {
+    // exponentiationCall (std::pow only under a finite static exponent,
+    // else power_js), pinnedRemainderCall (fmod) and jsBitwiseNotCall are
+    // the only places that spell these operators as C++.
+    const spellers = (pattern: RegExp): string[] =>
+        sourcePaths.filter((path) => pattern.test(sourceText(path))).sort();
+    assert.deepEqual(spellers(/std::pow[(]/), [
+        "src/lowering/pinned-operators.ts",
+    ]);
+    // compoundAssignmentValue / compoundAssignmentStore are the one
+    // compound-assignment rule for scene code and pinned bodies.
+    for (const name of [
+        "ASSIGNMENT_OPERATORS",
+        "compoundAssignmentValue",
+        "compoundAssignmentStore",
+        "exponentiationCall",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/lowering/pinned-operators.ts"],
+            name,
+        );
+    for (const path of [
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+        "src/lowering/pinned-ubo-writer-lowerer.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("compoundAssignmentStore"), path);
+    assert.deepEqual(spellers(/std::fmod[(]/), [
+        "src/lowering/pinned-operators.ts",
+    ]);
+    assert.deepEqual(spellers(/bitwise_not[(]/), [
+        "src/lowering/pinned-operators.ts",
+    ]);
+});
+
+test("ToUint32 / ToInt32 of a JavaScript number are spelled once", () => {
+    // jsToUint32Call / jsToInt32Call wrap modulo 2^32 (NaN to 0); a bare
+    // static_cast of a double is undefined outside the target range. The
+    // sprite atlas helper's fixed text is the one other speller, and the
+    // raw uint32 casts (indices and counts) may only shrink.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => /bbl::js::to_u?int32[(]/.test(sourceText(path)))
+            .sort(),
+        [
+            "src/compiler/sprite-atlas-record.ts",
+            "src/lowering/pinned-operators.ts",
+        ],
+    );
+    const casts = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [...sourceText(path).matchAll(/static_cast<std::uint32_t>[(]/g)]
+                .length,
+        0,
+    );
+    assert.ok(casts <= 163, `static_cast<std::uint32_t> casts: ${casts}`);
+});
+
+test("string concatenation operands and number formats are read once", () => {
+    // stringPlusOperands keeps a numeric `+` one operand (`1 + 2 + "x"` is
+    // "3x") for the runtime concatenation, the static string fold and UI
+    // text; foldNumberFormat is the one toFixed / toPrecision /
+    // toExponential fold.
+    assert.deepEqual(declarationOwners("stringPlusOperands"), [
+        "src/compiler/type-facts.ts",
+    ]);
+    for (const path of [
+        "src/compiler/expressions.ts",
+        "src/compiler/static-evaluator.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("stringPlusOperands"), path);
+    assert.deepEqual(declarationOwners("foldNumberFormat"), [
+        "src/compiler/number-intrinsics.ts",
+    ]);
+    for (const path of [
+        "src/compiler/expressions.ts",
+        "src/compiler/static-evaluator.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("foldNumberFormat"), path);
+});
+
+test("an intrinsic's conditional arms are selected by one rule", () => {
+    // selectArms tests the condition by truthiness and runs each arm's
+    // preparation only on its own branch; intrinsics that spell `c ? a : b`
+    // over their own arm spellings use it, as table-options.ts does for a
+    // table option's arms.
+    for (const path of [
+        "src/compiler/assignments.ts",
+        "src/compiler/intrinsics/physics.ts",
+        "src/compiler/intrinsics/sprite.ts",
+        "src/compiler/table-options.ts",
+    ])
+        assert.ok(sourceFacts(path).members.has("selectArms"), path);
+});
+
+test("a number's C++ width is always the caller's choice", () => {
+    // compileNumber, compileVec3, vec3FromRecord, tupleComponents and the
+    // option readers take a required precision: a silent float default
+    // narrowed double sinks (W77).
+    const defaulted = (text: string): boolean =>
+        text.includes('precision?: "float" | "double"') ||
+        text.includes('precision: "float" | "double" = "float"');
+    assert.deepEqual(
+        sourcePaths.filter((path) => defaulted(sourceText(path))),
+        [],
+    );
+});
+
+test("an access's accessors are read through memberAccessors", () => {
+    // memberAccessors names the getters / setters an access runs through the
+    // checker's key on every non-nullish union member: a const key, a union
+    // and an optional receiver no longer escape one copy or another.
+    assert.deepEqual(declarationOwners("memberAccessors"), [
+        "src/compiler/symbols.ts",
+    ]);
+    for (const path of [
+        "src/compiler/canvas-instrumentation.ts",
+        "src/compiler/classes.ts",
+        "src/compiler/concrete-argument-identities.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/declarations.ts",
+        "src/compiler/engine-lifecycle.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/function-specializations.ts",
+        "src/compiler/module-container-writes.ts",
+        "src/compiler/native-inert-calls.ts",
+        "src/compiler/parameter-projection-effects.ts",
+        "src/compiler/resource-loops.ts",
+        "src/compiler/retained-descriptor.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("memberAccessors"), path);
+});
+
+test("a call's member is read through namedMember", () => {
+    // namedMember reads the member an access names: `o.m`, `o["m"]` and
+    // `o[K]` with `const K = "m"` are one member; a key only the run time
+    // knows, or one that runs code, names none. Every call dispatcher and
+    // every analysis that recognizes a call by its member reads it there (a
+    // library global's static through libraryStaticMember), so none matches
+    // the dotted spelling alone.
+    for (const name of [
+        "NamedMember",
+        "namedMember",
+        "MemberReader",
+        "LibraryStaticMember",
+        "libraryStaticMember",
+        "isLibraryStatic",
+        "arrayMemberName",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/symbols.ts"],
+            name,
+        );
+    for (const name of ["MemberAccess", "isMemberAccess"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("pinnedMember"), [
+        "src/pinned-program.ts",
+    ]);
+    const compilerPaths = sourcePaths.filter(
+        (path) =>
+            path === "src/compiler.ts" || path.startsWith("src/compiler/"),
+    );
+    assert.deepEqual(
+        compilerPaths.filter((path) => sourceFacts(path).dottedCalleeTests > 0),
+        [],
+    );
+    assert.deepEqual(
+        compilerPaths.filter(
+            (path) => sourceFacts(path).dottedCalleeParameters > 0,
+        ),
+        [],
+    );
+    for (const path of [
+        "src/compiler.ts",
+        "src/compiler/browser-erasure.ts",
+        "src/compiler/data-lowering.ts",
+        "src/compiler/data-methods.ts",
+        "src/compiler/evaluation-order.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/handle-collections.ts",
+        "src/compiler/json-bridge.ts",
+        "src/compiler/kept-values.ts",
+        "src/compiler/math-intrinsics.ts",
+        "src/compiler/number-intrinsics.ts",
+        "src/compiler/parameter-effects.ts",
+        "src/compiler/platform-calls.ts",
+        "src/compiler/program-observations.ts",
+        "src/compiler/promises.ts",
+        "src/compiler/receiver-methods.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/ui-projection.ts",
+    ]) {
+        const calls = sourceFacts(path).calls;
+        assert.ok(
+            calls.has("namedMember") || calls.has("libraryStaticMember"),
+            path,
+        );
+    }
+    // The handle-method surfaces take the member compilePropertyCall read.
+    for (const [path, symbols] of [
+        ["src/compiler/audio-surface.ts", "./symbols.js"],
+        ["src/compiler/classes.ts", "./symbols.js"],
+        ["src/compiler/intrinsics/vat.ts", "../symbols.js"],
+        ["src/compiler/media-streams.ts", "./symbols.js"],
+        ["src/compiler/physics-surface.ts", "./symbols.js"],
+    ] as const)
+        assert.ok(
+            sourceFacts(path).imports.get(symbols)?.has("NamedMember"),
+            path,
+        );
+});
+
+test("undefined as a value is spelled and read by values/model.ts", () => {
+    // undefinedValue makes the json-null `undefined`; absenceOf reads which
+    // absence a json-null value is. Comparing emitted C++ to "std::nullopt"
+    // elsewhere may only shrink.
+    for (const name of [
+        "undefinedValue",
+        "absenceOf",
+        "absenceOfNull",
+        "jsonAbsenceCpp",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/values/model.ts"],
+            name,
+        );
+    const checks = sourcePaths.reduce(
+        (count, path) =>
+            count +
+            [...sourceText(path).matchAll(/[=!]== "std::nullopt"/g)].length,
+        0,
+    );
+    assert.ok(checks <= 5, `"std::nullopt" text checks: ${checks}`);
+    // A JsonValue absence is spelled by jsonAbsenceCpp.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("JsonValue::null_value()"),
+        ),
+        ["src/compiler/values/model.ts"],
+    );
+    // staticBooleanOf is the one reader of a value's known boolean.
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/values/model.ts" &&
+                    /\.cpp [=!]== "(?:true|false)"/.test(sourceText(path)),
+            )
+            .sort(),
+        [],
+    );
+});
+
+test("a Promise reaction call is recognized by promises.ts", () => {
+    // promiseReactionOf reads then / catch / finally only on a receiver the
+    // checker types as the library Promise: a class's own then is a method.
+    assert.deepEqual(declarationOwners("promiseReactionOf"), [
+        "src/compiler/promises.ts",
+    ]);
+    for (const path of [
+        "src/compiler.ts",
+        "src/compiler/async.ts",
+        "src/compiler/compressed-json.ts",
+        "src/compiler/pending-activations.ts",
+        "src/compiler/shared-closure-analysis.ts",
+    ])
+        assert.ok(sourceFacts(path).calls.has("promiseReactionOf"), path);
+});
+
+test("a binding's shared cell is declared by shared-cells.ts", () => {
+    // emitSharedCell spells the gc-shared cell of a binding closures share,
+    // records its type and reaches the runtime; sharedCellCpp reads the
+    // binding it holds. Pinned lowerers allocating runtime records are
+    // another construct.
+    for (const name of ["emitSharedCell", "sharedCellCpp"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/shared-cells.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                path !== "src/compiler/shared-cells.ts" &&
+                /make_gc_(?:shared<|cell\()/.test(sourceText(path)),
+        ),
+        [],
+    );
+});
+
+test("a statement list's reachable prefix is emitted by loop-control.ts", () => {
+    // emitReachableStatements stops at a lowered terminator and, when asked,
+    // at a completed static iteration: no hand-copied emit-then-test loop.
+    assert.deepEqual(declarationOwners("emitReachableStatements"), [
+        "src/compiler/loop-control.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /this\.emit\(\w+, (\w+)\);\s*if \(\s*this\.terminatesAfterLowering\(\1\)/.test(
+                sourceText(path),
+            ),
+        ),
+        [],
+    );
+});
+
+test("a by-value binding closures share and write gets its cell where it is bound", () => {
+    // binding-scopes.ts closureSharedCell gives a destructured, for-of or
+    // for-in binding a stored closure captures and any code writes one
+    // shared cell; no declaration form decides it on its own.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("closureSharedCell("),
+        ),
+        ["src/compiler/binding-scopes.ts"],
+    );
+});
+
+test("a body running off its end completes through emitFallOffEnd", () => {
+    // Undefined for a void or optional result, the generator end, or the
+    // guard of a path TypeScript proves impossible: spelled in one place.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("fell through without returning"),
+        ),
+        ["src/compiler.ts"],
+    );
+    for (const path of [
+        "src/compiler/native-functions.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(sourceText(path).includes(".emitFallOffEnd()"), path);
+});
+
+test("a class's construction order and parameter field writes have one owner", () => {
+    // initializeOwnMembers runs field initializers then parameter
+    // properties for a base and a derived class alike;
+    // constructorFieldParameters reads a constructor's `this.field = param`.
+    assert.deepEqual(declarationOwners("constructorFieldParameters"), [
+        "src/compiler/class-members.ts",
+    ]);
+    const classes = sourceText("src/compiler/classes.ts");
+    assert.equal(
+        [...classes.matchAll(/isParameterPropertyDeclaration\(/g)].length,
+        1,
+    );
+    assert.equal([...classes.matchAll(/this\.initializeFields\(/g)].length, 1);
+});
+
+test("a class member's static modifier is read by isStaticMember", () => {
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                sourceText(path).includes("ModifierFlags.Static"),
+        ),
+        ["src/compiler/class-members.ts"],
+    );
+});
+
+test("a lowering binds `this` for a scope through withThis", () => {
+    // withThis saves, binds and restores the enclosing `this`. The one other
+    // writer binds a synthetic receiver for the rest of a captured
+    // data-function body from that body's own hook.
+    const writers = sourcePaths.filter(
+        (path) =>
+            path !== "src/compiler.ts" &&
+            path !== "src/compiler/lowering-services.ts" &&
+            sourceText(path).includes(".defineThis("),
+    );
+    assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
+});
+
+test("a tuple's element flags have one reader", () => {
+    // tupleElements spells each element's type with its required, optional,
+    // rest or variadic flag; a rest parameter's lanes, spreads and tuple
+    // storage read them there.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes(".elementFlags"),
+        ),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
+test("the compiler never decides by comparing source text", () => {
+    // A spelling names no binding: two equal spellings can read different
+    // bindings, and one binding has many spellings. sameReference,
+    // sameExpression, libraryGlobal and staticAccessKey decide instead.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /getText\([^)]*\)\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+});
+
+test("a compound assignment's old value and store have one owner", () => {
+    // The data lowerer's compoundPlace holds the old value a right side may
+    // write, binding a target that runs code once; emitNumericCompound
+    // spells the number and emitCompoundStore stores it, binding it for an
+    // assignment used as a value.
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    (path === "src/compiler.ts" ||
+                        path.startsWith("src/compiler/")) &&
+                    sourceFacts(path).calls.has("compoundAssignmentValue"),
+            )
+            .sort(),
+        ["src/compiler/data-lowering.ts"],
+    );
+    for (const name of ["compoundPlace", "emitNumericCompound"])
+        assert.ok(
+            sourceFacts("src/compiler/statements.ts").members.has(name),
+            name,
+        );
+    // A string `+=` goes through the same owners (emitStringCompound).
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("concat_append("),
+        ),
+        ["src/compiler/data-lowering.ts"],
+    );
+});
+
+test("a folded condition is read through knownCondition", () => {
+    // Condition, presence and truthiness lowerings fold to the `true` /
+    // `false` spelling; values/model.ts knownCondition is its one reader. A
+    // UI attribute's own authored text is no compiled condition.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                path !== "src/compiler/values/model.ts" &&
+                /(?<!toLowerCase\(\) )[=!]== "(?:true|false)"/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+});
+
+test("a fact spelled over a value's C++ is rebased by rebaseSpelling", () => {
+    // Presence, truthiness and identity spellings carried to the binding
+    // that now holds a value replace only whole occurrences of its C++.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /\.replaceAll\(\s*[\w.]*(?:\.cpp|Cpp)\s*,/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+});
+
+test("a `var` binds through var-bindings.ts", () => {
+    // Which `var`s are hoisted, their storage and the writes their
+    // declarations make are var-bindings.ts's: the statement walk declares
+    // the storage, the binding funnel turns a declared name into an
+    // assignment, the rebind index reads the writes. compiler.ts keeps a
+    // `var` out of its static constants; no other file decides on `var`.
+    for (const name of ["VarBindings", "hoistedVarWrites"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/var-bindings.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                /variableKind\([^)]*\)\s*[!=]==\s*"var"/.test(sourceText(path)),
+            )
+            .sort(),
+        ["src/compiler.ts", "src/compiler/var-bindings.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).calls.has("hoistedVarWrites"),
+        ),
+        ["src/compiler/binding-rebinds.ts"],
+    );
+    for (const [member, path] of [
+        ["declareFor", "src/compiler/statements.ts"],
+        ["assignsDeclared", "src/compiler/binding-scopes.ts"],
+        ["refuseUnassignedRead", "src/compiler/binding-scopes.ts"],
+    ] as const)
+        assert.deepEqual(
+            sourcePaths.filter(
+                (source) =>
+                    source !== "src/compiler/var-bindings.ts" &&
+                    sourceFacts(source).members.has(member),
+            ),
+            [path],
+            member,
+        );
+});
+
+test("an await suspends through one co_await and one void settlement", () => {
+    // AsyncLowerer.suspend spells every await's co_await; asPromise spells
+    // the void promise an erased await and a void operand settle.
+    const source = sourceText("src/compiler/async.ts");
+    assert.equal(source.split("co_await ${").length - 1, 1);
+    assert.equal(
+        source.split(
+            "bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+        ).length - 1,
+        1,
+    );
+});
+
+test("a var's definite assignment is a syntactic analysis, and its frame the evaluation container", () => {
+    // var-bindings reads definite-assignment.ts, never the checker's
+    // diagnostics (a type check of the whole file); its scope is
+    // syntax.ts's evaluationContainer, which evaluation-order shares.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                sourceText(path).includes("getSemanticDiagnostics"),
+        ),
+        [],
+    );
+    assert.deepEqual(declarationOwners("evaluationContainer"), [
+        "src/compiler/syntax.ts",
+    ]);
+    assert.deepEqual(declarationOwners("definitelyAssignedAt"), [
+        "src/compiler/definite-assignment.ts",
+    ]);
+});
+
+test("an enum-like intrinsic option reads its string through table-options.ts", () => {
+    // A string looked up in a pin table, a `?:` over its arms and a run-time
+    // literal union matched against each member's spelling are
+    // table-options.ts's; no intrinsic matches a union's members itself.
+    for (const name of [
+        "compileTableOption",
+        "staticTableOption",
+        "staticTableEntry",
+        "staticTableValue",
+        "tableOptionValue",
+        "tableEntry",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/table-options.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/compiler/intrinsics/") &&
+                sourceFacts(path).members.has("enumMemberCpp"),
+        ),
+        [],
+    );
+});
+
+test("an engine field's engine is an analysis result before emission", () => {
+    // engine-field-identities.ts reads every store to a field's name before
+    // emission; no lowering notes an engine field's store as it emits it.
+    assert.deepEqual(declarationOwners("engineFieldIdentities"), [
+        "src/compiler/engine-field-identities.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes("noteEngineSlot"),
+        ),
+        [],
+    );
+});
+
+test("a value is written to an assignment target through one owner", () => {
+    // emitAssignmentTargetWrite writes a computed value as `target = value`
+    // would (a variable, a member, an array or object pattern): the
+    // destructuring assignments' walkers, a for-in/of head assigning an
+    // existing target and a hoisted `var`'s declaration share it. A loop
+    // head binds or assigns its element in statements.ts's bindLoopElement
+    // and bindStaticIterationValue alone.
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) =>
+                sourceFacts(path).members.has("emitAssignmentTargetWrite"),
+            )
+            .sort(),
+        [
+            "src/compiler/data-lowering.ts",
+            "src/compiler/statements.ts",
+            "src/compiler/var-bindings.ts",
+        ],
+    );
+    const statements = sourceText("src/compiler/statements.ts");
+    for (const call of [
+        "bindDataIterationVariable(",
+        "assignIterationTarget(",
+        "emitAssignmentTargetWrite(",
+    ])
+        assert.equal(statements.split(call).length - 1, 1, call);
+});
+
+test("a binding pattern binds through declarations.ts bindPattern", () => {
+    // Destructuring declarations, parameters, callbacks and for-of (runtime
+    // and unrolled) bind a pattern's names in the declaration owner; no
+    // other module binds a binding element's name. home-object-methods'
+    // `binding` is the declaration an object literal initializes.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                (path === "src/compiler.ts" ||
+                    path.startsWith("src/compiler/")) &&
+                /(?:bindLocalValue|bindParameterValue|bindCompileTimeValue|defineVariable|defineItem|define)\(\s*(?:binding|element|element_)\.name/.test(
+                    sourceText(path),
+                ),
+        ),
+        ["src/compiler/declarations.ts", "src/compiler/home-object-methods.ts"],
+    );
+    for (const path of [
+        "src/compiler/data-lowering.ts",
+        "src/compiler/expressions.ts",
+        "src/compiler/statements.ts",
+        "src/compiler/user-functions.ts",
+    ])
+        assert.ok(sourceFacts(path).members.has("bindPattern"), path);
+});
+
+test("a library call's callback lifetime is read through receiver-methods.ts", () => {
+    // callsArgumentInPlace (a callback a library call runs before it
+    // returns) and isListenerRegistration (a listener it keeps) are the one
+    // table the effect analysis, the native-function eligibility, the
+    // shared-closure analysis and the pinned record lowerer read.
+    for (const name of ["callsArgumentInPlace", "isListenerRegistration"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/receiver-methods.ts"],
+            name,
+        );
+    for (const [path, name] of [
+        ["src/compiler/parameter-effects.ts", "callsArgumentInPlace"],
+        ["src/compiler/native-functions.ts", "callsArgumentInPlace"],
+        ["src/compiler/native-functions.ts", "isListenerRegistration"],
+        ["src/compiler/shared-closure-analysis.ts", "isListenerRegistration"],
+        ["src/lowering/pinned-record-lowerer.ts", "callsArgumentInPlace"],
+        ["src/compiler/parameter-effects.ts", "bindingIsOnlyCalledDirectly"],
+        ["src/compiler/native-functions.ts", "bindingIsOnlyCalledDirectly"],
+    ] as const)
+        assert.ok(sourceFacts(path).calls.has(name), `${path} ${name}`);
+    // A local function only ever called directly is read the same way.
+    assert.deepEqual(declarationOwners("bindingIsOnlyCalledDirectly"), [
+        "src/compiler/binding-rebinds.ts",
+    ]);
+});
+
+test("the pinned lowering recognizes source by its syntax, not its text", () => {
+    // sameSource (a node against a source shape) and sameSyntax (two nodes)
+    // compare syntax trees through wrappers, layout and comments; a text
+    // comparison breaks on a stray `!`, parentheses or a reformatted pin.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/lowering/") &&
+                /getText\((?:[^()]|\([^()]*\))*\)\s*(?:\.trim\(\))?\s*(?:[=!]==|\.(?:startsWith|endsWith|includes)\()|(?:[=!]==)\s*[\w.!?[\]]*\.getText\(/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+    // propertyPath names a member chain (`this` included) for both;
+    // soleBindingName and declaredKey read a declared name; sourceEntry and
+    // isOneOfSources read a table keyed by source shapes.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path.startsWith("src/lowering/") &&
+                /\.name[?!]?\.getText\(|\.(?:get|has|delete|includes)\((?!\$\{)(?:[^()]|\([^()]*\))*\.getText\(/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+    for (const name of [
+        "sameSource",
+        "sameSyntax",
+        "propertyPath",
+        "soleBindingName",
+        "declaredKey",
+        "sourceEntry",
+        "isOneOfSources",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+});
+
+test("a projection's path algebra is read through projections.ts", () => {
+    // project / nest / derive / slotProjections and the path relations are
+    // the one algebra the parameter effect and projection analyses share.
+    for (const name of [
+        "projectMember",
+        "nest",
+        "derive",
+        "slotProjections",
+        "pathStartsWith",
+        "pathsOverlap",
+        "boundedKeyPath",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/projections.ts"],
+            name,
+        );
+});
+
+test("a stored record keeps its binding's object through one owner", () => {
+    // requireHeldRecordStorage asks recordHolder, one rule for variables
+    // and parameters, for every store; a `delete` asks for runtime storage
+    // and a JSON view for an observing owner, each its own question.
+    assert.deepEqual(declarationOwners("requireHeldRecordStorage"), [
+        "src/compiler/dynamic-binding-storage.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes(".recordHolder("))
+            .sort(),
+        ["src/compiler/dynamic-binding-storage.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes(".recordDeclaration("))
+            .sort(),
+        [
+            "src/compiler/binding-scopes.ts",
+            "src/compiler/data-lowering.ts",
+            "src/compiler/dynamic-binding-storage.ts",
+            "src/compiler/json-record-views.ts",
+        ],
+    );
+});
+
+test("the order deferred code runs in has one owner", () => {
+    // Outside the application realm an activation runs to its end and a
+    // reaction at once; continuation-order.ts alone decides when JavaScript's
+    // later run is unobservable, for the two lowerings that start them.
+    for (const name of [
+        "activationMaySuspend",
+        "activationOrderIsUnobservable",
+        "reactionOrderIsUnobservable",
+    ])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/continuation-order.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths
+            .filter(
+                (path) =>
+                    path !== "src/compiler/continuation-order.ts" &&
+                    /OrderIsUnobservable\(/.test(sourceText(path)),
+            )
+            .sort(),
+        ["src/compiler/async-activations.ts", "src/compiler/promises.ts"],
+    );
+});
+
+test("a pinned for-of reads what it walks off the collection's binding", () => {
+    // `for (const x of xs)` in a pinned body resolves `xs` through the
+    // declaration-keyed bindings table like any other read: the binding's
+    // `elements` (or a record list's `record`) give the native range and
+    // what `x` binds. No scope supplies a hook that recognises the
+    // iterated expression by its spelling. Ratchet: zero such providers.
+    const providers = sourcePaths.flatMap((path) =>
+        [
+            ...sourceText(path).matchAll(
+                /\bforOf\s*\??\s*[:(]|[.]forOf\s*=|\bforOf\s*,/g,
+            ),
+        ].map(() => path),
+    );
+    assert.deepEqual(providers, []);
+    // The numeric translator's iteration is the binding path; the typed
+    // record and character-kernel lowerers answer from the iterated value's
+    // own type.
+    const definitions = sourcePaths.filter((path) =>
+        /\bforOfIteration\(\s*statement: ts\.ForOfStatement/.test(
+            sourceText(path),
+        ),
+    );
+    assert.deepEqual(definitions.sort(), [
+        "src/lowering/character-kernel-lowerer.ts",
+        "src/lowering/pinned-numeric-lowerer.ts",
+        "src/lowering/pinned-record-lowerer.ts",
+    ]);
+    const numeric = sourceText("src/lowering/pinned-numeric-lowerer.ts");
+    const [iteration = ""] = numeric
+        .slice(numeric.indexOf("protected forOfIteration("))
+        .split(/\r?\n {4}\}\r?\n/);
+    assert.ok(iteration.includes("this.binding(statement.expression)"));
+    assert.ok(!/sameSource|Shape\(|sourceEntry/.test(iteration), iteration);
+});
+
+test("a Math member is one row of MATH_MEMBERS", () => {
+    // max and min are variadic rows like hypot: one fold, one spelling and
+    // one spread path every reader shares.
+    assert.deepEqual(
+        sourcePaths.filter(
+            (path) =>
+                path !== "src/compiler/math-intrinsics.ts" &&
+                /\b(?:mathExtremeCall|mathExtremeCpp|mathCallSpelling)\b/.test(
+                    sourceText(path),
+                ),
+        ),
+        [],
+    );
+});
+
+test("what a library call's result holds is answered in kept-values.ts from the facts table", () => {
+    // libraryResultMayHold answers for an argument, callResultHoldsArguments
+    // for any of them; the holding methods and the computing statics are
+    // library-call-facts.ts rows, and an unlisted static may hold.
+    for (const name of ["libraryResultMayHold", "callResultHoldsArguments"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/kept-values.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("ARGUMENT_HOLDING_METHODS"), [
+        "src/compiler/library-call-facts.ts",
+    ]);
+    assert.deepEqual(declarationOwners("libraryCallName"), [
+        "src/compiler/symbols.ts",
+    ]);
 });

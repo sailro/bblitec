@@ -1,15 +1,25 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import {
-    declaredInDefaultLibrary,
     isRetypableDeclaration,
     resolvedSymbol,
+    staticPropertyKey,
+    libraryName,
+    calledDeclaration,
 } from "./symbols.js";
 import {
     contextualProperty,
     isTypeReference,
     presentMembers,
+    arrayShape,
+    callSignatures,
 } from "./type-facts.js";
-import { outermostWrapper, unwrapExpression } from "./syntax.js";
+import {
+    outermostWrapper,
+    unwrapExpression,
+    positionalParameter,
+} from "./syntax.js";
 import type { DataType, TypedArrayKind } from "./data-types/model.js";
 import { isTypedArrayType } from "./data-types/typed-arrays.js";
 
@@ -39,12 +49,20 @@ export type NumericSlotDeclaration =
  * itself; several kinds share one numeric view (`NumericArrayView`). Either
  * keeps the stored array's identity.
  */
-export class NumericSlotStorageRequired extends Error {
+export class NumericSlotStorageRequired extends StorageDemand {
     constructor(
         readonly declaration: NumericSlotDeclaration,
         readonly kind: NumericSlotKind,
     ) {
         super("An ArrayLike slot must store the numeric arrays it holds.");
+    }
+
+    get request(): StorageRequest {
+        return {
+            kind: "numeric-slot",
+            declaration: this.declaration,
+            numeric: this.kind,
+        };
     }
 }
 
@@ -78,11 +96,7 @@ export function numericSlotStorage(
 
 /** Whether `type` is the library's `ArrayLike<number>`. */
 function isNumberArrayLike(checker: ts.TypeChecker, type: ts.Type): boolean {
-    if (
-        type.symbol?.name !== "ArrayLike" ||
-        !declaredInDefaultLibrary(type.symbol) ||
-        !isTypeReference(type)
-    )
+    if (libraryName(type) !== "ArrayLike" || !isTypeReference(type))
         return false;
     const [element] = checker.getTypeArguments(type);
     return element !== undefined && (element.flags & ts.TypeFlags.Number) !== 0;
@@ -99,14 +113,8 @@ function arrayElement(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): ts.Type | undefined {
-    if (
-        (type.symbol?.name !== "Array" &&
-            type.symbol?.name !== "ReadonlyArray") ||
-        !declaredInDefaultLibrary(type.symbol) ||
-        !isTypeReference(type)
-    )
-        return undefined;
-    return checker.getTypeArguments(type)[0];
+    const shape = arrayShape(checker, type);
+    return shape && !shape.tuple ? shape.element : undefined;
 }
 
 /** One step from a slot's declared type to the position a value is stored in. */
@@ -125,7 +133,7 @@ function arrayLikeAt(
     for (const step of steps) {
         if (!current) return false;
         if (step === "result") {
-            const signatures = current.getCallSignatures();
+            const signatures = callSignatures(checker, current, "exact");
             if (signatures.length !== 1) return false;
             current = presentType(
                 checker.getReturnTypeOfSignature(signatures[0]!),
@@ -173,15 +181,12 @@ function storageDeclaration(
 ): ts.Declaration | undefined {
     const parent = node.parent;
     if (parent === undefined) return undefined;
-    if (ts.isPropertyAssignment(parent) && parent.initializer === node)
-        return ts.isObjectLiteralExpression(parent.parent) &&
-            !ts.isComputedPropertyName(parent.name)
-            ? contextualPropertyDeclaration(
-                  checker,
-                  parent.parent,
-                  parent.name.text,
-              )
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node) {
+        const key = staticPropertyKey(checker, parent.name);
+        return ts.isObjectLiteralExpression(parent.parent) && key !== undefined
+            ? contextualPropertyDeclaration(checker, parent.parent, key)
             : undefined;
+    }
     if (ts.isShorthandPropertyAssignment(parent) && parent.name === node)
         return contextualPropertyDeclaration(
             checker,
@@ -195,9 +200,10 @@ function storageDeclaration(
         parent.expression !== node
     ) {
         const index = parent.arguments?.indexOf(node as ts.Expression) ?? -1;
-        const callee = checker.getResolvedSignature(parent)?.declaration;
-        return index >= 0 && callee && !ts.isJSDocSignature(callee)
-            ? callee.parameters[index]
+        const callee = calledDeclaration(checker, parent);
+        // A spread or a rest leaves no one parameter slot.
+        return index >= 0 && callee
+            ? positionalParameter(parent, callee, index)
             : undefined;
     }
     if (
@@ -314,7 +320,7 @@ export function withNumericSlotStorage(
             ? storage
             : undefined;
     if (mapped.kind === "function") {
-        const signatures = present.getCallSignatures();
+        const signatures = callSignatures(checker, present, "exact");
         if (signatures.length !== 1 || !mapped.result) return undefined;
         const result = withNumericSlotStorage(
             checker,

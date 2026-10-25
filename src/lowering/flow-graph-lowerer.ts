@@ -31,7 +31,7 @@
  * name rather than approximating.
  */
 import ts from "typescript";
-import { mathCallSpelling } from "../compiler/math-intrinsics.js";
+import { foldMathCall, MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral,
     sanitizeCppIdentifier,
@@ -57,6 +57,7 @@ import {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
+    jsBitwiseCall,
     pinnedRemainderCall,
 } from "./pinned-operators.js";
 import {
@@ -73,6 +74,7 @@ import {
     type ValueModel,
 } from "./pinned-partial-evaluator.js";
 import { recordAt } from "../compiler/record-access.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 /** A graph-authored name as one C++ identifier fragment. */
 function identifier(name: string): string {
@@ -755,7 +757,7 @@ class GraphLowering {
         const interpreter = new Interpreter(this, this.context, emitter);
         const env: FgEnv = new Env(interpreter.moduleEnv(definition.module));
         const params = declaration.parameters.map((parameter) =>
-            parameter.name.getText(definition.file),
+            soleBindingName(parameter.name),
         );
         const values: Val[] = [
             { k: "static", value: block },
@@ -1437,17 +1439,13 @@ class Interpreter implements ValueModel<Val, Binding> {
                 shape: "number",
             };
         }
-        if (
-            kind === ts.SyntaxKind.BarToken &&
-            right.k === "static" &&
-            right.value === 0
-        ) {
+        const bitwise = jsBitwiseCall(kind, a, b);
+        if (bitwise)
             return {
                 k: "residual",
-                cpp: `static_cast<double>(static_cast<std::int32_t>(${a}))`,
+                cpp: `static_cast<double>(${bitwise})`,
                 shape: "number",
             };
-        }
         return this.fail(node, "binary operator");
     }
 
@@ -1831,30 +1829,25 @@ class Interpreter implements ValueModel<Val, Binding> {
     }
 
     private mathCall(method: string, args: Val[], node: ts.Node): Val {
-        if (
-            args.every(
-                (argument) =>
-                    argument.k === "static" &&
-                    typeof argument.value === "number",
-            )
-        ) {
-            const numbers = args.map(
-                (argument) => (argument as { value: number }).value,
-            );
-            const fn = (
-                Math as unknown as Record<
-                    string,
-                    (...values: number[]) => number
-                >
-            )[method];
-            if (typeof fn !== "function") this.fail(node, `Math.${method}`);
-            return staticNumber(fn(...numbers));
-        }
-        const spell = mathCallSpelling(method);
-        if (!spell) this.fail(node, `Math.${method} over a run-time value`);
+        const numbers = args.map((argument) =>
+            argument.k === "static" && typeof argument.value === "number"
+                ? argument.value
+                : undefined,
+        );
+        const folded = numbers.every(
+            (value): value is number => value !== undefined,
+        )
+            ? foldMathCall(method, numbers)
+            : undefined;
+        if (folded !== undefined) return staticNumber(folded);
+        const spell = MATH_MEMBERS.get(method)?.cpp;
+        if (!spell) this.fail(node, `Math.${method}`);
         return {
             k: "residual",
-            cpp: spell(args.map((argument) => this.graph.numberCpp(argument))),
+            cpp: spell(
+                args.map((argument) => this.graph.numberCpp(argument)),
+                numbers,
+            ),
             shape: "number",
         };
     }

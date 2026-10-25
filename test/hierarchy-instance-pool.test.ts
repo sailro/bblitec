@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { assetRootTransformSource } from "../src/lowering/asset-root-transform.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMat4InvertCpp } from "../src/lowering/pinned-function-lowerer.js";
@@ -219,3 +220,29 @@ int main() {
         );
     },
 );
+
+test("a clone of a root an async result widened checks its asset handle at run time", () => {
+    const result = compileSource(`
+        import {createEngine,loadGltf,cloneTransformNode,createHierarchyInstancePool,addHierarchyInstance,type SceneNode,type AssetContainer} from "@babylonjs/lite";
+        queueMicrotask(() => {});
+        interface Assets { template: SceneNode }
+        async function load(engine: Awaited<ReturnType<typeof createEngine>>): Promise<Assets> {
+            const rock: AssetContainer = await loadGltf(engine, "rock.glb");
+            return { template: rock.entities[0] as SceneNode };
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.querySelector("canvas")!);
+            const assets = await load(engine);
+            const root = cloneTransformNode(assets.template);
+            root._localMatrix = undefined;
+            root.position.set(0, 0, 0);
+            addHierarchyInstance(createHierarchyInstancePool(root, 2), new Float32Array(16));
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /bbl::clone_scene_node\(/);
+    assert.match(
+        result.cpp,
+        /bbl::create_hierarchy_instance_pool\([^;]*bbl::cloned_asset_container\(/,
+    );
+});

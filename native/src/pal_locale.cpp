@@ -748,22 +748,27 @@ double local_time_zone_offset(double utc_milliseconds) {
     return cache.offset;
 }
 
-double parse_date(const std::string& value) {
-    const auto parsed = js::parse_date_time_string(value);
-    if (!parsed.local || !std::isfinite(parsed.milliseconds))
-        return js::date_time_clip(parsed.milliseconds);
+double utc_from_local(double local) {
+    if (!std::isfinite(local))
+        return js::date_time_clip(local);
     // Even a full day's timezone displacement cannot bring these values into TimeClip.
-    if (std::abs(parsed.milliseconds) > 8640000086400000.0)
+    if (std::abs(local) > 8640000086400000.0)
         return std::numeric_limits<double>::quiet_NaN();
     auto& cache = local_zone_calendar();
     UErrorCode status = U_ZERO_ERROR;
-    ucal_setMillis(cache.calendar.get(), parsed.milliseconds, &status);
+    ucal_setMillis(cache.calendar.get(), local, &status);
     int32_t standard = 0, daylight = 0;
     // Both repeated and skipped wall times use the offset before the transition.
     ucal_getTimeZoneOffsetFromLocal(cache.calendar.get(), UCAL_TZ_LOCAL_FORMER,
                                     UCAL_TZ_LOCAL_FORMER, &standard, &daylight, &status);
     check_icu(status);
-    return js::date_time_clip(parsed.milliseconds - static_cast<double>(standard) - daylight);
+    return js::date_time_clip(local - static_cast<double>(standard) - daylight);
+}
+
+double parse_date(const std::string& value) {
+    const auto parsed = js::parse_date_time_string(value);
+    return parsed.local ? utc_from_local(parsed.milliseconds)
+                        : js::date_time_clip(parsed.milliseconds);
 }
 
 namespace {

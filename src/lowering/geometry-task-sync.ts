@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { sameSyntax } from "../compiler/syntax.js";
 
 const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
 
@@ -60,15 +61,14 @@ export function assertGeometryTaskSync(context: LoweringContext): void {
         ).statements[0]!;
         if (!ts.isIfStatement(expected) && !ts.isExpressionStatement(expected))
             throw new Error(`Unsupported geometry sync statement: ${source}`);
-        const head = expected.expression.getText();
         const found = context.findNodes(
             owner,
             (node): node is ts.IfStatement | ts.ExpressionStatement =>
                 node.kind === expected.kind &&
-                context.expressionMatchesShape(
+                sameSyntax(
                     (node as ts.IfStatement | ts.ExpressionStatement)
                         .expression,
-                    head,
+                    expected.expression,
                 ),
         );
         if (found.length !== 1)

@@ -28,6 +28,11 @@ import {
 } from "../../post-process-effects.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import { compileStaticNumber } from "../option-helpers.js";
+import {
+    staticTableOption,
+    tableEntry,
+    type TableOption,
+} from "../table-options.js";
 import type {
     PostProcessCompositeManifest,
     PostProcessOptionValue,
@@ -40,6 +45,17 @@ import {
     requiredObjectNumber,
     type EngineOptionContext,
 } from "./engine-options.js";
+
+const postProcessSampling: TableOption = {
+    table: {
+        nearest: "bbl::PostProcessSampling::nearest",
+        linear: "bbl::PostProcessSampling::linear",
+    },
+    refusal: (mode) =>
+        `Post-process sourceSamplingMode must be 'nearest' or 'linear', received '${mode}'.`,
+    name: "post-process sampling mode",
+    label: "sampling",
+};
 
 interface CompiledPostProcessTask {
     cpp: string;
@@ -80,17 +96,18 @@ export function compilePostProcessTaskOptions(
         object,
         "sourceSamplingMode",
     );
-    let sampling = "bbl::PostProcessSampling::linear";
-    if (samplingExpression) {
-        const mode = context.compileStringLiteral(samplingExpression);
-        if (mode !== "nearest" && mode !== "linear") {
-            context.fail(
-                samplingExpression,
-                `Post-process sourceSamplingMode must be 'nearest' or 'linear', received '${mode}'.`,
-            );
-        }
-        sampling = `bbl::PostProcessSampling::${mode}`;
-    }
+    const sampling = tableEntry(
+        context,
+        postProcessSampling,
+        samplingExpression
+            ? staticTableOption(
+                  context,
+                  postProcessSampling,
+                  samplingExpression,
+              )
+            : "linear",
+        samplingExpression ?? object,
+    );
 
     const alphaExpression = context.objectProperty(object, "alphaMode");
     const alphaMode = alphaExpression

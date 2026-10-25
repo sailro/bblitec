@@ -2,10 +2,10 @@ import { requireWindowHost } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
-import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { UiProjection } from "./ui-projection.js";
@@ -32,12 +32,20 @@ import type { UiProjection } from "./ui-projection.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+import {
+    absenceOf,
+    absenceOfNull,
+    knownCondition,
+    staticKeyOf,
+    undefinedValue,
+} from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
     isHandleKind,
+    isTypedArrayType,
     isUndefinedDataType,
     primitiveTraits,
     propertyIsReadOnly,
@@ -49,28 +57,49 @@ import {
     isEngineScopedHandleKind,
 } from "./data-types/handles.js";
 import {
-    DynamicBindingStorageRequired,
+    requireHeldRecordStorage,
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
-import { provenUndefinedValue } from "./undefined-values.js";
+import {
+    provenVoidAsUndefined,
+    readsErasedVoid,
+    voidReceiver,
+} from "./undefined-values.js";
 import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
-    accessedPropertySymbol,
     declaredSymbol,
     enumMemberConstant,
     isAbsentTypeofIdentifier,
     resolvedDomApi,
     resolvedSymbol,
+    nullishComparison,
+    typeMayHoldNullish,
+    libraryName,
+    isLibraryNumberFormatter,
+    calledDeclaration,
+    memberAccessors,
+    namedMember,
+    type NamedMember,
+    libraryStaticMember,
+    staticAccessKey,
+    borrowedPrototypeMethod,
+    forwardedCallShape,
 } from "./symbols.js";
-import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
+import {
+    CRYPTO_GET_RANDOM_VALUES,
+    NAVIGATOR_GET_GAMEPADS,
+} from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
+    foldNumberFormat,
+    NUMBER_FORMAT_DIGITS,
     numberConstant,
     numberConstantValue,
+    numberFormatOf,
     numberPredicateFunction,
 } from "./number-intrinsics.js";
 import {
@@ -99,8 +128,14 @@ import {
     expressionMayRunCode,
     outermostWrapper,
     regularExpressionParts,
-    unwrapExpression,
-    wrappedParent,
+    isTypeAssertion,
+    refuseProtoSetter,
+    isAsyncFunction,
+    containsSuspension,
+    restParameterIndex,
+    variableKind,
+    isMemberAccess,
+    localCallback,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -136,9 +171,9 @@ import {
     compileMediaStreamMethodCall,
     mediaStreamTypeof,
 } from "./media-streams.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRuntimeValue } from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
-import { firstReturn } from "./loop-control.js";
+import { finalReturn, firstReturn } from "./loop-control.js";
 import {
     regexpCaptureCount,
     regexpCapturesMayBeUnmatched,
@@ -155,7 +190,7 @@ import { compileSymbolCall } from "./symbol-values.js";
 import { compileBigIntUpdate, compileBigIntValue } from "./bigint-values.js";
 import { unicodeUnitPattern } from "./regexp-unicode.js";
 import {
-    FORMATTED_MATH_FOLDS,
+    foldMathCall,
     mathConstantAccess,
     mathFunctionValue,
     mathMemberCall,
@@ -166,6 +201,7 @@ import {
 } from "./compressed-json.js";
 import { compileArrayPredicateOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
+import { isBinaryDataType } from "./data-types/typed-arrays.js";
 import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
@@ -186,11 +222,19 @@ import {
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
-import { pickedMeshHandleCpp } from "./properties.js";
-import { absenceKind, isNullable, nullability } from "./type-facts.js";
+import { pickedMeshHandle } from "./properties.js";
+import {
+    absenceKind,
+    isNullable,
+    nullability,
+    valueKindOf,
+    callSignatures,
+    stringPlusOperands,
+} from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
+    callbackFunction,
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
 } from "./user-functions.js";
@@ -212,23 +256,6 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
-/**
- * Number formatters the language owns rather than the scene.
- *
- * What `containsEvaluatedCall` is really asking is "could dropping this
- * argument drop an effect the program still needs" -- a user function's
- * body may mutate state, so it has to run. `Number.prototype.toFixed` and
- * its siblings cannot: they read one number and return a string. Treating
- * them as calls made an erased `console.log` emit its whole formatted
- * template as a discarded statement, which is dead work whose only visible
- * trace is the compiler rejecting the discard.
- */
-export const PURE_NUMBER_FORMATTERS = new EmissionSet([
-    "toFixed",
-    "toPrecision",
-    "toExponential",
-]);
-
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["encodeURIComponent", "encode_uri_component"],
@@ -239,34 +266,6 @@ const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["atob", "string_from_base64"],
 ]);
 
-/**
- * Calls in an argument are evaluated before their enclosing call. Stop at a
- * nested function boundary because creating a callback does not execute its
- * body.
- */
-function containsEvaluatedCall(node: ts.Node): boolean {
-    if (ts.isFunctionLike(node)) {
-        return false;
-    }
-    if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        PURE_NUMBER_FORMATTERS.has(node.expression.name.text)
-    ) {
-        // The receiver may still hold one -- `advance().toFixed(1)`.
-        return containsEvaluatedCall(node.expression.expression);
-    }
-    if (
-        ts.isCallExpression(node) ||
-        ts.isNewExpression(node) ||
-        isAssignmentExpression(node) ||
-        isUpdateExpression(node)
-    ) {
-        return true;
-    }
-    return ts.forEachChild(node, containsEvaluatedCall) ?? false;
-}
-
 export interface ExpressionContext
     extends
         PromiseLoweringContext,
@@ -274,6 +273,8 @@ export interface ExpressionContext
         Pick<
             LoweringServices,
             | "noteImpureRead"
+            | "dynamicBindings"
+            | "parameterObjects"
             | "conditionOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
@@ -300,6 +301,7 @@ export interface ExpressionContext
             | "symbols"
             | "bindings"
             | "unwrap"
+            | "unwrapValue"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
             | "emitUiDatasetProperty"
@@ -309,6 +311,7 @@ export interface ExpressionContext
             | "expectKind"
             | "expectSameEngine"
             | "activeThis"
+            | "withThis"
             | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
@@ -317,6 +320,7 @@ export interface ExpressionContext
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
+            | "withCallbackScopes"
             | "captureRecordScopes"
             | "captureNativeDependencies"
             | "captureNativeExpression"
@@ -335,6 +339,8 @@ export interface ExpressionContext
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
             | "propertyName"
+            | "objectProperty"
+            | "compilePropertyKey"
             | "namesLocalFunction"
             | "cppString"
             | "browserErasure"
@@ -369,6 +375,7 @@ export interface ExpressionContext
             | "leaveRuntimeControlFlow"
             | "isInRuntimeIteration"
             | "isInNativeFunctionBody"
+            | "isFunctionEvaluationRepeated"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
         > {
@@ -384,22 +391,11 @@ export interface ExpressionContext
     ): Value;
 }
 
-/**
- * Whether an expression's value is an object spread's operand, directly or
- * as an arm of a conditional that is one.
- */
+/** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
 function spreadsItsValue(expression: ts.Expression): boolean {
-    let current: ts.Expression = expression;
-    for (;;) {
-        const parent = wrappedParent(current);
-        if (ts.isSpreadAssignment(parent)) return true;
-        if (
-            !ts.isConditionalExpression(parent) ||
-            unwrapExpression(parent.condition) === current
-        )
-            return false;
-        current = parent;
-    }
+    return ts.isSpreadAssignment(
+        outermostWrapper(expression, { branches: "objects" }).parent,
+    );
 }
 
 /**
@@ -422,13 +418,12 @@ function hoistsPreparedArm(value: Value): boolean {
  * for a runtime number, the two spellings of a boolean, an enum's name,
  * and `null`.
  */
-function staticStringCoercion(value: Value): string | undefined {
+export function staticStringCoercion(value: Value): string | undefined {
     if (value.parameterBinding) return undefined;
     if (value.staticString !== undefined) return value.staticString;
     if (value.staticNumber !== undefined) return String(value.staticNumber);
     if (value.staticBoolean !== undefined) return String(value.staticBoolean);
-    if (value.kind === "json-null")
-        return value.cpp === "std::nullopt" ? "undefined" : "null";
+    if (value.kind === "json-null") return absenceOfNull(value);
     return undefined;
 }
 
@@ -439,29 +434,6 @@ function staticStringCoercion(value: Value): string | undefined {
  * and the runtime's append joins a surrogate pair split across the two
  * strings, which a plain `+=` on the native string would not.
  */
-export function emitStringAppend(
-    context: Pick<
-        LoweringServices,
-        | "absenceTags"
-        | "checker"
-        | "compileValue"
-        | "cppString"
-        | "dataTypes"
-        | "fail"
-        | "emit"
-        | "reachJsData"
-    >,
-    targetCpp: string,
-    right: ts.Expression,
-): void {
-    const value = context.compileValue(right);
-    context.reachJsData();
-    context.emit({
-        kind: "expression",
-        code: `bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`,
-    });
-}
-
 export function stringConcatPart(
     context: Pick<
         LoweringServices,
@@ -601,6 +573,14 @@ const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
     "__lookupSetter__",
 ]);
 
+/** The member names a forwarded call, a random-values fill or a borrowed prototype method is called by. */
+const FORWARDING_MEMBER_NAMES: ReadonlySet<string> = new Set([
+    "apply",
+    "bind",
+    "call",
+    "getRandomValues",
+]);
+
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
 
@@ -620,17 +600,13 @@ export class ExpressionLowerer {
         // store key) reads back wherever the lowering reaches it.
         const held = this.context.dataLowerer.assignedValue(expression);
         if (held) return held;
-        if (
-            this.context.options.workers &&
-            ts.isAwaitExpression(unwrapExpression(expression))
-        ) {
+        if (ts.isAwaitExpression(this.context.unwrapValue(expression))) {
             const awaited = this.context.compileWorkerValue(expression);
             if (awaited) return awaited;
         }
         let assertedValue: Value | undefined;
         if (
-            (ts.isAsExpression(expression) ||
-                ts.isTypeAssertionExpression(expression)) &&
+            isTypeAssertion(expression) &&
             this.assertedTypeIncludesImportedName(expression.type, "Mesh")
         ) {
             const asserted = this.compileValue(expression.expression);
@@ -648,24 +624,14 @@ export class ExpressionLowerer {
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
-                    cpp: pickedMeshHandleCpp(
-                        this.context,
-                        asserted,
-                        expression,
-                    ),
-                    ...(asserted.engineCpp
-                        ? { engineCpp: asserted.engineCpp }
-                        : {}),
+                    ...pickedMeshHandle(this.context, asserted, expression),
                     optionalFoundCpp:
                         `(${asserted.cpp}.picked_kind == ` +
                         `bbl::PickedNodeKind::mesh)`,
                 };
             }
         }
-        if (
-            ts.isAsExpression(expression) ||
-            ts.isTypeAssertionExpression(expression)
-        ) {
+        if (isTypeAssertion(expression)) {
             const sourceType = this.context.dataLowerer.dataTypeAt(
                 expression.expression,
             );
@@ -709,11 +675,11 @@ export class ExpressionLowerer {
         if (storage) return storage;
         const idleFunction = idleFunctionValue(this.context, unwrapped);
         if (idleFunction) return idleFunction;
-        const ratio = devicePixelRatioValue(this.context, unwrapped);
-        if (ratio) {
-            if (ratio.staticNumber === undefined)
+        const accessor = hostAccessorValue(this.context, unwrapped);
+        if (accessor) {
+            if (accessor.staticNumber === undefined)
                 requireWindowHost(this.context, unwrapped);
-            return ratio;
+            return accessor;
         }
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
@@ -722,7 +688,7 @@ export class ExpressionLowerer {
         const window = compileWindowIdentity(this.context, unwrapped);
         if (window) return window;
         if (this.context.browserErasure.isAbsentGlobalMember(unwrapped))
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
 
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -783,8 +749,7 @@ export class ExpressionLowerer {
                         cpp: "",
                     }),
                     ...this.context.captureRecordScopes(),
-                    ...(this.context.isInRuntimeIteration() ||
-                    this.context.isInNativeFunctionBody()
+                    ...(this.context.isFunctionEvaluationRepeated(lexicalThis)
                         ? { repeatedCallbackEvaluation: true }
                         : {}),
                     ...(evaluationIdentity
@@ -797,7 +762,9 @@ export class ExpressionLowerer {
             const contextual =
                 this.context.checker.getContextualType(unwrapped);
             if (
-                contextual?.getCallSignatures().length === 1 &&
+                contextual !== undefined &&
+                callSignatures(this.context.checker, contextual, "exact")
+                    .length === 1 &&
                 contextual.getProperties().length > 0 &&
                 !mentionsTypeParameter(this.context.checker, contextual) &&
                 contextual
@@ -959,7 +926,7 @@ export class ExpressionLowerer {
                 );
             }
             if (this.context.symbols.isGlobalUndefined(unwrapped)) {
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             const numeric = this.context.libraryGlobal(unwrapped);
             if (numeric === "Infinity" || numeric === "NaN") {
@@ -1106,8 +1073,10 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathConstantAccess(unwrapped, (expression) =>
-                    this.context.libraryGlobal(expression),
+                mathConstantAccess(
+                    unwrapped,
+                    (expression) => this.context.libraryGlobal(expression),
+                    (node) => namedMember(this.context.checker, node),
                 )
             ) {
                 const staticNumber = staticNumberValue(this.context, unwrapped);
@@ -1330,26 +1299,31 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (ts.isCallExpression(unwrapped)) {
-            const joined = ts.isPropertyAccessExpression(unwrapped.expression)
-                ? this.context.unwrap(unwrapped.expression.expression)
-                : undefined;
-            // A literal with spreads joins the array it builds at run time.
+            const join = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
+            const joined = join && this.context.unwrap(join.expression);
+            // A literal of generation-known elements joins at generation; one
+            // with spreads or run-time elements joins the array it builds at
+            // run time.
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "join" &&
+                join?.name === "join" &&
                 unwrapped.arguments.length <= 1 &&
                 joined &&
                 ts.isArrayLiteralExpression(joined) &&
                 !joined.elements.some(ts.isSpreadElement)
             ) {
-                const value =
-                    this.context.evaluator.compileStringLiteral(unwrapped);
-                return {
-                    kind: "string",
-                    cpp: this.context.cppString(value),
-                    staticString: value,
-                    dataType: { kind: "string" },
-                };
+                const value = unlessRuntimeValue(() =>
+                    this.context.evaluator.compileStringLiteral(unwrapped),
+                );
+                if (value !== undefined)
+                    return {
+                        kind: "string",
+                        cpp: this.context.cppString(value),
+                        staticString: value,
+                        dataType: { kind: "string" },
+                    };
             }
             // A pure module-URL helper remains a compile-time string even
             // though its implementation uses browser URL objects. Recognize
@@ -1530,10 +1504,7 @@ export class ExpressionLowerer {
                 );
             return this.compileRegExp(pattern, flags, unwrapped, "literals");
         }
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped)
-        ) {
+        if (ts.isStringLiteralLike(unwrapped)) {
             const value = this.context.compileStringLiteral(unwrapped);
             return {
                 kind: "string",
@@ -1544,9 +1515,8 @@ export class ExpressionLowerer {
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+                "string"
         ) {
             const operands: ts.Expression[] = [];
             this.collectStringPlusOperands(unwrapped, operands);
@@ -1623,7 +1593,7 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            (!containsEvaluatedCall(unwrapped.left) ||
+            (!this.runsCode(unwrapped.left) ||
                 !this.context.evaluationOrder.writesStorage(unwrapped.left))
         ) {
             let leftValue: Value | undefined;
@@ -1634,15 +1604,15 @@ export class ExpressionLowerer {
                         leftValue,
                     );
                 },
-                (condition) => condition === "true" || condition === "false",
+                (condition) => knownCondition(condition) !== undefined,
             );
-            if (truthiness === "true" || truthiness === "false") {
+            if (knownCondition(truthiness) !== undefined) {
                 const isAnd =
                     unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken;
                 const selectsRight = isAnd
-                    ? truthiness === "true"
-                    : truthiness === "false";
+                    ? knownCondition(truthiness) === true
+                    : knownCondition(truthiness) === false;
                 return selectsRight
                     ? this.compileValue(unwrapped.right)
                     : leftValue!;
@@ -1665,9 +1635,8 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken) &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+                "string"
         ) {
             return this.context.dataLowerer.compileStringLogicalValue(
                 unwrapped,
@@ -1728,7 +1697,13 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            const compiledOperand = this.context.compileValue(expression);
+            // typeof observes an element past the end as undefined.
+            const compiledOperand =
+                (ts.isElementAccessExpression(expression)
+                    ? this.context.dataLowerer.compileGuardableElementAccess(
+                          expression,
+                      )
+                    : undefined) ?? this.context.compileValue(expression);
             // An unchecked tuple lookup can be absent even when TypeScript's
             // flow type lists only its declared lanes. typeof observes the
             // stored value before narrowing it to one of those lanes.
@@ -1738,7 +1713,16 @@ export class ExpressionLowerer {
             const operand = storedOperand?.preserveUncheckedLookup
                 ? storedOperand
                 : compiledOperand;
-            if (isUndefinedDataType(operand.dataType)) {
+            if (readsErasedVoid(this.context, operand, expression))
+                this.context.fail(
+                    expression,
+                    "typeof a void result requires a proven undefined completion.",
+                );
+            // A void call still runs for its effects.
+            if (
+                operand.kind === "void" ||
+                isUndefinedDataType(operand.dataType)
+            ) {
                 this.context.emitDiscardedValue(operand);
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
@@ -1746,7 +1730,9 @@ export class ExpressionLowerer {
             }
             if (operand.kind === "json-null") {
                 return staticStringValue(
-                    operand.cpp === "std::nullopt" ? "undefined" : "object",
+                    absenceOfNull(operand) === "undefined"
+                        ? "undefined"
+                        : "object",
                     (text) => this.context.cppString(text),
                 );
             }
@@ -1820,11 +1806,9 @@ export class ExpressionLowerer {
                             this.context.dataTypes.structCall(dataType.name) !==
                                 undefined)
                       ? "function"
-                      : operand.kind === "void"
-                        ? "undefined"
-                        : dataType
-                          ? typeofTag(dataType)
-                          : "object";
+                      : dataType
+                        ? typeofTag(dataType)
+                        : "object";
             let present = presenceCpp(operand);
             if (operand.dataType?.kind === "function") {
                 const callable = `static_cast<bool>(${operand.cpp})`;
@@ -1987,15 +1971,13 @@ export class ExpressionLowerer {
                   )
                 : value;
         });
-        // A rest parameter takes the substitutions from its position on.
-        const signature = this.context.checker.getResolvedSignature(expression);
-        const parameters = signature?.getDeclaration()?.parameters ?? [];
-        const rest = parameters.findIndex(
-            (parameter) => parameter.dotDotDotToken !== undefined,
-        );
+        // A rest parameter takes the arguments from its position on; the
+        // strings array is the first argument.
+        const declaration = calledDeclaration(this.context.checker, expression);
+        const rest = declaration && restParameterIndex(declaration);
         const arguments_: Value[] = [stringsValue, ...substitutions];
         const values =
-            rest > 0
+            rest !== undefined
                 ? [
                       ...arguments_.slice(0, rest),
                       ...(arguments_.length >= rest
@@ -2074,22 +2056,17 @@ export class ExpressionLowerer {
             const resolved = this.generationTimeNumber(node);
             if (resolved !== undefined) return resolved;
         }
-        const mathCall = mathMemberCall(node, (expression) =>
-            this.context.libraryGlobal(expression),
+        const mathCall = mathMemberCall(
+            node,
+            (expression) => this.context.libraryGlobal(expression),
+            (read) => namedMember(this.context.checker, read),
         );
-        const formatted = mathCall && FORMATTED_MATH_FOLDS.get(mathCall.name);
-        if (!mathCall || !formatted) {
-            return undefined;
-        }
+        if (!mathCall) return undefined;
         const values = mathCall.call.arguments.map((argument) =>
             this.generationTimeNumber(argument),
         );
-        const numbers = values.filter(
-            (value): value is number => value !== undefined,
-        );
-        return numbers.length === values.length &&
-            numbers.length === formatted.arity
-            ? formatted.fold(...numbers)
+        return values.every((value): value is number => value !== undefined)
+            ? foldMathCall(mathCall.name, values, true)
             : undefined;
     }
 
@@ -2174,19 +2151,11 @@ export class ExpressionLowerer {
         node: ts.Expression,
         operands: ts.Expression[],
     ): void {
-        const unwrapped = this.context.unwrap(node);
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.StringLike) !==
-                0
-        ) {
-            this.collectStringPlusOperands(unwrapped.left, operands);
-            this.collectStringPlusOperands(unwrapped.right, operands);
-            return;
-        }
-        operands.push(node);
+        operands.push(
+            ...(stringPlusOperands(this.context.checker, node, (expression) =>
+                this.context.unwrap(expression),
+            ) ?? [node]),
+        );
     }
 
     /** A local module namespace exposes value exports in lexical key order. */
@@ -2324,6 +2293,18 @@ export class ExpressionLowerer {
         };
     }
 
+    /**
+     * Whether evaluating `expression` now runs code dropping it would lose:
+     * an effect, a library number formatter's receiver aside (`n.toFixed(2)`
+     * reads one number).
+     */
+    private runsCode(expression: ts.Expression): boolean {
+        return expressionHasEffects(expression, {
+            pureCall: (call) =>
+                isLibraryNumberFormatter(this.context.checker, call),
+        });
+    }
+
     private compileBrowserValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
@@ -2331,29 +2312,40 @@ export class ExpressionLowerer {
             // state; an unclassified one would drop its effect silently.
             const callee = this.context.unwrap(unwrapped.expression);
             if (
-                (ts.isPropertyAccessExpression(callee) ||
-                    ts.isElementAccessExpression(callee)) &&
+                isMemberAccess(callee) &&
                 !this.context.browserErasure.isBrowserOwner(callee.expression)
             )
                 this.context.fail(
                     unwrapped,
                     `'${callee.getText()}' would erase on a receiver that is not browser state; lower or remove the call.`,
                 );
+            // Web IDL converts every argument at the call except a buffer
+            // source, which the browser receives by reference and may fill
+            // (`crypto.getRandomValues(bytes)`): erasing would drop the write.
+            const shared = unwrapped.arguments.find(
+                (argument) =>
+                    isBinaryDataType(
+                        this.context.dataLowerer.dataTypeAt(argument),
+                    ) &&
+                    !this.context.browserErasure.isBrowserOnlyExpression(
+                        argument,
+                    ),
+            );
+            if (shared)
+                this.context.fail(
+                    shared,
+                    `'${callee.getText()}' would erase a call handed the program's own binary data, which the browser may write; lower or remove the call.`,
+                );
             for (const argument of unwrapped.arguments) {
                 if (
-                    !containsEvaluatedCall(argument) &&
+                    !this.runsCode(argument) &&
                     !someAnalysisNode(
                         argument,
                         (node) =>
                             (ts.isPropertyAccessExpression(node) ||
                                 ts.isElementAccessExpression(node)) &&
-                            (accessedPropertySymbol(
-                                this.context.checker,
-                                node,
-                            )?.declarations?.some(
-                                ts.isGetAccessorDeclaration,
-                            ) ??
-                                false),
+                            memberAccessors(this.context.checker, node, "get")
+                                .length > 0,
                         { functions: "skip", types: "skip" },
                     )
                 ) {
@@ -2383,7 +2375,7 @@ export class ExpressionLowerer {
             case "number":
                 return {
                     kind: "number",
-                    cpp: this.context.compileNumber(expression),
+                    cpp: this.context.compileNumber(expression, "float"),
                     ...(Number.isFinite(value.browserValue.value)
                         ? {
                               staticNumber: value.browserValue.value,
@@ -2404,7 +2396,7 @@ export class ExpressionLowerer {
             case "null":
                 return { kind: "json-null", cpp: "" };
             case "undefined":
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             case "dom-rect":
             case "object":
             case "search-params":
@@ -2496,7 +2488,7 @@ export class ExpressionLowerer {
         // Reusing the member must never execute its factory again.
         if (
             isHandleKind(value.kind) &&
-            containsEvaluatedCall(expression) &&
+            this.runsCode(expression) &&
             !value.nativeBinding
         ) {
             return this.context.bindings.pinValueToTemporary(
@@ -2611,10 +2603,7 @@ export class ExpressionLowerer {
         node: ts.Expression,
         guard: () => string,
     ): Value | undefined {
-        if (
-            this.context.options.workers &&
-            someAnalysisNode(node, ts.isAwaitExpression, { functions: "skip" })
-        )
+        if (this.context.options.workers && containsSuspension(node))
             return undefined;
         // Every member is a record, a tuple, a compile-time value or a plain
         // native value the tuple can hold.
@@ -3210,7 +3199,7 @@ export class ExpressionLowerer {
             (value.kind === "void" &&
                 !value.abruptCompletion &&
                 !value.coroutineResult) ||
-            (value.kind === "json-null" && value.cpp === "std::nullopt");
+            absenceOf(value) === "undefined";
         if (
             whenTrue.kind !== whenFalse.kind &&
             undefinedArm(whenTrue) &&
@@ -3552,7 +3541,7 @@ export class ExpressionLowerer {
             ts.isVariableDeclaration(declaration) &&
             declaration.parent !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            variableKind(declaration.parent) === "const" &&
             declaration.parent.parent !== undefined &&
             ts.isVariableStatement(declaration.parent.parent) &&
             ts.isSourceFile(declaration.parent.parent.parent)
@@ -3583,8 +3572,7 @@ export class ExpressionLowerer {
             if (
                 ts.isCallExpression(link) &&
                 link.questionDotToken &&
-                (ts.isPropertyAccessExpression(link.expression) ||
-                    ts.isElementAccessExpression(link.expression))
+                isMemberAccess(link.expression)
             ) {
                 link = link.expression;
                 continue;
@@ -3601,13 +3589,9 @@ export class ExpressionLowerer {
             return undefined;
         return this.context.probeEmission(() => {
             const value = this.compileValue(receiver);
-            if (
-                value.kind !== "json-null" &&
-                !isUndefinedDataType(value.dataType)
-            )
-                return undefined;
+            if (!isAbsentValue(value)) return undefined;
             this.context.emitDiscardedValue(value);
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         });
     }
 
@@ -3619,19 +3603,14 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         target: ts.Expression,
     ): Value | undefined {
-        if (
-            !ts.isPropertyAccessExpression(target) ||
-            target.name.text !== "bind" ||
-            call.arguments.length !== 1
-        )
+        const bind = namedMember(this.context.checker, target);
+        if (bind?.name !== "bind" || call.arguments.length !== 1)
             return undefined;
-        const method = this.context.unwrap(target.expression);
-        if (
-            !ts.isPropertyAccessExpression(method) ||
-            !isEffectTaskMethodName(method.name.text)
-        )
+        const method = this.context.unwrap(bind.expression);
+        const methodName = namedMember(this.context.checker, method);
+        if (!methodName || !isEffectTaskMethodName(methodName.name))
             return undefined;
-        const owner = this.context.unwrap(method.expression);
+        const owner = this.context.unwrap(methodName.expression);
         const receiver = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(owner) ||
@@ -3648,6 +3627,19 @@ export class ExpressionLowerer {
     private compileCall(call: ts.CallExpression): Value {
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
+        // Forwarded calls, random values and borrowed prototype methods are
+        // all calls of a member with one of these names.
+        const named = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (named && FORWARDING_MEMBER_NAMES.has(named.name)) {
+            const forwarded = this.compileForwardedCall(call);
+            if (forwarded) return forwarded;
+            const random = this.compileRandomValues(call);
+            if (random) return random;
+            this.refuseBorrowedPrototypeMethod(call);
+        }
         if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
             return this.context.moduleNamespaces.compileImport(call);
         const deferred = this.context.deferredCapabilities.compile(call);
@@ -3660,13 +3652,11 @@ export class ExpressionLowerer {
                     "class constructor.",
             );
         }
-        if (
-            ts.isPropertyAccessExpression(target) &&
-            target.expression.kind === ts.SyntaxKind.SuperKeyword
-        ) {
+        const targetMember = namedMember(this.context.checker, target);
+        if (targetMember?.expression.kind === ts.SyntaxKind.SuperKeyword) {
             return this.context.classLowerer.compileSuperMethodCall(
                 call,
-                target,
+                targetMember,
             );
         }
         const boundTaskMethod = this.boundEffectTaskMethod(call, target);
@@ -3730,10 +3720,11 @@ export class ExpressionLowerer {
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
-            const callee = this.context.unwrap(call.expression);
             if (
-                !ts.isPropertyAccessExpression(callee) ||
-                this.context.libraryGlobal(callee.expression) !== "navigator"
+                libraryStaticMember(
+                    this.context.checker,
+                    this.context.unwrap(call.expression),
+                )?.owner !== "navigator"
             )
                 return this.context.fail(
                     call,
@@ -3855,95 +3846,20 @@ export class ExpressionLowerer {
             const animationFrame = this.context.compileAnimationFrameCall(call);
             if (animationFrame) return animationFrame;
         }
-        if (ts.isPropertyAccessExpression(callee)) {
-            const value = this.compilePropertyCall(callee, call);
+        // `o.m(...)` and `o["m"](...)` are one named call.
+        const member = namedMember(this.context.checker, callee);
+        if (member) {
+            const value = this.compilePropertyCall(member, call);
             if (value) return value;
-        }
-        if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
-            return this.context.userFunctions.compileCallbackCall(
-                this.context,
-                call,
-                callee,
-            );
-        }
-        if (
-            ts.isCallExpression(callee) ||
-            ts.isBinaryExpression(callee) ||
-            ts.isConditionalExpression(callee)
-        ) {
-            const called = this.compileCallableValueCall(
-                call,
-                callee,
-                this.compileValue(callee),
-            );
-            if (called) return called;
-        }
-        if (ts.isElementAccessExpression(callee)) {
-            let callable = this.compileValue(call.expression);
-            if (callable.kind === "callback" && callable.callbackDeclaration) {
-                const native =
-                    this.context.userFunctions.compileNativeCallbackCall(
-                        this.context,
-                        call,
-                        callable,
-                    );
-                if (native) return native;
-                const declaration = callable.callbackDeclaration;
-                const owner = callable.callbackRecordOwner;
-                const inBodyScope = <T>(work: () => T): T =>
-                    owner
-                        ? this.context.withRecordScopes(
-                              owner,
-                              work,
-                              declaration,
-                          )
-                        : work();
-                return ts.isIdentifier(declaration)
-                    ? this.context.userFunctions.compile(
-                          this.context,
-                          call,
-                          declaration,
-                          inBodyScope,
-                      )!
-                    : this.context.userFunctions.compileCallbackCall(
-                          this.context,
-                          call,
-                          declaration,
-                          inBodyScope,
-                      );
-            }
-            if (
-                hasNonNullAssertion(call.expression) &&
-                callable.kind === "data"
-            ) {
-                callable = this.context.dataLowerer.narrowOptional(
-                    callable,
-                    call.expression,
-                    true,
-                );
-            }
-            if (
-                callable.kind === "data" &&
-                callable.dataType?.kind === "function"
-            ) {
-                return this.context.dataLowerer.compileStoredCall(
-                    call,
-                    callable.cpp,
-                    callable.dataType,
-                );
-            }
-            const recordCall =
-                this.context.dataLowerer.compileCallableRecordCall(
-                    call,
-                    callable,
-                );
-            if (recordCall) return recordCall;
+        } else if (
+            ts.isElementAccessExpression(callee) &&
+            staticAccessKey(this.context.checker, callee) !== undefined
+        )
+            // The checker names the member, but its key runs code first.
             this.context.fail(
-                callee,
-                `Indexed call target resolved to ${callable.kind}` +
-                    `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
+                callee.argumentExpression,
+                "A method key that runs code (a call or a getter) is not lowered; read it into a const first.",
             );
-        }
         const uriFunction = URI_FUNCTIONS.get(
             this.context.libraryGlobal(callee) ?? "",
         );
@@ -4037,25 +3953,118 @@ export class ExpressionLowerer {
             };
         }
 
-        if (!ts.isIdentifier(callee)) {
-            const predicate = compileArrayPredicateOverData(
-                this.context.dataLowerer,
+        // A library static read through the owner, dotted or keyed, ahead
+        // of the run-time element call below.
+        const predicate = compileArrayPredicateOverData(
+            this.context.dataLowerer,
+            call,
+        );
+        if (predicate) return predicate;
+        if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+            return this.context.userFunctions.compileCallbackCall(
+                this.context,
                 call,
+                callee,
             );
-            if (predicate) {
-                return predicate;
+        }
+        if (
+            ts.isCallExpression(callee) ||
+            ts.isBinaryExpression(callee) ||
+            ts.isConditionalExpression(callee)
+        ) {
+            const called = this.compileCallableValueCall(
+                call,
+                callee,
+                this.compileValue(callee),
+            );
+            if (called) return called;
+        }
+        if (
+            ts.isElementAccessExpression(callee) &&
+            ts.isOptionalChain(callee)
+        ) {
+            // `owner?.[key](...)`: the chain's absence skips the call.
+            const called = this.context.probeEmission(() =>
+                this.context.dataLowerer.optionalElementCall(
+                    this.compileValue(callee.expression),
+                    call,
+                    callee,
+                ),
+            );
+            if (called) return called;
+        }
+        if (ts.isElementAccessExpression(callee)) {
+            let callable = this.compileValue(call.expression);
+            if (callable.kind === "callback" && callable.callbackDeclaration) {
+                const native =
+                    this.context.userFunctions.compileNativeCallbackCall(
+                        this.context,
+                        call,
+                        callable,
+                    );
+                if (native) return native;
+                const declaration = callable.callbackDeclaration;
+                const inBodyScope = <T>(work: () => T): T =>
+                    this.context.withCallbackScopes(
+                        callable,
+                        work,
+                        declaration,
+                    );
+                return ts.isIdentifier(declaration)
+                    ? this.context.userFunctions.compile(
+                          this.context,
+                          call,
+                          declaration,
+                          inBodyScope,
+                      )!
+                    : this.context.userFunctions.compileCallbackCall(
+                          this.context,
+                          call,
+                          declaration,
+                          inBodyScope,
+                      );
             }
+            if (
+                hasNonNullAssertion(call.expression) &&
+                callable.kind === "data"
+            ) {
+                callable = this.context.dataLowerer.narrowOptional(
+                    callable,
+                    call.expression,
+                    true,
+                );
+            }
+            if (
+                callable.kind === "data" &&
+                callable.dataType?.kind === "function"
+            ) {
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callable.cpp,
+                    callable.dataType,
+                );
+            }
+            const recordCall =
+                this.context.dataLowerer.compileCallableRecordCall(
+                    call,
+                    callable,
+                );
+            if (recordCall) return recordCall;
+            this.context.fail(
+                callee,
+                `Indexed call target resolved to ${callable.kind}` +
+                    `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
+            );
+        }
+        if (!ts.isIdentifier(callee)) {
+            const member = namedMember(this.context.checker, callee);
+            const field =
+                member && namedMember(this.context.checker, member.expression);
             const receiver =
-                ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression)
-                    ? this.context.bindings.lookupOptional(callee.expression)
-                    : ts.isPropertyAccessExpression(callee) &&
-                        ts.isPropertyAccessExpression(callee.expression) &&
-                        callee.expression.expression.kind ===
-                            ts.SyntaxKind.ThisKeyword
-                      ? this.context.resolveThisField(
-                            callee.expression.name.text,
-                        )
+                member && ts.isIdentifier(member.expression)
+                    ? this.context.bindings.lookupOptional(member.expression)
+                    : field?.expression.kind === ts.SyntaxKind.ThisKeyword
+                      ? this.context.resolveThisField(field.name)
                       : undefined;
             this.context.fail(
                 callee,
@@ -4083,9 +4092,8 @@ export class ExpressionLowerer {
             const coerced = staticStringCoercion(value);
             this.context.reachJsData();
             if (value.kind === "json-null") {
-                return staticStringValue(
-                    value.cpp === "std::nullopt" ? "undefined" : "null",
-                    (text) => this.context.cppString(text),
+                return staticStringValue(absenceOfNull(value), (text) =>
+                    this.context.cppString(text),
                 );
             }
             // `String(symbol)` is its description text, as `toString()`.
@@ -4179,13 +4187,9 @@ export class ExpressionLowerer {
         if (fetched) return fetched;
 
         const bound = this.context.bindings.lookupOptional(callee);
-        if (
-            call.questionDotToken &&
-            bound &&
-            isAbsentValue(bound)
-        ) {
+        if (call.questionDotToken && bound && isAbsentValue(bound)) {
             this.context.emitDiscardedValue(bound);
-            return { kind: "json-null", cpp: "std::nullopt" };
+            return undefinedValue();
         }
         if (bound?.kind === "callback") {
             const recursive =
@@ -4204,12 +4208,7 @@ export class ExpressionLowerer {
                 );
             }
             const inRecordScope = <T>(work: () => T): T =>
-                bound.callbackRecordOwner
-                    ? this.context.withRecordScopes(
-                          bound.callbackRecordOwner,
-                          work,
-                      )
-                    : work();
+                this.context.withCallbackScopes(bound, work);
             const result = ts.isIdentifier(bound.callbackDeclaration)
                 ? this.context.userFunctions.compile(
                       this.context,
@@ -4440,12 +4439,7 @@ export class ExpressionLowerer {
                     call,
                 );
             };
-            return callable.callbackRecordOwner
-                ? this.context.withRecordScopes(
-                      callable.callbackRecordOwner,
-                      invoke,
-                  )
-                : invoke();
+            return this.context.withCallbackScopes(callable, invoke);
         }
         if (callable.kind === "data" && callable.dataType?.kind === "function")
             return this.context.dataLowerer.compileStoredCall(
@@ -4705,21 +4699,19 @@ export class ExpressionLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            callee &&
             this.context.dataLowerer.prefersRuntimeTupleIteration(
                 callee.expression,
                 callback,
             )
         )
             return undefined;
-        const local =
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback) ||
-            ts.isIdentifier(callback)
-                ? callback
-                : undefined;
+        const local = localCallback(callback);
         // Static iterations specialize local callbacks with their exact inputs.
         // Resource results can carry loader metadata without an erased stored
         // function signature; already stored callbacks retain that signature.
@@ -4734,12 +4726,11 @@ export class ExpressionLowerer {
                       "tuple",
                   )
                 : undefined;
-        if (!local && !stored) {
+        if (!local && !stored)
             this.context.fail(
                 callback,
-                `Compile-time Array.${method} requires a local function or function literal callback.`,
+                `Compile-time Array.${method} requires a represented callback.`,
             );
-        }
         const elements = owner.tupleElements ?? [];
         const invoke = (element: Value, index: number): Value => {
             const values: Value[] = [
@@ -4870,11 +4861,7 @@ export class ExpressionLowerer {
     ): Value {
         if (
             ts.isIdentifier(callback) ||
-            ts
-                .getModifiers(callback)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                ) ||
+            isAsyncFunction(callback) ||
             callback.parameters.length === 0 ||
             !ts.isArrayBindingPattern(callback.parameters[0]!.name)
         ) {
@@ -4897,28 +4884,10 @@ export class ExpressionLowerer {
             this.context.allocateUserFunctionPrefix(),
         );
         try {
-            const pattern = callback.parameters[0]!.name;
-            pattern.elements.forEach((binding, index) => {
-                if (ts.isOmittedExpression(binding)) return;
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer ||
-                    binding.dotDotDotToken
-                ) {
-                    this.context.fail(
-                        binding,
-                        "Static tuple callback bindings must be plain identifiers.",
-                    );
-                }
-                const value = tuple.tupleElements?.[index];
-                if (!value) {
-                    this.context.fail(
-                        binding,
-                        "Static tuple callback binding exceeds the tuple width.",
-                    );
-                }
-                this.context.bindings.bindLocalValue(binding.name, value);
-            });
+            this.context.declarations.bindPattern(
+                callback.parameters[0]!.name,
+                tuple,
+            );
             callback.parameters.slice(1).forEach((parameter, index) => {
                 if (
                     !ts.isIdentifier(parameter.name) ||
@@ -4944,12 +4913,8 @@ export class ExpressionLowerer {
             });
             if (ts.isBlock(callback.body)) {
                 const statements = callback.body.statements;
-                const finalStatement = statements.at(-1);
-                if (
-                    finalStatement &&
-                    ts.isReturnStatement(finalStatement) &&
-                    finalStatement.expression
-                ) {
+                const finalStatement = finalReturn(callback.body);
+                if (finalStatement?.expression) {
                     const earlierReturn = firstReturn(statements.slice(0, -1));
                     if (earlierReturn) {
                         this.context.fail(
@@ -5008,34 +4973,19 @@ export class ExpressionLowerer {
     /**
      * An index of an absent (null or undefined) receiver: an optional chain
      * short-circuits to undefined without evaluating the key; any other read
-     * evaluates the key, then throws JavaScript's TypeError, typed as the
-     * element it would have read.
+     * evaluates the key, then throws JavaScript's TypeError.
      */
     private compileAbsentElementAccess(
         unwrapped: ts.ElementAccessExpression,
+        owner: Value,
     ): Value {
-        if (unwrapped.questionDotToken)
-            return { kind: "json-null", cpp: "std::nullopt" };
-        const type = this.context.dataLowerer.dataTypeAt(unwrapped);
-        if (!type)
-            return this.context.fail(
-                unwrapped.expression,
-                "Element access is not supported for json-null.",
-            );
-        this.context.emitDiscardedValue(
-            this.compileValue(unwrapped.argumentExpression),
-        );
-        const absent = nullability(
-            this.context.checker.getTypeAtLocation(
-                this.context.unwrap(unwrapped.expression),
-            ),
-        );
-        this.context.reachJsData();
-        return this.context.dataLowerer.leafValue(
-            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${this.context.cppString(
-                `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
-            )})`,
-            type,
+        if (unwrapped.questionDotToken) return undefinedValue();
+        const key = this.compileValue(unwrapped.argumentExpression);
+        this.context.emitDiscardedValue(key);
+        return this.context.propertyAccess.absentReceiverRead(
+            unwrapped,
+            absenceOfNull(owner),
+            staticKeyOf(key),
         );
     }
 
@@ -5091,6 +5041,7 @@ export class ExpressionLowerer {
             const guardable =
                 this.context.dataLowerer.compileGuardableElementAccess(
                     unwrapped,
+                    false,
                 );
             if (guardable) return guardable;
         }
@@ -5103,9 +5054,9 @@ export class ExpressionLowerer {
             );
             const condition = selection.cpp;
             const selectedOwner =
-                condition === "true"
+                knownCondition(condition) === true
                     ? ownerExpression.whenTrue
-                    : condition === "false"
+                    : knownCondition(condition) === false
                       ? ownerExpression.whenFalse
                       : undefined;
             const indexed = (owner: ts.Expression): Value =>
@@ -5154,9 +5105,13 @@ export class ExpressionLowerer {
         if (collectionElement) {
             return collectionElement;
         }
-        const owner = this.compileValue(unwrapped.expression);
+        const owner = voidReceiver(
+            this.context,
+            this.compileValue(unwrapped.expression),
+            unwrapped.expression,
+        );
         if (owner.kind === "json-null")
-            return this.compileAbsentElementAccess(unwrapped);
+            return this.compileAbsentElementAccess(unwrapped, owner);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -5372,15 +5327,11 @@ export class ExpressionLowerer {
                 ) {
                     // A lookup's local table would recreate scalarized entries on
                     // every call. Retain the dictionary at its source declaration.
-                    const declaration = this.context.bindings.recordDeclaration(
+                    requireHeldRecordStorage(
+                        this.context,
                         owner,
                         unwrapped.expression,
                     );
-                    if (declaration)
-                        throw new DynamicBindingStorageRequired(
-                            declaration,
-                            "source",
-                        );
                 }
                 const keyType = this.context.checker.getTypeAtLocation(
                     unwrapped.argumentExpression,
@@ -5435,15 +5386,11 @@ export class ExpressionLowerer {
                     // Factory results may already be native leaves. Their
                     // captured owners cannot be hoisted, nor reconstructed
                     // on every lookup of the original dictionary.
-                    const declaration = this.context.bindings.recordDeclaration(
+                    requireHeldRecordStorage(
+                        this.context,
                         owner,
                         unwrapped.expression,
                     );
-                    if (declaration)
-                        throw new DynamicBindingStorageRequired(
-                            declaration,
-                            "source",
-                        );
                 }
                 for (const line of entryLines) this.context.emit(line);
                 this.context.reachJsData();
@@ -5536,8 +5483,7 @@ export class ExpressionLowerer {
                     )
                 )
                     return {
-                        kind: "json-null",
-                        cpp: "std::nullopt",
+                        ...undefinedValue(),
                         preserveUncheckedLookup: true,
                     };
                 this.context.fail(
@@ -5551,15 +5497,11 @@ export class ExpressionLowerer {
         // undefined (`(42)["format"]`).
         if (owner.kind === "number" || owner.kind === "boolean") {
             const key = this.compileValue(unwrapped.argumentExpression);
-            const name =
-                key.staticString ??
-                (key.staticNumber !== undefined
-                    ? String(key.staticNumber)
-                    : undefined);
+            const name = staticKeyOf(key);
             if (name !== undefined && !PRIMITIVE_PROTOTYPE_MEMBERS.has(name)) {
                 this.context.emitDiscardedValue(owner);
                 this.context.emitDiscardedValue(key);
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
         }
         if (owner.kind !== "tuple") {
@@ -5623,26 +5565,15 @@ export class ExpressionLowerer {
         }
         const value = owner.tupleElements?.[staticIndex];
         if (!value) {
-            const resultType =
-                this.context.checker.getTypeAtLocation(unwrapped);
-            const resultMembers =
-                (resultType.flags & ts.TypeFlags.Union) !== 0
-                    ? (resultType as ts.UnionType).types
-                    : [resultType];
             if (
-                resultMembers.some(
-                    (member) =>
-                        (member.flags &
-                            (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                        0,
-                ) ||
+                isNullable(this.context.checker.getTypeAtLocation(unwrapped)) ||
                 (ts.isBinaryExpression(unwrapped.parent) &&
                     unwrapped.parent.left === unwrapped &&
                     unwrapped.parent.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken)
             ) {
                 // A lane past the tuple's end reads as `undefined`.
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             this.context.fail(
                 unwrapped,
@@ -5659,17 +5590,7 @@ export class ExpressionLowerer {
      */
     private compileSelectedOperand(expression: ts.Expression): Value {
         const value = this.context.compileValue(expression);
-        if (
-            value.kind === "void" &&
-            !value.abruptCompletion &&
-            !value.coroutineResult &&
-            !value.erasedVoidCompletion &&
-            provenUndefinedValue(this.context, expression)
-        ) {
-            this.context.emitDiscardedValue(value);
-            return { kind: "json-null", cpp: "std::nullopt" };
-        }
-        return value;
+        return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
     private compileConditionalValue(
@@ -5691,7 +5612,7 @@ export class ExpressionLowerer {
                 ? browserCondition.value
                     ? "true"
                     : "false"
-                : !containsEvaluatedCall(unwrapped.condition) ||
+                : !this.runsCode(unwrapped.condition) ||
                     !this.context.evaluationOrder.writesStorage(
                         unwrapped.condition,
                     )
@@ -5700,17 +5621,16 @@ export class ExpressionLowerer {
                             this.context.conditions.compileCondition(
                                 unwrapped.condition,
                             ),
-                        (condition) =>
-                            condition === "true" || condition === "false",
+                        (condition) => knownCondition(condition) !== undefined,
                     )
                   : undefined;
-        if (foldedCondition === "true" || foldedCondition === "false") {
+        if (knownCondition(foldedCondition) !== undefined) {
             const taken =
-                foldedCondition === "true"
+                knownCondition(foldedCondition) === true
                     ? unwrapped.whenTrue
                     : unwrapped.whenFalse;
             const dropped =
-                foldedCondition === "true"
+                knownCondition(foldedCondition) === true
                     ? unwrapped.whenFalse
                     : unwrapped.whenTrue;
             const selected = this.compileSelectedOperand(taken);
@@ -5768,9 +5688,11 @@ export class ExpressionLowerer {
                 : undefined);
         if (
             !inferred &&
-            (this.context.checker
-                .getTypeAtLocation(unwrapped)
-                .getCallSignatures().length > 0 ||
+            (callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(unwrapped),
+                "exact",
+            ).length > 0 ||
                 this.context.symbols.isNullishLiteral(
                     this.context.unwrap(unwrapped.whenTrue),
                 ) ||
@@ -5792,11 +5714,11 @@ export class ExpressionLowerer {
         // holding either Float32Array) selects that typed array itself.
         const checkerTyped = (arm: ts.Expression): boolean =>
             TYPED_ARRAY_KINDS.has(
-                this.context.checker
-                    .getNonNullableType(
+                libraryName(
+                    this.context.checker.getNonNullableType(
                         this.context.checker.getTypeAtLocation(arm),
-                    )
-                    .getSymbol()?.name ?? "",
+                    ),
+                ) ?? "",
             );
         if (
             (inferred?.kind === "vector" || inferred?.kind === "span") &&
@@ -5911,12 +5833,12 @@ export class ExpressionLowerer {
             const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
-            if (condition === "true" || condition === "false") {
+            if (knownCondition(condition) !== undefined) {
                 // Keep the selected Value's generation-known metadata.
                 // A string-only sink would discard staticNumber, for
                 // example when the chosen number configures engine MSAA.
                 return this.compileSelectedOperand(
-                    condition === "true"
+                    knownCondition(condition) === true
                         ? unwrapped.whenTrue
                         : unwrapped.whenFalse,
                 );
@@ -5972,9 +5894,11 @@ export class ExpressionLowerer {
             this.context.conditions.compileCondition(unwrapped.condition),
         );
         const condition = selection.cpp;
-        if (condition === "true" || condition === "false") {
+        if (knownCondition(condition) !== undefined) {
             return this.compileSelectedOperand(
-                condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,
+                knownCondition(condition) === true
+                    ? unwrapped.whenTrue
+                    : unwrapped.whenFalse,
             );
         }
         const jsonConditional = this.tryCompileJsonConditional(
@@ -5986,32 +5910,24 @@ export class ExpressionLowerer {
             const value = this.compileValue(expression);
             const guard = this.context.unwrap(unwrapped.condition);
             const selected = this.context.unwrap(expression);
+            const comparison = nullishComparison(this.context.checker, guard);
+            // The arm where the test failed holds a present value, unless a
+            // strict test leaves the other nullish value possible.
             if (
                 value.dataType?.kind !== "optional" ||
                 !ts.isIdentifier(selected) ||
-                !ts.isBinaryExpression(guard)
+                !comparison ||
+                truth !== comparison.negated ||
+                (!comparison.loose &&
+                    typeMayHoldNullish(
+                        this.context.checker,
+                        comparison.tested,
+                        comparison.literal === "null" ? "undefined" : "null",
+                    ))
             )
                 return value;
-            const equal =
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
-            const unequal =
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-                guard.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsToken;
-            if ((!equal && !unequal) || truth === equal) return value;
-            const absent = (node: ts.Expression): boolean =>
-                this.context.symbols.isNullishLiteral(
-                    this.context.unwrap(node),
-                );
-            const tested = absent(guard.left)
-                ? this.context.unwrap(guard.right)
-                : absent(guard.right)
-                  ? this.context.unwrap(guard.left)
-                  : undefined;
-            return tested &&
+            const tested = this.context.unwrap(comparison.tested);
+            return ts.isIdentifier(tested) &&
                 ts.isIdentifier(tested) &&
                 declaredSymbol(this.context.checker, tested) ===
                     declaredSymbol(this.context.checker, selected)
@@ -6404,6 +6320,9 @@ export class ExpressionLowerer {
             );
         };
         for (const [index, property] of unwrapped.properties.entries()) {
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
                 refuseErrorReflection(this.context, spread, property);
@@ -6458,6 +6377,17 @@ export class ExpressionLowerer {
                 }
                 // `...undefined` and `...null` spread no key at all.
                 if (spread.kind === "void" || spread.kind === "json-null") {
+                    if (
+                        readsErasedVoid(
+                            this.context,
+                            spread,
+                            property.expression,
+                        )
+                    )
+                        this.context.fail(
+                            property,
+                            "Spreading a void result requires a proven undefined completion.",
+                        );
                     this.context.emitDiscardedValue(spread);
                     continue;
                 }
@@ -6515,7 +6445,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isGetAccessorDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6529,7 +6459,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isSetAccessorDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6543,7 +6473,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isMethodDeclaration(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6554,7 +6484,7 @@ export class ExpressionLowerer {
                 continue;
             }
             if (ts.isPropertyAssignment(property)) {
-                const name = this.context.propertyName(property.name);
+                const name = this.context.compilePropertyKey(property.name);
                 if (!name) {
                     this.context.fail(
                         property.name,
@@ -6636,8 +6566,8 @@ export class ExpressionLowerer {
                 ? {
                       recordPropertyOrder: [...ownKeys],
                       ...this.context.captureRecordScopes(),
-                      ...(this.context.isInRuntimeIteration() ||
-                      this.context.isInNativeFunctionBody()
+                      // Its methods take the record itself as `this`.
+                      ...(this.context.isFunctionEvaluationRepeated(undefined)
                           ? {
                                 repeatedCallbackEvaluation: true as const,
                             }
@@ -6654,16 +6584,7 @@ export class ExpressionLowerer {
         // returns. Allocate its mutable fields before either branch calls it.
         const asyncReceiver =
             this.context.options.workers &&
-            Object.values(methods).some(
-                (method) =>
-                    !ts.isIdentifier(method) &&
-                    ts
-                        .getModifiers(method)
-                        ?.some(
-                            (modifier) =>
-                                modifier.kind === ts.SyntaxKind.AsyncKeyword,
-                        ),
-            );
+            Object.values(methods).some(isAsyncFunction);
         return asyncReceiver
             ? this.context.bindings.materializeEscapingValue(
                   record,
@@ -6673,17 +6594,16 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `f.bind(thisArg, a, b)`: a fresh function of the parameters after the
-     * bound ones. The bound arguments are read once, in order after the
-     * target and thisArg, when `bind` runs; each call passes them before its
-     * own arguments. Bound arguments past the parameters are read and
-     * ignored, as the target ignores them.
+     * `f.bind(thisArg, ...bound)`: a fresh function of the parameters after
+     * the bound arguments, which are read once when `bind` runs and lead each
+     * call's own; past the parameters they are read and ignored, and into a
+     * rest parameter they lead its array. The target never reads `receiver`.
      */
     private compilePartialBind(
         call: ts.CallExpression,
         target: string,
         type: DataType<"function">,
-        receiverCpp: string,
+        receiver: string,
     ): Value {
         const bound = call.arguments.slice(1);
         if (type.erasedParameters?.length || type.generic)
@@ -6691,37 +6611,33 @@ export class ExpressionLowerer {
                 call,
                 "Function.bind with arguments requires represented parameter lanes.",
             );
-        if (
-            type.restParameter !== undefined &&
-            bound.length > type.restParameter
-        )
-            this.context.fail(
-                call,
-                "Function.bind cannot bind arguments into a rest parameter.",
-            );
         const spread = bound.find(ts.isSpreadElement);
         if (spread)
             this.context.fail(
                 spread,
                 "Function.bind takes its bound arguments separately.",
             );
-        if (bound.length > type.parameters.length)
+        const restIndex = type.restParameter ?? Number.POSITIVE_INFINITY;
+        const rest =
+            bound.length > restIndex ? type.parameters[restIndex] : undefined;
+        if (rest && rest.kind !== "vector")
+            return this.context.fail(
+                call,
+                "Function.bind into a rest parameter requires an array rest parameter.",
+            );
+        if (!rest && bound.length > type.parameters.length)
             this.context.dataLowerer.noteArgumentsPastSignature(
                 type,
                 "passes",
                 call,
             );
-        const receiver =
-            this.context.allocateTemporaryCppName("bound_receiver");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: receiver,
-            initializer: receiverCpp,
-        });
-        const boundCpp: string[] = [];
+        const fixed: string[] = [];
+        const elements: string[] = [];
         bound.forEach((argument, index) => {
-            const parameter = type.parameters[index];
+            const parameter =
+                rest && index >= restIndex
+                    ? rest.element
+                    : type.parameters[index];
             if (!parameter) {
                 this.context.emitDiscardedValue(this.compileValue(argument));
                 return;
@@ -6737,85 +6653,255 @@ export class ExpressionLowerer {
                     parameter,
                 ),
             });
-            boundCpp.push(name);
+            (rest && index >= restIndex ? elements : fixed).push(name);
         });
-        const count = Math.min(bound.length, type.parameters.length);
+        const count = fixed.length;
         const optionalParameters = (type.optionalParameters ?? [])
             .filter((index) => index >= count)
             .map((index) => index - count);
-        const { optionalParameters: _optional, restParameter, ...rest } = type;
+        const {
+            optionalParameters: _optional,
+            restParameter,
+            ...signature
+        } = type;
         void _optional;
-        const result: DataType<"function"> = {
-            ...rest,
-            parameters: type.parameters.slice(count),
-            identity: true,
-            ...(restParameter === undefined
-                ? {}
-                : { restParameter: restParameter - count }),
-            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
-        };
+        const result: DataType<"function"> = rest
+            ? {
+                  ...signature,
+                  parameters: [rest],
+                  restParameter: 0,
+                  identity: true,
+              }
+            : {
+                  ...signature,
+                  parameters: type.parameters.slice(count),
+                  identity: true,
+                  ...(restParameter === undefined
+                      ? {}
+                      : { restParameter: restParameter - count }),
+                  ...(optionalParameters.length > 0
+                      ? { optionalParameters }
+                      : {}),
+              };
         this.context.reachJsData();
+        const resultCpp = this.context.dataTypes.cppType(result);
         return {
             kind: "data",
             dataType: result,
             freshData: true,
-            cpp: `bbl::js::bind_callback_arguments<${this.context.dataTypes.cppType(result)}>(${[target, receiver, ...boundCpp].join(", ")})`,
+            cpp: rest
+                ? `bbl::js::bind_callback_rest<${resultCpp}>(${[target, receiver, `${this.context.dataTypes.cppType(rest)}{${elements.join(", ")}}`, ...fixed].join(", ")})`
+                : `bbl::js::bind_callback_arguments<${resultCpp}>(${[target, receiver, ...fixed].join(", ")})`,
         };
     }
 
     /**
-     * `f.call(thisArg, ...args)` on a named function that declares or reads
-     * its `this`: the function runs with `this` bound to thisArg, which is
-     * read before the arguments, as each argument is read before the next.
+     * A named function that declares or reads its `this`, which a receiver
+     * binds, with the value its name holds in scope.
      */
-    private compileReceiverCall(
-        call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
-    ): Value | undefined {
-        const target = this.context.unwrap(callee.expression);
-        if (
-            !ts.isIdentifier(target) ||
-            this.context.bindings.lookupOptional(target) !== undefined
-        )
-            return undefined;
+    private dynamicThisFunction(
+        expression: ts.Expression | undefined,
+    ): { name: ts.Identifier; binding: Value | undefined } | undefined {
+        const target = expression && this.context.unwrap(expression);
+        if (!target || !ts.isIdentifier(target)) return undefined;
+        // A name may hold that function itself, not another function value.
+        const bound = this.context.bindings.lookupOptional(target);
+        if (bound && bound.kind !== "callback") return undefined;
         const declaration = tryResolveFunctionDeclaration(
             this.context.checker,
             target,
         );
         if (
-            !declaration ||
-            !(
-                ts.isFunctionDeclaration(declaration) ||
-                ts.isFunctionExpression(declaration)
-            ) ||
-            !(
-                functionUsesDynamicThis(declaration) ||
-                this.context.checker.getSignatureFromDeclaration(declaration)
-                    ?.thisParameter
-            ) ||
-            call.arguments.length === 0 ||
-            call.arguments.some(ts.isSpreadElement)
+            bound &&
+            callbackFunction(this.context.checker, bound) !== declaration
         )
             return undefined;
-        const pins = this.context.evaluationOrder.operandsToPin(call.arguments);
-        const values = call.arguments.map((argument, index) => {
-            const value = this.compileValue(argument);
+        return declaration &&
+            (ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)) &&
+            (functionUsesDynamicThis(declaration) ||
+                this.context.checker.getSignatureFromDeclaration(declaration)
+                    ?.thisParameter)
+            ? { name: target, binding: bound }
+            : undefined;
+    }
+
+    /**
+     * A dynamic-`this` function run on a receiver it is handed:
+     * `f.call(thisArg, ...args)`, `f.apply(thisArg, [...args])` and
+     * `Reflect.apply(f, thisArg, [...args])` run `f` with `this` bound to
+     * thisArg, read before the arguments, as each argument before the next.
+     * `f.bind(thisArg, ...bound)(...args)` runs `f` once the same way.
+     */
+    private compileForwardedCall(call: ts.CallExpression): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        const bound =
+            ts.isCallExpression(callee) &&
+            forwardedCallShape(this.context.checker, callee)?.method === "bind"
+                ? callee
+                : undefined;
+        const shape = forwardedCallShape(this.context.checker, bound ?? call);
+        const target =
+            shape && (bound || shape.method !== "bind")
+                ? this.dynamicThisFunction(shape.target)?.name
+                : undefined;
+        if (!shape || !target) return undefined;
+        const listed = bound
+            ? [...bound.arguments, ...call.arguments]
+            : call.arguments;
+        const receiver = listed[shape.receiver];
+        const list = shape.spread
+            ? listed[shape.receiver + 1] &&
+              this.context.unwrap(listed[shape.receiver + 1]!)
+            : undefined;
+        if (
+            !receiver ||
+            listed.some(ts.isSpreadElement) ||
+            (shape.spread &&
+                list !== undefined &&
+                (!ts.isArrayLiteralExpression(list) ||
+                    list.elements.some(ts.isSpreadElement)))
+        )
+            return this.context.fail(
+                call,
+                "A dynamic-this function runs on a receiver it is handed with its arguments listed: separately, or as an array literal.",
+            );
+        const operands = [
+            receiver,
+            ...(shape.spread
+                ? list && ts.isArrayLiteralExpression(list)
+                    ? list.elements
+                    : []
+                : listed.slice(1)),
+        ];
+        const pins = this.context.evaluationOrder.operandsToPin(operands);
+        const values = operands.map((operand, index) => {
+            const value = this.compileValue(operand);
             return pins[index]
-                ? pinOperand(this.context, value, argument, "call_argument")
+                ? pinOperand(this.context, value, operand, "call_argument")
                 : value;
         });
-        const previous = this.context.activeThis();
-        this.context.defineThis(values[0]);
-        try {
-            return this.context.userFunctions.compileCallbackWithValues(
+        return this.context.withThis(values[0], () =>
+            this.context.userFunctions.compileCallbackWithValues(
                 this.context,
                 target,
                 values.slice(1),
                 call,
+            ),
+        );
+    }
+
+    /**
+     * A library prototype's method run on another receiver
+     * (`Array.prototype.push.call(list, x)`) is not lowered; the method
+     * called on the receiver itself is. `Object.prototype.hasOwnProperty`
+     * has its own lowering.
+     */
+    private refuseBorrowedPrototypeMethod(call: ts.CallExpression): void {
+        const borrowed = borrowedPrototypeMethod(this.context.checker, call);
+        if (
+            !borrowed ||
+            (borrowed.owner === "Object" &&
+                borrowed.method === "hasOwnProperty" &&
+                borrowed.invoke === "call")
+        )
+            return;
+        this.context.fail(
+            call,
+            `${borrowed.owner}.prototype.${borrowed.method}.${borrowed.invoke} borrows a library method for another receiver; call the method on that receiver.`,
+        );
+    }
+
+    /**
+     * `crypto.getRandomValues(array)`: fills an integer typed array with
+     * random bits from the host's entropy source and returns that array.
+     */
+    private compileRandomValues(call: ts.CallExpression): Value | undefined {
+        if (
+            resolvedDomApi(this.context.checker, call) !==
+            CRYPTO_GET_RANDOM_VALUES
+        )
+            return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const argument = argumentAt(call, 0);
+        const array = this.compileValue(argument);
+        const type = array.dataType;
+        if (
+            array.kind !== "data" ||
+            !type ||
+            !isTypedArrayType(type) ||
+            type.kind === "f32array" ||
+            type.kind === "f64array"
+        )
+            return this.context.fail(
+                argument,
+                "crypto.getRandomValues fills an integer typed array.",
             );
-        } finally {
-            this.context.defineThis(previous);
-        }
+        const filled = this.context.bindings.pinValueToTemporary(
+            array,
+            "random_values",
+            argument,
+        );
+        this.context.reachFeature("data:crypto", call);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::js::fill_random_values(${filled.cpp});`,
+        });
+        return filled;
+    }
+
+    /**
+     * `f.bind(thisArg, ...args)` on a dynamic-`this` function: a new
+     * function value whose body runs on thisArg, read once here, with the
+     * bound arguments ahead of each call's own.
+     */
+    private compileReceiverBind(
+        call: ts.CallExpression,
+        callee: NamedMember,
+    ): Value | undefined {
+        const bindable = this.dynamicThisFunction(callee.expression);
+        if (!bindable) return undefined;
+        const target = bindable.name;
+        const argument = call.arguments[0];
+        if (!argument || ts.isSpreadElement(argument))
+            return this.context.fail(
+                call,
+                "Binding a dynamic-this function takes its receiver as a separate first argument.",
+            );
+        const type = this.context.dataLowerer.dataTypeAt(target);
+        if (type?.kind !== "function")
+            return this.context.fail(
+                call,
+                "A function bound to a receiver is a function value of its declared signature, whose parameters and result need native types (not unknown or generic).",
+            );
+        const receiver = this.context.bindings.pinValueToTemporary(
+            this.compileValue(argument),
+            "bound_receiver",
+            argument,
+        );
+        // Every bind makes a new function object, not the declaration's.
+        const { identity: _identity, ...fresh } = type;
+        void _identity;
+        const bound = this.context.compileStoredDataFunction(
+            target,
+            fresh,
+            bindable.binding?.callbackRecordOwner,
+            false,
+            receiver,
+        );
+        if (call.arguments.length > 1)
+            return this.compilePartialBind(
+                call,
+                bound,
+                fresh,
+                "std::monostate{}",
+            );
+        return {
+            kind: "data",
+            dataType: { ...type, identity: true },
+            freshData: true,
+            cpp: bound,
+        };
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */
@@ -6832,11 +6918,7 @@ export class ExpressionLowerer {
                 result.dataType?.kind !== "struct")
         )
             return result;
-        const source = callback.callbackDeclaration;
-        const declaration =
-            source && ts.isIdentifier(source)
-                ? tryResolveFunctionDeclaration(this.context.checker, source)
-                : source;
+        const declaration = callbackFunction(this.context.checker, callback);
         const signature = declaration?.body
             ? this.context.checker.getSignatureFromDeclaration(declaration)
             : undefined;
@@ -6853,10 +6935,11 @@ export class ExpressionLowerer {
     /** Function call adapters consume the function object before their arguments run. */
     private compileFunctionObject(expression: ts.Expression): Value {
         if (
-            this.context.checker
-                .getTypeAtLocation(expression)
-                .getCallSignatures()
-                .some((signature) => signature.thisParameter)
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(expression),
+                "exact",
+            ).some((signature) => signature.thisParameter)
         )
             this.context.fail(
                 expression,
@@ -6934,14 +7017,22 @@ export class ExpressionLowerer {
     }
 
     private compilePropertyCall(
-        callee: ts.PropertyAccessExpression,
+        member: NamedMember,
         call: ts.CallExpression,
     ): Value | undefined {
+        const callee = member.access;
+        const memberName = member.name;
+        if (memberName === "bind") {
+            const bound = this.compileReceiverBind(call, member);
+            if (bound) return bound;
+        }
         if (
-            callee.name.text === "bind" &&
-            this.context.checker
-                .getTypeAtLocation(callee.expression)
-                .getCallSignatures().length > 0
+            memberName === "bind" &&
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(callee.expression),
+                "exact",
+            ).length > 0
         ) {
             const collection = compileBoundCollectionMethod(
                 this.context.dataLowerer,
@@ -6997,13 +7088,22 @@ export class ExpressionLowerer {
                           receiverType!,
                           argumentAt(call, 0),
                       );
-            if (call.arguments.length > 1)
+            if (call.arguments.length > 1) {
+                const held =
+                    this.context.allocateTemporaryCppName("bound_receiver");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: held,
+                    initializer: receiverCpp,
+                });
                 return this.compilePartialBind(
                     call,
                     target,
                     callable.dataType,
-                    receiverCpp,
+                    held,
                 );
+            }
             const type: DataType<"function"> = {
                 ...callable.dataType,
                 identity: true,
@@ -7021,17 +7121,15 @@ export class ExpressionLowerer {
         // layers. It is a renderer-owned list rather than the scene's,
         // so the push is recognized here rather than through an
         // intrinsic name.
-        if (
-            callee.name.text === "push" &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "_beforeUpdate"
-        ) {
-            const renderer = this.context.compileValue(
-                callee.expression.expression,
-            );
+        const hooks =
+            memberName === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (hooks?.name === "_beforeUpdate") {
+            const renderer = this.context.compileValue(hooks.expression);
             if (renderer.kind !== "sprite-renderer") {
                 this.context.fail(
-                    callee.expression.expression,
+                    hooks.expression,
                     "'_beforeUpdate' is the SpriteRenderer's own " +
                         `per-frame hook list; received ${renderer.kind}.`,
                 );
@@ -7047,20 +7145,18 @@ export class ExpressionLowerer {
                 engineCpp,
             };
         }
-        if (callee.name.text === "call") {
-            const receiverCall = this.compileReceiverCall(call, callee);
-            if (receiverCall) return receiverCall;
-        }
-        if (callee.name.text === "call" || callee.name.text === "apply") {
+        if (memberName === "call" || memberName === "apply") {
             const functionCall = this.context.probeEmission(() => {
                 const objectCall = compileObjectPrototypeCall(
                     this.context,
                     call,
                 );
                 if (objectCall) return objectCall;
-                const callable = this.context.checker
-                    .getTypeAtLocation(callee.expression)
-                    .getCallSignatures().length
+                const callable = callSignatures(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(callee.expression),
+                    "exact",
+                ).length
                     ? this.compileFunctionObject(callee.expression)
                     : this.compileValue(callee.expression);
                 if (
@@ -7072,7 +7168,7 @@ export class ExpressionLowerer {
                         callable.cpp,
                         callable.dataType,
                         undefined,
-                        callee.name.text === "apply" ? "apply" : 1,
+                        memberName === "apply" ? "apply" : 1,
                     );
                 }
                 return undefined;
@@ -7082,20 +7178,20 @@ export class ExpressionLowerer {
         const staticOwner = this.context.libraryGlobal(callee.expression);
         if (
             staticOwner === "Object" &&
-            (callee.name.text === "keys" || callee.name.text === "values")
+            (memberName === "keys" || memberName === "values")
         ) {
-            return this.compileObjectProjection(call, callee.name.text);
+            return this.compileObjectProjection(call, memberName);
         }
         const objectStatic =
             staticOwner === "Object"
-                ? OBJECT_STATIC_HANDLERS.get(callee.name.text)
+                ? OBJECT_STATIC_HANDLERS.get(memberName)
                 : undefined;
         if (objectStatic) {
             return objectStatic(this.context, call);
         }
         if (staticOwner === "Atomics")
-            return compileAtomicsCall(this.context, call, callee.name.text);
-        if (staticOwner === "String" && callee.name.text === "fromCharCode") {
+            return compileAtomicsCall(this.context, call, memberName);
+        if (staticOwner === "String" && memberName === "fromCharCode") {
             this.context.reachJsData();
             // Spread arguments pack, in order with the others, into one list.
             if (call.arguments.some(ts.isSpreadElement))
@@ -7130,7 +7226,7 @@ export class ExpressionLowerer {
                 dataType: { kind: "string" },
             };
         }
-        if (staticOwner === "String" && callee.name.text === "fromCodePoint") {
+        if (staticOwner === "String" && memberName === "fromCodePoint") {
             const spread = call.arguments.find(ts.isSpreadElement);
             if (spread)
                 this.context.fail(
@@ -7146,9 +7242,10 @@ export class ExpressionLowerer {
             };
         }
         if (
-            callee.name.text === "toLocaleString" &&
-            this.context.checker.getTypeAtLocation(callee.expression).flags &
-                ts.TypeFlags.NumberLike
+            memberName === "toLocaleString" &&
+            valueKindOf(
+                this.context.checker.getTypeAtLocation(callee.expression),
+            ) === "number"
         ) {
             const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind !== "number")
@@ -7162,7 +7259,7 @@ export class ExpressionLowerer {
                 owner,
             );
         }
-        if (callee.name.text === "toString") {
+        if (memberName === "toString") {
             const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind === "number") {
                 this.context.expectArgumentCount(call, 0, 1);
@@ -7171,13 +7268,13 @@ export class ExpressionLowerer {
                 return {
                     kind: "data",
                     cpp: radix
-                        ? `bbl::js::number_to_string_radix(${owner.cpp}, static_cast<int>(${this.context.compileNumber(radix, "double")}))`
+                        ? `bbl::js::number_to_string_radix(${owner.cpp}, ${this.context.compileNumber(radix, "double")})`
                         : `bbl::js::number_to_string(${owner.cpp})`,
                     dataType: { kind: "string" },
                 };
             }
         }
-        if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
+        if (isLibraryNumberFormatter(this.context.checker, call)) {
             this.context.expectArgumentCount(call, 0, 1);
             const owner = this.numberMethodReceiver(callee.expression);
             const number =
@@ -7187,7 +7284,7 @@ export class ExpressionLowerer {
                 ? staticNumberValue(this.context, call.arguments[0])
                 : undefined;
             if (
-                callee.name.text === "toFixed" &&
+                memberName === "toFixed" &&
                 owner.kind === "number" &&
                 (number === undefined ||
                     (call.arguments.length > 0 && digits === undefined))
@@ -7223,43 +7320,17 @@ export class ExpressionLowerer {
             ) {
                 this.context.fail(
                     call,
-                    `Number.${callee.name.text} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
+                    `Number.${memberName} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
                 );
             }
-            let text: string;
-            if (callee.name.text === "toFixed") {
-                if (digits !== undefined && (digits < 0 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toFixed precision must be between 0 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toFixed()
-                        : number.toFixed(digits);
-            } else if (callee.name.text === "toPrecision") {
-                if (digits !== undefined && (digits < 1 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toPrecision precision must be between 1 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toPrecision()
-                        : number.toPrecision(digits);
-            } else {
-                if (digits !== undefined && (digits < 0 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toExponential precision must be between 0 and 100.",
-                    );
-                }
-                text =
-                    digits === undefined
-                        ? number.toExponential()
-                        : number.toExponential(digits);
+            const format = numberFormatOf(memberName)!;
+            const text = foldNumberFormat(format, number, digits);
+            if (text === undefined) {
+                const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
+                this.context.fail(
+                    call,
+                    `Number.${format} precision must be between ${low} and ${high}.`,
+                );
             }
             return {
                 kind: "string",
@@ -7271,10 +7342,7 @@ export class ExpressionLowerer {
             (): Value | undefined => {
                 const staticOwner = this.compileStaticOwner(callee.expression);
                 if (!staticOwner) return undefined;
-                if (
-                    staticOwner.kind === "tuple" &&
-                    callee.name.text === "flat"
-                ) {
+                if (staticOwner.kind === "tuple" && memberName === "flat") {
                     this.context.expectArgumentCount(call, 0, 1);
                     const depth = call.arguments[0]
                         ? staticNumberValue(this.context, call.arguments[0])
@@ -7337,13 +7405,13 @@ export class ExpressionLowerer {
                 const fetched = this.context.compileStaticFetchMethod(
                     call,
                     staticOwner,
-                    callee.name.text,
+                    memberName,
                 );
                 if (fetched) return fetched;
                 const mapped = this.compileStaticTupleMap(
                     call,
                     staticOwner,
-                    callee.name.text,
+                    memberName,
                 );
                 if (mapped) return mapped;
                 return undefined;
@@ -7360,7 +7428,7 @@ export class ExpressionLowerer {
         const regexpOwner =
             boundRegexp?.dataType?.kind === "regexp"
                 ? boundRegexp
-                : regexpType.symbol?.name === "RegExp" ||
+                : libraryName(regexpType) === "RegExp" ||
                     regexpExpression.kind ===
                         ts.SyntaxKind.RegularExpressionLiteral
                   ? this.context.dataLowerer.narrowOptional(
@@ -7370,10 +7438,10 @@ export class ExpressionLowerer {
                     )
                   : undefined;
         if (regexpOwner?.dataType?.kind === "regexp") {
-            if (callee.name.text !== "exec" && callee.name.text !== "test") {
+            if (memberName !== "exec" && memberName !== "test") {
                 this.context.fail(
-                    callee.name,
-                    `RegExp method '${callee.name.text}' is not supported.`,
+                    member.key,
+                    `RegExp method '${memberName}' is not supported.`,
                 );
             }
             this.context.expectArgumentCount(call, 1, 1);
@@ -7391,7 +7459,7 @@ export class ExpressionLowerer {
                 argumentAt(call, 0),
             );
             this.context.reachJsData();
-            if (callee.name.text === "test") {
+            if (memberName === "test") {
                 // A literal creates a fresh RegExp on each evaluation, so folding
                 // it cannot lose a stored expression's lastIndex mutation.
                 if (
@@ -7432,7 +7500,7 @@ export class ExpressionLowerer {
         const pushed =
             this.context.handleCollections.compileParticleSystemsPush(
                 call,
-                callee,
+                member,
             );
         if (pushed) return pushed;
         const math = this.context.dataLowerer.compileMathCall(call);
@@ -7449,16 +7517,16 @@ export class ExpressionLowerer {
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
         const found =
-            this.context.handleCollections.compileFind(call, callee) ??
-            this.context.handleCollections.compileFilter(call, callee);
+            this.context.handleCollections.compileFind(call, member) ??
+            this.context.handleCollections.compileFilter(call, member);
         if (found) {
             return found;
         }
         const physics = this.context.probeEmission(() =>
-            compilePhysicsMethodCall(this.context, call, callee),
+            compilePhysicsMethodCall(this.context, call, member),
         );
         if (physics) return physics;
-        const method = mayCompileDataMethodCall(this.context.checker, callee)
+        const method = mayCompileDataMethodCall(this.context.checker, member)
             ? this.context.probeEmission(() =>
                   this.context.dataLowerer.compileDataMethodCall(call),
               )
@@ -7473,22 +7541,22 @@ export class ExpressionLowerer {
         const media = compileMediaStreamMethodCall(
             this.context.dataLowerer,
             call,
-            callee,
+            member,
         );
         if (media) return media;
-        const audio = compileAudioMethodCall(this.context, call, callee);
+        const audio = compileAudioMethodCall(this.context, call, member);
         if (audio) {
             return audio;
         }
         // The second such surface: a VatHandle is a closure bundle
         // upstream, so its playback methods ride the handle too.
-        const vat = compileVatMethodCall(this.context, call, callee);
+        const vat = compileVatMethodCall(this.context, call, member);
         if (vat) {
             return vat;
         }
         const lightPush = this.context.handleCollections.compileSceneLightPush(
             call,
-            callee,
+            member,
         );
         if (lightPush) {
             return lightPush;
@@ -7497,12 +7565,12 @@ export class ExpressionLowerer {
         // grows through its own `push_back`; this one owns the case that
         // arm declines, a compile-time tuple of engine handles.
         const handlePush =
-            this.context.handleCollections.compileHandleTuplePush(call, callee);
+            this.context.handleCollections.compileHandleTuplePush(call, member);
         if (handlePush) {
             return handlePush;
         }
         const staticMethod =
-            this.context.classLowerer.resolveStaticMethod(callee);
+            this.context.classLowerer.resolveStaticMethod(member);
         if (staticMethod) {
             const factory =
                 this.context.classLowerer.compileNullableResourceFactory(
@@ -7510,7 +7578,7 @@ export class ExpressionLowerer {
                     staticMethod,
                 );
             if (factory) return factory;
-            return this.context.classLowerer.withStaticReceiver(callee, () =>
+            return this.context.classLowerer.withStaticReceiver(member, () =>
                 this.context.userFunctions.compileCallbackCall(
                     this.context,
                     call,
@@ -7537,7 +7605,11 @@ export class ExpressionLowerer {
                   this.compileModuleNamespace(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
-                  : this.compileValue(receiver);
+                  : voidReceiver(
+                        this.context,
+                        this.compileValue(receiver),
+                        receiver,
+                    );
             const instance = receiverValue
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
@@ -7548,36 +7620,18 @@ export class ExpressionLowerer {
             // the declared call result only types that throwing branch.
             if (instance?.kind === "json-null") {
                 this.context.emitDiscardedValue(instance);
-                if (callee.questionDotToken)
-                    return { kind: "json-null", cpp: "std::nullopt" };
-                const message = this.context.cppString(
-                    `Cannot read properties of ${instance.cpp === "std::nullopt" ? "undefined" : "null"} (reading '${callee.name.text}')`,
-                );
-                const type = this.context.dataLowerer.dataTypeAt(call);
-                this.context.reachJsData();
-                if (type)
-                    return this.context.dataLowerer.leafValue(
-                        `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
-                        type,
-                    );
-                if (
-                    this.context.checker.getTypeAtLocation(call).flags &
-                    (ts.TypeFlags.Void | ts.TypeFlags.Never)
-                )
-                    return {
-                        kind: "void",
-                        cpp: `bbl::js::throw_nullish_access(${message})`,
-                    };
-                return this.context.fail(
+                if (callee.questionDotToken) return undefinedValue();
+                return this.context.propertyAccess.absentReceiverRead(
                     call,
-                    "A method call on an absent receiver requires a represented result type.",
+                    absenceOfNull(instance),
+                    memberName,
                 );
             }
             const callableProperty = instance
                 ? readCallableProperty(
                       this.context,
                       instance,
-                      callee.name.text,
+                      memberName,
                       callee,
                   )
                 : undefined;
@@ -7592,7 +7646,7 @@ export class ExpressionLowerer {
                 callee.questionDotToken !== undefined;
             if (
                 instance?.kind === "splat-mesh" &&
-                callee.name.text === "updateData"
+                memberName === "updateData"
             ) {
                 this.context.expectArgumentCount(call, 1, 1);
                 if (presenceFlagCpp(instance)) {
@@ -7630,15 +7684,15 @@ export class ExpressionLowerer {
             // the call site exactly as a direct call to that
             // function does, by handing the identifier the literal
             // wrote to the same resolver.
-            const recordMethod = instance?.recordMethods?.[callee.name.text];
+            const recordMethod = instance?.recordMethods?.[memberName];
             const recordCallback =
                 instance &&
                 (this.context.moduleNamespaces.member(
                     instance,
-                    callee.name.text,
+                    memberName,
                     callee,
                 ) ??
-                    instance.recordProperties?.[callee.name.text]);
+                    instance.recordProperties?.[memberName]);
             if (recordCallback?.intrinsicName) {
                 const result = this.context.compileRegisteredIntrinsic(
                     recordCallback.intrinsicName,
@@ -7654,15 +7708,19 @@ export class ExpressionLowerer {
                 instance &&
                 call.questionDotToken &&
                 !recordMethod &&
-                (!recordCallback ||
-                    recordCallback.kind === "json-null" ||
-                    isUndefinedDataType(recordCallback.dataType))
+                // A class instance read through another type has its class's methods.
+                !this.context.classLowerer.viewMethod(
+                    instance,
+                    memberName,
+                    call,
+                ) &&
+                (!recordCallback || isAbsentValue(recordCallback))
             ) {
                 // An explicitly absent property short-circuits just like a
                 // missing one; none of the call's arguments are evaluated.
                 if (recordCallback)
                     this.context.emitDiscardedValue(recordCallback);
-                return { kind: "json-null", cpp: "std::nullopt" };
+                return undefinedValue();
             }
             if (instance && recordMethod) {
                 // A literal written in the record has no identifier
@@ -7767,7 +7825,7 @@ export class ExpressionLowerer {
                     if (!ts.isExpressionStatement(call.parent))
                         return this.compileOptionalMethodValue(
                             call,
-                            callee.name.text,
+                            memberName,
                             instance,
                             declaration,
                             optionalFound,
@@ -7779,7 +7837,7 @@ export class ExpressionLowerer {
                     this.context.increaseIndent();
                     const result = this.context.classLowerer.compileMethodCall(
                         instance,
-                        callee.name.text,
+                        memberName,
                         call,
                         declaration,
                     );
@@ -7797,7 +7855,7 @@ export class ExpressionLowerer {
                 }
                 return this.context.classLowerer.compileMethodCall(
                     instance,
-                    callee.name.text,
+                    memberName,
                     call,
                     declaration,
                 );
@@ -7872,6 +7930,6 @@ export class ExpressionLowerer {
                   nativeBinding: true,
                   nativeCaptures: [binding],
               }
-            : { kind: "json-null", cpp: "std::nullopt" };
+            : undefinedValue();
     }
 }

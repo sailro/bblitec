@@ -2330,20 +2330,54 @@ physics_world_trigger_events(const PhysicsWorldHandle& world) {
 }
 #endif
 
+namespace {
+
+/** Whether a shape is the pin's MESH: a triangle soup no heightfield built. */
+bool is_mesh_shape(const PhysicsShapeState& shape) {
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
+    if (shape.heightfield)
+        return false;
+#endif
+    return shape.triangle_mesh != nullptr;
+}
+
+} // namespace
+
 PhysicsRaycastResult physics_world_raycast(PhysicsWorldHandle world, std::array<double, 3> from,
                                            std::array<double, 3> to, std::uint32_t membership,
                                            std::uint32_t collide_with, bool should_hit_triggers) {
     const btVector3 ray_from = to_bt(from);
     const btVector3 ray_to = to_bt(to);
+    // The closest hit and the triangle it struck: a triangle mesh (its BVH
+    // or GImpact view, under a mass-frame compound too) reports its part (0
+    // or more) and source triangle; a compound's other children report part
+    // -1. Havok's key numbers its compressed mesh's primitives instead, two
+    // coplanar triangles sharing an edge being one: the two agree while no
+    // triangles merge.
+    struct ClosestTriangleRayCallback : btCollisionWorld::ClosestRayResultCallback {
+        std::int32_t triangle_index = -1;
+
+        ClosestTriangleRayCallback(const btVector3& start, const btVector3& end)
+            : ClosestRayResultCallback(start, end) {}
+
+        btScalar addSingleResult(btCollisionWorld::LocalRayResult& result,
+                                 bool normal_in_world_space) override {
+            const btCollisionWorld::LocalShapeInfo* shape = result.m_localShapeInfo;
+            triangle_index = shape && shape->m_shapePart >= 0
+                                 ? static_cast<std::int32_t>(shape->m_triangleIndex)
+                                 : -1;
+            return ClosestRayResultCallback::addSingleResult(result, normal_in_world_space);
+        }
+    };
 #if BBLITE_HAS_PHYSICS_TRIGGER
-    struct FilteredRayCallback final : btCollisionWorld::ClosestRayResultCallback {
+    struct FilteredRayCallback final : ClosestTriangleRayCallback {
         bool include_triggers;
 
         FilteredRayCallback(const btVector3& start, const btVector3& end, bool include)
-            : ClosestRayResultCallback(start, end), include_triggers(include) {}
+            : ClosestTriangleRayCallback(start, end), include_triggers(include) {}
 
         bool needsCollision(btBroadphaseProxy* proxy) const override {
-            return ClosestRayResultCallback::needsCollision(proxy) &&
+            return ClosestTriangleRayCallback::needsCollision(proxy) &&
                    (include_triggers || !is_trigger_object(static_cast<const btCollisionObject*>(
                                             proxy->m_clientObject)));
         }
@@ -2351,7 +2385,7 @@ PhysicsRaycastResult physics_world_raycast(PhysicsWorldHandle world, std::array<
 #else
     // No shape wears the trigger flag, so the option has nothing to exclude.
     static_cast<void>(should_hit_triggers);
-    btCollisionWorld::ClosestRayResultCallback callback(ray_from, ray_to);
+    ClosestTriangleRayCallback callback(ray_from, ray_to);
 #endif
     callback.m_collisionFilterGroup = static_cast<int>(membership);
     callback.m_collisionFilterMask = static_cast<int>(collide_with);
@@ -2380,6 +2414,9 @@ PhysicsRaycastResult physics_world_raycast(PhysicsWorldHandle world, std::array<
         {point.x(), point.y(), point.z()},
         {normal.x(), normal.y(), normal.z()},
         hit_body ? hit_body->identity : 0,
+        // The pin reports a MESH shape's triangle and -1 for any other shape.
+        hit_body && hit_body->shape && is_mesh_shape(*hit_body->shape) ? callback.triangle_index
+                                                                       : -1,
     };
 }
 

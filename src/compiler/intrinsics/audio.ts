@@ -6,12 +6,17 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { pinCpp } from "../evaluation-order.js";
-import { presenceCpp, type Feature, type Value } from "../types.js";
+import {
+    isAbsentValue,
+    presenceCpp,
+    type Feature,
+    type Value,
+} from "../types.js";
 import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { packagedAudioUrl, refuseAudioName } from "../audio-surface.js";
 import { lowerEngineSoundsDisposal } from "../../lowering/audio-engine-disposal.js";
-import { isNullable } from "../type-facts.js";
+import { isNullable, valueKindOf } from "../type-facts.js";
 import {
     emitPresentOption,
     emitScalarOption,
@@ -315,7 +320,7 @@ function soundOptions(
     });
     if (!argument) return { options: target };
     const value = context.compileValue(argument);
-    if (value.kind === "json-null" || value.dataType?.kind === "undefined") {
+    if (isAbsentValue(value)) {
         context.emitDiscardedValue(value);
         return { options: target };
     }
@@ -552,7 +557,7 @@ function soundSource(
             "sound_url",
         );
     const type = context.checker.getTypeAtLocation(argument);
-    if (type.flags & ts.TypeFlags.StringLike) return url(argument);
+    if (valueKindOf(type) === "string") return url(argument);
     const list = context.unwrap(argument);
     if (ts.isArrayLiteralExpression(list)) {
         if (list.elements.some(ts.isSpreadElement))
@@ -891,8 +896,8 @@ function compileLibraryCall(
             const argument = argumentAt(call, 1);
             let source: string;
             if (
-                context.checker.getTypeAtLocation(argument).flags &
-                    ts.TypeFlags.StringLike ||
+                valueKindOf(context.checker.getTypeAtLocation(argument)) ===
+                    "string" ||
                 ts.isArrayLiteralExpression(context.unwrap(argument))
             )
                 source = soundSource(context, call, importedName);

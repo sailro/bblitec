@@ -647,17 +647,37 @@ export function runGeneratedProgram(
     return output;
 }
 
+/** An application realm on the native event loop, without a display. */
+export function headlessRealmHost(): string {
+    return `
+namespace bbl::pal {
+Engine& window_document_engine() { static Engine engine; return engine; }
+}
+${windowApplicationHost()}
+`;
+}
+
 /**
  * The window application a generated program's `main` runs in, as C++ to
  * append to it (test/fixtures/realm-application-fixture.hpp): `errors`
  * routes the window's error listeners through ApplicationErrors instead of
- * failing the run, and `timeoutMs` closes a loop that does not finish.
+ * failing the run, `timeoutMs` closes a loop that does not finish, and
+ * `devicePixelRatio` is the Window's.
  */
 export function windowApplicationHost(
-    options: { errors?: boolean; timeoutMs?: number } = {},
+    options: {
+        errors?: boolean;
+        timeoutMs?: number;
+        devicePixelRatio?: number;
+    } = {},
 ): string {
     return [
         ...(options.errors ? ["#define FIXTURE_APPLICATION_ERRORS"] : []),
+        ...(options.devicePixelRatio === undefined
+            ? []
+            : [
+                  `#define FIXTURE_DEVICE_PIXEL_RATIO ${options.devicePixelRatio}`,
+              ]),
         ...(options.timeoutMs === undefined
             ? []
             : [`#define FIXTURE_APPLICATION_TIMEOUT_MS ${options.timeoutMs}`]),

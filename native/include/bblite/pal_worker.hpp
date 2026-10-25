@@ -6,6 +6,7 @@
 #error Worker runtime requires BBLITE_WORKERS for isolated JavaScript state.
 #endif
 
+#include <bblite/js_accessor.hpp>
 #include <bblite/js_structured_clone.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/js_generator.hpp>
@@ -16,12 +17,17 @@
 #include <bblite/runtime.hpp>
 #include <bblite/uncaught_error.hpp>
 
+#include <array>
+#include <cstdint>
 #include <iostream>
 
 namespace bbl::pal {
 
 class WorkerRealm;
 using WorkerEntry = void (*)(WorkerRealm&);
+
+/** The global's host accessors a program redefines (`src/compiler/host-globals.ts`). */
+enum class HostAccessor : std::uint8_t { device_pixel_ratio, count };
 
 /** One event and one deserialization memo, shared by all recipient listeners. */
 class WorkerMessageEvent {
@@ -248,17 +254,29 @@ public:
         platform_handler_ = std::move(callback);
     }
     /**
-     * `globalThis.devicePixelRatio` of this realm: a Window host provides
-     * its display scale when the realm starts; a realm without one (a worker
-     * global) has none, which reads as undefined.
+     * A host accessor of this realm's global: a Window host provides each
+     * when the realm starts; a realm without one (a worker global) reads
+     * undefined.
      */
-    void provide_device_pixel_ratio(double (*provider)()) {
+    void provide_host_accessor(HostAccessor accessor, double (*provider)()) {
         require_owner();
-        device_pixel_ratio_ = provider;
+        host_accessors_.at(static_cast<std::size_t>(accessor)).provider = provider;
     }
-    [[nodiscard]] js::Nullable<double> device_pixel_ratio() const {
+    /** `Object.defineProperty(globalThis, name, { get })`: later reads run it. */
+    void define_host_accessor(HostAccessor accessor, js::Callback<double()> getter,
+                              bool configurable) {
         require_owner();
-        return device_pixel_ratio_ ? js::Nullable<double>(device_pixel_ratio_()) : std::nullopt;
+        auto& defined = host_accessors_.at(static_cast<std::size_t>(accessor)).defined;
+        if (!defined)
+            defined.emplace();
+        defined->define(js::Accessor<double>(std::move(getter), {}), configurable);
+    }
+    [[nodiscard]] js::Nullable<double> host_accessor(HostAccessor accessor) const {
+        require_owner();
+        const auto& slot = host_accessors_.at(static_cast<std::size_t>(accessor));
+        if (slot.defined)
+            return slot.defined->get();
+        return slot.provider ? js::Nullable<double>(slot.provider()) : std::nullopt;
     }
     /** The realm this thread runs, if any. */
     static WorkerRealm* current_if_any() { return current_; }
@@ -341,7 +359,11 @@ private:
     std::optional<worker_detail::Address> parent_;
     std::thread::id owner_;
     std::shared_ptr<HostServices> host_services_;
-    double (*device_pixel_ratio_)() = nullptr;
+    struct HostAccessorSlot {
+        double (*provider)() = nullptr;
+        std::optional<js::Accessor<double>> defined;
+    };
+    std::array<HostAccessorSlot, static_cast<std::size_t>(HostAccessor::count)> host_accessors_{};
     bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;
@@ -349,10 +371,10 @@ private:
     EventLoop::EventHandler platform_handler_;
 };
 
-/** `globalThis.devicePixelRatio` in the running realm; undefined outside a Window realm. */
-inline js::Nullable<double> realm_device_pixel_ratio() {
+/** A host accessor of the running realm's global; undefined outside a Window realm. */
+inline js::Nullable<double> realm_host_accessor(HostAccessor accessor) {
     const WorkerRealm* realm = WorkerRealm::current_if_any();
-    return realm ? realm->device_pixel_ratio() : std::nullopt;
+    return realm ? realm->host_accessor(accessor) : std::nullopt;
 }
 
 } // namespace bbl::pal

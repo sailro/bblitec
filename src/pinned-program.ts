@@ -3,14 +3,18 @@ import ts from "typescript";
 import {
     aliasTarget,
     compilerPackageTypings,
+    declarationInDefaultLibrary,
     declaredSymbol,
+    namedMember,
     resolvedSymbol,
+    type NamedMember,
 } from "./compiler/symbols.js";
 import { sourceLocation } from "./source-location.js";
 import {
     isLibraryTyping,
     libraryTypingFile,
 } from "./typescript-library-files.js";
+import { namesMember, specifierSourceName } from "./compiler/syntax.js";
 
 /**
  * The sources a typed pinned program is built over: the store that reads
@@ -122,14 +126,8 @@ function scopedName(identifier: ts.Identifier): boolean {
     const parent = identifier.parent;
     return !(
         !parent ||
-        (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
-        (ts.isQualifiedName(parent) && parent.right === identifier) ||
-        (ts.isPropertyAssignment(parent) && parent.name === identifier) ||
-        (ts.isBindingElement(parent) && parent.propertyName === identifier) ||
-        ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
-            parent.propertyName === identifier) ||
+        namesMember(identifier) ||
         ts.isExportSpecifier(parent) ||
-        ts.isJsxAttribute(parent) ||
         ts.isTypePredicateNode(parent) ||
         ts.findAncestor(parent, ts.isImportTypeNode) !== undefined
     );
@@ -422,7 +420,7 @@ export class PinnedProgram implements PinnedNames {
         if (ts.isImportSpecifier(declaration)) {
             const from = imported(declaration);
             if (!from) return CHECKER;
-            const name = (declaration.propertyName ?? declaration.name).text;
+            const name = specifierSourceName(declaration);
             return this.importedExport(file, from.specifier, name, seen);
         }
         if (ts.isImportClause(declaration)) {
@@ -444,8 +442,7 @@ export class PinnedProgram implements PinnedNames {
             const clause = declaration.parent.parent;
             if (clause.moduleSpecifier) {
                 if (!ts.isStringLiteral(clause.moduleSpecifier)) return CHECKER;
-                const name = (declaration.propertyName ?? declaration.name)
-                    .text;
+                const name = specifierSourceName(declaration);
                 return this.importedExport(
                     file,
                     clause.moduleSpecifier.text,
@@ -631,6 +628,28 @@ export function pinnedNamesOf(file: ts.SourceFile): PinnedNames {
         singleFiles.set(file, single);
     }
     return single;
+}
+
+/**
+ * The library global a pinned expression names (`Math`), or undefined: an
+ * identifier the default library declares, or one the pin's own names leave
+ * undeclared. A pinned module's own binding of the name is not the global.
+ */
+export function pinnedLibraryGlobal(
+    expression: ts.Expression,
+): string | undefined {
+    if (!ts.isIdentifier(expression)) return undefined;
+    const file = expression.getSourceFile();
+    const declaration = pinnedNamesOf(file).declarationOf(expression);
+    const global = declaration
+        ? declarationInDefaultLibrary(declaration)
+        : !declaredSymbol(moduleSymbols(file), expression);
+    return global ? expression.text : undefined;
+}
+
+/** The member a pinned access names ({@link namedMember}), read by the pin's checker. */
+export function pinnedMember(node: ts.Node): NamedMember | undefined {
+    return namedMember(pinnedCheckerOf(node.getSourceFile()), node);
 }
 
 /** Types from the same checked program as the pin's name resolution. */

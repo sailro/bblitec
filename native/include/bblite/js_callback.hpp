@@ -255,6 +255,26 @@ template <typename Target, typename Function, typename Receiver, typename... Bou
         });
 }
 
+/** A bound function whose arguments reach the target's rest parameter: the fixed bound
+ * arguments, then a fresh rest array of the bound elements and the call's own; thisArg as above. */
+template <typename Target, typename Function, typename Receiver, typename Rest, typename... Bound>
+[[nodiscard]] Target bind_callback_rest(Function target, const Receiver&, Rest leading,
+                                        Bound... bound) {
+    return make_closure(std::tuple{std::move(target), std::move(leading), std::move(bound)...},
+                        [](auto& captures, Rest tail) {
+                            return std::apply(
+                                [&](auto& function, const Rest& elements, auto&... fixed) {
+                                    Rest values;
+                                    if constexpr (requires { values.reserve(0); })
+                                        values.reserve(elements.size() + tail.size());
+                                    values.insert(values.end(), elements.begin(), elements.end());
+                                    values.insert(values.end(), tail.begin(), tail.end());
+                                    return function(fixed..., std::move(values));
+                                },
+                                captures);
+                        });
+}
+
 /** The function arm a call reads from a union slot; any other arm is not callable. */
 template <std::size_t Index, typename... Members>
 [[nodiscard]] const std::variant_alternative_t<Index, std::variant<Members...>>&

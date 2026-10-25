@@ -4,7 +4,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  * readback are platform seams. Canvas proxies keep their source listeners.
  */
 import ts from "typescript";
-import { objectProperty } from "../compiler/syntax.js";
+import { objectProperty, sameSource } from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
     lowerMat4InvertCpp,
@@ -79,9 +79,7 @@ export function lowerPointerDrag(
     const normalStart = normal.declaration.body!.statements.findIndex(
         (statement) =>
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(
-                normal.file,
-            ) === "dx",
+            sameSource(statement.declarationList.declarations[0]?.name, "dx"),
     );
     if (normalStart < 0)
         context.contractError(
@@ -104,16 +102,16 @@ export function lowerPointerDrag(
     const begin = statements.findIndex(
         (statement) =>
             ts.isVariableStatement(statement) &&
-            statement.declarationList.declarations[0]?.name.getText(
-                move.file,
-            ) === "delta",
+            sameSource(
+                statement.declarationList.declarations[0]?.name,
+                "delta",
+            ),
     );
     const end = statements.findIndex(
         (statement) =>
             ts.isExpressionStatement(statement) &&
             ts.isBinaryExpression(statement.expression) &&
-            statement.expression.left.getText(move.file) ===
-                "active.lastPlanePoint",
+            sameSource(statement.expression.left, "active.lastPlanePoint"),
     );
     if (begin < 0 || end <= begin)
         context.contractError(
@@ -179,9 +177,10 @@ export function lowerPointerDrag(
         statement: (statement, lowerer, indent) => {
             if (
                 ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations[0]?.name.getText(
-                    move.file,
-                ) === "livePlanePoint"
+                sameSource(
+                    statement.declarationList.declarations[0]?.name,
+                    "livePlanePoint",
+                )
             ) {
                 context.assertStatementShapes(
                     statement,
@@ -190,7 +189,7 @@ export function lowerPointerDrag(
                     "Pointer drag live anchor",
                 );
                 return [
-                    `${indent}const Vec3d livePlanePoint = ${lowerer.expression(statement.declarationList.declarations[0].initializer!)};`,
+                    `${indent}const Vec3d livePlanePoint = ${lowerer.expression(statement.declarationList.declarations[0]!.initializer!)};`,
                 ];
             }
             return undefined;

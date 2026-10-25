@@ -22,6 +22,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import {
+    collectionBinding,
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
@@ -48,6 +49,7 @@ import {
     pinnedOptionNumber,
 } from "./pinned-option-defaults.js";
 import { recordAt } from "../compiler/record-access.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -371,6 +373,25 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                 annotation: "readonly Mesh[]",
                 cpp: "casters",
                 cppType: "std::vector<ShadowCaster>",
+                // Each caster is read through its world matrix and bounds.
+                binding: collectionBinding(
+                    "casters",
+                    (element) =>
+                        new Map<string, PinnedBinding>([
+                            [
+                                `${element}.worldMatrix`,
+                                { cpp: `${element}.world`, type: "f32" },
+                            ],
+                            [
+                                `${element}.boundMin`,
+                                { cpp: `${element}.bounds_min`, type: "f32" },
+                            ],
+                            [
+                                `${element}.boundMax`,
+                                { cpp: `${element}.bounds_max`, type: "f32" },
+                            ],
+                        ]),
+                ),
             },
             { pinned: "orthoMinZ", kind: "number", cpp: "ortho_min_z" },
             { pinned: "orthoMaxZ", kind: "number", cpp: "ortho_max_z" },
@@ -409,26 +430,6 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                 ],
             ]),
             matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-            forOf: (iterated, element) => {
-                if (iterated !== "casterMeshes") return undefined;
-                return {
-                    range: "casters",
-                    bindings: new Map<string, PinnedBinding>([
-                        [
-                            `${element}.worldMatrix`,
-                            { cpp: `${element}.world`, type: "f32" },
-                        ],
-                        [
-                            `${element}.boundMin`,
-                            { cpp: `${element}.bounds_min`, type: "f32" },
-                        ],
-                        [
-                            `${element}.boundMax`,
-                            { cpp: `${element}.bounds_max`, type: "f32" },
-                        ],
-                    ]),
-                };
-            },
 
             returns: {
                 type: "ShadowLightMatrix",
@@ -581,7 +582,7 @@ function csmDefaults(context: LoweringContext) {
     );
     if (
         !ts.isCallExpression(cascades) ||
-        cascades.expression.getText(file) !== "Math.min" ||
+        !sameSource(cascades.expression, "Math.min") ||
         cascades.arguments.length !== 2
     ) {
         context.contractError(
@@ -2372,13 +2373,14 @@ export function shadowFactorySource(
         "registerSceneWithShadowSupport",
     );
     context.callExpression(registerDeclaration, "ensureShadowTask");
-    const { file: coreFile, declaration: ensureDeclaration } =
-        context.functionDeclaration(sceneModule, "ensureShadowTask");
+    const { declaration: ensureDeclaration } = context.functionDeclaration(
+        sceneModule,
+        "ensureShadowTask",
+    );
     const unshift = context.callExpression(ensureDeclaration, "unshift");
     if (
         !ts.isPropertyAccessExpression(unshift.expression) ||
-        unshift.expression.expression.getText(coreFile) !==
-            "scene._frameGraph._tasks"
+        !sameSource(unshift.expression.expression, "scene._frameGraph._tasks")
     ) {
         context.contractError(
             unshift,

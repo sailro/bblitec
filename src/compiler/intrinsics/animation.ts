@@ -15,6 +15,7 @@ export interface AnimationIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
+            | "checker"
             | "libraryGlobal"
             | "intrinsicOptions"
             | "compileNumber"

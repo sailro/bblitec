@@ -1,6 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
 /** Fold source plugin declarations and retain their live textures and UBO callbacks.
  * Shader injection, binding layout and enabled-plugin ordering execute the pin's
  * composers. The fold proves that bindTextures/getActiveTextures refer to the
@@ -8,7 +8,7 @@ import { declaredSymbol, resolvedSymbol } from "./symbols.js";
  * Standard retains its existing fragment texture contract.
  */
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, isSuspensionPoint } from "./syntax.js";
 import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
@@ -29,6 +29,7 @@ type MaterialPluginFamily = "standard" | "pbr";
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
 interface MaterialPluginContext extends Pick<
     LoweringServices,
+    | "objectProperty"
     | "checker"
     | "program"
     | "evaluationOrder"
@@ -657,17 +658,13 @@ function foldPluginObject(
                         returned,
                         "Plugin uniforms require exactly the ubo declaration array.",
                     );
-                const property = object.properties.find(
-                    (property) =>
-                        property.name &&
-                        context.propertyName(property.name) === "ubo",
-                );
-                if (!property || !ts.isPropertyAssignment(property))
+                const ubo = context.objectProperty(object, "ubo");
+                if (!ubo)
                     context.fail(
                         returned,
                         "Plugin uniforms require a ubo declaration array.",
                     );
-                returned = property.initializer;
+                returned = ubo;
             }
             const fields = foldPluginFieldDeclarations(
                 context,
@@ -1209,7 +1206,7 @@ function foldTexturePushes(
         for (const statement of statements) {
             if (ts.isForOfStatement(statement)) {
                 if (
-                    statement.awaitModifier ||
+                    isSuspensionPoint(statement) ||
                     !ts.isVariableDeclarationList(statement.initializer) ||
                     statement.initializer.declarations.length !== 1
                 )
@@ -1261,12 +1258,14 @@ function foldTexturePushes(
                 );
             }
             const call = context.unwrap(statement.expression);
+            const push = ts.isCallExpression(call)
+                ? namedMember(context.checker, call.expression)
+                : undefined;
             if (
                 !ts.isCallExpression(call) ||
-                !ts.isPropertyAccessExpression(call.expression) ||
-                call.expression.name.text !== "push" ||
-                !ts.isIdentifier(call.expression.expression) ||
-                call.expression.expression.text !== outName
+                push?.name !== "push" ||
+                !ts.isIdentifier(push.expression) ||
+                push.expression.text !== outName
             ) {
                 context.fail(
                     statement,

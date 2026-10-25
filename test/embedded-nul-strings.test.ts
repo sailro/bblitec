@@ -30,6 +30,12 @@ test("a string holding NUL is spelled with its full length", () => {
     );
 });
 
+test("no run of question marks spells a trigraph", () => {
+    assert.equal(stringLiteral("??="), '"?\\?="');
+    assert.equal(stringLiteral("a???=b"), '"a?\\?\\?=b"');
+    assert.ok(!stringLiteral("????/").includes("??"));
+});
+
 test("every native string sink receives the whole string", () => {
     const result = compileSource(
         `

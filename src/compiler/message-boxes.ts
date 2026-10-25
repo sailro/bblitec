@@ -8,6 +8,7 @@ import { pinCpp } from "./evaluation-order.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { requireWindowHost } from "./window-events.js";
 import { compileWindowMemberCall } from "./window-members.js";
+import { undefinedOnly } from "./type-facts.js";
 
 /**
  * `alert(message)` and `confirm(message)`: a modal message box the Window
@@ -35,10 +36,7 @@ function messageText(
         `bbl::js::concat(${stringConcatPart(context, present, argument)})`;
     if (!defaulted) return text(value);
     const declared = context.checker.getTypeAtLocation(argument);
-    if (
-        isUndefinedDataType(value.dataType) ||
-        (declared.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
-    ) {
+    if (isUndefinedDataType(value.dataType) || undefinedOnly(declared)) {
         context.emitDiscardedValue(value);
         return "std::string()";
     }

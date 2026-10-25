@@ -1,11 +1,12 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
+import { absenceOf, absenceOfNull, jsonAbsenceCpp } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
-import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
+import { hasNonNullAssertion } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 import { yieldsFreshObject } from "../fresh-records.js";
-import { objectIdentityCallArgument } from "../static-evaluator.js";
+import { unwrapObjectIdentity } from "../static-evaluator.js";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -16,9 +17,12 @@ import {
     errorConstructor,
     thrownMessage,
 } from "../error-values.js";
-import { provenUndefinedValue } from "../undefined-values.js";
+import { readsErasedVoid } from "../undefined-values.js";
 import { rejectionOnlyPromiseCpp, settlesNever } from "../promises.js";
-import { DynamicBindingStorageRequired } from "../dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    requireHeldRecordStorage,
+} from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
@@ -102,15 +106,9 @@ function ownedDocument(
     node: ts.Node,
 ): string | undefined {
     if (!isPlainJsonRecord(record)) return undefined;
-    let expression = lowerer.convertedExpression(node);
-    while (expression) {
-        const argument = objectIdentityCallArgument(
-            unwrapExpression(expression),
-            (value) => lowerer.context.libraryGlobal(value),
-        );
-        if (!argument) break;
-        expression = argument;
-    }
+    const converted = lowerer.convertedExpression(node);
+    const expression =
+        converted && unwrapObjectIdentity(lowerer.context.checker, converted);
     if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
@@ -180,25 +178,14 @@ function valueJson(
                 "Erased object storage requires a mutable plain-data document owner.",
             );
         }
-        if (value.kind === "record" && expression) {
-            const declaration = lowerer.context.bindings.recordDeclaration(
-                value,
-                expression,
-            );
-            if (
-                declaration &&
-                !lowerer.context.dynamicBindings.has(declaration)
-            )
-                throw new DynamicBindingStorageRequired(declaration, "source");
-        }
+        requireHeldRecordStorage(lowerer.context, value, node, expression);
     }
     if (
         value.kind === "void" &&
-        !value.erasedVoidCompletion &&
-        provenUndefinedValue(lowerer.context, node)
+        !readsErasedVoid(lowerer.context, value, node)
     ) {
         lowerer.context.emitDiscardedValue(value);
-        return "bbl::js::JsonValue{}";
+        return jsonAbsenceCpp("undefined");
     }
     // An optional's one absent state is the absence its read admits:
     // `undefined` or `null`, or the run-time answer of a read that records
@@ -231,10 +218,7 @@ function valueJson(
                 value,
             );
     }
-    if (value.kind === "json-null")
-        return value.cpp === "std::nullopt"
-            ? "bbl::js::JsonValue{}"
-            : "bbl::js::JsonValue::null_value()";
+    if (value.kind === "json-null") return jsonAbsenceCpp(absenceOfNull(value));
     if (value.kind === "record" && !value.cpp) {
         const owned = ownedDocument(lowerer, value, node);
         if (owned !== undefined) return owned;
@@ -573,7 +557,7 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, lowerer, value) => {
             if (value.dataType?.kind === "null")
                 return `(static_cast<void>(${value.cpp}), bbl::js::Null{})`;
-            if (value.kind !== "json-null" || value.cpp === "std::nullopt")
+            if (value.kind !== "json-null" || absenceOf(value) === "undefined")
                 return undefined;
             lowerer.context.emitDiscardedValue(value);
             return "bbl::js::Null{}";
@@ -589,19 +573,12 @@ export const scalarsSinks: DataSinkOperations<
         value: (_type, lowerer, value, node) => {
             if (isUndefinedDataType(value.dataType))
                 return `(static_cast<void>(${value.cpp}), bbl::js::Undefined{})`;
-            if (
-                value.erasedVoidCompletion ||
-                (value.kind === "void" &&
-                    !provenUndefinedValue(lowerer.context, node))
-            )
+            if (readsErasedVoid(lowerer.context, value, node))
                 lowerer.context.fail(
                     node,
                     "A stored void field requires a proven undefined completion.",
                 );
-            if (
-                value.kind === "void" ||
-                (value.kind === "json-null" && value.cpp === "std::nullopt")
-            ) {
+            if (value.kind === "void" || absenceOf(value) === "undefined") {
                 lowerer.context.emitDiscardedValue(value);
                 return "bbl::js::Undefined{}";
             }

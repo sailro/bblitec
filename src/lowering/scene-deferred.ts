@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { isAsyncFunction } from "../compiler/syntax.js";
 
 /** The adapter may collect failures only when the source callback rejects. */
 export function assertAsyncSceneBuilder(
@@ -21,9 +22,7 @@ export function assertAsyncSceneBuilder(
         calls[0]!.arguments.length !== 1 ||
         !callback ||
         !ts.isArrowFunction(callback) ||
-        !callback.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
+        !isAsyncFunction(callback)
     ) {
         context.contractError(
             declaration,

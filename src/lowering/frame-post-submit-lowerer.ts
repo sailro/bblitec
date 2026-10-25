@@ -5,11 +5,16 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    memberElement,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import {
     pinnedRecordLiteral,
     pinnedRecordSchema,
 } from "./pinned-record-literal.js";
+import { sameSource, sourceEntry, isOneOfSources } from "../compiler/syntax.js";
 
 const path = "src/engine/frame-post-submit.ts";
 const stateSchema = pinnedRecordSchema("FramePostSubmitState", {
@@ -35,7 +40,6 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             "encoder",
             "states",
             "state",
-            "hooks",
             "dispatch",
             "previousTaskResolver",
             "entry",
@@ -54,6 +58,10 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             "current.cancel": "current->cancel",
         }))
             bindings.set(name, { cpp, type: "opaque" });
+        bindings.set(
+            "hooks",
+            collectionBinding("hooks", memberElement(bindings)),
+        );
         bindings.set("state.hooks.size", {
             cpp: "static_cast<double>(state->hooks.size())",
             type: "scalar",
@@ -100,19 +108,6 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
             bindings,
             calls,
             foldConditions: false,
-            forOf(iterated, element) {
-                return iterated === "hooks"
-                    ? {
-                          range: "hooks",
-                          bindings: new Map([
-                              ...[...bindings].filter(([name]) =>
-                                  name.startsWith(`${element}.`),
-                              ),
-                              [element, { cpp: element, type: "opaque" }],
-                          ]),
-                      }
-                    : undefined;
-            },
             expression(input, lowerer) {
                 const node = unwrapExpression(input);
                 if (ts.isStringLiteralLike(node))
@@ -122,34 +117,33 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
                     return "{}";
                 if (
                     ts.isNewExpression(node) &&
-                    node.expression.getText(file) === "Set"
+                    sameSource(node.expression, "Set")
                 )
                     return "js::Set<std::shared_ptr<FramePostSubmitHook>>{}";
                 if (ts.isObjectLiteralExpression(node)) {
-                    const schema = node.properties.some(
-                        (property) => property.name?.getText(file) === "hooks",
+                    const schema = node.properties.some((property) =>
+                        sameSource(property.name, "hooks"),
                     )
                         ? stateSchema
                         : hookSchema;
                     return `js::make_gc_shared<${schema.cpp}>(${pinnedRecordLiteral(context, lowerer, node, schema)})`;
                 }
                 if (ts.isCallExpression(node)) {
-                    const name = node.expression
-                        .getText(file)
-                        .replaceAll("!", "");
-                    const call = calls.get(name);
+                    const callee = node.expression;
+                    const call = sourceEntry(calls, callee);
                     if (call)
                         return call(
                             node.arguments.map((argument) =>
                                 lowerer.expression(argument),
                             ),
                         );
-                    if (name === "_states?.get")
+                    if (sameSource(callee, "_states?.get"))
                         return `find_frame_post_submit_state(${lowerer.expression(node.arguments[0]!)})`;
-                    if (name === "current.cancel" || name === "cancel") {
+                    if (isOneOfSources(callee, ["current.cancel", "cancel"])) {
                         if (!node.questionDotToken) return undefined;
-                        const callback =
-                            name === "cancel" ? "cancel" : "current->cancel";
+                        const callback = sameSource(callee, "cancel")
+                            ? "cancel"
+                            : "current->cancel";
                         return `(${callback} ? ${callback}() : void())`;
                     }
                 }
@@ -191,12 +185,11 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
                     ts.isExpressionStatement(node) &&
                     ts.isCallExpression(node.expression)
                 ) {
-                    const name = node.expression.expression
-                        .getText(file)
-                        .replaceAll("!", "");
                     if (
-                        name === "hooks.delete" ||
-                        name === "state.hooks.delete"
+                        isOneOfSources(node.expression.expression, [
+                            "hooks.delete",
+                            "state.hooks.delete",
+                        ])
                     )
                         return [
                             `${indent}(void)${lowerer.expression(node.expression)};`,

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -120,7 +121,7 @@ export function compileHttpCall(
     if (
         options &&
         options.kind !== "record" &&
-        !(options.kind === "json-null" && options.cpp === "std::nullopt")
+        !(absenceOf(options) === "undefined")
     )
         context.fail(
             optionsNode!,
@@ -176,11 +177,7 @@ function requestSignal(
     site: ts.Node,
 ): string | undefined {
     const context = lowerer.context;
-    if (
-        value.kind === "json-null" ||
-        value.dataType?.kind === "undefined" ||
-        value.dataType?.kind === "null"
-    ) {
+    if (isAbsentValue(value)) {
         context.emitDiscardedValue(value);
         return undefined;
     }

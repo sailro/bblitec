@@ -1,4 +1,14 @@
 import ts from "typescript";
+import {
+    isAssignmentExpression,
+    patternSlots,
+    unwrapExpression,
+} from "./syntax.js";
+import { staticAccessKey, libraryStaticMember } from "./symbols.js";
+import { unionMembers } from "./type-facts.js";
+import type { PatternRead } from "./syntax.js";
+import { unlessRefused } from "./compile-error.js";
+import type { LoweringServices } from "./lowering-services.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -33,32 +43,55 @@ export function propertyNeverObserved(
     if (known !== undefined) return known;
     const carries = (expression: ts.Expression): boolean => {
         const type = checker.getTypeAtLocation(expression);
-        const parts = type.isUnion() ? type.types : [type];
+        const parts = unionMembers(type);
         return parts.some(
             (part) =>
                 (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
                     0 || part.getProperty(name) !== undefined,
         );
     };
+    // A destructuring reads the keys it names; a rest or a run-time key, any.
+    const readsName = (slots: readonly { read: PatternRead }[]): boolean =>
+        slots.some(
+            ({ read }) =>
+                read.kind !== "member" ||
+                read.key === undefined ||
+                read.key === name,
+        );
+    const assignmentPatternReads = (pattern: ts.Expression): boolean => {
+        const target = unwrapExpression(pattern);
+        if (ts.isObjectLiteralExpression(target)) {
+            const slots = patternSlots(target);
+            return (
+                readsName(slots) ||
+                slots.some((slot) => assignmentPatternReads(slot.target))
+            );
+        }
+        return (
+            ts.isArrayLiteralExpression(target) &&
+            patternSlots(target).some((slot) =>
+                assignmentPatternReads(slot.target),
+            )
+        );
+    };
     const observes = (node: ts.Node): boolean => {
         if (ts.isPropertyAccessExpression(node) && node.name.text === name)
             return true;
-        if (
-            ts.isElementAccessExpression(node) &&
-            (!ts.isStringLiteralLike(node.argumentExpression) ||
-                node.argumentExpression.text === name) &&
-            carries(node.expression)
-        )
+        if (ts.isElementAccessExpression(node)) {
+            // A key only the run time knows may be this one.
+            const key = staticAccessKey(checker, node);
+            if ((key === undefined || key === name) && carries(node.expression))
+                return true;
+        }
+        if (ts.isObjectBindingPattern(node) && readsName(patternSlots(node)))
             return true;
         if (
-            ts.isBindingElement(node) &&
-            ((node.propertyName &&
-                ts.isIdentifier(node.propertyName) &&
-                node.propertyName.text === name) ||
-                (!node.propertyName &&
-                    ts.isIdentifier(node.name) &&
-                    node.name.text === name) ||
-                node.dotDotDotToken !== undefined)
+            (isAssignmentExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                assignmentPatternReads(node.left)) ||
+            ((ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                !ts.isVariableDeclarationList(node.initializer) &&
+                assignmentPatternReads(node.initializer))
         )
             return true;
         if (
@@ -68,16 +101,13 @@ export function propertyNeverObserved(
             return true;
         if (ts.isForInStatement(node) && carries(node.expression)) return true;
         if (ts.isCallExpression(node)) {
-            const callee = node.expression;
+            const callee = libraryStaticMember(checker, node.expression);
             const reflective =
-                ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression) &&
-                ((callee.expression.text === "Object" &&
-                    reflectiveObjectMethods.has(callee.name.text)) ||
-                    (callee.expression.text === "JSON" &&
-                        callee.name.text === "stringify") ||
-                    (callee.expression.text === "Reflect" &&
-                        callee.name.text !== "apply"));
+                callee !== undefined &&
+                ((callee.owner === "Object" &&
+                    reflectiveObjectMethods.has(callee.name)) ||
+                    (callee.owner === "JSON" && callee.name === "stringify") ||
+                    (callee.owner === "Reflect" && callee.name !== "apply"));
             if (reflective && node.arguments.some(carries)) return true;
         }
         return (
@@ -92,4 +122,19 @@ export function propertyNeverObserved(
         .every((file) => !observes(file));
     names.set(name, unread);
     return unread;
+}
+
+/**
+ * What `compile` makes for a property named `name`, or undefined when that
+ * compile refuses and {@link propertyNeverObserved}: nothing would read the
+ * value back, so no storage needs it. A read property compiles unprobed.
+ */
+export function compiledUnlessUnobserved<T>(
+    context: Pick<LoweringServices, "probeEmission" | "program" | "checker">,
+    name: string,
+    compile: () => T,
+): T | undefined {
+    if (!propertyNeverObserved(context.program, context.checker, name))
+        return compile();
+    return unlessRefused(() => context.probeEmission(compile, () => true));
 }

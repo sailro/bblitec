@@ -10,6 +10,7 @@ import {
 } from "./regexp-grammar.js";
 import { valueForKind, type Value } from "./types.js";
 import { argumentAt, regularExpressionParts } from "./syntax.js";
+import { callSignatures, signatureParameterTypes } from "./type-facts.js";
 
 /** Both replacement overloads use the ordinary inline/stored callback invocation path. */
 export function replacementCallback(
@@ -57,23 +58,26 @@ export function replacementCallback(
                 lowerer.leafValue(`${packet}.input`, { kind: "string" }),
             ];
         } else {
-            const signature = context.checker
-                .getTypeAtLocation(argumentAt(call, 1))
-                .getCallSignatures()[0];
+            const signature = callSignatures(
+                context.checker,
+                context.checker.getTypeAtLocation(argumentAt(call, 1)),
+                "exact",
+            )[0];
             if (!signature)
                 return context.fail(
                     call,
                     "RegExp replacement requires a callable signature.",
                 );
-            supplied = signature.parameters.map((parameter, index) => {
+            supplied = signatureParameterTypes(
+                context.checker,
+                signature,
+                call,
+            ).map((parameter, index) => {
                 if (index === 0)
                     return lowerer.leafValue(`*${packet}.groups[0]`, {
                         kind: "string",
                     });
-                const declared = context.dataTypes.fromTsType(
-                    context.checker.getTypeOfSymbolAtLocation(parameter, call),
-                    call,
-                );
+                const declared = context.dataTypes.fromTsType(parameter, call);
                 const inner =
                     declared?.kind === "optional" ? declared.inner : declared;
                 const scalar = (type: DataType): boolean =>

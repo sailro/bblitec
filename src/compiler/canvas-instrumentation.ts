@@ -8,13 +8,33 @@ import {
     declaredInDomLibrary,
     libraryGlobal,
     resolvedSymbol,
+    staticAccessKey,
+    libraryName,
+    calledDeclaration,
+    memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
+    choosesOperand,
     isAssignmentExpression,
     isUpdateExpression,
+    operandYield,
     stringLiteralText,
     unwrapExpression,
+    writeSites,
+    writeSiteOf,
+    positionalParameter,
+    variableKind,
+    isMemberAccess,
 } from "./syntax.js";
+import {
+    undefinedOnly,
+    presentMembers,
+    isVoid,
+    holdsOnly,
+    typeCanCarryReference,
+    callSignatures,
+} from "./type-facts.js";
 
 type ReportingValue =
     | "primitive"
@@ -57,15 +77,10 @@ export function hasOnlyReportingEffects(
         return false;
     if (
         fn &&
-        !checker
-            .getTypeAtLocation(fn)
-            .getCallSignatures()
-            .every(
-                (signature) =>
-                    (checker.getReturnTypeOfSignature(signature).flags &
-                        (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !==
-                    0,
-            )
+        !callSignatures(checker, checker.getTypeAtLocation(fn), "exact").every(
+            (signature) =>
+                undefinedOnly(checker.getReturnTypeOfSignature(signature)),
+        )
     )
         return false;
     const locals = new Map<ts.Symbol, ReportingValue>();
@@ -87,21 +102,17 @@ export function hasOnlyReportingEffects(
             index === 0 && options.ownedRejection ? "error" : "input",
         );
     }
-    const primitive = (expression: ts.Expression): boolean => {
-        const type = checker.getTypeAtLocation(expression);
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.StringLike |
-                        ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Void)) !==
-                0,
-        );
-    };
+    // A symbol is not printable: concatenating one throws.
+    const primitive = (expression: ts.Expression): boolean =>
+        holdsOnly(checker.getTypeAtLocation(expression), [
+            "string",
+            "number",
+            "boolean",
+            "bigint",
+            "null",
+            "undefined",
+            "void",
+        ]);
     const printable = (value: ReportingValue | undefined): boolean =>
         value === "primitive" || value === "error" || value === "printable";
     const join = (
@@ -118,13 +129,16 @@ export function hasOnlyReportingEffects(
     const property = (
         node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): string | undefined => {
-        if (ts.isPropertyAccessExpression(node)) return node.name.text;
-        if (value(node.argumentExpression) !== "primitive") return undefined;
-        const key = checker.getTypeAtLocation(node.argumentExpression);
-        return key.isStringLiteral() ? key.value : undefined;
+        // A key that converts an object may run its toString.
+        if (
+            ts.isElementAccessExpression(node) &&
+            value(node.argumentExpression) !== "primitive"
+        )
+            return undefined;
+        return staticAccessKey(checker, node);
     };
     const libraryCall = (call: ts.CallExpression): boolean => {
-        const declaration = checker.getResolvedSignature(call)?.declaration;
+        const declaration = calledDeclaration(checker, call);
         return (
             declaration !== undefined &&
             declarationInDefaultLibrary(declaration)
@@ -158,11 +172,8 @@ export function hasOnlyReportingEffects(
             if (!name) return undefined;
             const member = accessedPropertySymbol(checker, node);
             if (
-                member?.declarations?.some(
-                    (declaration) =>
-                        !declarationInDefaultLibrary(declaration) &&
-                        (ts.isGetAccessorDeclaration(declaration) ||
-                            ts.isSetAccessorDeclaration(declaration)),
+                memberAccessors(checker, node, "either").some(
+                    (declaration) => !declarationInDefaultLibrary(declaration),
                 )
             )
                 return undefined;
@@ -171,16 +182,15 @@ export function hasOnlyReportingEffects(
                 owner === "console" &&
                 member?.declarations?.every(declarationInDefaultLibrary)
             ) {
-                const signatures = checker
-                    .getTypeAtLocation(node)
-                    .getCallSignatures();
+                const signatures = callSignatures(
+                    checker,
+                    checker.getTypeAtLocation(node),
+                    "exact",
+                );
                 if (
                     signatures.length &&
-                    signatures.every(
-                        (signature) =>
-                            (checker.getReturnTypeOfSignature(signature).flags &
-                                ts.TypeFlags.Void) !==
-                            0,
+                    signatures.every((signature) =>
+                        isVoid(checker.getReturnTypeOfSignature(signature)),
                     )
                 )
                     return "reporter";
@@ -216,10 +226,7 @@ export function hasOnlyReportingEffects(
                 node.arguments.every((argument) => printable(value(argument)))
             )
                 return "primitive";
-            if (
-                ts.isPropertyAccessExpression(callee) ||
-                ts.isElementAccessExpression(callee)
-            ) {
+            if (isMemberAccess(callee)) {
                 const owner = value(callee.expression),
                     name = property(callee);
                 if (
@@ -242,10 +249,7 @@ export function hasOnlyReportingEffects(
                         checker.getTypeAtLocation(expression),
                     );
                     const symbol = type.getSymbol();
-                    if (
-                        symbol?.getName() === "HTMLCanvasElement" &&
-                        declaredInDomLibrary(symbol)
-                    )
+                    if (libraryName(symbol) === "HTMLCanvasElement")
                         return "canvas";
                 }
                 if (
@@ -326,16 +330,14 @@ export function hasOnlyReportingEffects(
                     : undefined;
             const beforeRight = reported;
             const right = value(node.right);
-            if (
-                [
-                    ts.SyntaxKind.AmpersandAmpersandToken,
-                    ts.SyntaxKind.BarBarToken,
-                    ts.SyntaxKind.QuestionQuestionToken,
-                ].includes(node.operatorToken.kind)
-            ) {
+            // A chosen right operand may not run: its reports do not stand.
+            if (choosesOperand(node)) {
                 reported = beforeRight;
                 return join(left, right);
             }
+            // A comma yields its right operand once its left one is known.
+            if (operandYield(node, node.right))
+                return left === undefined ? undefined : right;
             return printable(left) && printable(right)
                 ? "primitive"
                 : undefined;
@@ -386,8 +388,7 @@ export function hasOnlyReportingEffects(
     const statement = (node: ts.Statement): boolean => {
         if (ts.isBlock(node)) return node.statements.every(statement);
         if (ts.isVariableStatement(node)) {
-            if ((node.declarationList.flags & ts.NodeFlags.Const) === 0)
-                return false;
+            if (variableKind(node.declarationList) !== "const") return false;
             return node.declarationList.declarations.every((declaration) => {
                 if (
                     !ts.isIdentifier(declaration.name) ||
@@ -467,31 +468,13 @@ function hasOnlyInstrumentationEffects(
     };
     const valueDeclaration = (node: ts.Node): ts.Declaration | undefined =>
         resolvedSymbol(checker, node)?.valueDeclaration;
-    const isPrimitive = (expression: ts.Expression): boolean => {
-        const type = checker.getTypeAtLocation(expression);
-        const members = type.isUnion() ? type.types : [type];
-        return members.every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.StringLike |
-                        ts.TypeFlags.NumberLike |
-                        ts.TypeFlags.BooleanLike |
-                        ts.TypeFlags.BigIntLike |
-                        ts.TypeFlags.ESSymbolLike |
-                        ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined |
-                        ts.TypeFlags.Void)) !==
-                0,
-        );
-    };
+    const isPrimitive = (expression: ts.Expression): boolean =>
+        !typeCanCarryReference(checker.getTypeAtLocation(expression));
     const isBrowserType = (expression: ts.Expression): boolean => {
         const direct = checker.getTypeAtLocation(expression);
         const type = checker.getAwaitedType(direct) ?? direct;
-        return (type.isUnion() ? type.types : [type]).every(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !==
-                    0 || declaredInDomLibrary(member.getSymbol()),
+        return presentMembers(type).every((member) =>
+            declaredInDomLibrary(member.getSymbol()),
         );
     };
     const isFetch = (expression: ts.Expression): boolean =>
@@ -554,7 +537,7 @@ function hasOnlyInstrumentationEffects(
                 ts.isVariableDeclaration(target) &&
                 target.initializer !== undefined &&
                 ts.isVariableDeclarationList(target.parent) &&
-                (target.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                variableKind(target.parent) === "const" &&
                 confined(target.initializer, seen)
             );
         }
@@ -575,11 +558,10 @@ function hasOnlyInstrumentationEffects(
     const isFetchBinding = (
         call: ts.CallExpression | ts.NewExpression,
     ): boolean => {
-        const callee = unwrapExpression(call.expression);
+        const callee = namedMember(checker, unwrapExpression(call.expression));
         return (
             ts.isCallExpression(call) &&
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "bind" &&
+            callee?.name === "bind" &&
             isFetch(callee.expression) &&
             call.arguments.length === 1 &&
             ts.isIdentifier(call.arguments[0]!) &&
@@ -588,7 +570,7 @@ function hasOnlyInstrumentationEffects(
     };
     const safeCall = (call: ts.CallExpression | ts.NewExpression): boolean => {
         if (isFetchBinding(call)) return true;
-        const signature = checker.getResolvedSignature(call)?.declaration;
+        const signature = calledDeclaration(checker, call);
         if (!signature) return false;
         const fn = functions(signature);
         if (fn?.body) return prove(fn);
@@ -627,13 +609,17 @@ function hasOnlyInstrumentationEffects(
                     "Response",
                 ].includes(libraryGlobal(checker, callee) ?? "")
             );
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const receiver = unwrapExpression(callee.expression);
+        const member = namedMember(checker, callee);
+        if (!member) return false;
+        const receiver = unwrapExpression(member.expression);
         if (isBrowserType(receiver) && confined(receiver)) {
             return (call.arguments ?? []).every(
                 (argument) =>
-                    checker.getTypeAtLocation(argument).getCallSignatures()
-                        .length === 0 || confined(argument),
+                    callSignatures(
+                        checker,
+                        checker.getTypeAtLocation(argument),
+                        "exact",
+                    ).length === 0 || confined(argument),
             );
         }
         return (
@@ -667,31 +653,23 @@ function hasOnlyInstrumentationEffects(
     };
     const visit = (node: ts.Node): boolean => {
         if (ts.isTypeNode(node)) return true;
-        if (isAssignmentExpression(node) && !safeWrite(node.left)) return false;
-        if (
-            isAssignmentExpression(node) &&
-            isFetch(node.left) &&
-            !confined(node.right)
-        )
-            return false;
-        if (isUpdateExpression(node) && !safeWrite(node.operand)) return false;
-        if (ts.isDeleteExpression(node) && !safeWrite(node.expression))
-            return false;
+        for (const { target, stored } of writeSites(node))
+            if (
+                !safeWrite(target) ||
+                (stored && isFetch(target) && !confined(stored))
+            )
+                return false;
         if (
             (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
             !safeCall(node)
         )
             return false;
         // Accessors and dynamic dispatch can hide arbitrary native effects.
-        if (ts.isPropertyAccessExpression(node)) {
-            const target = valueDeclaration(node);
-            if (
-                target &&
-                (ts.isGetAccessorDeclaration(target) ||
-                    ts.isSetAccessorDeclaration(target))
-            )
-                return false;
-        }
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            memberAccessors(checker, node, "either").length > 0
+        )
+            return false;
         if (ts.isElementAccessExpression(node) && !confined(node.expression))
             return false;
         if (ts.isForOfStatement(node) && !confined(node.expression))
@@ -734,14 +712,14 @@ export function writesUnobservedCanvasMetadata(
     argumentIndex: number,
     host: NativeHostUi | undefined,
 ): boolean {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
+    const declaration = calledDeclaration(checker, call);
     if (
         !declaration ||
         !ts.isFunctionDeclaration(declaration) ||
         !declaration.body
     )
         return false;
-    const parameter = declaration.parameters[argumentIndex];
+    const parameter = positionalParameter(call, declaration, argumentIndex);
     if (!parameter || !ts.isIdentifier(parameter.name)) return false;
     const symbol = resolvedSymbol(checker, parameter.name);
     if (
@@ -768,15 +746,8 @@ export function writesUnobservedCanvasMetadata(
                 valid = false;
                 return;
             }
-            const write = field.parent;
-            if (
-                !(
-                    ts.isBinaryExpression(write) &&
-                    write.left === field &&
-                    write.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                ) &&
-                !(ts.isDeleteExpression(write) && write.expression === field)
-            ) {
+            const kind = writeSiteOf(field)?.kind;
+            if (kind !== "assign" && kind !== "delete") {
                 valid = false;
                 return;
             }

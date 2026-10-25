@@ -8,7 +8,8 @@ import type { LoweringServices } from "../lowering-services.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import { absenceOf, knownCondition } from "../values/model.js";
+import { argumentAt, propertyKey } from "../syntax.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
@@ -16,10 +17,17 @@ import { compressedTextureUrls } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import {
     addressModeByPin,
+    addressModeCppByPin,
     loadTexture2DDefaults,
     loadTexture2DOptionFields,
     loadTexture2DSamplerCpp,
+    textureFilterByPin,
 } from "../../pinned-address-modes.js";
+import {
+    compileTableOption,
+    staticTableOption,
+    type TableOption,
+} from "../table-options.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { localAssetPath } from "../../asset-source.js";
@@ -38,6 +46,23 @@ import {
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
+import { valueKindOf } from "../type-facts.js";
+
+/** loadTexture2D's filters: the sampler rule reads them at generation. */
+const textureFilter: TableOption = {
+    table: textureFilterByPin,
+    refusal: "Reached texture filters support nearest and linear.",
+    name: "texture filter",
+    label: "texture_filter",
+};
+
+const textureAddressMode: TableOption = {
+    table: addressModeCppByPin,
+    refusal:
+        "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
+    name: "texture address mode",
+    label: "address_mode",
+};
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -148,9 +173,7 @@ function sceneSplatFragment(
     if (!slots)
         context.fail(site, "A GsShaderFragment requires id and fragmentSlots.");
     const helper = fields.helperFunctions;
-    const hasHelper =
-        helper &&
-        !(helper.kind === "json-null" && helper.cpp === "std::nullopt");
+    const hasHelper = helper && !(absenceOf(helper) === "undefined");
     return {
         kind: "scene",
         id: string(fields.id),
@@ -296,7 +319,7 @@ function fetchedGltfSource(
     expression: ts.Expression,
 ): string | undefined {
     const type = context.checker.getTypeAtLocation(expression);
-    if ((type.flags & ts.TypeFlags.StringLike) !== 0) return undefined;
+    if (valueKindOf(type) === "string") return undefined;
     // The bytes' own carrier, read in a probe that leaves no trace: the
     // loader packages the file itself, not the response's opaque copy.
     const bytes = context.probeEmission(
@@ -640,9 +663,9 @@ function compileLoadBabylon(
     }
     const asset = context.assetRegistry.registerAsset(source, "babylon");
     const textureModes =
-        loadTextures === "true"
+        knownCondition(loadTextures) === true
             ? [true]
-            : loadTextures === "false"
+            : knownCondition(loadTextures) === false
               ? [false]
               : [false, true];
     writable(asset).babylonTextureModes = [
@@ -650,7 +673,8 @@ function compileLoadBabylon(
     ];
     // The pin imports its camera parser only when `loadCamera !== false`
     // (load-babylon.ts), so a literal `false` reaches no camera factory.
-    if (loadCamera !== "false") context.reachFeature("camera:free", call);
+    if (knownCondition(loadCamera) !== false)
+        context.reachFeature("camera:free", call);
     context.reachFeature("loader:babylon", call);
     context.reachFeature("material:standard", call);
     context.reachFeature("renderer:scene", call);
@@ -708,12 +732,7 @@ function compileLoadTexture2D(
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
         for (const property of options.properties) {
-            const name =
-                property.name &&
-                (ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name))
-                    ? property.name.text
-                    : undefined;
+            const name = property.name && propertyKey(property.name);
             if (!loadTexture2DOptionFields.includes(name ?? "")) {
                 context.fail(
                     property,
@@ -721,64 +740,59 @@ function compileLoadTexture2D(
                 );
             }
         }
-        const filterName = (expression: ts.Expression): string => {
-            const filter = context.compileStringLiteral(expression);
-            if (filter !== "nearest" && filter !== "linear") {
-                context.fail(
-                    expression,
-                    "Reached texture filters support nearest and linear.",
-                );
-            }
-            return filter;
-        };
         const minExpression = context.objectProperty(options, "minFilter");
         if (minExpression) {
-            minFilter = filterName(minExpression);
+            minFilter = staticTableOption(
+                context,
+                textureFilter,
+                minExpression,
+            );
         }
         const magExpression = context.objectProperty(options, "magFilter");
         if (magExpression) {
-            magFilter = filterName(magExpression);
+            magFilter = staticTableOption(
+                context,
+                textureFilter,
+                magExpression,
+            );
         }
-        const addressMode = (expression: ts.Expression): string => {
-            const unwrapped = context.unwrap(expression);
-            if (ts.isConditionalExpression(unwrapped)) {
-                return `(${context.compileBoolean(unwrapped.condition)} ? ${addressMode(unwrapped.whenTrue)} : ${addressMode(unwrapped.whenFalse)})`;
-            }
-            const mode = context.compileStringLiteral(expression);
-            const mapped = addressModeByPin[mode];
-            if (!mapped) {
-                context.fail(
-                    expression,
-                    "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
-                );
-            }
-            return `bbl::${mapped}`;
-        };
         const addressUExpression = context.objectProperty(
             options,
             "addressModeU",
         );
         if (addressUExpression) {
-            addressModeU = addressMode(addressUExpression);
+            addressModeU = compileTableOption(
+                context,
+                textureAddressMode,
+                addressUExpression,
+            );
         }
         const addressVExpression = context.objectProperty(
             options,
             "addressModeV",
         );
         if (addressVExpression) {
-            addressModeV = addressMode(addressVExpression);
+            addressModeV = compileTableOption(
+                context,
+                textureAddressMode,
+                addressVExpression,
+            );
         }
         const mipExpression = context.objectProperty(options, "mipMaps");
         if (mipExpression) {
-            mipMaps = context.compileBoolean(mipExpression) === "true";
+            mipMaps =
+                knownCondition(context.compileBoolean(mipExpression)) === true;
         }
         const invertExpression = context.objectProperty(options, "invertY");
         if (invertExpression) {
-            invertY = context.compileBoolean(invertExpression) === "true";
+            invertY =
+                knownCondition(context.compileBoolean(invertExpression)) ===
+                true;
         }
         const srgbExpression = context.objectProperty(options, "srgb");
         if (srgbExpression) {
-            srgb = context.compileBoolean(srgbExpression) === "true";
+            srgb =
+                knownCondition(context.compileBoolean(srgbExpression)) === true;
         }
         const premultiplyExpression = context.objectProperty(
             options,
@@ -786,7 +800,9 @@ function compileLoadTexture2D(
         );
         if (premultiplyExpression) {
             premultiplyAlpha =
-                context.compileBoolean(premultiplyExpression) === "true";
+                knownCondition(
+                    context.compileBoolean(premultiplyExpression),
+                ) === true;
         }
     }
     // `maxAnisotropy: allLinear ? 4 : 1` — the rule, and the mip
@@ -936,7 +952,7 @@ function compileLoadSkybox(
             ),
     );
     const size = call.arguments[3]
-        ? context.compileNumber(call.arguments[3])
+        ? context.compileNumber(call.arguments[3], "double")
         : "100.0";
     context.reachFeature("background:image-skybox", call);
     return {

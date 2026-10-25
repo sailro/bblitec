@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { isTypeReference } from "./type-facts.js";
+import { isTypeReference, callSignatures, unionMembers } from "./type-facts.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -108,21 +108,19 @@ export function mentionsTypeParameter(
     ) {
         return true;
     }
-    return type
-        .getCallSignatures()
-        .some(
-            (signature) =>
-                signature
-                    .getParameters()
-                    .some((parameter) =>
-                        mentionsTypeParameter(
-                            checker,
-                            checker.getTypeOfSymbol(parameter),
-                            seen,
-                        ),
-                    ) ||
-                mentionsTypeParameter(checker, signature.getReturnType(), seen),
-        );
+    return callSignatures(checker, type, "exact").some(
+        (signature) =>
+            signature
+                .getParameters()
+                .some((parameter) =>
+                    mentionsTypeParameter(
+                        checker,
+                        checker.getTypeOfSymbol(parameter),
+                        seen,
+                    ),
+                ) ||
+            mentionsTypeParameter(checker, signature.getReturnType(), seen),
+    );
 }
 
 /** The generic declaration a type reference instantiates (`Promise` of `Promise<T>`). */
@@ -196,8 +194,16 @@ class TypeUnifier {
             });
             return;
         }
-        const patternSignature = pattern.getCallSignatures()[0];
-        const actualSignature = actual.getCallSignatures()[0];
+        const patternSignature = callSignatures(
+            this.checker,
+            pattern,
+            "exact",
+        )[0];
+        const actualSignature = callSignatures(
+            this.checker,
+            actual,
+            "exact",
+        )[0];
         if (patternSignature && actualSignature) {
             patternSignature.getParameters().forEach((parameter, index) => {
                 const counterpart = actualSignature.getParameters()[index];
@@ -236,7 +242,7 @@ class TypeUnifier {
      * whose other properties it matches.
      */
     private unifyUnion(pattern: ts.UnionType, actual: ts.Type): void {
-        const actualMembers = actual.isUnion() ? [...actual.types] : [actual];
+        const actualMembers = [...unionMembers(actual)];
         const parameters: ts.Type[] = [];
         const generic: ts.Type[] = [];
         for (const member of pattern.types) {

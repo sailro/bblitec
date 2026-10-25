@@ -5,10 +5,17 @@ import { repositoryRelativePath } from "./upstream-source.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
-    propertyNameText,
+    propertyKey,
+    bindingElementKey,
+    specifierSourceName,
 } from "./compiler/syntax.js";
 import { sourceLocation } from "./source-location.js";
-import { declaredSymbol, resolvedSymbol } from "./compiler/symbols.js";
+import {
+    calledDeclaration,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./compiler/symbols.js";
+import { unionMembers } from "./compiler/type-facts.js";
 
 export interface ApiUse {
     id: string;
@@ -136,7 +143,7 @@ export function scanApiUsage(
         const targets = seen.get(actual) ?? new Set<ts.Type>();
         targets.add(expected);
         seen.set(actual, targets);
-        for (const part of actual.isUnion() ? actual.types : [actual])
+        for (const part of unionMembers(actual))
             for (const member of checker.getPropertiesOfType(part)) {
                 for (const declaration of member.declarations ?? []) {
                     if (
@@ -193,14 +200,14 @@ export function scanApiUsage(
             importsSurface(node.moduleSpecifier)
         ) {
             for (const element of node.importClause.namedBindings.elements) {
-                const name = (element.propertyName ?? element.name).text;
+                const name = specifierSourceName(element);
                 if (!Object.hasOwn(surface.snapshot.exports, name))
                     unresolved.add(name);
             }
         }
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
             const signature = checker.getResolvedSignature(node);
-            const declaration = signature?.declaration;
+            const declaration = calledDeclaration(checker, node);
             if (declaration)
                 add(
                     surface.byDeclaration.get(declarationKey(declaration)) ??
@@ -243,7 +250,7 @@ export function scanApiUsage(
             ts.isObjectLiteralExpression(node.parent)
         ) {
             const context = checker.getContextualType(node.parent);
-            const name = propertyNameText(node.name);
+            const name = propertyKey(node.name);
             if (context && name !== undefined) {
                 add(properties(context, name), node, "provide", () =>
                     ts.isPropertyAssignment(node)
@@ -255,16 +262,13 @@ export function scanApiUsage(
             ts.isBindingElement(node) &&
             ts.isObjectBindingPattern(node.parent)
         ) {
-            const name = node.propertyName ?? node.name;
-            if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) {
+            const key = bindingElementKey(node);
+            if (key !== undefined) {
                 add(
-                    properties(
-                        checker.getTypeAtLocation(node.parent),
-                        name.text,
-                    ),
+                    properties(checker.getTypeAtLocation(node.parent), key),
                     node,
                     "read",
-                    () => name.text,
+                    () => key,
                 );
             }
         } else if (ts.isIdentifier(node)) {

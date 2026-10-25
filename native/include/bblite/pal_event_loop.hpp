@@ -184,14 +184,40 @@ public:
             return fixed_frame_time_;
         return std::chrono::duration<double, std::milli>(Clock::now() - origin_).count();
     }
-    void use_fixed_animation_time(double delta_ms) {
+    /**
+     * Step animation frames and timers by `delta_ms`. A `held` clock stays at
+     * zero until `start_fixed_animation_time()`: an engine's capture clock
+     * starts with its first rendered frame, as the browser capture's does, so
+     * renderer setup spanning animation frames takes no time.
+     */
+    void use_fixed_animation_time(double delta_ms, bool held = false) {
         require_owner();
         if (!std::isfinite(delta_ms) || delta_ms <= 0)
             throw std::invalid_argument(
                 "A fixed animation clock requires a positive finite delta.");
         if (fixed_frame_delta_ && *fixed_frame_delta_ != delta_ms)
             throw std::logic_error("Engines in one realm must share their capture clock.");
+        if (!fixed_frame_delta_)
+            fixed_clock_ = held ? FixedClock::held : FixedClock::first_frame;
         fixed_frame_delta_ = delta_ms;
+    }
+    /** Release a held fixed clock: the next animation frame is one step later. */
+    void start_fixed_animation_time() {
+        require_owner();
+        if (fixed_clock_ == FixedClock::held)
+            fixed_clock_ = FixedClock::stepping;
+    }
+    /** The fixed clock's time; none while the realm runs on the wall clock. */
+    std::optional<double> fixed_animation_time() const {
+        return fixed_frame_delta_ ? std::optional<double>(fixed_frame_time_) : std::nullopt;
+    }
+    /**
+     * Run `step` after each animation frame's callbacks and due fixed-clock
+     * timers, where the browser updates the rendering.
+     */
+    void on_rendering_update(Task step) {
+        require_owner();
+        rendering_update_ = std::move(step);
     }
 
     static EventLoop& current() {
@@ -199,6 +225,8 @@ public:
             throw std::logic_error("No active realm event loop.");
         return *current_;
     }
+    /** The realm event loop this thread runs, if any. */
+    static EventLoop* current_if_any() { return current_; }
 
     void checkpoint() const {
         if (inbox_->terminated() && !closing_)
@@ -821,9 +849,10 @@ private:
             batch.push_back(id);
         }
         if (fixed_frame_delta_) {
-            if (fixed_frame_started_)
+            if (fixed_clock_ == FixedClock::stepping)
                 fixed_frame_time_ = static_cast<double>(++fixed_frame_index_) * *fixed_frame_delta_;
-            fixed_frame_started_ = true;
+            else if (fixed_clock_ == FixedClock::first_frame)
+                fixed_clock_ = FixedClock::stepping;
         }
         const auto milliseconds =
             fixed_frame_delta_
@@ -854,6 +883,8 @@ private:
                     inbox_->animation_requested_ = true;
             }
         }
+        if (rendering_update_)
+            turn([&] { rendering_update_(); });
     }
     bool dispatch_one(bool wait) {
         checkpoint();
@@ -925,7 +956,13 @@ private:
     std::optional<double> fixed_frame_delta_;
     double fixed_frame_time_ = 0;
     std::uint64_t fixed_frame_index_ = 0;
-    bool fixed_frame_started_ = false;
+    /**
+     * A fixed clock is held at zero until released, keeps its first
+     * animation frame at zero, then steps once per animation frame.
+     */
+    enum class FixedClock { held, first_frame, stepping };
+    FixedClock fixed_clock_ = FixedClock::first_frame;
+    Task rendering_update_;
     std::deque<Task> microtasks_;
     std::map<TimerId, Timer> timers_;
     std::priority_queue<Deadline, std::vector<Deadline>, std::greater<Deadline>> deadlines_;

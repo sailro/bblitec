@@ -3,7 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 
 import type { DataType } from "./data-types.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { libraryName, namedMember } from "./symbols.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
@@ -112,18 +112,17 @@ export function compileWebStorageCall(
     context: WebStorageContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee) return undefined;
     const global = storageGlobal(context, callee.expression);
-    if (!global && !STORAGE_METHODS.has(callee.name.text)) {
+    if (!global && !STORAGE_METHODS.has(callee.name)) {
         const type = context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(callee.expression),
         );
-        if (
-            type.symbol?.name !== "Storage" ||
-            !declaredInDomLibrary(type.symbol)
-        )
-            return undefined;
+        if (libraryName(type) !== "Storage") return undefined;
     }
     const owner = context.probeEmission(() => {
         const value = context.compileValue(callee.expression);
@@ -145,11 +144,11 @@ export function compileWebStorageCall(
     const optional = owner.dataType?.kind === "optional";
     const callback = storageValue(
         optional ? optionalValueCpp(receiver) : receiver,
-    ).recordProperties?.[callee.name.text];
+    ).recordProperties?.[callee.name];
     if (callback?.dataType?.kind !== "function")
         return context.fail(
-            callee.name,
-            `${global ?? "Storage"}.${callee.name.text} is not lowered; the reached Web Storage surface is getItem, setItem and removeItem.`,
+            callee.key,
+            `${global ?? "Storage"}.${callee.name} is not lowered; the reached Web Storage surface is getItem, setItem and removeItem.`,
         );
     return context.dataLowerer.compileStoredCall(
         call,

@@ -7,6 +7,7 @@ import { imageCodecForFileName } from "../image-codec-manifest.js";
 import { findRepositoryRoot } from "../upstream-source.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { mathMemberIsImpure } from "./math-intrinsics.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import {
     closureModules,
@@ -17,7 +18,7 @@ import { runGenerationChild } from "./generation-child.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { ModuleJsonDeclined, runModuleJsonSync } from "./module-json-sync.js";
 import { CompilerSymbols } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, variableKind } from "./syntax.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { parameterIsReadOnly } from "./parameter-effects.js";
 import type { Value } from "./types.js";
@@ -81,7 +82,8 @@ function checkClosedInputs(
                     if (
                         !globals.has(global) ||
                         (global === "Math" &&
-                            property?.name.text === "random") ||
+                            property !== undefined &&
+                            mathMemberIsImpure(property.name.text)) ||
                         (global === "document" &&
                             property?.name.text !== "createElement")
                     ) {
@@ -99,7 +101,7 @@ function checkClosedInputs(
                     ts.isVariableDeclarationList(target.parent) &&
                     ts.isVariableStatement(target.parent.parent) &&
                     ts.isSourceFile(target.parent.parent.parent) &&
-                    (!(target.parent.flags & ts.NodeFlags.Const) ||
+                    (variableKind(target.parent) !== "const" ||
                         !parameterIsReadOnly(context.checker, member, child))
                 ) {
                     context.fail(
@@ -108,7 +110,7 @@ function checkClosedInputs(
                     );
                 }
             },
-            { types: "skip", memberNames: "skip" },
+            { types: "skip", names: "references" },
         );
     }
 }

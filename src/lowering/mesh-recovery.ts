@@ -6,6 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { sameSource } from "../compiler/syntax.js";
 
 /** Retained data uploads use the pin's eligibility and attribute-presence predicates. */
 export function lowerRetainedMeshRecovery(context: LoweringContext): string {
@@ -77,8 +78,7 @@ export function lowerRetainedMeshRecovery(context: LoweringContext): string {
     for (const [name, member] of flags) {
         const property = returned.properties.find(
             (item) =>
-                ts.isPropertyAssignment(item) &&
-                item.name.getText(file) === name,
+                ts.isPropertyAssignment(item) && sameSource(item.name, name),
         );
         if (!property || !ts.isPropertyAssignment(property))
             return context.contractError(

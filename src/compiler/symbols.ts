@@ -2,7 +2,26 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "../repository-root.js";
-import { stringLiteralText, unwrapExpression } from "./syntax.js";
+import {
+    accessKey,
+    propertyKey,
+    unwrapExpression,
+    specifierSourceName,
+    expressionHasEffects,
+    equalityOperator,
+    argumentForParameter,
+    type ParameterInput,
+    functionOfDeclaration,
+    isFunctionWithBody,
+    type FunctionWithBody,
+    variableKind,
+    writeSites,
+    isMemberAccess,
+    type MemberAccess,
+} from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
+import { admitsUndefined, callSignatures, nullability } from "./type-facts.js";
+import { numberFormatOf } from "./number-intrinsics.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
@@ -121,10 +140,8 @@ export function resolvedDomApi(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): string | undefined {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration &&
-        !ts.isJSDocSignature(declaration) &&
-        declarationOrigin(declaration) === "dom"
+    const declaration = calledDeclaration(checker, call);
+    return declaration && declarationOrigin(declaration) === "dom"
         ? declarationApi(declaration)
         : undefined;
 }
@@ -198,7 +215,10 @@ export function ecmascriptGlobalTypeof(
         return undefined;
     if ((symbol!.flags & ts.SymbolFlags.Variable) === 0) return "object";
     const type = checker.getTypeOfSymbolAtLocation(symbol!, node);
-    if (type.getCallSignatures().length || type.getConstructSignatures().length)
+    if (
+        callSignatures(checker, type, "exact").length ||
+        type.getConstructSignatures().length
+    )
         return "function";
     return type.flags & ts.TypeFlags.NumberLike ? "number" : "object";
 }
@@ -248,6 +268,41 @@ export function declaredInDefaultLibrary(
     symbol: ts.Symbol | undefined,
 ): boolean {
     return declaredIn(symbol, "default-lib", "dom");
+}
+
+/**
+ * Whether a call is a library number formatter (`n.toFixed(2)`,
+ * `toPrecision`, `toExponential`): it reads one number and runs nothing of
+ * the program's. A scene method of the same name is a call like any other.
+ */
+export function isLibraryNumberFormatter(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    const declaration = calledDeclaration(checker, call);
+    return (
+        callee !== undefined &&
+        numberFormatOf(callee.name) !== undefined &&
+        declaration !== undefined &&
+        declarationInDefaultLibrary(declaration) &&
+        ts.isInterfaceDeclaration(declaration.parent) &&
+        declaration.parent.name.text === "Number"
+    );
+}
+
+/**
+ * The name of a library declaration (`Promise`, `File`, `GPUDevice`): a
+ * type's or symbol's name when the default, DOM or WebGPU library declares
+ * it; undefined for a scene declaration of the same name.
+ */
+export function libraryName(
+    of: ts.Type | ts.Symbol | undefined,
+): string | undefined {
+    const symbol = of && "getSymbol" in of ? of.getSymbol() : of;
+    return symbol && declaredIn(symbol, "default-lib", "dom", "webgpu")
+        ? symbol.name
+        : undefined;
 }
 
 /** Whether one declaration lives in a library file — see {@link declaredInDefaultLibrary}. */
@@ -363,6 +418,74 @@ export function resolvedSymbol(
     return symbol && aliasTarget(checker, symbol);
 }
 
+/**
+ * The binding a value name stands for: {@link resolvedSymbol}, with a
+ * constructor parameter-property canonicalized to its parameter. The
+ * checker may expose the parameter's symbol at the declaration and a
+ * property-flavoured one at a use in the constructor body; lexical lookup
+ * must not depend on which view a given identifier got.
+ */
+export function valueSymbolOf(
+    checker: ts.TypeChecker,
+    identifier: ts.MemberName,
+): ts.Symbol | undefined {
+    const resolved = resolvedSymbol(checker, identifier);
+    const parameter = resolved?.declarations?.find(ts.isParameter);
+    return parameter &&
+        ts.isIdentifier(parameter.name) &&
+        ts.isParameterPropertyDeclaration(parameter, parameter.parent)
+        ? (declaredSymbol(checker, parameter.name) ?? resolved)
+        : resolved;
+}
+
+/**
+ * The declaration a call, construction or tag resolves to: a function,
+ * method, constructor or signature; a JSDoc signature declares none.
+ */
+export function calledDeclaration(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): ts.SignatureDeclaration | undefined {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration && !ts.isJSDocSignature(declaration)
+        ? declaration
+        : undefined;
+}
+
+/** Where the declaration a call resolves to comes from ({@link declarationOrigin}). */
+export function calledOrigin(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): DeclarationOrigin | undefined {
+    const declaration = calledDeclaration(checker, call);
+    return declaration && declarationOrigin(declaration);
+}
+
+/**
+ * The authored function a call runs: the declaration it resolves to when
+ * that has a body, else the function literal its `const` callee was
+ * initialized with, whatever type annotates the binding.
+ */
+export function calledFunction(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): FunctionWithBody | undefined {
+    const declaration = calledDeclaration(checker, call);
+    if (isFunctionWithBody(declaration)) return declaration;
+    const callee = ts.isCallExpression(call)
+        ? unwrapExpression(call.expression)
+        : undefined;
+    const binding =
+        callee && ts.isIdentifier(callee)
+            ? resolvedSymbol(checker, callee)?.valueDeclaration
+            : undefined;
+    return binding &&
+        ts.isVariableDeclaration(binding) &&
+        variableKind(binding) === "const"
+        ? functionOfDeclaration(binding)
+        : undefined;
+}
+
 /** The member a dotted access or a literal-typed computed key names. */
 export function accessedPropertySymbol(
     checker: ts.TypeChecker,
@@ -377,6 +500,138 @@ export function accessedPropertySymbol(
             );
     }
     return resolvedSymbol(checker, access);
+}
+
+/**
+ * Whether two expressions read the same reference: the same binding, or the
+ * same keys off the same reference, or both `this`. A call anywhere is a new
+ * value each time it runs, so two spellings of one call are not one value.
+ */
+export function sameReference(
+    checker: ts.TypeChecker,
+    left: ts.Expression,
+    right: ts.Expression,
+): boolean {
+    const a = unwrapExpression(left);
+    const b = unwrapExpression(right);
+    if (
+        a.kind === ts.SyntaxKind.ThisKeyword ||
+        b.kind === ts.SyntaxKind.ThisKeyword
+    )
+        return a.kind === b.kind;
+    if (ts.isIdentifier(a) && ts.isIdentifier(b)) {
+        const symbol = resolvedSymbol(checker, a);
+        return symbol !== undefined && symbol === resolvedSymbol(checker, b);
+    }
+    if (
+        (ts.isPropertyAccessExpression(a) || ts.isElementAccessExpression(a)) &&
+        (ts.isPropertyAccessExpression(b) || ts.isElementAccessExpression(b))
+    ) {
+        const key = staticAccessKey(checker, a);
+        return (
+            key !== undefined &&
+            key === staticAccessKey(checker, b) &&
+            sameReference(checker, a.expression, b.expression)
+        );
+    }
+    return false;
+}
+
+/**
+ * Whether two expressions compute one value from the same references: the
+ * same operators over {@link sameReference} operands and equal literals. A
+ * call computes a new value each time, so it is never the same.
+ */
+export function sameExpression(
+    checker: ts.TypeChecker,
+    left: ts.Expression,
+    right: ts.Expression,
+): boolean {
+    const a = unwrapExpression(left);
+    const b = unwrapExpression(right);
+    if (sameReference(checker, a, b)) return true;
+    if (a.kind !== b.kind) return false;
+    if (ts.isLiteralExpression(a) && ts.isLiteralExpression(b))
+        return a.text === b.text;
+    if (
+        a.kind === ts.SyntaxKind.TrueKeyword ||
+        a.kind === ts.SyntaxKind.FalseKeyword ||
+        a.kind === ts.SyntaxKind.NullKeyword
+    )
+        return true;
+    if (ts.isBinaryExpression(a) && ts.isBinaryExpression(b))
+        return (
+            a.operatorToken.kind === b.operatorToken.kind &&
+            sameExpression(checker, a.left, b.left) &&
+            sameExpression(checker, a.right, b.right)
+        );
+    if (ts.isPrefixUnaryExpression(a) && ts.isPrefixUnaryExpression(b))
+        return (
+            a.operator === b.operator &&
+            writeSites(a).length === 0 &&
+            sameExpression(checker, a.operand, b.operand)
+        );
+    if (ts.isTypeOfExpression(a) && ts.isTypeOfExpression(b))
+        return sameExpression(checker, a.expression, b.expression);
+    return false;
+}
+
+/**
+ * The user accessors a member access runs: getters for a read (`"get"`),
+ * setters for a write (`"set"`), both for `"either"`. A dotted access reads
+ * its symbol, whose declarations a union receiver's members all supply; a
+ * computed one the property the checker's key names
+ * ({@link staticAccessKey}) on the non-nullish receiver. Inherited and
+ * static accessors count. Empty for a run-time key or a plain property.
+ */
+export function memberAccessors(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    half: "get" | "set" | "either",
+): readonly ts.AccessorDeclaration[] {
+    let property: ts.Symbol | undefined;
+    if (ts.isPropertyAccessExpression(access))
+        property = resolvedSymbol(checker, access);
+    else {
+        const key = staticAccessKey(checker, access);
+        property =
+            key === undefined
+                ? undefined
+                : checker.getPropertyOfType(
+                      checker.getNonNullableType(
+                          checker.getTypeAtLocation(access.expression),
+                      ),
+                      key,
+                  );
+    }
+    const found: ts.AccessorDeclaration[] = [];
+    for (const declaration of property?.declarations ?? []) {
+        const accessor =
+            ts.isGetAccessorDeclaration(declaration) ||
+            ts.isSetAccessorDeclaration(declaration)
+                ? declaration
+                : undefined;
+        if (
+            accessor &&
+            (half === "either" ||
+                (half === "get") === ts.isGetAccessorDeclaration(accessor))
+        )
+            found.push(accessor);
+    }
+    return found;
+}
+
+/**
+ * The first member of an enum the checker cannot fold to a constant: its
+ * enum object would have to be built when the declaration runs.
+ */
+export function computedEnumMember(
+    checker: ts.TypeChecker,
+    declaration: ts.EnumDeclaration,
+): ts.EnumMember | undefined {
+    return declaration.members.find(
+        (member) => checker.getConstantValue(member) === undefined,
+    );
 }
 
 /**
@@ -425,6 +680,290 @@ export function symbolPropertyKey(
         : undefined;
 }
 
+/**
+ * The key a key expression's type fixes: a unique symbol's, or a string,
+ * number or bigint literal type's ToPropertyKey text.
+ */
+function typedKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): string | undefined {
+    const symbolKey = symbolPropertyKey(checker, expression);
+    if (symbolKey !== undefined) return symbolKey;
+    const type = checker.getTypeAtLocation(expression);
+    if (type.isStringLiteral() || type.isNumberLiteral())
+        return String(type.value);
+    if (type.flags & ts.TypeFlags.BigIntLiteral) {
+        const { negative, base10Value } = (type as ts.BigIntLiteralType).value;
+        return negative && base10Value !== "0"
+            ? `-${base10Value}`
+            : base10Value;
+    }
+    return undefined;
+}
+
+/**
+ * The key a property name declares as the checker knows it: the syntax's
+ * ({@link propertyKey}), or the key a computed name's type fixes
+ * (`[KEY]` with `const KEY = "a"`, `[Tone.Bold]`, a unique symbol). Whether
+ * the key expression must still run is the lowering's question.
+ */
+export function staticPropertyKey(
+    checker: ts.TypeChecker,
+    name: ts.PropertyName,
+): string | undefined {
+    return (
+        propertyKey(name) ??
+        (ts.isComputedPropertyName(name)
+            ? typedKey(checker, name.expression)
+            : undefined)
+    );
+}
+
+/** The key an access reads as the checker knows it ({@link accessKey}, then the key's type). */
+export function staticAccessKey(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
+    return (
+        accessKey(access) ??
+        (ts.isElementAccessExpression(access)
+            ? typedKey(checker, access.argumentExpression)
+            : undefined)
+    );
+}
+
+/**
+ * A member an access names by a key the checker knows. `o.m`, `o["m"]` and
+ * `o[K]` with `const K = "m"` are one member, `name` "m"; `o[0]` and
+ * `o["0"]` are member "0". A key that only the run time knows, or whose
+ * expression runs code (a call, a write, a user getter), names none: the
+ * access keeps its run-time key.
+ */
+export interface NamedMember {
+    /** The access itself, `o.m` or `o["m"]`. */
+    readonly access: MemberAccess;
+    /** The receiver, `o`. */
+    readonly expression: ts.Expression;
+    /** The member's key ({@link staticAccessKey}). */
+    readonly name: string;
+    /** The node that spells the key, for diagnostics. */
+    readonly key: ts.Node;
+}
+
+/**
+ * The one reader of the member a call or read names: every name-keyed
+ * dispatcher asks it, so the dotted and the static-keyed spelling are one
+ * member everywhere.
+ */
+export function namedMember(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): NamedMember | undefined {
+    if (ts.isPropertyAccessExpression(node))
+        return {
+            access: node,
+            expression: node.expression,
+            name: node.name.text,
+            key: node.name,
+        };
+    if (!ts.isElementAccessExpression(node)) return undefined;
+    // A keyed access analyzes its key; a parsed one's answer is kept.
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    let known = parsed ? keyedMembers.get(checker) : undefined;
+    if (parsed && !known) keyedMembers.set(checker, (known = new WeakMap()));
+    const kept = known?.get(node);
+    if (kept !== undefined) return kept ?? undefined;
+    const name = keyMayRunCode(checker, node.argumentExpression)
+        ? undefined
+        : staticAccessKey(checker, node);
+    const member: NamedMember | undefined =
+        name === undefined
+            ? undefined
+            : {
+                  access: node,
+                  expression: node.expression,
+                  name,
+                  key: node.argumentExpression,
+              };
+    known?.set(node, member ?? null);
+    return member;
+}
+
+/** @unjournaled Pure functions of the checked source: each keyed access's member. */
+const keyedMembers = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ElementAccessExpression, NamedMember | null>
+>();
+
+/** A static member of a library global: `Object.keys`, `Math["max"]`. */
+export interface LibraryStaticMember extends NamedMember {
+    /** The global ({@link libraryGlobal}): "Object", "Math". */
+    readonly owner: string;
+}
+
+/** `Object.assign`, `Math.max`, a global's name, or a method's bare name. */
+export function libraryCallName(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+): string | undefined {
+    const unwrapped = unwrapExpression(call.expression);
+    if (ts.isIdentifier(unwrapped)) return unwrapped.text;
+    const callee = namedMember(checker, unwrapped);
+    if (!callee) return undefined;
+    const owner = libraryGlobal(checker, callee.expression);
+    return owner ? `${owner}.${callee.name}` : callee.name;
+}
+
+/**
+ * The library global's static member a callee names ({@link namedMember}
+ * on a {@link libraryGlobal} receiver), or undefined.
+ */
+export function libraryStaticMember(
+    checker: ts.TypeChecker,
+    callee: ts.Node,
+): LibraryStaticMember | undefined {
+    const member = namedMember(checker, callee);
+    if (!member) return undefined;
+    const owner = libraryGlobal(checker, member.expression);
+    return owner === undefined ? undefined : { ...member, owner };
+}
+
+/** A call that runs a function on a receiver it is handed. */
+export interface ForwardedCallShape {
+    /** The function the call runs. */
+    readonly target: ts.Expression;
+    /** `call`, `apply` or `bind` on the function; `Reflect.apply` is `apply`. */
+    readonly method: "call" | "apply" | "bind";
+    /** The argument the function takes as `this`. */
+    readonly receiver: number;
+    /** The arguments come as one array (`apply`) rather than listed. */
+    readonly spread: boolean;
+}
+
+/**
+ * `f.call(t, ...args)`, `f.apply(t, args)`, `f.bind(t, ...args)` and
+ * `Reflect.apply(f, t, args)`: the one reading of a forwarded call.
+ */
+export function forwardedCallShape(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): ForwardedCallShape | undefined {
+    const callee = unwrapExpression(call.expression);
+    const reflected = libraryStaticMember(checker, callee);
+    if (reflected)
+        return reflected.owner === "Reflect" &&
+            reflected.name === "apply" &&
+            call.arguments[0] !== undefined
+            ? {
+                  target: call.arguments[0],
+                  method: "apply",
+                  receiver: 1,
+                  spread: true,
+              }
+            : undefined;
+    const member = namedMember(checker, callee);
+    return member?.name === "call" ||
+        member?.name === "apply" ||
+        member?.name === "bind"
+        ? {
+              target: member.expression,
+              method: member.name,
+              receiver: 0,
+              spread: member.name === "apply",
+          }
+        : undefined;
+}
+
+/**
+ * A library prototype's method a forwarded call runs on another receiver
+ * (`Array.prototype.push.call(xs, v)`), or undefined.
+ */
+export function borrowedPrototypeMethod(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+):
+    | {
+          readonly owner: string;
+          readonly method: string;
+          readonly invoke: string;
+      }
+    | undefined {
+    const shape = forwardedCallShape(checker, call);
+    if (!shape || shape.method === "bind") return undefined;
+    const method = namedMember(checker, unwrapExpression(shape.target));
+    const prototype =
+        method && namedMember(checker, unwrapExpression(method.expression));
+    if (!method || prototype?.name !== "prototype") return undefined;
+    const owner = libraryGlobal(checker, prototype.expression);
+    return owner === undefined
+        ? undefined
+        : { owner, method: method.name, invoke: shape.method };
+}
+
+/** Whether a callee names the library static `owner.name` ({@link libraryStaticMember}). */
+export function isLibraryStatic(
+    checker: ts.TypeChecker,
+    callee: ts.Node,
+    owner: string,
+    name: string,
+): boolean {
+    const member = libraryStaticMember(checker, callee);
+    return member?.owner === owner && member.name === name;
+}
+
+/**
+ * The member an access names on an array-like receiver: an index key
+ * (`xs[0]`, `xs["0"]`) reads an element and names none.
+ */
+export function arrayMemberName(
+    checker: ts.TypeChecker,
+    access: MemberAccess,
+): string | undefined {
+    const name = namedMember(checker, access)?.name;
+    return name === undefined ||
+        (ts.isElementAccessExpression(access) && String(Number(name)) === name)
+        ? undefined
+        : name;
+}
+
+/** A reader's view of {@link namedMember}, bound to its program. */
+export type MemberReader = (node: ts.Node) => NamedMember | undefined;
+
+/** Whether a key expression's evaluation runs code: an effect or a user getter. */
+function keyMayRunCode(checker: ts.TypeChecker, key: ts.Expression): boolean {
+    return (
+        expressionHasEffects(key) ||
+        someAnalysisNode(
+            key,
+            (node) =>
+                isMemberAccess(node) &&
+                memberAccessors(checker, node, "get").length > 0,
+            { functions: "skip", types: "skip" },
+        )
+    );
+}
+
+/**
+ * Whether a value can carry `key` as its type knows it: a declared property,
+ * an index signature, or a type that names no members (`any`, `unknown`).
+ */
+export function typeMayHoldKey(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    key: string,
+): boolean {
+    const type = checker.getNonNullableType(
+        checker.getTypeAtLocation(expression),
+    );
+    return (
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+        checker.getPropertyOfType(type, key) !== undefined ||
+        checker.getIndexInfosOfType(type).length > 0
+    );
+}
+
 /** Whether a property key is a symbol's: no string-keyed enumeration lists it. */
 export function isSymbolPropertyKey(key: string): boolean {
     return key.startsWith("__@");
@@ -436,7 +975,7 @@ export function symbolFieldName(key: string): string {
 }
 
 /** The names the library binds the global object itself to. */
-const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
+export const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
     "globalThis",
     "window",
     "self",
@@ -481,14 +1020,98 @@ export function isGlobalUndefined(
     );
 }
 
-/** Whether an expression is a literal `null` or the global `undefined`. */
+/**
+ * The nullish value an expression's syntax fixes: `"null"` for `null`,
+ * `"undefined"` for the global `undefined` or any `void` (whatever it runs,
+ * it yields undefined). A local binding named `undefined` is no global.
+ */
+export function nullishLiteral(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): "null" | "undefined" | undefined {
+    const node = unwrapExpression(expression);
+    if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
+    return isGlobalUndefined(checker, node) || ts.isVoidExpression(node)
+        ? "undefined"
+        : undefined;
+}
+
+/**
+ * {@link argumentForParameter}, with an argument the checker knows is
+ * `undefined` (`f(undefined)`, `f(void 0)`) taking the parameter's default
+ * as JavaScript does.
+ */
+export function parameterInput(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    parameterIndex: number,
+): ParameterInput {
+    const input = argumentForParameter(call, declaration, parameterIndex);
+    const initializer = declaration.parameters[parameterIndex]?.initializer;
+    return input.kind === "argument" &&
+        initializer &&
+        nullishLiteral(checker, input.argument) === "undefined"
+        ? { kind: "default", initializer }
+        : input;
+}
+
+/**
+ * An equality testing one operand against a nullish literal: `x === null`,
+ * `undefined != x`, `x == void 0`. A loose test matches both null and
+ * undefined. Undefined when no operand is a {@link nullishLiteral}.
+ */
+export interface NullishComparison {
+    readonly tested: ts.Expression;
+    readonly literal: "null" | "undefined";
+    readonly loose: boolean;
+    readonly negated: boolean;
+}
+
+/** Whether an expression's type admits the nullish value `literal`. */
+export function typeMayHoldNullish(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    literal: "null" | "undefined",
+): boolean {
+    const type = checker.getTypeAtLocation(expression);
+    return literal === "undefined"
+        ? admitsUndefined(type)
+        : nullability(type).null ||
+              (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+}
+
+export function nullishComparison(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): NullishComparison | undefined {
+    const node = unwrapExpression(expression);
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const operator = equalityOperator(node.operatorToken.kind);
+    if (!operator) return undefined;
+    const right = nullishLiteral(checker, node.right);
+    const left = right ? undefined : nullishLiteral(checker, node.left);
+    const literal = right ?? left;
+    return literal
+        ? {
+              tested: right ? node.left : node.right,
+              literal,
+              ...operator,
+          }
+        : undefined;
+}
+
+/**
+ * Whether an expression is a nullish literal a reader may fold away: a
+ * {@link nullishLiteral} that runs nothing (`void 0`, not `void f()`).
+ */
 export function isNullishLiteral(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
     return (
-        unwrapExpression(expression).kind === ts.SyntaxKind.NullKeyword ||
-        isGlobalUndefined(checker, expression)
+        nullishLiteral(checker, expression) !== undefined &&
+        !expressionHasEffects(expression)
     );
 }
 
@@ -519,13 +1142,14 @@ export function libraryGlobal(
             ? node.text
             : undefined;
     }
-    if (!ts.isPropertyAccessExpression(node)) return undefined;
-    const owner = unwrapExpression(node.expression);
+    const member = namedMember(checker, node);
+    if (!member) return undefined;
+    const owner = unwrapExpression(member.expression);
     return ts.isIdentifier(owner) &&
         GLOBAL_OBJECT_NAMES.has(owner.text) &&
         libraryGlobal(checker, owner) === owner.text &&
-        declaredInDefaultLibrary(resolvedSymbol(checker, node))
-        ? node.name.text
+        declaredInDefaultLibrary(accessedPropertySymbol(checker, member.access))
+        ? member.name
         : undefined;
 }
 
@@ -575,7 +1199,6 @@ export class CompilerSymbols {
         return isGlobalUndefined(this.checker, expression);
     }
 
-    /** See {@link isNullishLiteral}. */
     public isNullishLiteral(expression: ts.Expression): boolean {
         return isNullishLiteral(this.checker, expression);
     }
@@ -615,25 +1238,7 @@ export class CompilerSymbols {
     }
 
     public valueSymbol(identifier: ts.MemberName): ts.Symbol | undefined {
-        const resolved = resolvedSymbol(this.checker, identifier);
-        if (!resolved) {
-            return undefined;
-        }
-        // A constructor parameter-property has one declaration but the
-        // checker may expose its declaration-name symbol at the parameter
-        // and its property-flavoured symbol at a use in the constructor
-        // body. Canonicalize both through that shared parameter declaration
-        // so lexical lookup does not depend on which view the checker gave
-        // the particular identifier.
-        const parameter = resolved.declarations?.find(ts.isParameter);
-        if (
-            parameter &&
-            ts.isIdentifier(parameter.name) &&
-            ts.isParameterPropertyDeclaration(parameter, parameter.parent)
-        ) {
-            return declaredSymbol(this.checker, parameter.name) ?? resolved;
-        }
-        return resolved;
+        return valueSymbolOf(this.checker, identifier);
     }
 
     /** A value's defining module and an export of that same resolved symbol. */
@@ -699,6 +1304,56 @@ export class CompilerSymbols {
         };
     }
 
+    /**
+     * The pinned export a name binds, through every re-export on the way:
+     * `import { createEngine } from "./engine"`, where engine.ts re-exports
+     * it from the pinned package, binds `createEngine`. Undefined when no
+     * import chain reaches the pinned package.
+     */
+    private pinnedExport(
+        identifier: ts.Identifier,
+    ): { name: string; typeOnly: boolean } | undefined {
+        let symbol = declaredSymbol(this.checker, identifier);
+        let typeOnly = false;
+        const seen = new Set<ts.Symbol>();
+        while (
+            symbol &&
+            (symbol.flags & ts.SymbolFlags.Alias) !== 0 &&
+            !seen.has(symbol)
+        ) {
+            seen.add(symbol);
+            for (const declaration of symbol.declarations ?? []) {
+                if (
+                    !ts.isImportSpecifier(declaration) &&
+                    !ts.isExportSpecifier(declaration)
+                )
+                    continue;
+                const site = ts.isImportSpecifier(declaration)
+                    ? declaration.parent.parent.parent
+                    : declaration.parent.parent;
+                if (
+                    !ts.isImportDeclaration(site) &&
+                    !ts.isExportDeclaration(site)
+                )
+                    continue;
+                typeOnly ||=
+                    declaration.isTypeOnly ||
+                    (ts.isImportDeclaration(site)
+                        ? (site.importClause?.isTypeOnly ?? false)
+                        : site.isTypeOnly);
+                const module = site.moduleSpecifier;
+                if (
+                    module &&
+                    ts.isStringLiteral(module) &&
+                    isBabylonModule(module.text)
+                )
+                    return { name: specifierSourceName(declaration), typeOnly };
+            }
+            symbol = this.checker.getImmediateAliasedSymbol(symbol);
+        }
+        return undefined;
+    }
+
     /** See {@link physicsEngineModulePackage}. */
     public isPhysicsEngineModule(identifier: ts.Identifier): boolean {
         return (
@@ -712,11 +1367,9 @@ export class CompilerSymbols {
         active?: Set<ts.Symbol>,
     ): string | undefined {
         const identifier = unwrapExpression(expression);
-        if (
-            ts.isPropertyAccessExpression(identifier) ||
-            ts.isElementAccessExpression(identifier)
-        ) {
-            const owner = unwrapExpression(identifier.expression);
+        const member = namedMember(this.checker, identifier);
+        if (member) {
+            const owner = unwrapExpression(member.expression);
             if (!ts.isIdentifier(owner)) return undefined;
             const imported = this.importModuleSpecifier(owner);
             if (
@@ -725,11 +1378,7 @@ export class CompilerSymbols {
                 !isBabylonModule(imported.specifier)
             )
                 return undefined;
-            const name = ts.isPropertyAccessExpression(identifier)
-                ? identifier.name.text
-                : stringLiteralText(
-                      unwrapExpression(identifier.argumentExpression),
-                  );
+            const name = member.name;
             return name &&
                 this.checker.getPropertyOfType(
                     this.checker.getTypeAtLocation(owner),
@@ -739,22 +1388,20 @@ export class CompilerSymbols {
                 : undefined;
         }
         if (!ts.isIdentifier(identifier)) return undefined;
-        const imported = this.importModuleSpecifier(identifier);
-        if (!imported?.named || !isBabylonModule(imported.specifier)) {
-            const symbol = this.valueSymbol(identifier);
-            if (!symbol || active?.has(symbol)) return undefined;
-            active ??= new Set();
-            active.add(symbol);
-            const declaration = symbol.valueDeclaration;
-            return declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                ts.isVariableDeclarationList(declaration.parent) &&
-                (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-                ? this.importedName(declaration.initializer, active)
-                : undefined;
-        }
-        return imported.named.propertyName?.text ?? imported.named.name.text;
+        const pinned = this.pinnedExport(identifier);
+        if (pinned) return pinned.name;
+        const symbol = this.valueSymbol(identifier);
+        if (!symbol || active?.has(symbol)) return undefined;
+        active ??= new Set();
+        active.add(symbol);
+        const declaration = symbol.valueDeclaration;
+        return declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            variableKind(declaration.parent) === "const"
+            ? this.importedName(declaration.initializer, active)
+            : undefined;
     }
 
     /**
@@ -765,15 +1412,13 @@ export class CompilerSymbols {
     public babylonImportName(identifier: ts.Identifier): string | undefined {
         const imported = this.importModuleSpecifier(identifier);
         if (
-            !imported ||
-            imported.typeOnly ||
-            !isBabylonModule(imported.specifier)
-        ) {
-            return undefined;
-        }
-        return imported.nonNamed
-            ? "*"
-            : (imported.named?.propertyName?.text ?? imported.named?.name.text);
+            imported?.nonNamed &&
+            !imported.typeOnly &&
+            isBabylonModule(imported.specifier)
+        )
+            return "*";
+        const pinned = this.pinnedExport(identifier);
+        return pinned && !pinned.typeOnly ? pinned.name : undefined;
     }
 
     /**

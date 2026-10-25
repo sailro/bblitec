@@ -173,6 +173,11 @@ struct DomPointerCaptures {
     }
 };
 
+/** A GamepadEvent: the gamepad that connected or disconnected. */
+struct PlatformGamepadEvent : PlatformEventFlags {
+    GamepadHandle gamepad{};
+};
+
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
@@ -180,6 +185,7 @@ struct DomInput {
     DomEventListeners<PlatformTransitionEvent> transition;
     DomEventListeners<PlatformDragEvent> drag;
     DomEventListeners<PlatformStorageEvent> storage;
+    DomEventListeners<PlatformGamepadEvent> gamepad;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -215,6 +221,7 @@ struct DomInput {
         transition.gc_trace(visitor);
         drag.gc_trace(visitor);
         storage.gc_trace(visitor);
+        gamepad.gc_trace(visitor);
     }
 #endif
 };
@@ -464,7 +471,7 @@ inline void dom_pointer_dispatched(DomPointerCaptures& captures, const PlatformM
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
     using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent,
-                                 PlatformDragEvent>;
+                                 PlatformDragEvent, PlatformGamepadEvent>;
     struct Entry {
         Payload payload;
         bool controls_default = false;
@@ -512,7 +519,9 @@ struct DomEventBatch {
                             if (event.acceptance)
                                 event.acceptance->store(event.default_prevented,
                                                         std::memory_order_release);
-                        } else
+                        } else if constexpr (std::is_same_v<PayloadType, PlatformGamepadEvent>)
+                            engine.dom_input->gamepad.dispatch(event, invoke, &engine);
+                        else
                             engine.dom_input->keyboard.dispatch(event, invoke, &engine);
                     }
                     if (entry.controls_default && event.default_prevented)

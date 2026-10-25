@@ -16,6 +16,7 @@ import {
     declaredInDomLibrary,
     resolvedDomApi,
     resolvedSymbol,
+    type NamedMember,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import { MEDIA_STREAM_TRACK_LISTS } from "./web-audio-members.js";
@@ -23,6 +24,7 @@ import {
     webAudioMemberAssign,
     webAudioMemberCall,
 } from "../lowering/web-platform-schema.js";
+import { undefinedOnly } from "./type-facts.js";
 
 /**
  * MediaStream and MediaStreamTrack objects (`bblite/pal_media_stream.hpp`):
@@ -216,12 +218,12 @@ function trackMethod(
 export function compileMediaStreamMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
     const context = lowerer.context;
     const kind = mediaReceiverKind(context, callee.expression);
     if (!kind) return undefined;
-    const method = callee.name.text;
+    const method = callee.name;
     const lower = kind === "media-stream" ? streamMethod : trackMethod;
     reachMediaStreams(context, call);
     const owner = context.compileValue(callee.expression);
@@ -229,11 +231,11 @@ export function compileMediaStreamMethodCall(
         const receiver = pinCpp(context, present.cpp, "media_receiver");
         return lower(lowerer, call, receiver, method);
     };
-    const result = lowerer.chainReceiverCall(owner, callee, call, run);
+    const result = lowerer.chainReceiverCall(owner, callee.access, call, run);
     return (
         result ??
         context.fail(
-            callee.name,
+            callee.key,
             `${kind === "media-stream" ? "MediaStream" : "MediaStreamTrack"}.${method} is not lowered natively.`,
         )
     );
@@ -403,14 +405,10 @@ export function compileUninhabitedMethod(
 ): Value | undefined {
     const context = lowerer.context;
     const returned = context.checker.getTypeAtLocation(call);
-    const result =
-        (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0
-            ? undefined
-            : context.dataTypes.fromTsType(returned, call);
-    if (
-        result === undefined &&
-        (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) === 0
-    )
+    const result = undefinedOnly(returned)
+        ? undefined
+        : context.dataTypes.fromTsType(returned, call);
+    if (result === undefined && !undefinedOnly(returned))
         return context.fail(
             call,
             `${method} has no owned native representation of its result.`,

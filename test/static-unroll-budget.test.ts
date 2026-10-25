@@ -100,7 +100,12 @@ test("folds a large handle-tuple for...of into a static table and one native loo
     );
 
     // One body, not three hundred.
-    assert.equal(result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.01\);/g,
+        )?.length,
+        1,
+    );
     assert.equal(result.cpp.match(/mark_mesh_dirty/g)?.length, 1);
     // The table holds the bound handle locals and the loop walks it.
     assert.match(
@@ -150,7 +155,12 @@ test("creation calls are pinned once before folding their handle list", () => {
     `);
 
     assert.match(result.cpp, /v_bblite_handle_table_/);
-    assert.equal(result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.01\);/g,
+        )?.length,
+        1,
+    );
 });
 
 test("folded scene membership retains every generation-time registration", () => {
@@ -183,7 +193,12 @@ test("folded bodies keep iteration-local scalar bindings", () => {
 
     assert.match(result.cpp, /v_bblite_handle_table_/);
     assert.doesNotMatch(result.cpp, /v_bblite_repeat_index_/);
-    assert.equal(result.cpp.match(/\.rotation\.y \+= /g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
 });
 
 test("a uniform numeric nest uses one native body before static expansion", () => {

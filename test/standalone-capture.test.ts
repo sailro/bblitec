@@ -85,6 +85,27 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
             "inline bool acquire_dawn_surface_texture",
         ),
     );
+    // The window arms of the presentation every standalone renderer shares.
+    const presentation = (
+        backend: "sdl_gpu" | "dawn",
+        signatures: string[],
+    ) => {
+        const source = readFileSync(
+            `native/src/pal_${backend}_presentation.hpp`,
+            "utf8",
+        );
+        return signatures
+            .map((signature) => cppFunction(source, signature))
+            .join("\n");
+    };
+    writeFileSync(
+        join(directory, "presentation.hpp"),
+        "struct SdlFramePresentation {\n" +
+            presentation("sdl_gpu", ["bool acquire(", "bool submit("]) +
+            "\n};\nstruct DawnFramePresentation {\n" +
+            presentation("dawn", ["bool acquire(", "void present("]) +
+            "\n};\n",
+    );
     for (const [name, file, signatures] of [
         [
             "SdlEffect",

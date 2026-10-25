@@ -4,8 +4,9 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { opaqueElement, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { bindingElementKey } from "../compiler/syntax.js";
 
 export function lowerBabylonSceneData(
     context: LoweringContext,
@@ -62,6 +63,11 @@ export function lowerBabylonSceneData(
                     type: "scalar",
                 });
             }
+        // The light list is walked whole, one JSON light record a step.
+        bindings.set("data.lights", {
+            ...bindings.get("data.lights")!,
+            elements: { element: opaqueElement },
+        });
         return {
             bindings,
             calls: new Map([
@@ -78,15 +84,6 @@ export function lowerBabylonSceneData(
                 ],
             ]),
 
-            forOf(iterated, element) {
-                if (iterated !== "data.lights") return undefined;
-                return {
-                    range: 'document.at("lights")',
-                    bindings: new Map([
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
             expression(node, lowerer) {
                 if (node.kind === ts.SyntaxKind.NullKeyword) return "nullptr";
                 if (ts.isIdentifier(node) && node.text === "undefined")
@@ -282,9 +279,7 @@ export function lowerBabylonSceneData(
                                         element,
                                         "Expected a light mesh-ID name.",
                                     );
-                                const key = context.propertyName(
-                                    element.propertyName ?? element.name,
-                                );
+                                const key = bindingElementKey(element);
                                 if (
                                     !key ||
                                     ![

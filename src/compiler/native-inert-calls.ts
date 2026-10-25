@@ -1,16 +1,21 @@
 import ts from "typescript";
 import {
-    isAssignmentOperator,
     localSyncFunction,
     requiredParameterCount,
     restParameterIndex,
     unwrapExpression,
+    writeSites,
+    isDeclaredInside,
+    isSuspensionPoint,
+    variableKind,
 } from "./syntax.js";
 import {
-    accessedPropertySymbol,
     libraryGlobal,
     type CompilerSymbols,
+    memberAccessors,
+    namedMember,
 } from "./symbols.js";
+import { arrayShape, unionMembers } from "./type-facts.js";
 
 /**
  * Pinned exports whose only effect the native realm does not represent.
@@ -160,10 +165,12 @@ class InertWalk {
         // label, `switch`, `try`) keeps the call on the ordinary lowering.
         if (ts.isStatement(node) && !inertStatementKinds.has(node.kind))
             return false;
+        // A write stays inert only into the call's own locals; `delete`
+        // and loop targets included.
+        if (writeSites(node).some(({ target }) => !this.isOwnLocal(target)))
+            return false;
         if (
-            ts.isAwaitExpression(node) ||
-            ts.isYieldExpression(node) ||
-            ts.isDeleteExpression(node) ||
+            isSuspensionPoint(node, { yield: true }) ||
             ts.isTaggedTemplateExpression(node) ||
             ts.isNonNullExpression(node) ||
             ts.isClassLike(node) ||
@@ -177,26 +184,8 @@ class InertWalk {
             if (!this.call(node)) return false;
         } else if (ts.isNewExpression(node)) {
             if (!this.construction(node)) return false;
-        } else if (ts.isBinaryExpression(node)) {
-            if (
-                isAssignmentOperator(node.operatorToken.kind) &&
-                !this.isOwnLocal(node.left)
-            ) {
-                return false;
-            }
-        } else if (
-            ts.isPrefixUnaryExpression(node) ||
-            ts.isPostfixUnaryExpression(node)
-        ) {
-            if (
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken) &&
-                !this.isOwnLocal(node.operand)
-            ) {
-                return false;
-            }
         } else if (ts.isForOfStatement(node)) {
-            if (node.awaitModifier || !this.isArray(node.expression)) {
+            if (isSuspensionPoint(node) || !this.isArray(node.expression)) {
                 return false;
             }
         } else if (
@@ -226,20 +215,21 @@ class InertWalk {
             );
             return (
                 closure !== undefined &&
-                this.isInsideRoot(closure) &&
+                isDeclaredInside(closure, this.root) &&
                 this.body(closure)
             );
         }
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const owner = unwrapExpression(callee.expression);
+        const member = namedMember(this.context.checker, callee);
+        if (!member) return false;
+        const owner = unwrapExpression(member.expression);
         if (
             libraryGlobal(this.context.checker, owner) === "Object" &&
-            ["entries", "keys", "values"].includes(callee.name.text)
+            ["entries", "keys", "values"].includes(member.name)
         ) {
             return true;
         }
         return (
-            localCollectionMethods.has(callee.name.text) &&
+            localCollectionMethods.has(member.name) &&
             this.isLocalCollection(owner)
         );
     }
@@ -260,9 +250,9 @@ class InertWalk {
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
-            !this.isInsideRoot(declaration) ||
+            !isDeclaredInside(declaration, this.root) ||
             !declaration.initializer ||
-            (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+            variableKind(declaration) !== "const"
         ) {
             return false;
         }
@@ -281,30 +271,21 @@ class InertWalk {
             declaration !== undefined &&
             (ts.isVariableDeclaration(declaration) ||
                 ts.isParameter(declaration)) &&
-            this.isInsideRoot(declaration)
+            isDeclaredInside(declaration, this.root)
         );
     }
 
     private isArray(expression: ts.Expression): boolean {
-        const type = this.context.checker.getTypeAtLocation(expression);
-        const parts = type.isUnion() ? type.types : [type];
-        return parts.every(
-            (part) =>
-                this.context.checker.isArrayType(part) ||
-                this.context.checker.isTupleType(part),
-        );
+        return unionMembers(
+            this.context.checker.getTypeAtLocation(expression),
+        ).every((part) => arrayShape(this.context.checker, part) !== undefined);
     }
 
     private readsAccessor(
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ): boolean {
-        const symbol = accessedPropertySymbol(this.context.checker, access);
         return (
-            symbol?.declarations?.some(
-                (declaration) =>
-                    ts.isGetAccessorDeclaration(declaration) ||
-                    ts.isSetAccessorDeclaration(declaration),
-            ) === true
+            memberAccessors(this.context.checker, access, "either").length > 0
         );
     }
 
@@ -312,16 +293,5 @@ class InertWalk {
         identifier: ts.Identifier,
     ): ts.Declaration | undefined {
         return this.context.symbols.valueSymbol(identifier)?.valueDeclaration;
-    }
-
-    private isInsideRoot(node: ts.Node): boolean {
-        for (
-            let current: ts.Node | undefined = node;
-            current;
-            current = current.parent
-        ) {
-            if (current === this.root) return true;
-        }
-        return false;
     }
 }

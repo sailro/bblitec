@@ -3,6 +3,7 @@ import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import { absentBinding } from "../pinned-numeric-lowerer.js";
+import { sameSource, propertyPath } from "../../compiler/syntax.js";
 
 /** Source manager traversal; scratch identity and pose accumulation are supplied transports. */
 export function lowerGltfWeightedAnimationPasses(
@@ -71,7 +72,7 @@ export function lowerGltfWeightedAnimationPasses(
 
         expression(node, lowerer) {
             if (!ts.isCallExpression(node)) return undefined;
-            const callee = node.expression.getText(file);
+            const callee = propertyPath(node.expression)?.join(".") ?? "";
             const args = node.arguments;
             const expected = (
                 count: number,
@@ -219,8 +220,8 @@ export function lowerGltfWeightedAnimationPasses(
             if (
                 !ts.isArrowFunction(callback) ||
                 callback.parameters.length !== 2 ||
-                callback.parameters[0]!.name.getText(file) !== "target" ||
-                callback.parameters[1]!.name.getText(file) !== "key" ||
+                !sameSource(callback.parameters[0]!.name, "target") ||
+                !sameSource(callback.parameters[1]!.name, "key") ||
                 !ts.isBlock(callback.body)
             )
                 context.contractError(

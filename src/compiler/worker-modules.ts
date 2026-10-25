@@ -12,6 +12,7 @@ import type {
 import { featureOrder, projectFeatures } from "./output-projection.js";
 import { libraryGlobal } from "./symbols.js";
 import { commonSourceDirectory, sourceUnitStem } from "./source-units.js";
+import { propertyKey } from "./syntax.js";
 
 /** Replay a reached async API with an application scheduler and owned engines. */
 export class ApplicationRealmRequired extends Error {}
@@ -90,9 +91,7 @@ export function compileWorkerApplication(
                 !options.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        (ts.isIdentifier(property.name) ||
-                            ts.isStringLiteralLike(property.name)) &&
-                        property.name.text === "type" &&
+                        propertyKey(property.name) === "type" &&
                         ts.isStringLiteralLike(property.initializer) &&
                         property.initializer.text === "module",
                 )

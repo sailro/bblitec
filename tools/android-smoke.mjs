@@ -185,9 +185,7 @@ try {
                 "The native render capture has no valid renderer frame.",
             );
         receipt.rendererFrame = state.frame;
-        const expected = Number(
-            captureEnvironment.BBLITE_CAPTURE_ENGINE_FRAME ?? captureFrame,
-        );
+        const expected = Number(captureFrame);
         if (state.frame !== expected)
             throw new Error(
                 `Renderer frame ${state.frame} differs from requested frame ${expected}.`,

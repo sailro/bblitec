@@ -305,6 +305,13 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
         `const entries=[{url:"/clips/voice_01.bin"}]; const alias=entries; alias.push({url:"/clips/voice_02.bin"}); const url=entries[Math.floor(Math.random()*2)].url;`,
         `const entries=[{url:"/clips/voice_01.bin"}]; function edit(bank:{url:string}[]):void{bank[0].url="/clips/voice_02.bin";} edit(entries); const url=entries[Math.floor(Math.random())].url;`,
         `const record={nested:{url:"/clips/voice_01.bin"}}; const alias=record.nested; alias.url="/clips/voice_02.bin"; const url=record.nested.url;`,
+        // Every alias site and selection operand reaches the binding.
+        `const record={nested:{url:"/clips/voice_01.bin"}}; const {nested}=record; nested.url="/clips/voice_02.bin"; const url=record.nested.url;`,
+        `const entries=[{url:"/clips/voice_01.bin"}]; for (const entry of entries) entry.url="/clips/voice_02.bin"; const url=entries[0].url;`,
+        `const entries=[{url:"/clips/voice_01.bin"}]; let alias:{url:string}[]=[]; alias=entries; alias[0].url="/clips/voice_02.bin"; const url=entries[0].url;`,
+        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; (Math.random()>0.5?a:b).url="/clips/voice_02.bin"; const url=a.url;`,
+        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; const pick=Math.random()>0.5?a:b; pick.url="/clips/voice_02.bin"; const url=a.url;`,
+        `const a={url:"/clips/voice_01.bin"}; const box={a}; box.a.url="/clips/voice_02.bin"; const url=a.url;`,
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips%2fvoice_01.bin","/clips%5cvoice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,

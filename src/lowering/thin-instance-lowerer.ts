@@ -13,6 +13,12 @@ import {
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 import { absentDrawRangeBinding } from "./mesh-draw-range.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    sameSource,
+    soleBindingName,
+    isOneOfSources,
+    propertyPath,
+} from "../compiler/syntax.js";
 
 const cpuModule = "src/mesh/thin-instance.ts";
 const gpuModule = "src/mesh/thin-instance-gpu.ts";
@@ -207,8 +213,8 @@ function thinScope(
         bind(`BU.${flag}`, `${value}.0`, "scalar");
     const optionalTarget = (node: ts.Expression): string | undefined => {
         if (!ts.isPropertyAccessExpression(node)) return undefined;
-        const root = roots.find(
-            ([source]) => node.expression.getText(file) === source,
+        const root = roots.find(([source]) =>
+            sameSource(node.expression, source),
         );
         const field = fields[node.name.text as keyof typeof fields];
         return root &&
@@ -318,7 +324,7 @@ function thinScope(
                 const buffer = node.properties.some(
                     (property) =>
                         ts.isPropertyAssignment(property) &&
-                        property.name.getText(file) === "usage",
+                        sameSource(property.name, "usage"),
                 );
                 const literal = pinnedRecordLiteral(
                     context,
@@ -418,7 +424,7 @@ function thinScope(
                 }
                 if (
                     ts.isCallExpression(expression) &&
-                    expression.expression.getText(file) === "retireGpuResources"
+                    sameSource(expression.expression, "retireGpuResources")
                 ) {
                     const callback = expression.arguments[1];
                     if (
@@ -448,18 +454,19 @@ function thinScope(
                                     n.expression.expression.name.text ===
                                         "destroy"
                                 ) {
-                                    const owner =
-                                        n.expression.expression.expression.getText(
-                                            file,
-                                        );
                                     if (
-                                        owner !== "retiredMatrix" &&
-                                        owner !== "retiredColor"
+                                        !isOneOfSources(
+                                            n.expression.expression.expression,
+                                            ["retiredMatrix", "retiredColor"],
+                                        )
                                     )
                                         return context.contractError(
                                             n,
                                             "Unrepresented retired thin-instance owner.",
                                         );
+                                    const owner = propertyPath(
+                                        n.expression.expression.expression,
+                                    )!.join(".");
                                     return [
                                         `${i}if (${owner}) ${owner}->destroy();`,
                                     ];
@@ -497,7 +504,7 @@ function lowerFunction(
             gpu,
             new Set(
                 declaration.parameters.map((parameter) =>
-                    parameter.name.getText(file),
+                    soleBindingName(parameter.name),
                 ),
             ),
         ),
@@ -805,7 +812,7 @@ function lowerUnpairedThinInstanceDetach(context: LoweringContext): string {
                 ts.isBinaryExpression(node.expression) &&
                 node.expression.operatorToken.kind ===
                     ts.SyntaxKind.EqualsToken &&
-                absentStores.has(node.expression.left.getText(file))
+                isOneOfSources(node.expression.left, absentStores)
             )
                 return [];
             return undefined;

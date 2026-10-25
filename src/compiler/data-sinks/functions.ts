@@ -2,7 +2,7 @@ import ts from "typescript";
 
 import { callMember, dataTypesEqual, type DataType } from "../data-types.js";
 import { isTaggedStorageWidening } from "../data-types/operations.js";
-import { nullability } from "../type-facts.js";
+import { nullability, callSignatures } from "../type-facts.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
 import { hasFixedTupleRest } from "../user-functions.js";
@@ -10,6 +10,7 @@ import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
     isNonThenableDataType,
+    readsErasedVoid,
 } from "../undefined-values.js";
 
 import { plainLane } from "./containers.js";
@@ -245,9 +246,11 @@ function widenedTaggedResult(
         ? lowerer.context.unwrap(origin)
         : origin;
     const checker = lowerer.context.checker;
-    const signatures = checker
-        .getNonNullableType(checker.getTypeAtLocation(checkedNode))
-        .getCallSignatures();
+    const signatures = callSignatures(
+        checker,
+        checker.getTypeAtLocation(checkedNode),
+        "present",
+    );
     const mapped = lowerer.dataTypeAt(checkedNode);
     if (
         signatures.length !== 1 ||
@@ -404,6 +407,11 @@ function valueFunction(
     node: ts.Node,
 ): string | undefined {
     if (value.kind === "void") {
+        if (readsErasedVoid(lowerer.context, value, node))
+            lowerer.context.fail(
+                node,
+                "A void result stored as a function requires a proven undefined completion.",
+            );
         lowerer.context.emitDiscardedValue(value);
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }

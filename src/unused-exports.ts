@@ -2,6 +2,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 import { aliasTarget, declaredSymbol } from "./compiler/symbols.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
+import { bindingElementKey, specifierSourceName } from "./compiler/syntax.js";
+import { callSignatures } from "./compiler/type-facts.js";
 
 interface UnusedExport {
     file: string;
@@ -120,7 +122,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                     );
             }
             for (const signature of [
-                ...type.getCallSignatures(),
+                ...callSignatures(checker, type, "exact"),
                 ...type.getConstructSignatures(),
             ]) {
                 visitType(signature.getReturnType());
@@ -169,7 +171,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                     for (const specifier of clause.namedBindings.elements)
                         markImported(
                             node.moduleSpecifier,
-                            (specifier.propertyName ?? specifier.name).text,
+                            specifierSourceName(specifier),
                         );
                 return;
             }
@@ -179,7 +181,7 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                         if (node.moduleSpecifier)
                             markImported(
                                 node.moduleSpecifier,
-                                (specifier.propertyName ?? specifier.name).text,
+                                specifierSourceName(specifier),
                             );
                         else
                             mark(
@@ -196,12 +198,12 @@ function unusedExports(program: ts.Program): UnusedExport[] {
                 ts.isBindingElement(node) &&
                 ts.isObjectBindingPattern(node.parent)
             ) {
-                const name = node.propertyName ?? node.name;
-                if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+                const key = bindingElementKey(node);
+                if (key !== undefined)
                     mark(
                         checker.getPropertyOfType(
                             checker.getTypeAtLocation(node.parent),
-                            name.text,
+                            key,
                         ),
                     );
             }

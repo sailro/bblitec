@@ -354,6 +354,16 @@ export function parseBlendExport(
     return undefined;
 }
 
+/** The WebGPU blend factors this runtime has an enumerator for. */
+export const blendFactorByPin: Readonly<Record<string, string>> = {
+    zero: "zero",
+    one: "one",
+    "src-alpha": "src_alpha",
+    "one-minus-src-alpha": "one_minus_src_alpha",
+    dst: "dst",
+    "dst-alpha": "dst_alpha",
+};
+
 /**
  * A WebGPU blend factor, as this runtime's own enumerator. The pin writes
  * the WebGPU spelling; the record carries an enum, and a factor the pin
@@ -361,15 +371,7 @@ export function parseBlendExport(
  * silently picking a neighbour.
  */
 export function nativeBlendFactor(factor: string): string {
-    const known: Record<string, string> = {
-        zero: "zero",
-        one: "one",
-        "src-alpha": "src_alpha",
-        "one-minus-src-alpha": "one_minus_src_alpha",
-        dst: "dst",
-        "dst-alpha": "dst_alpha",
-    };
-    const mapped = known[factor];
+    const mapped = blendFactorByPin[factor];
     if (!mapped) {
         throw new Error(
             `Pinned blend uses factor '${factor}', which this runtime has no enumerator for.`,

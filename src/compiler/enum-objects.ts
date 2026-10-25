@@ -8,8 +8,9 @@ import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { enumMemberConstant, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, propertyKey } from "./syntax.js";
 import type { Value } from "./types.js";
+import { holdsOnly } from "./type-facts.js";
 
 type EnumObjectContext = Pick<
     LoweringServices,
@@ -30,12 +31,6 @@ export function enumObjectSymbol(
 }
 
 /** Whether a type, or each member of its union, has one of `flags`. */
-function everyMember(type: ts.Type, flags: ts.TypeFlags): boolean {
-    return type.isUnion()
-        ? type.types.every((member) => (member.flags & flags) !== 0)
-        : (type.flags & flags) !== 0;
-}
-
 /** Every member of a (possibly merged) enum with its folded value. */
 function enumMembers(
     context: EnumObjectContext,
@@ -47,18 +42,13 @@ function enumMembers(
         .flatMap((declaration) => declaration.members)
         .map((member) => {
             const value = context.checker.getConstantValue(member);
-            if (
-                value === undefined ||
-                !(
-                    ts.isIdentifier(member.name) ||
-                    ts.isStringLiteral(member.name)
-                )
-            )
+            const name = propertyKey(member.name);
+            if (value === undefined || name === undefined)
                 return context.fail(
                     node,
                     `Enum member '${member.name.getText()}' has no constant value, so its enum object has no static layout.`,
                 );
-            return { name: member.name.text, value };
+            return { name, value };
         });
 }
 
@@ -79,14 +69,18 @@ export function compileEnumElementAccess(
         access.argumentExpression,
     );
     const key = context.compileValue(access.argumentExpression);
-    if (everyMember(keyType, ts.TypeFlags.NumberLike)) {
-        const arms = members.flatMap(({ name, value }) =>
-            typeof value === "number"
-                ? [
-                      `if (key == ${doubleLiteral(value)}) return ${stringLiteral(name)};`,
-                  ]
-                : [],
-        );
+    if (holdsOnly(keyType, ["number"])) {
+        // Each member assigns its name to its value's key in order, so the
+        // last member with a value is the one its key reads back.
+        const arms = [...members]
+            .reverse()
+            .flatMap(({ name, value }) =>
+                typeof value === "number"
+                    ? [
+                          `if (key == ${doubleLiteral(value)}) return ${stringLiteral(name)};`,
+                      ]
+                    : [],
+            );
         return lookup(
             context,
             access,
@@ -96,7 +90,7 @@ export function compileEnumElementAccess(
             arms,
         );
     }
-    if (!everyMember(keyType, ts.TypeFlags.StringLike))
+    if (!holdsOnly(keyType, ["string"]))
         context.fail(
             access.argumentExpression,
             "An enum object is read by a number (its reverse mapping) or a string key.",

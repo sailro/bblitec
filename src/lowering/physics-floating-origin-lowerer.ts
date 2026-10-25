@@ -35,11 +35,18 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import {
+    collectionBinding,
     recordLiteralCpp,
     type PinnedBinding,
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+import {
+    variableKind,
+    sameSource,
+    isOneOfSources,
+    propertyPath,
+} from "../compiler/syntax.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -147,6 +154,14 @@ function regionMembers(pinned: string, cpp: string): [string, PinnedBinding][] {
     ];
 }
 
+/** A region list, walked one region record at a time. */
+function regionList(cpp: string): PinnedBinding {
+    return collectionBinding(
+        cpp,
+        (element) => new Map(regionMembers(element, element)),
+    );
+}
+
 /** A body record's members, on the lvalue `cpp`. */
 function bodyMembers(pinned: string, cpp: string): [string, PinnedBinding][] {
     return [
@@ -178,10 +193,7 @@ function worldMembers(): [string, PinnedBinding][] {
             `${pinned}.gravity`,
             { cpp: `${FLOATING_ORIGIN}.gravity`, type: "f64-buffer" },
         ],
-        [
-            `${pinned}.regions`,
-            { cpp: `${FLOATING_ORIGIN}.regions`, type: "opaque" },
-        ],
+        [`${pinned}.regions`, regionList(`${FLOATING_ORIGIN}.regions`)],
         [
             `${pinned}.regions.length`,
             scalar(`static_cast<double>(${FLOATING_ORIGIN}.regions.size())`),
@@ -207,7 +219,7 @@ function contextMembers(): [string, PinnedBinding][] {
     return [
         ["fo.radius", scalar("fo.radius")],
         ["fo.gravity", { cpp: "fo.gravity", type: "f64-buffer" }],
-        ["fo.regions", { cpp: "fo.regions", type: "opaque" }],
+        ["fo.regions", regionList("fo.regions")],
     ];
 }
 
@@ -304,16 +316,13 @@ const PAL_RESULTS: ReadonlyMap<
 /** `hknp.HP_Name(...)`, whatever local holds the solver module. */
 function solverCall(
     node: ts.Expression,
-    file: ts.SourceFile,
 ): { name: string; call: ts.CallExpression } | undefined {
     const call = ts.isElementAccessExpression(node) ? node.expression : node;
     if (
         !ts.isCallExpression(call) ||
         !ts.isPropertyAccessExpression(call.expression) ||
         !call.expression.name.text.startsWith("HP_") ||
-        !["hknp", "world._hknp"].includes(
-            call.expression.expression.getText(file),
-        )
+        !isOneOfSources(call.expression.expression, ["hknp", "world._hknp"])
     ) {
         return undefined;
     }
@@ -337,11 +346,9 @@ function floatingOriginScope(
     methods: NonNullable<PinnedNumericScope["methods"]>;
     statement: NonNullable<PinnedNumericScope["statement"]>;
     expression: NonNullable<PinnedNumericScope["expression"]>;
-    forOf: NonNullable<PinnedNumericScope["forOf"]>;
     vec3Literal: NonNullable<PinnedNumericScope["vec3Literal"]>;
     recordLiteral: NonNullable<PinnedNumericScope["recordLiteral"]>;
 } {
-    const file = context.sourceFile(havokFloatingOriginModule);
     const memberBindings = new Map<string, PinnedBinding>([
         ...worldMembers(),
         ...contextMembers(),
@@ -381,7 +388,7 @@ function floatingOriginScope(
         const access = context.unwrapExpression(node);
         if (
             !ts.isElementAccessExpression(access) ||
-            !RECORD_LIST_NAMES.has(access.expression.getText(file))
+            !isOneOfSources(access.expression, RECORD_LIST_NAMES)
         ) {
             return undefined;
         }
@@ -426,7 +433,7 @@ function floatingOriginScope(
         // `used.has(region)`: set membership by identity.
         if (
             ts.isCallExpression(node) &&
-            node.expression.getText(file) === "used.has" &&
+            sameSource(node.expression, "used.has") &&
             node.arguments.length === 1
         ) {
             return `used.contains(${lowerer.expression(node.arguments[0]!)}.get())`;
@@ -439,16 +446,9 @@ function floatingOriginScope(
         indent,
     ) =>
         ts.isVariableStatement(node)
-            ? declaration(context, file, node, lowerer, indent, engine)
+            ? declaration(context, node, lowerer, indent, engine)
             : ts.isExpressionStatement(node)
-              ? expressionStatement(
-                    context,
-                    file,
-                    node,
-                    lowerer,
-                    indent,
-                    engine,
-                )
+              ? expressionStatement(context, node, lowerer, indent, engine)
               : undefined;
     return {
         memberBindings,
@@ -462,14 +462,6 @@ function floatingOriginScope(
         ]),
         statement,
         expression,
-        forOf: (_iterated, element, owner) => {
-            return owner && RECORD_LISTS.get(owner.cpp) === "region"
-                ? {
-                      range: owner.cpp,
-                      bindings: new Map(regionMembers(element, element)),
-                  }
-                : undefined;
-        },
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
         recordLiteral: recordLiteralCpp,
     };
@@ -478,7 +470,6 @@ function floatingOriginScope(
 /** A declaration the platform answers, or undefined for an ordinary one. */
 function declaration(
     context: LoweringContext,
-    file: ts.SourceFile,
     node: ts.VariableStatement,
     lowerer: PinnedNumericLowerer,
     indent: string,
@@ -489,7 +480,7 @@ function declaration(
         return undefined;
     }
     const name = entry.name.text;
-    const constant = (node.declarationList.flags & ts.NodeFlags.Const) !== 0;
+    const constant = variableKind(node.declarationList) === "const";
     const qualifier = constant ? "const " : "";
     const initializer = entry.initializer
         ? context.unwrapExpression(entry.initializer)
@@ -501,9 +492,10 @@ function declaration(
     // A region the module looks up or creates.
     if (
         ts.isCallExpression(initializer) &&
-        ["_findRegion", "_getOrCreateRegion"].includes(
-            initializer.expression.getText(file),
-        )
+        isOneOfSources(initializer.expression, [
+            "_findRegion",
+            "_getOrCreateRegion",
+        ])
     ) {
         const value = lowerer.expression(initializer);
         bind(regionMembers(name, name));
@@ -513,13 +505,13 @@ function declaration(
     }
     // A region the module creates: `{ _world, origin, gravity }`.
     if (ts.isObjectLiteralExpression(initializer)) {
-        if (entry.type?.getText(file) !== "WorldRegion") return undefined;
+        if (!sameSource(entry.type, "WorldRegion")) return undefined;
         const value = regionLiteral(context, initializer, lowerer);
         bind(regionMembers(name, name));
         return [`${indent}const auto ${name} = ${value};`];
     }
     // A solver call whose tuple result the pin reads.
-    const solver = solverCall(initializer, file);
+    const solver = solverCall(initializer);
     const result = solver ? PAL_RESULTS.get(solver.name) : undefined;
     if (solver && result) {
         if (result.indexed !== ts.isElementAccessExpression(initializer)) {
@@ -536,10 +528,9 @@ function declaration(
             `${indent}${qualifier}${result.type} ${name} = ${result.cpp(args)};`,
         ];
     }
-    const text = initializer.getText(file);
     // `const node = body.node`: the node's arena reference; its pose is
     // read where the pin reads a member off it.
-    if (text.endsWith(".node")) {
+    if (propertyPath(initializer)?.at(-1) === "node") {
         const owner = lowerer.expression(initializer);
         const pose = `physics_node_pose(${engine}, ${owner})`;
         bind([
@@ -576,7 +567,7 @@ function declaration(
     // in place.
     if (
         ts.isElementAccessExpression(initializer) &&
-        RECORD_LIST_NAMES.has(initializer.expression.getText(file))
+        isOneOfSources(initializer.expression, RECORD_LIST_NAMES)
     ) {
         const owner = lowerer.expression(initializer.expression);
         const kind = RECORD_LISTS.get(owner);
@@ -595,8 +586,8 @@ function declaration(
     // `new Set<WorldRegion>()`: membership by identity.
     if (
         ts.isNewExpression(initializer) &&
-        initializer.expression.getText(file) === "Set" &&
-        initializer.typeArguments?.[0]?.getText(file) === "WorldRegion" &&
+        sameSource(initializer.expression, "Set") &&
+        sameSource(initializer.typeArguments?.[0], "WorldRegion") &&
         !initializer.arguments?.length
     ) {
         bind([[name, { cpp: name, type: "opaque" }]]);
@@ -608,7 +599,6 @@ function declaration(
 /** An expression statement the platform answers, or undefined. */
 function expressionStatement(
     context: LoweringContext,
-    file: ts.SourceFile,
     node: ts.ExpressionStatement,
     lowerer: PinnedNumericLowerer,
     indent: string,
@@ -622,7 +612,7 @@ function expressionStatement(
         return undefined;
     }
     const callee = call.expression;
-    const solver = solverCall(call, file);
+    const solver = solverCall(call);
     // `hknp.HP_Body_SetQTransform(body, [position, rotation])`.
     if (solver?.name === "HP_Body_SetQTransform") {
         const [body, transform] = call.arguments;
@@ -684,7 +674,7 @@ function expressionStatement(
         return undefined;
     }
     // `used.add(region)`.
-    if (callee.getText(file) === "used.add" && call.arguments.length === 1) {
+    if (sameSource(callee, "used.add") && call.arguments.length === 1) {
         return [
             `${indent}used.insert(${lowerer.expression(call.arguments[0]!)}.get());`,
         ];
@@ -697,7 +687,7 @@ function expressionStatement(
             !start ||
             !count ||
             call.arguments.length !== 2 ||
-            count.getText(file) !== "1" ||
+            !sameSource(count, "1") ||
             RECORD_LISTS.get(list) !== "region"
         ) {
             return context.contractError(
@@ -920,7 +910,7 @@ function contextFactoryCpp(
     motionTypes: ReadonlyMap<string, number>,
 ): string {
     const pinned = "createHavokFloatingOriginContext";
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         havokFloatingOriginModule,
         pinned,
     );
@@ -970,7 +960,7 @@ function contextFactoryCpp(
                         if (hook) {
                             if (
                                 !ts.isPropertyAssignment(property) ||
-                                property.initializer.getText(file) !== hook
+                                !sameSource(property.initializer, hook)
                             ) {
                                 context.contractError(
                                     property,
@@ -1038,7 +1028,7 @@ export function enableFloatingOriginCpp(
     motionTypes: ReadonlyMap<string, number>,
 ): string {
     const pinned = "enableHavokFloatingOrigin";
-    const { file } = context.functionDeclaration(havokModule, pinned);
+    context.functionDeclaration(havokModule, pinned);
     const scope = floatingOriginScope(context, "*world.engine", motionTypes);
     const parts = lowerPinnedFunctionParts(
         context,
@@ -1099,7 +1089,7 @@ export function enableFloatingOriginCpp(
                     ts.isBinaryExpression(assignment) &&
                     assignment.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
-                    assignment.left.getText(file) === "world._fo"
+                    sameSource(assignment.left, "world._fo")
                 ) {
                     const call = context.unwrapExpression(assignment.right);
                     if (

@@ -1560,7 +1560,12 @@ test("shares handle-touching methods beside native siblings", () => {
 
     // Handle parameters use a shared closure over their instance metadata.
     assert.doesNotMatch(result.cpp, /bblscene::Spinner_spin/);
-    assert.equal(result.cpp.match(/rotation\.y \+=/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(
+            /rotation\.y = static_cast<float>\(static_cast<double>\(/g,
+        )?.length,
+        1,
+    );
     // The plain-data sibling on the same instance still emits once.
     assert.match(result.cpp, /bblscene::Spinner_rate\(/);
 });
@@ -2484,8 +2489,8 @@ test("materializes mutable intersection-typed object locals", () => {
         const moved = move();
     `);
 
-    assert.match(result.cpp, /\.grounded = true;/);
-    assert.match(result.cpp, /\.wall = 1\.0;/);
+    assert.match(result.cpp, /->grounded = true;/);
+    assert.match(result.cpp, /->wall = 1\.0;/);
     assert.doesNotMatch(result.cpp, /false = true|0\.0 =/);
 });
 
@@ -2501,8 +2506,8 @@ test("writes nested mutable record fields through native lvalues", () => {
         actor.box.y += 2;
     `);
 
-    assert.match(result.cpp, /v_actor\.box->x = 4\.0;/);
-    assert.match(result.cpp, /v_actor\.box->y \+= 2\.0;/);
+    assert.match(result.cpp, /v_actor->box->x = 4\.0;/);
+    assert.match(result.cpp, /v_actor->box->y \+= 2\.0;/);
     assert.doesNotMatch(result.cpp, /0\.0 =|70\.0 \* 2\.8\) \+=/);
 });
 
@@ -2688,9 +2693,14 @@ test("retains lexical constant-expression tuple arrays for runtime break", () =>
         `for \\(std::size_t (\\w+) = 0; \\1 < ${range[1]}\\.size\\(\\); \\+\\+\\1\\) \\{\\s+\\[\\[maybe_unused\\]\\] const auto& (\\w+) = ${range[1]}\\[\\1\\];`,
     ).exec(result.cpp);
     assert.ok(iteration);
+    // The pattern binds its lanes from the item in place, as a declaration does.
+    const lane = new RegExp(`double (\\w+_vx) = ${iteration[2]}\\[0\\];`).exec(
+        result.cpp,
+    );
+    assert.ok(lane);
     assert.match(
         result.cpp,
-        new RegExp(`if \\(${iteration[2]}\\[0\\] > 0\\.0\\) \\{\\s+break;`),
+        new RegExp(`if \\(${lane[1]} > 0\\.0\\) \\{\\s+break;`),
     );
 });
 
@@ -2761,7 +2771,7 @@ test("returns the value of chained numeric field assignments", () => {
         box.w = box.h = 42;
     `);
 
-    assert.match(result.cpp, /v_box\.w = \(v_box\.h = 42\.0\);/);
+    assert.match(result.cpp, /->w = \(v_box->h = 42\.0\);/);
 });
 
 test("returns the value of chained scalar-local assignments", () => {
@@ -2793,18 +2803,21 @@ test("spreads a native partial struct into a wider struct", () => {
 
     // Nothing reads a copied key's presence, so an own undefined needs no
     // document: the wider record stays native and copies present fields.
-    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
+    assert.match(
+        result.cpp,
+        /bblscene::Item v_item = bbl::js::make_ref<bblscene::ItemData>\(\);/,
+    );
     for (const key of ["label", "enabled"])
         assert.match(
             result.cpp,
             new RegExp(
-                String.raw`if \(v_options\.${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options\.${key}\);`,
+                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item->${key} = \(\*v_options->${key}\);`,
             ),
         );
     // `label` is never written, so the copy's presence is known statically.
     assert.ok(
         result.cpp.includes(
-            "v_options.enabled = bbl::js::Nullable<bool>{true};",
+            "v_options->enabled = bbl::js::Nullable<bool>{true};",
         ),
     );
 
@@ -2982,7 +2995,7 @@ test("retains tuple array storage through fixed and runtime indices", () => {
     );
     assert.match(
         result.cpp,
-        /v_total \+= \(v_bblite_item_\d+\[0\] \+ v_bblite_item_\d+\[1\]\);/,
+        /double (v_block\d+_left) = (v_bblite_item_\d+)\[0\];\s+\[\[maybe_unused\]\] double (v_block\d+_right) = \2\[1\];\s+v_total \+= \(\1 \+ \3\);/,
     );
 });
 
@@ -3486,7 +3499,7 @@ test("stores and mutates a runtime string local", () => {
         result.cpp,
         /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/,
     );
-    assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
+    assert.match(result.cpp, /v_\w*name = bbl::js::string_to_upper_case/);
 });
 
 test("preserves undefined in typeof for maybe-absent runtime values", () => {
@@ -3666,7 +3679,12 @@ test("erases type-only class implements clauses", () => {
         counter.bump();
     `);
 
-    assert.match(result.cpp, /\(\*v_bblite_class_field_value_\d+\)\+\+/);
+    // An `implements` clause names no base: the class lowers as a plain one,
+    // its method a native function over the field.
+    assert.match(
+        result.cpp,
+        /ImplementedCounter_bump\(\(\*v_bblite_class_field_value_\d+\)\)/,
+    );
 });
 
 test("runs a discarded local-class constructor for its side effects", () => {
@@ -4213,7 +4231,7 @@ test("binds object data-path locals with shared identity", () => {
     // field write still reaches the object stored in the holder.
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -4500,8 +4518,11 @@ test("copies spread objects and destructures reference-backed array entries", ()
     );
     // `original.row` is never written, so the moved row folds.
     assert.match(result.cpp, /v_moved->row = \(1\.0 \+ 1\.0\);/);
-    assert.match(result.cpp, /v_bblite_item_\d+->row/);
-    assert.match(result.cpp, /v_bblite_item_\d+->colors/);
+    // The pattern reads the item in place.
+    assert.match(
+        result.cpp,
+        /auto&& (v_bblite_destructure_\d+) = v_bblite_item_\d+;\s+double v_fn\d+_block\d+_row = \1->row;\s+bbl::js::Array<double> v_fn\d+_block\d+_colors = \1->colors;/,
+    );
 });
 
 test("keeps an object element alive after its container is resized", () => {
@@ -4539,7 +4560,7 @@ test("mutable object aliases retain JavaScript identity", () => {
     `);
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder->inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -5364,7 +5385,7 @@ test("indexes runtime strings as one-character strings", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::string_index\([^\r\n]+/);
-    assert.match(result.cpp, /bbl::js::string_lower\(v_fn\d+_text\)/);
+    assert.match(result.cpp, /bbl::js::string_to_lower_case\(v_fn\d+_text\)/);
 });
 
 test("narrows guarded optional strings before trim", () => {
@@ -5373,7 +5394,10 @@ test("narrows guarded optional strings before trim", () => {
             if (!value) return "";
             return value.trim();
         }
-        const cleaned = clean(" value ");
+        // A pure helper handed a known value folds at its call.
+        let input: string | undefined = " value ";
+        if (Date.now() < 0) input = undefined;
+        const cleaned = clean(input);
         const words = cleaned.split(/\\s+/);
         const numbers = "1 2".split(/\\s+/).map(Number);
     `);
@@ -5395,11 +5419,14 @@ test("calls a string method on a parenthesized runtime conditional", () => {
             const semi = line.indexOf(";");
             return (semi >= 0 ? line.slice(0, semi) : line).trim();
         }
-        const value = clean("key=value ; comment");
+        // A pure helper handed a known value folds at its call.
+        let line = "key=value ; comment";
+        if (Date.now() < 0) line = "";
+        const value = clean(line);
     `);
 
     assert.match(result.cpp, /return bbl::js::string_trim\(/);
-    assert.match(result.cpp, /auto& v_value = \w+;/);
+    assert.match(result.cpp, /v_value = bblscene::clean\(v_line\);/);
     assert.match(result.cpp, /\? bbl::js::string_slice\(/);
     assert.match(result.cpp, /"key=value ; comment"/);
 });
@@ -8338,16 +8365,14 @@ test("snapshots scalar members of records retained by classes", () => {
             result.cpp,
         );
     assert.ok(stored);
-    const initialized = new RegExp(
-        String.raw`auto& (\w+) = v_vehicle;\s*${stored[1]} = \1;`,
-    ).exec(result.cpp);
-    assert.ok(initialized);
-    assert.ok(
-        result.cpp.indexOf(initialized[0]) > result.cpp.indexOf(stored[0]),
-    );
+    // The argument binds first; the field is assigned from it once stored.
+    const argument = /auto& (\w+) = v_vehicle;/.exec(result.cpp);
+    assert.ok(argument);
+    const initialized = `${stored[1]} = ${argument[1]};`;
+    assert.ok(result.cpp.indexOf(initialized) > result.cpp.indexOf(stored[0]));
     assert.ok(result.cpp.includes(`return ${stored[1]}->bodyRestY;`));
     const mutation = result.cpp.indexOf(".position.y = 10.0;");
-    assert.ok(mutation > result.cpp.indexOf(initialized[0]));
+    assert.ok(mutation > result.cpp.indexOf(initialized));
     assert.match(result.cpp, /double bodyRestY\{\};/);
 });
 
@@ -8387,7 +8412,10 @@ test("reads mutated flat-entry variables from live generated state", (t) => {
         );
         assert.match(result.cpp, /\.position\.x = v_counter;/);
         assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0;/);
-        assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
+        assert.match(
+            result.cpp,
+            /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.3\)/,
+        );
         assert.equal(
             (result.cpp.match(/bbl::mark_mesh_dirty\(/g) ?? []).length,
             2,
@@ -8575,15 +8603,33 @@ test("preserves compound assignments for numeric properties", () => {
     `);
 
     assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0;/);
-    assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
-    assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
+    assert.match(
+        result.cpp,
+        /\.environment\.exposure = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.exposure\) - 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.environment\.contrast = static_cast<float>\(static_cast<double>\([^\n]*\.environment\.contrast\) \+ 0\.2\)/,
+    );
     assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
     assertCameraScalarWrite(result.cpp, "beta", /\(\w+ - 0\.4\)/);
-    assert.match(result.cpp, /\.alpha \+= 0\.1f/);
-    assert.match(result.cpp, /\.specular_power -= 1\.0f/);
+    assert.match(
+        result.cpp,
+        /\.alpha = static_cast<float>\(static_cast<double>\([^\n]*\.alpha\) \+ 0\.1\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.specular_power = static_cast<float>\(static_cast<double>\([^\n]*\.specular_power\) - 1\.0\)/,
+    );
     assert.match(result.cpp, /\.position\.x -= 0\.02/);
-    assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
-    assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
+    assert.match(
+        result.cpp,
+        /\.rotation\.y = static_cast<float>\(static_cast<double>\([^\n]*\.rotation\.y\) \+ 0\.01\)/,
+    );
+    assert.match(
+        result.cpp,
+        /\.scaling\.z = static_cast<float>\(static_cast<double>\([^\n]*\.scaling\.z\) \+ 0\.03\)/,
+    );
 });
 
 test("records awaits lowered by static expression evaluation", () => {
@@ -9621,6 +9667,104 @@ test("lowers dynamic retained UI innerHTML substitutions", () => {
     assert.match(result.cpp, /color:#ff6b6b/);
     assert.match(result.cpp, /\.empty\(\)/);
     assert.doesNotMatch(result.cpp, /__BBLITE_UI_MARKUP_/);
+});
+
+test("evaluates a retained UI substitution's || right operand only when taken", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        let reads = 0;
+        function pickLabel(): string { reads++; return reads > 1 ? "k" : ""; }
+        function fallbackLabel(): string { reads += 10; return "?"; }
+        async function main(): Promise<void> {
+            await createEngine({});
+            const stats = document.createElement("div");
+            window.addEventListener("keydown", () => {
+                stats.innerHTML = \`<span>KEY \${pickLabel() || fallbackLabel()}</span>\`;
+            });
+            document.body.appendChild(stats);
+        }
+        void main();
+    `);
+    // The fallback's effect sits under the left operand's falsy test.
+    assert.match(
+        result.cpp,
+        /if \([^\n]*empty\(\)[^\n]*\) \{\n\s*\(\*v_reads\) \+= 10\.0;/,
+    );
+    assert.equal(result.cpp.match(/\(\*v_reads\) \+= 10\.0;/g)?.length, 1);
+});
+
+test("a float field's compound store rounds once, at the store", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.scaling.x = 3;
+            box.scaling.x *= 1.1;
+            box.scaling.y = 1e39;
+        }
+        void main();
+    `);
+    // JavaScript computes 3 * 1.1 in double and rounds at the float32
+    // store; an out-of-range number stores as an infinity.
+    assert.match(
+        result.cpp,
+        /scaling\.x = static_cast<float>\(static_cast<double>\([^\n]*scaling\.x\) \* 1\.1\);/,
+    );
+    assert.match(
+        result.cpp,
+        /scaling\.y = std::numeric_limits<float>::infinity\(\);/,
+    );
+    assert.doesNotMatch(result.cpp, /\*= 1\.1f|1e\+39f/);
+});
+
+test("shares one cell between the closures that capture and write a by-value binding", () => {
+    // A for-of variable gets one cell per iteration; a destructured binding
+    // one cell where the pattern binds it.
+    for (const source of [
+        "const incs: Array<() => void> = [], gets: Array<() => number> = []; for (let x of [1, 10]) { incs.push(() => { x++; }); gets.push(() => x); } incs[0]!(); console.log(gets[0]!());",
+        "function counter(o: { n: number }) { let { n } = o; return { inc: () => { n++; }, get: () => n }; } const c = counter({ n: 0 }); c.inc(); console.log(c.get());",
+    ])
+        assert.match(
+            compileSource(source).cpp,
+            /auto \w*shared_binding\w* = bbl::js::make_gc_shared<double>\(/,
+        );
+});
+
+test("refuses a hoisted var read while it can be undefined its type cannot hold", () => {
+    // The scope's own read some path reaches unassigned, `!` or not.
+    for (const read of ["y", "y!"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `function f(c: boolean): number { if (c) { var y = 3; } return ${read}; } console.log(f(true));`,
+                ),
+            /The `var` 'y' can be read here before it is assigned/,
+        );
+    // A read inside a class the definite-assignment walk does not follow.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(c: boolean): number { if (c) { var y = 3; } class K { static v = y; } return K.v; } console.log(f(true));",
+            ),
+        /The `var` 'y' is read where its assignment runs through a ClassDeclaration, which the definite-assignment analysis does not follow/,
+    );
+    // A function lowered before the walk reached an assignment.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(): number { const get = (): number => w; const before = get(); var w = 7; return before; } console.log(f());",
+            ),
+        /A function reads the `var` 'w' where it can still be undefined/,
+    );
+    // One binding with a parameter is not a storage of its own.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(a: number): number { var a = 2; return a; } console.log(f(1));",
+            ),
+        /The `var` 'a' shares its binding with a parameter/,
+    );
 });
 
 test("folds static string concatenation assigned to retained UI text", () => {
@@ -11831,7 +11975,7 @@ test("lowers boolean data-field assignment expression callbacks", () => {
         invoke((value) => (state.left = value));
     `);
 
-    assert.match(result.cpp, /v_state\.left = true/);
+    assert.match(result.cpp, /v_state->left = true/);
 });
 
 test("projects an audited native host-page UI companion without changing scene source", () => {
@@ -12440,6 +12584,54 @@ test("refuses retained UI under the standalone effect and frame-graph drivers", 
     );
 });
 
+test("presents a realm's retained UI over an effect renderer and refuses a realm frame graph", () => {
+    // The idle callback takes the application realm, whose Window host
+    // composites the UI over every renderer's canvas frames.
+    const program = (registration: string) => `
+        import {
+            createEffectRenderer,
+            createEffectWrapper,
+            createEngine,
+            createFrameGraphContext,
+            registerEffectRenderer,
+            registerFrameGraphContext,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            requestIdleCallback(() => {});
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            ${registration}
+            const hint = document.createElement("div");
+            hint.textContent = "hint";
+            document.body.appendChild(hint);
+            await startEngine(engine);
+        }
+
+        void main();
+    `;
+    const effect = compileSource(
+        program(`const effect = createEffectWrapper(engine, {
+            name: "fx",
+            fragmentWGSL: "@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+        });
+        registerEffectRenderer(createEffectRenderer(engine, effect, { name: "fx-renderer" }));`),
+    );
+    for (const feature of ["platform:workers", "ui:rml", "renderer:effect"])
+        assert.ok(effect.manifest.features.includes(feature), feature);
+    // The engine holds a registered FrameGraphContext by address.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    "registerFrameGraphContext(createFrameGraphContext(engine));",
+                ),
+            ),
+        /A standalone frame graph .*does not yet run in an application realm/,
+    );
+});
+
 test("keeps the packaged success arm of a nullable retained-canvas factory", () => {
     const result = compileSource(
         `
@@ -12495,33 +12687,38 @@ test("keeps the packaged success arm of a nullable retained-canvas factory", () 
 });
 
 test("does not erase an application condition from a retained-canvas factory", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                class OptionalHud {
-                    private readonly canvas: HTMLCanvasElement;
+    const result = compileSource(`
+        class OptionalHud {
+            private readonly canvas: HTMLCanvasElement;
 
-                    private constructor() {
-                        this.canvas = document.createElement("canvas");
-                    }
+            private constructor() {
+                this.canvas = document.createElement("canvas");
+            }
 
-                    static async create(enabled: boolean): Promise<OptionalHud | null> {
-                        try {
-                            if (!enabled) return null;
-                            return new OptionalHud();
-                        } catch {
-                            return null;
-                        }
-                    }
-
-                    static async run(): Promise<void> {
-                        await OptionalHud.create(true);
-                    }
+            static async create(enabled: boolean): Promise<OptionalHud | null> {
+                try {
+                    if (!enabled) return null;
+                    return new OptionalHud();
+                } catch {
+                    return null;
                 }
+            }
 
-                void OptionalHud.run();
-            `),
-        /outside the native data model/,
+            static async run(): Promise<void> {
+                const hud = await OptionalHud.create(Math.random() > 0.5);
+                if (hud) globalThis.close();
+            }
+        }
+
+        void OptionalHud.run();
+    `);
+    assert.match(
+        result.cpp,
+        /if \(!\(v_fn\d+_enabled\)\) \{\s*co_return bblscene::OptionalHud\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /->canvas = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
     );
 });
 
@@ -13798,6 +13995,20 @@ test("refuses to erase a DOM call on a receiver erasure cannot classify", () => 
         );
 });
 
+test("refuses to erase a browser call handed the program's own binary data", () => {
+    // The browser fills the buffer it is handed; erasing the call left the
+    // bytes zero.
+    assert.throws(
+        () =>
+            compileSource(`
+                const bytes = new Uint8Array(16);
+                void crypto.subtle.digest("SHA-256", bytes);
+                console.log(bytes[0]);
+            `),
+        /'crypto\.subtle\.digest' would erase a call handed the program's own binary data/,
+    );
+});
+
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
     const result = compileSource(`
         import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";
@@ -14646,6 +14857,90 @@ test("packages runtime-selected module textures as a closed image directory", ()
     );
     assert.match(result.cpp, /Unknown packaged asset/);
     assert.match(result.cpp, /bbl::load_file_texture/);
+});
+
+test("a realm's module texture URLs take a union suffix and its address modes at run time", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { demoAssetUrl } from "./demo-asset-url.js";
+
+            const sources = [
+                { file: "road-straight.png", addressModeU: "clamp-to-edge" },
+                { file: "boost-arrow.png", addressModeU: "repeat" },
+            ] as const;
+            async function main(): Promise<void> {
+                const engine = await createEngine(document.querySelector("canvas")!);
+                const urls = sources.map((source) => demoAssetUrl(\`./antigravity-racer/track/\${source.file}\`, import.meta.url));
+                await Promise.all(
+                    sources.map((source, i) =>
+                        loadTexture2D(engine, urls[i]!, { addressModeU: source.addressModeU }),
+                    ),
+                );
+            }
+            queueMicrotask(() => {});
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/realm-track-texture-test.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /bbl::js::concat\("\/antigravity-racer\/track\/", bblscene::\w+_to_string\(/,
+    );
+    assert.match(
+        result.cpp,
+        /== bblscene::\w+::clamp_to_edge \? bbl::TextureAddressMode::clamp : bbl::TextureAddressMode::repeat\)/,
+    );
+});
+
+test("an enum-like intrinsic option reads its string through one pin table", () => {
+    const result = compileSource(`
+        import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(smooth: boolean): Promise<void> {
+            const engine = await createEngine({});
+            const sampling: "linear" | "nearest" = smooth ? "linear" : "nearest";
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1], sampling });
+            createSprite2DLayer(atlas, { capacity: 1, depth: "test-write" });
+            await loadTexture2D(engine, "a.png", { addressModeU: smooth ? "repeat" : "mirror-repeat" });
+        }
+        void main(Math.random() > 0.5);
+    `);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_sampling == bblscene::\w+::linear \? bbl::TextureFilter::linear : bbl::TextureFilter::nearest\)/,
+    );
+    assert.match(result.cpp, /bbl::Sprite2DDepthMode::test_write/);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_smooth \? bbl::TextureAddressMode::repeat : bbl::TextureAddressMode::mirror\)/,
+    );
+    // An option a generation-time decision reads takes a known string.
+    const engine = `import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});`;
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const mode: "nearest" | "linear" = Math.random() > 0.5 ? "nearest" : "linear";
+            await loadTexture2D(engine, "a.png", { minFilter: mode });
+        }
+        void main();`),
+        /A texture filter must be a generation-known string/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1] });
+            const mode: "none" | "test" = Math.random() > 0.5 ? "none" : "test";
+            createSprite2DLayer(atlas, { capacity: 1, depth: mode });
+        }
+        void main();`),
+        /A sprite layer depth mode must be a generation-known string/,
+    );
 });
 
 test("preserves numeric tuple identity except through array spread", () => {
@@ -19570,7 +19865,9 @@ test("does not erase a bounded wait through a shadowed Promise", () => {
                 ),
                 frameYieldFile,
             ),
-        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+        // `globalThis.Promise` is the language's Promise, not erasable
+        // browser state: the alias itself refuses as a value.
+        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)|Unknown or unsupported variable 'globalThis'/,
     );
 });
 
@@ -21302,7 +21599,7 @@ test("a storage buffer a nested callback replaces is read through its shared cel
     const engineAlias = /auto& (\w+) = v_engine;/.exec(result.cpp);
     assert.ok(engineAlias, "the palette borrows the entry engine");
     const buffer =
-        /auto (v_fn\d+_buffer) = bbl::js::make_gc_shared<[^;]*bbl::create_storage_buffer\(/.exec(
+        /auto (v_fn\d+_buffer) = bbl::js::make_gc_cell\(bbl::create_storage_buffer\(/.exec(
             result.cpp,
         );
     assert.ok(buffer, "the replaceable buffer has shared storage");

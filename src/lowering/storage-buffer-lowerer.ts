@@ -4,7 +4,10 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { storageBufferDescriptorCpp } from "./storage-buffer-descriptor.js";
 import { assertMappedBufferAdapter } from "./gpu-buffer-adapters.js";
 
@@ -636,28 +639,19 @@ function disposal(context: LoweringContext): string {
         "_disposeStorageBuffers",
     );
     const body = lowerPinnedBody(file, declaration.body!.statements, {
-        bindings: new Map(),
+        // Disposal walks a snapshot of the engine's registry.
+        bindings: new Map([
+            [
+                "[...(engine._storageBuffers ?? [])]",
+                collectionBinding("storage_buffer_registry_snapshot(engine)"),
+            ],
+        ]),
         calls: new Map([
             [
                 "disposeStorageBuffer",
                 (args) => `dispose_storage_buffer(engine, ${args.join(", ")})`,
             ],
         ]),
-        forOf(_iterated, element, _binding, syntax) {
-            if (
-                !context.expressionMatchesShape(
-                    syntax.expression,
-                    "[...(engine._storageBuffers ?? [])]",
-                )
-            )
-                return undefined;
-            return {
-                range: "storage_buffer_registry_snapshot(engine)",
-                bindings: new Map([
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
-        },
     });
     return `// ${context.provenance(path, "_disposeStorageBuffers")}
 static void dispose_gpu_storage_buffers(Engine& engine) {

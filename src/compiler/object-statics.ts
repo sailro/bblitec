@@ -1,7 +1,7 @@
 import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyNameText } from "./syntax.js";
+import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -18,16 +18,22 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { isSupportedFunction } from "./user-functions.js";
-import { isSymbolPropertyKey } from "./symbols.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { borrowedPrototypeMethod, isSymbolPropertyKey } from "./symbols.js";
+import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
+import {
+    defineHostAccessor,
+    globalDefinitionRefusal,
+    isRealmGlobalObject,
+} from "./host-globals.js";
 import { callableRecordValue } from "./callable-records.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
+import { callSignatures } from "./type-facts.js";
+import { absenceOfNull, jsonAbsenceCpp, staticKeyOf } from "./values/model.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -39,6 +45,7 @@ type ObjectStaticContext = Pick<
     | "captureManagedClosureLines"
     | "registerNativeBinding"
     | "activeThis"
+    | "withThis"
     | "defineThis"
     | "moduleNamespaces"
     | "captureEmittedLines"
@@ -54,10 +61,13 @@ type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
+    | "dynamicBindings"
+    | "parameterObjects"
     | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
+    | "options"
     | "fail"
     | "emitUiDatasetProperty"
     | "emitUiStyleValue"
@@ -455,9 +465,7 @@ function compileObjectIs(
     const erased = (value: Value, node: ts.Expression): string | undefined => {
         if (isJsonValue(value)) return value.cpp;
         if (value.kind === "json-null")
-            return value.cpp === "std::nullopt"
-                ? "bbl::js::JsonValue{}"
-                : "bbl::js::JsonValue::null_value()";
+            return jsonAbsenceCpp(absenceOfNull(value));
         if (numeric(value))
             return `bbl::js::JsonValue::from_number(${value.cpp})`;
         if (textual(value))
@@ -502,24 +510,12 @@ export function compileObjectPrototypeCall(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call")
-        return undefined;
-    const method = context.unwrap(callee.expression);
-    if (
-        !ts.isPropertyAccessExpression(method) ||
-        method.name.text !== "hasOwnProperty"
-    )
-        return undefined;
-    const prototype = context.unwrap(method.expression);
-    if (
-        !ts.isPropertyAccessExpression(prototype) ||
-        prototype.name.text !== "prototype"
-    )
-        return undefined;
-    const owner = context.unwrap(prototype.expression);
-    if (context.libraryGlobal(owner) !== "Object") return undefined;
-    return compileObjectHasOwn(context, call);
+    const borrowed = borrowedPrototypeMethod(context.checker, call);
+    return borrowed?.owner === "Object" &&
+        borrowed.method === "hasOwnProperty" &&
+        borrowed.invoke === "call"
+        ? compileObjectHasOwn(context, call)
+        : undefined;
 }
 
 /**
@@ -689,11 +685,7 @@ function compileObjectFromEntries(
             if (entry.kind !== "tuple" || entry.tupleElements?.length !== 2)
                 return undefined;
             const [key, value] = entry.tupleElements;
-            const name =
-                key?.staticString ??
-                (key?.staticNumber !== undefined
-                    ? String(key.staticNumber)
-                    : undefined);
+            const name = staticKeyOf(key);
             if (name === undefined) return undefined;
             if (properties[name]) context.emitDiscardedValue(properties[name]);
             properties[name] = value!;
@@ -752,8 +744,7 @@ function compileObjectAssign(
         (context.checker.getAwaitedType(contextualType) ?? contextualType);
     const callable = context.dataTypes.fromStoredTsType(
         contextual &&
-            context.checker.getNonNullableType(contextual).getCallSignatures()
-                .length === 1
+            callSignatures(context.checker, contextual, "present").length === 1
             ? context.checker.getNonNullableType(contextual)
             : context.checker.getTypeAtLocation(call),
         call,
@@ -851,15 +842,7 @@ function compileObjectAssign(
         const values = sources.map((source) => {
             const value = context.compileValue(source);
             if (value.kind === "record") {
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             const cpp = context.dataLowerer.compileKnownValueForSink(
                 value,
@@ -893,15 +876,7 @@ function compileObjectAssign(
                 readPairs(source, value);
                 // A later argument can mutate an earlier source. Retain that
                 // source's identity rather than snapshotting its scalar fields.
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             return context.bindings.pinValueToTemporary(
                 value,
@@ -993,15 +968,7 @@ function compileObjectAssign(
             const value = context.compileValue(source);
             if (value.kind === "record") {
                 readPairs(source, value, true);
-                const declaration = context.bindings.recordDeclaration(
-                    value,
-                    source,
-                );
-                if (declaration)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        "source",
-                    );
+                requireHeldRecordStorage(context, value, source);
             }
             if (value.dataType?.kind === "struct")
                 context.dataTypes.markStoredObjectReferences(value.dataType);
@@ -1066,6 +1033,37 @@ function compileObjectAssign(
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);
         }
+        return owner;
+    }
+    // A Record stored as a map: each own enumerable source property is a
+    // key. A JavaScript Map's entries are no properties, so it stays refused.
+    if (
+        target.kind === "data" &&
+        target.dataType?.kind === "map" &&
+        target.dataType.dictionary &&
+        target.dataType.key.kind === "string"
+    ) {
+        const mapType = target.dataType;
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
+        // Every argument is evaluated before the first source's keys are read.
+        const values = sources.map((source) =>
+            context.bindings.pinValueToTemporary(
+                context.compileValue(source),
+                "assign_source",
+                source,
+            ),
+        );
+        sources.forEach((source, index) => {
+            for (const [key, value] of sourcePairs(source, values[index]))
+                context.emit({
+                    kind: "expression",
+                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
+                });
+        });
         return owner;
     }
     // Nothing else has stored fields to copy into: an engine handle's
@@ -1133,11 +1131,13 @@ interface PropertyDefinition {
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
 
+/** `existing`: the target already has an enumerable property, which an omitted `enumerable` keeps. */
 function propertyDefinition(
     context: ObjectStaticContext,
     operation: DefinitionOperation,
     key: string,
     expression: ts.Expression,
+    existing = false,
 ): PropertyDefinition {
     const refuse = (message: string): never =>
         context.fail(expression, `Object.${operation} ${message}`);
@@ -1156,7 +1156,7 @@ function propertyDefinition(
             return refuse(
                 "needs literal descriptors without spreads or descriptor accessors.",
             );
-        const name = propertyNameText(property.name);
+        const name = propertyKey(property.name);
         if (name === undefined || names.has(name))
             return refuse("needs distinct, non-computed descriptor members.");
         names.add(name);
@@ -1203,9 +1203,14 @@ function propertyDefinition(
             return refuse(
                 "requires an accessor getter; setter-only descriptors are not represented.",
             );
-        if (!attributes.has("enumerable") || !attributes.has("configurable"))
+        if (
+            (!existing && !attributes.has("enumerable")) ||
+            !attributes.has("configurable")
+        )
             return refuse(
-                "requires enumerable true and an explicit boolean configurable attribute for accessors.",
+                existing
+                    ? "requires an explicit boolean configurable attribute for accessors."
+                    : "requires enumerable true and an explicit boolean configurable attribute for accessors.",
             );
     } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
@@ -1230,12 +1235,7 @@ function definitionTarget(
     const expression = argumentAt(call, 0);
     const target = context.compileValue(expression);
     if (target.kind === "record") {
-        const declaration = context.bindings.recordDeclaration(
-            target,
-            expression,
-        );
-        if (declaration)
-            throw new DynamicBindingStorageRequired(declaration, "source");
+        requireHeldRecordStorage(context, target, expression);
     }
     if (target.kind !== "data" || target.dataType?.kind !== "struct")
         return context.fail(
@@ -1299,23 +1299,23 @@ function definitionAccessor(
         const receiver = argument(receiverName, receiverType);
         const values =
             member.name === "get" ? [] : [argument(valueName, field.type)];
-        const previousThis = context.activeThis();
-        if (!ts.isArrowFunction(callback)) context.defineThis(receiver);
-        try {
-            const value = context.compileCallbackWithValues(
-                callback,
-                values,
-                callback,
-                member.name === "set",
-            );
-            context.emit(
-                member.name === "get"
-                    ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
-                    : "return true;",
-            );
-        } finally {
-            context.defineThis(previousThis);
-        }
+        // An arrow callback keeps the enclosing `this`.
+        context.withThis(
+            ts.isArrowFunction(callback) ? context.activeThis() : receiver,
+            () => {
+                const value = context.compileCallbackWithValues(
+                    callback,
+                    values,
+                    callback,
+                    member.name === "set",
+                );
+                context.emit(
+                    member.name === "get"
+                        ? `return ${context.dataLowerer.compileKnownValueForSink(value, field.type, callback)};`
+                        : "return true;",
+                );
+            },
+        );
     });
     return member.name === "get"
         ? `bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(body, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)})`
@@ -1445,21 +1445,86 @@ function applyPropertyDefinitions(
     return target;
 }
 
+/** Evaluate every getter, then redefine the global's host accessors in order. */
+function applyGlobalDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+    definitions: readonly PropertyDefinition[],
+): Value {
+    const applied = definitions.map((definition) => {
+        const refuse = (message: string): never =>
+            context.fail(definition.node, `Object.${operation} ${message}`);
+        const refusal = globalDefinitionRefusal(definition.key);
+        if (refusal) return refuse(refusal);
+        const getter = definition.members.find(
+            (member) => member.name === "get",
+        );
+        if (definition.setter || getter?.name !== "get")
+            return refuse(
+                `defines the global ${definition.key} only with a getter.`,
+            );
+        if (functionUsesDynamicThis(getter.callback))
+            return refuse(
+                `does not represent a ${definition.key} getter that reads 'this'.`,
+            );
+        const name = context.allocateTemporaryCppName("defined_property");
+        // The getter is often a stored callback already: referenced, not copied.
+        context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name,
+            initializer: context.compileStoredDataFunction(getter.callback, {
+                kind: "function",
+                parameters: [],
+                result: { kind: "number" },
+            }),
+        });
+        return defineHostAccessor(
+            definition.key,
+            name,
+            definition.configurable,
+        );
+    });
+    for (const code of applied) context.emit({ kind: "expression", code });
+    return ts.isExpressionStatement(call.parent)
+        ? { kind: "void", cpp: "" }
+        : context.compileValue(argumentAt(call, 0));
+}
+
 function compileObjectDefineProperty(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 3, 3);
-    const target = definitionTarget(context, call, "defineProperty");
+    const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const target = global
+        ? undefined
+        : definitionTarget(context, call, "defineProperty");
     const key = context.compileValue(argumentAt(call, 1)).staticString;
     if (key === undefined)
         return context.fail(
             call,
             "Object.defineProperty needs a property key known at generation.",
         );
-    return applyPropertyDefinitions(context, call, "defineProperty", target, [
-        propertyDefinition(context, "defineProperty", key, argumentAt(call, 2)),
-    ]);
+    const definitions = [
+        propertyDefinition(
+            context,
+            "defineProperty",
+            key,
+            argumentAt(call, 2),
+            global,
+        ),
+    ];
+    return target
+        ? applyPropertyDefinitions(
+              context,
+              call,
+              "defineProperty",
+              target,
+              definitions,
+          )
+        : applyGlobalDefinitions(context, call, "defineProperty", definitions);
 }
 
 function compileObjectDefineProperties(
@@ -1467,7 +1532,10 @@ function compileObjectDefineProperties(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const target = definitionTarget(context, call, "defineProperties");
+    const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const target = global
+        ? undefined
+        : definitionTarget(context, call, "defineProperties");
     const descriptors = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(descriptors))
         return context.fail(
@@ -1477,7 +1545,7 @@ function compileObjectDefineProperties(
     const definitions: PropertyDefinition[] = [];
     const keys = new Set<string>();
     for (const property of descriptors.properties) {
-        const key = property.name && propertyNameText(property.name);
+        const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
             key === undefined ||
@@ -1495,9 +1563,17 @@ function compileObjectDefineProperties(
                 "defineProperties",
                 key,
                 property.initializer,
+                global,
             ),
         );
     }
+    if (!target)
+        return applyGlobalDefinitions(
+            context,
+            call,
+            "defineProperties",
+            definitions,
+        );
     return applyPropertyDefinitions(
         context,
         call,
