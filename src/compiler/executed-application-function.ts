@@ -449,7 +449,6 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 if (
                     writesThroughTrackedRoot(
                         node,
-                        (callee) => namedMember(this.context.checker, callee),
                         (expression) => {
                             const identifier = rootIdentifier(expression);
                             return (
@@ -457,9 +456,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                                 this.namesClosureBinding(identifier, root)
                             );
                         },
-                        undefined,
-                        this.context.checker,
-                        this.context.sourceFiles,
+                        {
+                            checker: this.context.checker,
+                            typed: true,
+                            ...(this.context.sourceFiles
+                                ? { sourceFiles: this.context.sourceFiles }
+                                : {}),
+                        },
                     )
                 ) {
                     this.context.fail(

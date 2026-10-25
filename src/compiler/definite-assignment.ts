@@ -65,6 +65,7 @@ export function definitelyAssignedAt(
 }
 
 class AssignmentWalk {
+    /** @unjournaled One walk's state over checked source, discarded with it. */
     private readonly targets: JumpTarget[] = [];
 
     constructor(

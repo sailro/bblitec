@@ -16,7 +16,6 @@ import {
     accessedPropertySymbol,
     aliasTarget,
     memberAccessors,
-    namedMember,
     type CompilerSymbols,
 } from "./symbols.js";
 import {
@@ -449,7 +448,6 @@ function writesThroughBinding(
                     evaluationOrder.writesStorage(node)) ||
                 writesThroughTrackedRoot(
                     node,
-                    (callee) => namedMember(checker, callee),
                     // Assigning a name, the binding's own included and an
                     // export through its namespace, rebinds it (`isRebound`'s
                     // question); the object it held is unchanged.
@@ -462,9 +460,11 @@ function writesThroughBinding(
                             ) && names(scan, written)
                         );
                     },
-                    undefined,
-                    checker,
-                    program.getSourceFiles(),
+                    {
+                        checker,
+                        typed: true,
+                        sourceFiles: program.getSourceFiles(),
+                    },
                 ) ||
                 (ts.isCallExpression(node) &&
                     node.arguments.some(

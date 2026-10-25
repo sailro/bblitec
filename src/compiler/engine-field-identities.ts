@@ -42,10 +42,13 @@ export function engineFieldIdentities(
 }
 
 export class EngineFieldIdentities {
+    /** @unjournaled Derived from the checked program before emission. */
     private stores?: Map<string, Store[]>;
-    /** A store whose name the analysis cannot read: every name is unknown. */
+    /** @unjournaled A store whose name the analysis cannot read: every name is unknown. */
     private unnamed = false;
+    /** @unjournaled Derived from the checked program before emission. */
     private identifiers?: Map<string, ts.Identifier[]>;
+    /** @unjournaled Derived from the checked program before emission. */
     private readonly roots = new Map<string, ts.Symbol | undefined>();
 
     constructor(

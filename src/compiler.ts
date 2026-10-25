@@ -3069,13 +3069,10 @@ class Compiler implements LoweringServices {
                 scan.namesAlias,
             );
         if (
-            writesThroughTrackedRoot(
-                node,
-                (callee) => namedMember(this.checker, callee),
-                isTarget,
-                undefined,
-                this.checker,
-            )
+            writesThroughTrackedRoot(node, isTarget, {
+                checker: this.checker,
+                typed: true,
+            })
         ) {
             return true;
         }

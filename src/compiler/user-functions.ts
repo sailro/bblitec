@@ -487,9 +487,9 @@ export function functionUsesDynamicThis(
  * recognize a write the same way, so a family added here has to reach one
  * place rather than several.
  *
- * `mutatesVia` decides which method calls write their receiver; with a
- * checker the default is {@link callWritesReceiver}, without one every
- * method not known to only read.
+ * `mutatesVia` decides which method calls write their receiver; a `typed`
+ * walk defaults to {@link callWritesReceiver} and skips primitive targets,
+ * an untyped one counts every method not known to only read.
  *
  * `isTarget` learns whether the target is assigned or is a mutated
  * receiver: assigning a bare name rebinds it, which a caller tracking the
@@ -497,19 +497,16 @@ export function functionUsesDynamicThis(
  */
 function writesThroughRoot(
     node: ts.Node,
-    member: MemberReader,
     isTarget: (
         expression: ts.Expression,
         via: "assignment" | "receiver",
     ) => boolean,
-    mutatesVia?: (
-        method: string,
-        receiver: ts.Expression,
-        call: ts.CallExpression,
-    ) => boolean,
-    checker?: ts.TypeChecker,
-    sourceFiles?: readonly ts.SourceFile[],
+    options: TrackedWriteOptions,
 ): boolean {
+    const { mutatesVia, sourceFiles } = options;
+    const checker = options.typed ? options.checker : undefined;
+    const member: MemberReader = (callee) =>
+        namedMember(options.checker, callee);
     const writes = writeSites(node);
     if (writes.length > 0)
         return writes.some(({ target }) => isTarget(target, "assignment"));
@@ -545,6 +542,21 @@ function writesThroughRoot(
             typeCanCarryReference(checker.getTypeAtLocation(target))) &&
         isTarget(target, "receiver")
     );
+}
+
+/** What a write walk reads beside its node and target test. */
+export interface TrackedWriteOptions {
+    /** Reads each call's member. */
+    readonly checker: ts.TypeChecker;
+    /** Receiver writes and targets by type (otherwise by method name). */
+    readonly typed?: boolean;
+    readonly mutatesVia?: (
+        method: string,
+        receiver: ts.Expression,
+        call: ts.CallExpression,
+    ) => boolean;
+    /** Where a RegExp's `lastIndex` may be read (a typed walk's read-only RegExp calls). */
+    readonly sourceFiles?: readonly ts.SourceFile[];
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
@@ -858,15 +870,7 @@ function writesSharedBinding(
     active: Set<SupportedFunction>,
 ): boolean {
     const writes = someAnalysisNode(body, (node) => {
-        if (
-            writesThroughRoot(
-                node,
-                (callee) => namedMember(checker, callee),
-                isShared,
-                undefined,
-                checker,
-            )
-        ) {
+        if (writesThroughRoot(node, isShared, { checker, typed: true })) {
             return true;
         }
         if (ts.isCallExpression(node)) {

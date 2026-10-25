@@ -633,12 +633,12 @@ function reachesSpecializingEffect(
         if (
             writesThroughTrackedRoot(
                 node,
-                (callee) => namedMember(context.checker, callee),
                 (target) =>
                     isComposedAudioEnum(
                         context.checker,
                         unwrapExpression(target),
                     ),
+                { checker: context.checker },
             )
         ) {
             required = true;
@@ -655,7 +655,6 @@ function reachesSpecializingEffect(
             ) &&
             writesThroughTrackedRoot(
                 node,
-                (callee) => namedMember(context.checker, callee),
                 (target) => {
                     const member = unwrapExpression(target);
                     const symbol = ts.isPropertyAccessExpression(member)
@@ -663,6 +662,7 @@ function reachesSpecializingEffect(
                         : undefined;
                     return symbol !== undefined && declaredInDomLibrary(symbol);
                 },
+                { checker: context.checker },
             )
         ) {
             required = true;
@@ -962,16 +962,20 @@ export function loopBoundMayChange(
                         return root !== undefined && scan.namesAlias(root);
                     };
                     return (
-                        writesThroughTrackedRoot(
-                            node,
-                            (callee) => namedMember(context.checker, callee),
-                            namesAlias,
-                            arrayLength
-                                ? (method) => resizingArrayMethods.has(method)
+                        writesThroughTrackedRoot(node, namesAlias, {
+                            checker: context.checker,
+                            ...(arrayLength
+                                ? {
+                                      mutatesVia: (method: string) =>
+                                          resizingArrayMethods.has(method),
+                                  }
                                 : arrayContents
-                                  ? (method) => mutatingArrayMethods.has(method)
-                                  : undefined,
-                        ) ||
+                                  ? {
+                                        mutatesVia: (method: string) =>
+                                            mutatingArrayMethods.has(method),
+                                    }
+                                  : {}),
+                        }) ||
                         (ts.isCallExpression(node) &&
                             node.arguments.some(
                                 (argument, index) =>
@@ -1132,7 +1136,6 @@ export function parameterizedResourceLoop(
     walkReachedLoopNodes(context, statement.statement, (node) => {
         writesThroughTrackedRoot(
             node,
-            (callee) => namedMember(context.checker, callee),
             (target) => {
                 if (!ts.isCallExpression(node) && ts.isIdentifier(target)) {
                     const symbol = context.symbols.valueSymbol(target);
@@ -1140,6 +1143,7 @@ export function parameterizedResourceLoop(
                 }
                 return markMutation(target);
             },
+            { checker: context.checker },
         );
         if (ts.isCallExpression(node)) {
             const called = resolvedLoopCallee(context, node);
@@ -1458,10 +1462,10 @@ export function parameterizedResourceLoop(
         if (
             writesThroughTrackedRoot(
                 node,
-                (callee) => namedMember(context.checker, callee),
                 (target) =>
                     ts.isIdentifier(target) &&
                     indices.has(context.symbols.valueSymbol(target)!),
+                { checker: context.checker },
             )
         ) {
             safe = false;

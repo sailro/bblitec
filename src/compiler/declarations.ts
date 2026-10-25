@@ -81,7 +81,6 @@ import {
     calledDeclaration,
     calledFunction,
     memberAccessors,
-    namedMember,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -4404,14 +4403,14 @@ export class DeclarationLowerer {
                     if (
                         writesThroughTrackedRoot(
                             node,
-                            (callee) =>
-                                namedMember(this.context.checker, callee),
                             (target, via) =>
                                 via === "receiver" &&
                                 referenceBases(target).some(scan.namesAlias),
-                            undefined,
-                            this.context.checker,
-                            this.context.sourceFiles(),
+                            {
+                                checker: this.context.checker,
+                                typed: true,
+                                sourceFiles: this.context.sourceFiles(),
+                            },
                         )
                     )
                         return true;
@@ -4833,13 +4832,14 @@ export class DeclarationLowerer {
                 mutates: (node, scan) =>
                     writesThroughTrackedRoot(
                         node,
-                        (callee) => namedMember(checker, callee),
                         (target, via) =>
                             via === "receiver" &&
                             referenceBases(target).some(scan.namesAlias),
-                        undefined,
-                        checker,
-                        this.context.sourceFiles(),
+                        {
+                            checker,
+                            typed: true,
+                            sourceFiles: this.context.sourceFiles(),
+                        },
                     ),
             },
         );

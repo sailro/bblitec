@@ -186,26 +186,53 @@ struct SdlData : CommonData {
     } resources;
     std::vector<upstream::RenderDrawLists> task_draw_lists;
     bool offscreen = false;
-    using CommonData::CommonData;
-};
-struct DawnData : CommonData {
-    DawnState state;
-    unsigned width = 320, height = 180;
+    // The frame presentation: an endpoint's leased image, or the window's swapchain.
+    struct {
+        SDL_GPUTexture* image = nullptr;
+        bool acquire(SdlGpuCommand& command, bool endpoint, SDL_Window* window,
+                     const Engine& engine, SDL_GPUTexture** texture, Uint32* width,
+                     Uint32* height) {
+            if (endpoint) {
+                *width = static_cast<Uint32>(engine.options.width);
+                *height = static_cast<Uint32>(engine.options.height);
+                *texture = image;
+                return true;
+            }
+            return command.acquire_swapchain(window, texture, width, height);
+        }
+    } presentation;
     using CommonData::CommonData;
 };
 struct OffscreenImage {
     WGPUTexture texture = nullptr;
 };
+struct DawnData : CommonData {
+    DawnState state;
+    unsigned width = 320, height = 180;
+    bool offscreen = false;
+    // The frame presentation: an endpoint's leased image, or the window's surface.
+    struct {
+        OffscreenImage* image = nullptr;
+        bool acquire(bool endpoint, DawnState& state, WGPUSurfaceTexture& texture) {
+            if (endpoint) {
+                texture = WGPU_SURFACE_TEXTURE_INIT;
+                texture.texture = image->texture;
+                wgpuTextureAddRef(texture.texture);
+                return true;
+            }
+            return acquire_dawn_surface_texture(state, texture);
+        }
+    } presentation;
+    using CommonData::CommonData;
+};
 struct Frame {
     SdlGpuCommand command{nullptr};
     SDL_GPUTexture* swapchain = nullptr;
-    SDL_GPUTexture* offscreen_texture = nullptr;
     Uint32 width = 0, height = 0;
     double acquired = 0, benchmark_start = 0, delta_ms = 0, updated = 0;
     WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     DawnTexture surface;
     DawnTextureView surface_view;
-    OffscreenImage* offscreen_image = nullptr;
 };
 template <typename Data> struct Context {
     Data data_;
@@ -290,7 +317,7 @@ void surface_boundaries() {
     {
         SdlScene renderer(engine);
         renderer.data_.offscreen = true;
-        renderer.frame_->offscreen_texture = &sdl_texture;
+        renderer.data_.presentation.image = &sdl_texture;
         engine.options.width = 640;
         engine.options.height = 360;
         assert(renderer.acquire());
@@ -335,7 +362,8 @@ void surface_boundaries() {
     {
         DawnScene renderer(engine);
         OffscreenImage image{&dawn_texture};
-        renderer.frame_->offscreen_image = &image;
+        renderer.data_.offscreen = true;
+        renderer.data_.presentation.image = &image;
         assert(renderer.acquire());
         assert(events.empty() && dawn_texture.references == 1 && dawn_view.references == 1);
     }

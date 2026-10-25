@@ -61,19 +61,19 @@ const NODE_CREATIONS: ReadonlySet<string> = new Set([
  * element anywhere.
  */
 export class PageNesting {
-    /** Each host element's id, with the ids of the host elements around it. */
+    /** @unjournaled Each host element's id, with the ids of the host elements around it. */
     private readonly markup = new Map<string, readonly string[]>();
-    /** Ids the markup repeats or the program assigns: any element may hold them. */
+    /** @unjournaled Ids the markup repeats or the program assigns: any element may hold them. */
     private readonly ambiguous = new Set<string>();
-    /** Ids of the document's own elements (`<html>`, `<body>`): they hold every element. */
+    /** @unjournaled Ids of the document's own elements (`<html>`, `<body>`): they hold every element. */
     private readonly roots = new Set<string>();
-    /** Where each node may be inserted. */
+    /** @unjournaled Where each node may be inserted. */
     private readonly placements = new Map<PageNode, Set<PageNode>>();
-    /** Nodes that may be inserted where the analysis cannot follow. */
+    /** @unjournaled Nodes that may be inserted where the analysis cannot follow. */
     private readonly anywhere = new Set<PageNode>();
-    /** Nodes the program may insert unknown nodes under. */
+    /** @unjournaled Nodes the program may insert unknown nodes under. */
     private readonly unknownUnder = new Set<PageNode>();
-    /** An insertion the analysis cannot place at all. */
+    /** @unjournaled An insertion the analysis cannot place at all. */
     private everything = false;
 
     public constructor(

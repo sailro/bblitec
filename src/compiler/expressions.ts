@@ -567,6 +567,14 @@ const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
     "__lookupSetter__",
 ]);
 
+/** The member names a forwarded call, a random-values fill or a borrowed prototype method is called by. */
+const FORWARDING_MEMBER_NAMES: ReadonlySet<string> = new Set([
+    "apply",
+    "bind",
+    "call",
+    "getRandomValues",
+]);
+
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
 
@@ -3617,11 +3625,19 @@ export class ExpressionLowerer {
     private compileCall(call: ts.CallExpression): Value {
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
-        const forwarded = this.compileForwardedCall(call);
-        if (forwarded) return forwarded;
-        const random = this.compileRandomValues(call);
-        if (random) return random;
-        this.refuseBorrowedPrototypeMethod(call);
+        // Forwarded calls, random values and borrowed prototype methods are
+        // all calls of a member with one of these names.
+        const named = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (named && FORWARDING_MEMBER_NAMES.has(named.name)) {
+            const forwarded = this.compileForwardedCall(call);
+            if (forwarded) return forwarded;
+            const random = this.compileRandomValues(call);
+            if (random) return random;
+            this.refuseBorrowedPrototypeMethod(call);
+        }
         if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
             return this.context.moduleNamespaces.compileImport(call);
         const deferred = this.context.deferredCapabilities.compile(call);

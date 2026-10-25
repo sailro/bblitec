@@ -1,4 +1,3 @@
-#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the

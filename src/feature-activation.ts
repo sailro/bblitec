@@ -1763,7 +1763,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "data:crypto": {
         provenance: "the Web Crypto getRandomValues entropy source",
-        consumers: INVENTORY,
+        consumers: ["fidelity.json"],
     },
     "data:tagged-template": {
         provenance: "the ECMAScript tagged template string arrays",

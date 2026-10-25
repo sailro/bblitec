@@ -1,4 +1,3 @@
-#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's

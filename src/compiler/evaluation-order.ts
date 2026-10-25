@@ -749,19 +749,18 @@ function privateObjects(
             { types: "skip" },
         );
         // A candidate keeping others hands them on through what it gives out.
-        for (const holders of keptIn.values())
-            for (const holder of holders)
-                if (
-                    readOut
-                        .get(holder)
-                        ?.some(
-                            (read) =>
-                                typeCanCarryReference(
-                                    checker.getTypeAtLocation(read),
-                                ) && useHolder(owner, read) !== "kept",
-                        )
-                )
-                    candidates.delete(holder);
+        for (const holder of new Set([...keptIn.values()].flat()))
+            if (
+                readOut
+                    .get(holder)
+                    ?.some(
+                        (read) =>
+                            typeCanCarryReference(
+                                checker.getTypeAtLocation(read),
+                            ) && useHolder(owner, read) !== "kept",
+                    )
+            )
+                candidates.delete(holder);
         // What an escaped object keeps escapes with it.
         for (let changed = true; changed;) {
             changed = false;
@@ -791,35 +790,39 @@ function useHolder(
     value: ts.Expression,
 ): "kept" | "escapes" | ts.Identifier {
     const closure = ts.findAncestor(value.parent, runsAsOwner);
-    if (closure === owner) return heldAt(owner, value, true);
+    if (closure === owner) return heldAt(value, true);
     if (
         !closure ||
         (!ts.isArrowFunction(closure) && !ts.isFunctionExpression(closure)) ||
         ts.findAncestor(closure.parent, runsAsOwner) !== owner ||
-        heldAt(closure, value, false) !== "kept"
+        heldAt(value, false) !== "kept"
     )
         return "escapes";
     return useHolder(owner, closure);
 }
 
-/** {@link useHolder} for a value `owner` evaluates itself. */
-function heldAt(
-    owner: ts.Node,
-    value: ts.Expression,
-    returnsKeep: boolean,
-): "kept" | "escapes" | ts.Identifier {
-    const position = outermostWrapper(value);
+/** The literal a value is a member or element of: it goes where that goes. */
+function enclosingLiteral(position: ts.Expression): ts.Expression | undefined {
     const parent = position.parent;
-    // A literal's member or element goes where the literal goes.
     if (
         (ts.isShorthandPropertyAssignment(parent) ||
             (ts.isPropertyAssignment(parent) &&
                 parent.initializer === position)) &&
         ts.isObjectLiteralExpression(parent.parent)
     )
-        return heldAt(owner, parent.parent, returnsKeep);
-    if (ts.isArrayLiteralExpression(parent))
-        return heldAt(owner, parent, returnsKeep);
+        return parent.parent;
+    return ts.isArrayLiteralExpression(parent) ? parent : undefined;
+}
+
+/** {@link useHolder} for a value its own run evaluates. */
+function heldAt(
+    value: ts.Expression,
+    returnsKeep: boolean,
+): "kept" | "escapes" | ts.Identifier {
+    const position = outermostWrapper(value);
+    const parent = position.parent;
+    const literal = enclosingLiteral(position);
+    if (literal) return heldAt(literal, returnsKeep);
     if (
         ts.isReturnStatement(parent) ||
         (ts.isArrowFunction(parent) && parent.body === position)
@@ -845,14 +848,8 @@ function heldAt(
 function handsOn(value: ts.Expression): boolean {
     const position = outermostWrapper(value);
     const parent = position.parent;
-    if (
-        (ts.isShorthandPropertyAssignment(parent) ||
-            (ts.isPropertyAssignment(parent) &&
-                parent.initializer === position)) &&
-        ts.isObjectLiteralExpression(parent.parent)
-    )
-        return handsOn(parent.parent);
-    if (ts.isArrayLiteralExpression(parent)) return handsOn(parent);
+    const literal = enclosingLiteral(position);
+    if (literal) return handsOn(literal);
     if (isMemberAccess(parent) && parent.expression === position) return false;
     if (writeSites(parent).length > 0) return true;
     if (

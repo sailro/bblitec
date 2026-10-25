@@ -40,7 +40,6 @@ import {
     isBabylonModule,
     libraryGlobal,
     resolvedSymbol,
-    namedMember,
     isLibraryStatic,
 } from "./symbols.js";
 import type { Value } from "./types.js";
@@ -275,7 +274,6 @@ export function sameFileClosure(
             if (
                 writesThroughTrackedRoot(
                     node,
-                    (callee) => namedMember(checker, callee),
                     (target) => {
                         const root = rootIdentifier(target);
                         return (
@@ -283,7 +281,7 @@ export function sameFileClosure(
                             namesModuleScopeBinding(checker, root)
                         );
                     },
-                    () => false,
+                    { checker, mutatesVia: () => false },
                 )
             ) {
                 rejected = true;
