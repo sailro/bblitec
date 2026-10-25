@@ -42,7 +42,6 @@ import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     accessedPropertySymbol,
-    declaredSymbol,
     declaredInDomLibrary,
     libraryName,
 } from "./symbols.js";
@@ -107,6 +106,7 @@ import {
     isAssignmentOperator,
     isTypeAssertion,
     outermostWrapper,
+    valueUse,
     wrappersAround,
 } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
@@ -2208,34 +2208,20 @@ export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
 
     /**
-     * A class method read without calling it: method values are
-     * unsupported. `owner` is the class of an instance read through
-     * another type (an interface it implements).
+     * A class method read as a value: method values are unsupported, though
+     * a call, test or comparison reads it (`valueUse`). `method` is what
+     * the read names, through the class of a kept instance where known.
      */
     private refuseMethodValue(
         expression: ts.PropertyAccessExpression,
-        owner?: ts.ClassLikeDeclaration,
+        method = accessedPropertySymbol(this.context.checker, expression)
+            ?.valueDeclaration,
     ): void {
-        const position = outermostWrapper(expression);
         if (
-            ts.isCallExpression(position.parent) &&
-            position.parent.expression === position
-        )
-            return;
-        const symbol = owner?.name
-            ? declaredSymbol(this.context.checker, owner.name)
-            : undefined;
-        const declaration = (
-            symbol
-                ? this.context.checker
-                      .getDeclaredTypeOfSymbol(symbol)
-                      .getProperty(expression.name.text)
-                : accessedPropertySymbol(this.context.checker, expression)
-        )?.valueDeclaration;
-        if (
-            declaration &&
-            ts.isMethodDeclaration(declaration) &&
-            ts.isClassLike(declaration.parent)
+            method &&
+            ts.isMethodDeclaration(method) &&
+            ts.isClassLike(method.parent) &&
+            valueUse(expression).kind !== "read"
         )
             this.context.fail(
                 expression,
@@ -3583,7 +3569,16 @@ export class PropertyAccessLowerer {
                 ? this.context.compileRecordGetter(owner, accessor)
                 : owner.recordProperties?.[property];
             if (!value) {
-                const method = owner.recordMethods?.[property];
+                // A class instance read through another type has its class's
+                // methods, which a test or comparison reads as present.
+                const classMethod = this.context.classLowerer.viewMethod(
+                    owner,
+                    property,
+                    expression,
+                );
+                if (classMethod)
+                    this.refuseMethodValue(expression, classMethod);
+                const method = owner.recordMethods?.[property] ?? classMethod;
                 if (method) {
                     return {
                         kind: "callback",
@@ -3620,8 +3615,6 @@ export class PropertyAccessLowerer {
                     // guards, `typeof` and concatenation read.
                     return undefinedValue();
                 }
-                if (owner.classDeclaration)
-                    this.refuseMethodValue(expression, owner.classDeclaration);
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +

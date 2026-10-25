@@ -25,6 +25,8 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import { classChain, classMemberTable } from "./class-members.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 
 /**
  * The values a literal holds, at any depth: an object literal's property
@@ -158,6 +160,40 @@ export function valueDestination(
         use = valueUse(next);
         held ||= use.held;
     }
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const handsOutThis = new WeakMap<ts.ClassLikeDeclaration, boolean>();
+
+/**
+ * Whether a class's code, or a base class's, hands out `this`: returns,
+ * stores, binds or passes it rather than reading through, calling or
+ * testing it ({@link valueDestination}).
+ */
+export function classHandsOutThis(
+    checker: ts.TypeChecker,
+    declaration: ts.ClassLikeDeclaration,
+): boolean {
+    const known = handsOutThis.get(declaration);
+    if (known !== undefined) return known;
+    const answer = classChain(classMemberTable(checker, declaration)).some(
+        (link) =>
+            someAnalysisNode(link.declaration, (node) => {
+                if (
+                    node.kind !== ts.SyntaxKind.ThisKeyword ||
+                    !ts.isExpression(node)
+                )
+                    return false;
+                const use = valueDestination(checker, node);
+                return (
+                    use.kind !== "member" &&
+                    use.kind !== "read" &&
+                    use.kind !== "discarded"
+                );
+            }),
+    );
+    handsOutThis.set(declaration, answer);
+    return answer;
 }
 
 /** Typed-array and view constructors: a view of a buffer, a copy of anything else. */

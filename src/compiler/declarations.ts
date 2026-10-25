@@ -38,6 +38,7 @@ import {
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import {
     demandedStorageType,
+    heldClassInstanceType,
     requireOneObject,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
@@ -59,7 +60,6 @@ import {
     isVoid,
     arrayElementType,
     callSignatures,
-    classInstanceDeclaration,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -406,8 +406,13 @@ export class DeclarationLowerer {
         // A deployment constant the checker leaves untyped (an
         // `import.meta.env` key its declarations omit) holds its folded value.
         const deployed = browserDeploymentValue(this.context, initializer);
+        const held =
+            ts.isVariableDeclaration(name.parent) &&
+            heldClassInstanceType(this.context.checker, name.parent);
         return (
-            this.context.dataLowerer.dataTypeAt(name) ??
+            (held
+                ? this.context.dataTypes.fromStoredTsType(held, initializer)
+                : this.context.dataLowerer.dataTypeAt(name)) ??
             this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
@@ -1056,7 +1061,7 @@ export class DeclarationLowerer {
         }
 
         if (
-            !this.holdsClassInstance(declaration) &&
+            !heldClassInstanceType(this.context.checker, declaration) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
@@ -2935,31 +2940,6 @@ export class DeclarationLowerer {
      * A function literal a later assignment replaces: storage of its type,
      * whether that type is written or inferred from the initializer.
      */
-    /**
-     * A binding a class instance initializes and nothing rebinds holds that
-     * instance, whatever structural type annotates it: JavaScript keeps one
-     * object, and its reads and calls go through the class.
-     */
-    private holdsClassInstance(declaration: ts.VariableDeclaration): boolean {
-        const initializer = declaration.initializer;
-        if (
-            !declaration.type ||
-            !initializer ||
-            !ts.isIdentifier(declaration.name) ||
-            this.context.sharedClosures.identifierIsRebound(declaration.name)
-        )
-            return false;
-        const instance = classInstanceDeclaration(
-            this.context.checker.getTypeAtLocation(initializer),
-        );
-        return (
-            instance !== undefined &&
-            classInstanceDeclaration(
-                this.context.checker.getTypeFromTypeNode(declaration.type),
-            ) !== instance
-        );
-    }
-
     private isReassignedFunctionLiteral(
         declaration: ts.VariableDeclaration,
     ): boolean {
