@@ -7916,6 +7916,13 @@ void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) 
     runtime.system_interface.time_ms = milliseconds;
 }
 
+std::optional<UiRmlNextUpdate> ui_rml_next_update(const UiRmlRuntime& runtime) {
+    if (!runtime.system_interface.time_ms)
+        return std::nullopt;
+    return UiRmlNextUpdate{*runtime.system_interface.time_ms,
+                           runtime.context->GetNextUpdateDelay()};
+}
+
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height) {
     auto& cpu = runtime.render_interface.cpu;
     double checkpoint = cpu.now();
@@ -8026,6 +8033,10 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     }
     if (runtime.update_gradient_text())
         runtime.context->Update();
+    // Animated gradient text changes with time, as RmlUi's own animations do.
+    if (std::any_of(runtime.gradient_text.begin(), runtime.gradient_text.end(),
+                    [](const auto& text) { return text.duration > 0.0; }))
+        runtime.context->RequestNextUpdate(0);
     cpu.split(cpu.sample.outlines, checkpoint);
 }
 
