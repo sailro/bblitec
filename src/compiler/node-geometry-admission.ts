@@ -3,6 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
 import { writeSites, accessKey } from "./syntax.js";
+import { namedMember } from "./symbols.js";
 
 interface Context extends Pick<
     LoweringServices,
@@ -103,17 +104,18 @@ export function checkNodeGeometryMutation(
         unprovenMesh(node.arguments[0])
     )
         context.admissions.noteNodeGeometryMutation(node);
-    if (!ts.isPropertyAccessExpression(callee)) return;
-    if (callee.name.text === "set" && importedVector(callee.expression))
+    const member = namedMember(context.checker, callee);
+    if (!member) return;
+    if (member.name === "set" && importedVector(member.expression))
         context.admissions.noteNodeGeometryMutation(node);
     if (
-        context.libraryGlobal(callee.expression) === "Object" &&
+        context.libraryGlobal(member.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
             "defineProperties",
             "setPrototypeOf",
-        ].includes(callee.name.text) &&
+        ].includes(member.name) &&
         node.arguments[0] &&
         (unprovenMesh(node.arguments[0]) || importedVector(node.arguments[0]))
     )

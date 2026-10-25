@@ -64,6 +64,9 @@ import {
     nullishLiteral,
     libraryName,
     memberAccessors,
+    namedMember,
+    isLibraryStatic,
+    arrayMemberName,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -160,10 +163,9 @@ import { typedArrayTable } from "./typed-array-tables.js";
 import { numberConstantValue, staticScalarValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
+    mathArityAccepts,
     foldMathCall,
     MATH_MEMBERS,
-    mathExtremeCall,
-    mathExtremeCpp,
     mathMemberAccess,
 } from "./math-intrinsics.js";
 import {
@@ -249,6 +251,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    keyIndex,
     patternSlots,
     refuseProtoSetter,
     equalityOperator,
@@ -256,6 +259,8 @@ import {
     isSuspensionPoint,
     variableKind,
     objectLiteralMembers,
+    type MemberAccess,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -371,6 +376,18 @@ function isWriteTarget(node: ts.Expression): boolean {
     return site !== undefined && site.kind !== "delete";
 }
 
+/** The array member a value is the receiver of (`xs.push`), by name. */
+function arrayMemberOf(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+): { readonly access: MemberAccess; readonly name: string } | undefined {
+    const parent = value.parent;
+    if (!isMemberAccess(parent) || parent.expression !== value)
+        return undefined;
+    const name = arrayMemberName(checker, parent);
+    return name === undefined ? undefined : { access: parent, name };
+}
+
 /**
  * How one reference to an array binding can change its length: not at all
  * (`0`), only up to an element count (an element write at a known index),
@@ -389,14 +406,16 @@ function referenceLengthExtent(
     let value: ts.Expression = reference;
     for (;;) {
         value = outermostWrapper(value, { branches: "objects" });
-        const parent: ts.Node = value.parent;
+        const member = arrayMemberOf(checker, value);
+        const call = member?.access.parent;
         if (
-            ts.isPropertyAccessExpression(parent) &&
-            ts.isCallExpression(parent.parent) &&
-            parent.parent.expression === parent &&
-            lengthPreservingArrayMethods.has(parent.name.text)
+            member &&
+            call &&
+            ts.isCallExpression(call) &&
+            call.expression === member.access &&
+            lengthPreservingArrayMethods.has(member.name)
         ) {
-            value = parent.parent;
+            value = call;
             continue;
         }
         break;
@@ -416,11 +435,12 @@ function referenceLengthExtent(
             ? 0
             : Infinity;
     }
-    if (ts.isPropertyAccessExpression(parent) && parent.expression === value) {
-        const method = parent.name.text;
-        if (method === "length") return isWriteTarget(parent) ? Infinity : 0;
-        const call = parent.parent;
-        if (!ts.isCallExpression(call) || call.expression !== parent) return 0;
+    const member = arrayMemberOf(checker, value);
+    if (member) {
+        const { access, name: method } = member;
+        if (method === "length") return isWriteTarget(access) ? Infinity : 0;
+        const call = access.parent;
+        if (!ts.isCallExpression(call) || call.expression !== access) return 0;
         return resizingArrayMethods.has(method) ||
             (readOnlyDataMethods.has(method) &&
                 callbackTakesReceiver(checker, method, call.arguments[0]))
@@ -551,6 +571,7 @@ export function isNeverResized(
 interface DataLoweringContext extends Pick<
     LoweringServices,
     | "declarations"
+    | "speculating"
     | "objectProperty"
     | "symbols"
     | "optionalChainStop"
@@ -613,6 +634,7 @@ interface DataLoweringContext extends Pick<
     | "compileCallbackWithValues"
     | "captureManagedClosureLines"
     | "withRecordScopes"
+    | "withCallbackScopes"
     | "compilePredicateWithValues"
     | "compileStoredDataFunction"
     | "compileStoredAccessor"
@@ -646,6 +668,7 @@ interface DataLoweringContext extends Pick<
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
     | "dynamicBindings"
+    | "parameterObjects"
 > {
     /** Source storages that keep `null` and `undefined` apart. */
     readonly absenceTags: ReadonlySet<ts.Declaration>;
@@ -2619,6 +2642,9 @@ export class DataLowerer {
             // path itself.
             const receiver = this.context.unwrap(unwrapped.expression);
             let owner =
+                (mode === "write" && ts.isConditionalExpression(receiver)
+                    ? this.selectedWriteOwner(receiver)
+                    : undefined) ??
                 this.guardedChainReceiver(unwrapped) ??
                 this.compileDataPath(unwrapped.expression, mode, true) ??
                 (ts.isCallExpression(receiver) ||
@@ -4263,7 +4289,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     public chainReceiverCall(
         owner: Value,
-        callee: ts.PropertyAccessExpression,
+        callee: MemberAccess,
         call: ts.CallExpression,
         run: (present: Value) => Value | undefined,
     ): Value | undefined {
@@ -7156,8 +7182,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** A call through the global `Math` object, pure by declaration. */
     private isGlobalMathCall(call: ts.CallExpression): boolean {
         return (
-            mathMemberAccess(this.context.unwrap(call.expression), (owner) =>
-                this.context.libraryGlobal(owner),
+            mathMemberAccess(
+                this.context.unwrap(call.expression),
+                (owner) => this.context.libraryGlobal(owner),
+                (node) => namedMember(this.context.checker, node),
             ) !== undefined
         );
     }
@@ -8404,15 +8432,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         call: ts.CallExpression,
         expectedResult?: DataType<"vector">,
     ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
+            !callee ||
             this.context.libraryGlobal(callee.expression) !== "Array" ||
-            (callee.name.text !== "from" && callee.name.text !== "of")
+            (callee.name !== "from" && callee.name !== "of")
         ) {
             return undefined;
         }
-        if (callee.name.text === "of") {
+        if (callee.name === "of") {
             const type = this.dataTypeAt(call);
             if (type?.kind !== "vector")
                 this.context.fail(
@@ -8552,11 +8583,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileTypedArrayFactory(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            (callee.name.text !== "from" && callee.name.text !== "of")
-        )
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (!callee || (callee.name !== "from" && callee.name !== "of"))
             return undefined;
         const name = this.typedArrayClass(callee.expression);
         const kind =
@@ -8564,7 +8595,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!kind) return undefined;
         const dataType: DataType = { kind };
         this.context.reachJsData();
-        if (callee.name.text === "of") {
+        if (callee.name === "of") {
             const spread = call.arguments.find(ts.isSpreadElement);
             if (spread)
                 this.context.fail(
@@ -8612,24 +8643,93 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const callee = mathMemberAccess(
             this.context.unwrap(target),
             (expression) => this.context.libraryGlobal(expression),
+            (node) => namedMember(this.context.checker, node),
         );
         if (!callee) {
             return undefined;
         }
-        const method = callee.name.text;
+        const method = callee.name;
         const numbers = (): string[] =>
             call.arguments.map((argument) =>
                 this.context.compileNumber(argument, "double"),
             );
+        const member = MATH_MEMBERS.get(method);
+        if (!member)
+            return this.context.fail(
+                callee.key,
+                `Math.${method} is not supported.`,
+            );
+        const count = call.arguments.length;
+        if (!mathArityAccepts(member, count))
+            this.context.fail(
+                call,
+                `Math.${method} expects ${describeMathArity(member)}.`,
+            );
+        const only = count === 1 ? argumentAt(call, 0) : undefined;
+        if (member.rangeCpp && only && ts.isSpreadElement(only)) {
+            // One spread: the iterated range itself, no rest array; an
+            // exact member folds over static lanes.
+            const spread = this.context.compileValue(only.expression);
+            const iterated = this.iteratedElements(spread);
+            let range: string | undefined;
+            if (iterated && "lanes" in iterated) {
+                const parts = iterated.lanes.map(
+                    (element) => element.staticNumber,
+                );
+                const folded = parts.every(
+                    (part): part is number => part !== undefined,
+                )
+                    ? foldMathCall(method, parts)
+                    : undefined;
+                if (folded !== undefined) {
+                    this.context.emitDiscardedValue(spread);
+                    return numberConstantValue(folded);
+                }
+                range = this.compileKnownValueForSink(
+                    spread,
+                    { kind: "vector", element: { kind: "number" } },
+                    only.expression,
+                );
+            } else if (iterated?.element.kind === "number")
+                range = iterated.range.cpp;
+            if (range === undefined)
+                return this.context.fail(
+                    only,
+                    `Math.${method} spread requires an array of numbers.`,
+                );
+            const source = this.context.allocateTemporaryCppName(
+                `math_${method}_source`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: source,
+                initializer: range,
+            });
+            this.context.reachJsData();
+            const result = this.context.allocateTemporaryCppName(
+                `math_${method}_result`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: result,
+                initializer: member.rangeCpp(source),
+            });
+            return {
+                kind: "number",
+                cpp: result,
+                dataType: { kind: "number" },
+            };
+        }
         // An exact member folds over static arguments (foldMathCall says
         // which), so a scene that hands one to generation-time state (a
         // particle column) gets the value rather than the expression.
-        const member = MATH_MEMBERS.get(method);
-        if (member?.fold) {
-            // Folded from the SOURCE, never from a compiled value: this arm
-            // runs before the runtime path compiles the arguments, and
-            // compiling one speculatively would emit an inlined body twice
-            // when the fold misses.
+        // Folded from the SOURCE, never from a compiled value: this arm runs
+        // before the runtime path compiles the arguments, and compiling one
+        // speculatively would emit an inlined body twice when the fold
+        // misses.
+        if (member.fold && !call.arguments.some(ts.isSpreadElement)) {
             const values = call.arguments.map((argument) =>
                 staticNumberValue(this.context, argument),
             );
@@ -8640,143 +8740,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : undefined;
             if (folded !== undefined) return numberConstantValue(folded);
         }
-        if (member) {
-            const count = call.arguments.length;
-            if (
-                member.variadic ? count < member.arity : count !== member.arity
-            ) {
-                this.context.fail(
-                    call,
-                    `Math.${method} expects ${describeMathArity(member)}.`,
-                );
-            }
-            if (method === "pow") {
-                const [base, exponent] = numbers();
-                const power = exponentiationCall(
-                    base!,
-                    exponent!,
-                    staticNumberValue(this.context, argumentAt(call, 1)),
-                );
-                if (power.jsData) this.context.reachJsData();
-                return {
-                    kind: "number",
-                    cpp: power.cpp,
-                    dataType: { kind: "number" },
-                };
-            }
-            const cpp =
-                member.variadic &&
-                member.rangeCpp &&
-                call.arguments.some(ts.isSpreadElement)
-                    ? member.rangeCpp(
-                          this.compileFunctionArguments(call, {
-                              kind: "function",
-                              restParameter: 0,
-                              parameters: [
-                                  {
-                                      kind: "vector",
-                                      element: { kind: "number" },
-                                  },
-                              ],
-                          })[0]!,
-                      )
-                    : member.cpp(numbers());
-            if (member.reach !== undefined) this.context.reachJsData();
-            if (member.reach === "js-random") this.context.reachJsRandom();
-            return {
-                kind: "number",
-                cpp,
-                dataType: { kind: "number" },
-                ...(member.impure ? { impure: true } : {}),
-            };
-        }
-        if (method === "max" || method === "min") {
-            const only =
-                call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
-            if (only && ts.isSpreadElement(only)) {
-                const spread = this.context.compileValue(only.expression);
-                const iterated = this.iteratedElements(spread);
-                let range: string | undefined;
-                if (iterated && "lanes" in iterated) {
-                    const parts = iterated.lanes.map(
-                        (element) => element.staticNumber,
-                    );
-                    if (
-                        parts.every(
-                            (part): part is number => part !== undefined,
-                        )
-                    ) {
-                        this.context.emitDiscardedValue(spread);
-                        return numberConstantValue(
-                            foldMathCall(method, parts)!,
-                        );
-                    }
-                    range = this.compileKnownValueForSink(
-                        spread,
-                        { kind: "vector", element: { kind: "number" } },
-                        only.expression,
-                    );
-                } else if (iterated?.element.kind === "number")
-                    range = iterated.range.cpp;
-                if (range === undefined)
-                    return this.context.fail(
-                        argumentAt(call, 0),
-                        `Math.${method} spread requires an array of numbers.`,
-                    );
-                const source = this.context.allocateTemporaryCppName(
-                    `math_${method}_source`,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto&&",
-                    name: source,
-                    initializer: range,
-                });
-                this.context.reachJsData();
-                const result = this.context.allocateTemporaryCppName(
-                    `math_${method}_result`,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name: result,
-                    initializer: mathExtremeCpp(method, source),
-                });
-                return {
-                    kind: "number",
-                    cpp: result,
-                    dataType: { kind: "number" },
-                };
-            }
-            if (call.arguments.some(ts.isSpreadElement)) {
-                const packed = this.compileFunctionArguments(call, {
-                    kind: "function",
-                    restParameter: 0,
-                    parameters: [
-                        { kind: "vector", element: { kind: "number" } },
-                    ],
-                })[0]!;
-                this.context.reachJsData();
-                return this.leafValue(mathExtremeCpp(method, packed), {
-                    kind: "number",
-                });
-            }
-            const staticParts = call.arguments.map((argument) =>
-                this.context.evaluator.staticNumberThroughRecords(argument),
+        if (method === "pow") {
+            const [base, exponent] = numbers();
+            const power = exponentiationCall(
+                base!,
+                exponent!,
+                staticNumberValue(this.context, argumentAt(call, 1)),
             );
-            if (staticParts.every((part): part is number => part !== undefined))
-                return numberConstantValue(foldMathCall(method, staticParts)!);
-            // The list evaluates left to right without a rest-array allocation;
-            // stored and direct calls share NaN and signed-zero behavior.
-            const parts = numbers();
-            this.context.reachJsData();
+            if (power.jsData) this.context.reachJsData();
             return {
                 kind: "number",
-                cpp: mathExtremeCall(method, parts),
+                cpp: power.cpp,
                 dataType: { kind: "number" },
             };
         }
-        this.context.fail(callee.name, `Math.${method} is not supported.`);
+        // A list evaluates left to right without a rest-array allocation;
+        // a spread among other arguments packs one.
+        const cpp =
+            member.rangeCpp && call.arguments.some(ts.isSpreadElement)
+                ? member.rangeCpp(
+                      this.compileFunctionArguments(call, {
+                          kind: "function",
+                          restParameter: 0,
+                          parameters: [
+                              {
+                                  kind: "vector",
+                                  element: { kind: "number" },
+                              },
+                          ],
+                      })[0]!,
+                  )
+                : member.cpp(numbers());
+        if (member.reach !== undefined) this.context.reachJsData();
+        if (member.reach === "js-random") this.context.reachJsRandom();
+        return {
+            kind: "number",
+            cpp,
+            dataType: { kind: "number" },
+            ...(member.impure ? { impure: true } : {}),
+        };
     }
 
     /**
@@ -9263,8 +9265,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        const identity = isObjectIdentityFunction(callback, (expression) =>
-            this.context.libraryGlobal(expression),
+        const identity = isObjectIdentityFunction(
+            this.context.checker,
+            callback,
         );
         const local =
             ts.isIdentifier(callback) ||
@@ -9715,6 +9718,72 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
+    /**
+     * The object a write through `c ? a : b` reaches: the arm the condition
+     * picks, read once before the value written. Both arms are write paths
+     * of one storage type.
+     */
+    private selectedWriteOwner(selection: ts.ConditionalExpression): Value {
+        const condition = this.context.conditions.compileCondition(
+            selection.condition,
+        );
+        const known = knownCondition(condition);
+        if (known !== undefined)
+            return this.selectedWriteArm(
+                known ? selection.whenTrue : selection.whenFalse,
+            );
+        const picked = this.context.allocateTemporaryCppName("write_selection");
+        this.context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name: picked,
+            initializer: condition,
+        });
+        const whenTrue = this.selectedWriteArm(selection.whenTrue);
+        const whenFalse = this.selectedWriteArm(selection.whenFalse);
+        if (
+            !whenTrue.dataType ||
+            !whenFalse.dataType ||
+            !dataTypesEqual(whenTrue.dataType, whenFalse.dataType)
+        )
+            return this.context.fail(
+                selection,
+                "A write through a selection requires both arms to share one storage type.",
+            );
+        return {
+            ...this.leafValue(
+                `(${picked} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
+                whenTrue.dataType,
+            ),
+            nativeCaptures: [
+                this.context.registerNativeConstBinding(picked),
+                ...(whenTrue.nativeCaptures ?? []),
+                ...(whenFalse.nativeCaptures ?? []),
+            ],
+        };
+    }
+
+    /**
+     * One arm a selection writes through, resolved as a member write's owner
+     * is (a data path, an element, a call's result), its snapshot cleared.
+     */
+    private selectedWriteArm(arm: ts.Expression): Value {
+        const expression = this.context.unwrap(arm);
+        const value =
+            this.compileDataPath(arm, "write", true) ??
+            (ts.isElementAccessExpression(expression) ||
+            ts.isCallExpression(expression)
+                ? this.context.compileValue(arm)
+                : undefined);
+        if (value?.kind !== "data")
+            return this.context.fail(
+                arm,
+                "A write through a selection requires each arm to be a represented data path.",
+            );
+        this.invalidateStaticElements(value);
+        return value;
+    }
+
     /** Clear a complete element snapshot through every compiler alias. */
     public invalidateStaticElements(
         value: Value,
@@ -9856,8 +9925,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (
             call.questionDotToken ||
-            (ts.isPropertyAccessExpression(call.expression) &&
-                call.expression.questionDotToken) ||
+            namedMember(this.context.checker, call.expression)?.access
+                .questionDotToken ||
             (receiver !== undefined && this.chainShortCircuitsCall(call))
         ) {
             return this.compileOptionalStoredCall(
@@ -9926,14 +9995,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * neither `null` nor `undefined`, so the call is skipped, not refused.
      */
     private chainShortCircuitsCall(call: ts.CallExpression): boolean {
-        if (
-            !ts.isOptionalChain(call) ||
-            !ts.isPropertyAccessExpression(call.expression)
-        )
-            return false;
-        const owner = unwrapExpression(call.expression.expression);
-        if (!ts.isPropertyAccessExpression(owner)) return false;
-        const member = resolvedSymbol(this.context.checker, owner);
+        const callee = namedMember(this.context.checker, call.expression);
+        if (!ts.isOptionalChain(call) || !callee) return false;
+        const owner = namedMember(
+            this.context.checker,
+            unwrapExpression(callee.expression),
+        );
+        if (!owner) return false;
+        const member = accessedPropertySymbol(
+            this.context.checker,
+            owner.access,
+        );
         if (!member || (member.flags & ts.SymbolFlags.Optional) !== 0)
             return false;
         return !isNullable(this.context.checker.getTypeOfSymbol(member));
@@ -10001,8 +10073,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 call.questionDotToken ||
                 (argumentOffset !== 0 &&
-                    ts.isPropertyAccessExpression(call.expression) &&
-                    call.expression.questionDotToken)
+                    namedMember(this.context.checker, call.expression)?.access
+                        .questionDotToken)
             )
                 this.context.emit(`if (!${callback}) ${missing}`);
             if (called) this.context.emit(`${called} = true;`);
@@ -10107,10 +10179,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             let matchedField: string | undefined;
             someAnalysisNode(statement.statement, (node) => {
                 if (!ts.isCallExpression(node)) return false;
-                const target = node.expression;
+                const target = namedMember(
+                    this.context.checker,
+                    node.expression,
+                );
                 if (
-                    !ts.isPropertyAccessExpression(target) ||
-                    target.name.text !== "set" ||
+                    target?.name !== "set" ||
                     !ts.isIdentifier(target.expression) ||
                     declaredSymbol(this.context.checker, target.expression) !==
                         ownerSymbol ||
@@ -10616,25 +10690,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const unwrapped = unwrapExpression(argument);
         if (name === "Uint8Array") {
-            if (
-                ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "slice" &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.name.text === "buffer" &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression.expression.expression,
-                ) &&
-                unwrapped.expression.expression.expression.name.text ===
-                    "data" &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression.expression.expression,
-                )
-            ) {
+            const member = (node: ts.Node) =>
+                namedMember(this.context.checker, node);
+            const slice = ts.isCallExpression(unwrapped)
+                ? member(unwrapped.expression)
+                : undefined;
+            const buffer =
+                slice?.name === "slice" ? member(slice.expression) : undefined;
+            const data =
+                buffer?.name === "buffer"
+                    ? member(buffer.expression)
+                    : undefined;
+            if (data?.name === "data" && ts.isIdentifier(data.expression)) {
                 const imageData = this.context.bindings.lookupOptional(
-                    unwrapped.expression.expression.expression.expression,
+                    data.expression,
                 );
                 const pixels = imageData?.recordProperties?.data;
                 if (
@@ -10742,6 +10811,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
         }
+        // An object argument is a sequence, never the length overload.
+        if (
+            valueKindOf(this.context.checker.getTypeAtLocation(unwrapped)) ===
+            "object"
+        )
+            this.context.fail(
+                argument,
+                `new ${name} expects a length or a numeric sequence: a typed array, a number array or a numeric tuple.`,
+            );
         return {
             kind: "data",
             cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
@@ -10853,6 +10931,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : undefined,
                 unwrapped,
             );
+        }
+        // A parsed document converts as the numeric sequence the source
+        // asserts it is, through that assertion's sink.
+        if (isJsonValue(staticSource)) {
+            const asserted = this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(unwrapped),
+                unwrapped,
+            );
+            return asserted && isNumericSequenceType(asserted)
+                ? `bbl::js::${prefix}_array_from(${this.compileKnownValueForSink(staticSource, asserted, unwrapped)})`
+                : undefined;
         }
         // A single argument that is itself an array is never the length
         // overload, so this precedes the sized fallback in the caller. Every
@@ -12368,6 +12457,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return value;
         }
         this.requireDocumentDictionaryConversion(value, dataType, source);
+        // A compile-time record stores its entries in a dictionary whatever
+        // expression produced it, as a named one does (`valueMap`).
+        if (value.kind === "record" && dataType.kind === "map")
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
         // A live engine collection stored as an array is the snapshot an
         // array copy of it takes: its handles in their current order.
         if (
@@ -14667,12 +14765,58 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ownerNode,
             );
         }
+        // An array's own keys are its indices and its length; `in` also
+        // reaches Array.prototype's and Object.prototype's members.
+        const indexed = this.membershipArrayOwner(narrowed);
+        if (indexed !== undefined) {
+            if (key.staticString !== undefined) {
+                const name = key.staticString;
+                const index = keyIndex(name);
+                if (name === "length") return "true";
+                if (index !== undefined) {
+                    this.context.reachJsData();
+                    return `bbl::js::array_has_index(${indexed}, ${doubleLiteral(index)})`;
+                }
+                return String(
+                    operator === "in" &&
+                        (name in Array.prototype ||
+                            Object.hasOwn(Object.prototype, name)),
+                );
+            }
+            if (key.kind === "number" || key.dataType?.kind === "number") {
+                this.context.reachJsData();
+                return `bbl::js::array_has_index(${indexed}, ${this.context.castNumber(key, "double")})`;
+            }
+            return this.context.fail(
+                keyNode,
+                "Membership of an array takes a number or a generation-known string key.",
+            );
+        }
         return this.context.fail(
             ownerNode,
             operator === "in"
-                ? "'in' is decided for compile-time records, dictionaries and structs."
-                : "Object.hasOwn is decided for compile-time records, dictionaries and structs.",
+                ? "'in' is decided for compile-time records, dictionaries, structs and arrays."
+                : "Object.hasOwn is decided for compile-time records, dictionaries, structs and arrays.",
         );
+    }
+
+    /**
+     * What `bbl::js::array_has_index` tests an array-like owner's index
+     * against: a container, or a static tuple's length.
+     */
+    private membershipArrayOwner(owner: Value): string | undefined {
+        if (owner.kind === "tuple" && owner.tupleElements) {
+            this.context.emitDiscardedValue(owner);
+            return doubleLiteral(owner.tupleElements.length);
+        }
+        const type = owner.kind === "data" ? owner.dataType : undefined;
+        if (
+            type?.kind === "vector" ||
+            type?.kind === "span" ||
+            (type !== undefined && isTypedArrayType(type))
+        )
+            return owner.cpp;
+        return undefined;
     }
 
     private membershipStringKeyCpp(key: Value, node: ts.Expression): string {
@@ -15771,6 +15915,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     writable(root.recordProperties)[property] =
                         this.context.classLowerer.storedFieldValue(
                             root.cpp,
+                            root.dataType.name,
                             field,
                         );
                     return;
@@ -16628,49 +16773,79 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     };
                 }),
             };
-        } else {
-            value = this.context.compileValue(expression.right);
-            const type = value.dataType ?? this.dataTypeAt(right);
-            if (!type || !["vector", "tuple", "product"].includes(type.kind))
-                this.context.fail(
-                    right,
-                    "Array destructuring assignment requires represented array storage.",
-                );
-            if (value.kind === "tuple") {
-                const source =
-                    this.context.allocateTemporaryCppName("destructure_source");
-                const initializer = this.compileKnownValueForSink(
-                    value,
-                    type,
-                    right,
-                );
-                this.context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: source,
-                    initializer: initializer,
-                });
-                value = {
-                    ...this.leafValue(source, type),
-                    nativeCaptures: [
-                        this.context.registerNativeBinding(source),
-                    ],
-                };
-            } else {
-                // Keep the RHS identity across writes to the assignment
-                // targets, reusing an already stable result when possible.
-                value = this.context.bindings.pinValueToTemporary(
-                    value,
-                    "destructure_source",
-                );
-            }
-        }
+        } else
+            value = this.heldArraySource(
+                this.context.compileValue(expression.right),
+                right,
+            );
         this.emitArrayAssignmentPattern(
             left,
             value,
             this.context.checker.getTypeAtLocation(right),
         );
         return true;
+    }
+
+    /**
+     * An array pattern's source, held across the writes to its targets: a
+     * compile-time tuple in native storage, any other value pinned (an
+     * already stable one reused).
+     */
+    private heldArraySource(value: Value, node: ts.Expression): Value {
+        const type = value.dataType ?? this.dataTypeAt(node);
+        if (!type || !["vector", "tuple", "product"].includes(type.kind))
+            this.context.fail(
+                node,
+                "Array destructuring assignment requires represented array storage.",
+            );
+        if (value.kind !== "tuple")
+            return this.context.bindings.pinValueToTemporary(
+                value,
+                "destructure_source",
+            );
+        const source =
+            this.context.allocateTemporaryCppName("destructure_source");
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: source,
+            initializer: this.compileKnownValueForSink(value, type, node),
+        });
+        return {
+            ...this.leafValue(source, type),
+            nativeCaptures: [this.context.registerNativeBinding(source)],
+        };
+    }
+
+    /**
+     * Writes a value to an assignment target as `target = value` would: a
+     * variable, a member, or an array or object pattern whose leaves take
+     * their parts of it (a for-in/of head, a hoisted `var`'s declaration).
+     */
+    public emitAssignmentTargetWrite(
+        target: ts.Expression,
+        value: Value,
+    ): void {
+        const pattern = this.context.unwrap(target);
+        if (ts.isArrayLiteralExpression(pattern)) {
+            this.emitArrayAssignmentPattern(
+                pattern,
+                this.heldArraySource(value, pattern),
+                this.context.checker.getTypeAtLocation(pattern),
+            );
+            return;
+        }
+        if (ts.isObjectLiteralExpression(pattern)) {
+            const targets = this.objectPatternTargets(pattern);
+            if (!targets)
+                this.context.fail(
+                    pattern,
+                    "An object assignment pattern here writes plain keys to plain targets: no default, nested pattern or rest.",
+                );
+            this.emitObjectPatternWrites(targets, value, pattern);
+            return;
+        }
+        this.emitDestructuringTargetWrite(pattern, () => value);
     }
 
     private emitArrayAssignmentPattern(
@@ -16789,8 +16964,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): boolean {
         const left = this.context.unwrap(expression.left);
         if (!ts.isObjectLiteralExpression(left)) return false;
+        const targets = this.objectPatternTargets(left);
+        if (!targets) return false;
+        this.emitObjectPatternWrites(
+            targets,
+            this.context.compileValue(expression.right),
+            expression.right,
+        );
+        return true;
+    }
+
+    /** An object pattern's `{ key: target }` slots, when each is plain. */
+    private objectPatternTargets(
+        pattern: ts.ObjectLiteralExpression,
+    ): { key: string; name: ts.Expression }[] | undefined {
         const targets: { key: string; name: ts.Expression }[] = [];
-        for (const { read, target, fallback } of patternSlots(left)) {
+        for (const { read, target, fallback } of patternSlots(pattern)) {
             const name = this.context.unwrap(target);
             if (
                 read.kind !== "member" ||
@@ -16802,27 +16991,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ts.isElementAccessExpression(name)
                 )
             )
-                return false;
+                return undefined;
             targets.push({ key: read.key, name });
         }
-        const raw = this.context.compileValue(expression.right);
+        return targets;
+    }
+
+    /** Writes each object-pattern target from its property of the source, evaluated once. */
+    private emitObjectPatternWrites(
+        targets: readonly { key: string; name: ts.Expression }[],
+        raw: Value,
+        node: ts.Expression,
+    ): void {
         const narrowed =
-            raw.kind === "data"
-                ? this.narrowOptional(raw, expression.right)
-                : raw;
+            raw.kind === "data" ? this.narrowOptional(raw, node) : raw;
         const source =
             narrowed.kind === "record"
                 ? narrowed
                 : this.context.bindings.pinValueToTemporary(
                       narrowed,
                       "destructure_source",
-                      expression.right,
+                      node,
                   );
         for (const { key, name } of targets)
             this.emitDestructuringTargetWrite(name, () =>
                 this.destructuredMember(source, key, name),
             );
-        return true;
     }
 
     /** The value of property `key` an object destructuring reads from `source`. */
@@ -17035,6 +17229,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         this.invalidateStaticElements(target);
         this.context.bindings.invalidateRecordProperties(target);
+        if (ts.isIdentifier(name)) this.context.bindings.markVarAssigned(name);
         const root = rootIdentifier(name, (node) => this.context.unwrap(node));
         const owner = root && this.context.bindings.lookupOptional(root);
         if (owner) this.context.bindings.invalidateRecordProperties(owner);
@@ -18309,11 +18504,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node: ts.Expression,
         ): ts.Expression | undefined =>
             ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "getPrototypeOf" &&
-            this.context.libraryGlobal(node.expression.expression) ===
-                "Object" &&
-            node.arguments.length === 1
+            node.arguments.length === 1 &&
+            isLibraryStatic(
+                this.context.checker,
+                node.expression,
+                "Object",
+                "getPrototypeOf",
+            )
                 ? node.arguments[0]
                 : undefined;
         const [call, prototype] = prototypeArgument(left)
@@ -19617,6 +19814,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const iterator = iteratorMethodCall(
             expression,
             (receiver) => this.context.libraryGlobal(receiver),
+            (node) => namedMember(this.context.checker, node),
             (node) => this.context.unwrap(node),
         );
         if (!iterator) {
@@ -19855,13 +20053,62 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         template: Value | undefined,
         define: (identifier: ts.Identifier, value: Value) => void,
     ): void {
+        const value = this.iterationValue(
+            name,
+            ts.isIdentifier(name),
+            itemCpp,
+            element,
+            template,
+        );
+        // A pattern destructures the item as a destructuring declaration
+        // destructures its initializer.
+        if (ts.isIdentifier(name)) define(name, value);
+        else this.context.declarations.bindPattern(name, value, name, true);
+    }
+
+    /**
+     * Assigns a runtime iteration's item to a for-in/of head's existing
+     * target, as `target = item` would.
+     */
+    public assignIterationTarget(
+        target: ts.Expression,
+        itemCpp: string,
+        element: DataIterationElement,
+        template: Value | undefined,
+    ): void {
+        const pattern = this.context.unwrap(target);
+        this.emitAssignmentTargetWrite(
+            target,
+            this.iterationValue(
+                target,
+                !ts.isArrayLiteralExpression(pattern) &&
+                    !ts.isObjectLiteralExpression(pattern),
+                itemCpp,
+                element,
+                template,
+            ),
+        );
+    }
+
+    /**
+     * The value one iteration gives its head: the element whole (an entry's
+     * pair, a `keys()` index), or the item a pattern destructures.
+     */
+    private iterationValue(
+        head: ts.Node,
+        whole: boolean,
+        itemCpp: string,
+        element: DataIterationElement,
+        template: Value | undefined,
+    ): Value {
         const owner = this.context.registerNativeBinding(itemCpp, false, true);
-        const defineItem = (identifier: ts.Identifier, value: Value): void =>
-            define(identifier, { ...value, nativeCaptures: [owner] });
-        const defineIndex = (
-            identifier: ts.Identifier,
-            indexCpp: string,
-        ): void => {
+        if (element.kind === "array-index") {
+            if (!whole) {
+                this.context.fail(
+                    head,
+                    "Array keys iteration binds one identifier.",
+                );
+            }
             // The yielded number is a writable binding, independent of the
             // iterator's counter and of numbers yielded on later iterations.
             const cpp = this.context.allocateTemporaryCppName("entry_index");
@@ -19869,59 +20116,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "declaration",
                 type: "double",
                 name: cpp,
-                initializer: `static_cast<double>(${indexCpp})`,
+                initializer: `static_cast<double>(${element.indexCpp})`,
                 attributes: "[[maybe_unused]] ",
             });
-            define(identifier, {
+            return {
                 kind: "number",
                 cpp,
                 dataType: { kind: "number" },
                 nativeCaptures: [
                     this.context.registerNativeBinding(cpp, false, true),
                 ],
-            });
-        };
-        if (element.kind === "array-index") {
-            if (!ts.isIdentifier(name)) {
-                this.context.fail(
-                    name,
-                    "Array keys iteration binds one identifier.",
-                );
-            }
-            defineIndex(name, element.indexCpp);
-            return;
+            };
         }
-        if (ts.isIdentifier(name)) {
-            if (element.kind === "array-entry")
-                this.context.fail(
-                    name,
-                    "Array entries iteration requires an [index, value] binding.",
-                );
-            if (element.kind === "map-entry" || element.kind === "set-entry") {
-                define(
-                    name,
-                    this.materializeIterationPair(itemCpp, element, name),
-                );
-                return;
-            }
-            const value: Value = {
+        if (!whole)
+            return this.iterationPatternValue(itemCpp, element, template);
+        if (element.kind === "array-entry")
+            this.context.fail(
+                head,
+                "Array entries iteration requires an [index, value] binding.",
+            );
+        if (element.kind === "map-entry" || element.kind === "set-entry")
+            return this.materializeIterationPair(itemCpp, element, head);
+        return {
+            ...runtimeMeshValue({
                 ...withNativeMetadata(
                     this.leafValue(itemCpp, element),
                     template,
                 ),
                 runtimeIteration: true,
-            };
-            defineItem(name, runtimeMeshValue(value));
-            return;
-        }
-        // A pattern destructures the item as a destructuring declaration
-        // destructures its initializer.
-        this.context.declarations.bindPattern(
-            name,
-            this.iterationPatternValue(itemCpp, element, template),
-            name,
-            true,
-        );
+            }),
+            nativeCaptures: [owner],
+        };
     }
 
     /**
@@ -20243,10 +20468,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
             );
         }
+        const method = ts.isCallExpression(expression)
+            ? namedMember(this.context.checker, expression.expression)?.name
+            : undefined;
         const projected =
-            ts.isCallExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression)
-                ? ["map", "flatMap"].includes(expression.expression.name.text)
+            ts.isCallExpression(expression) && method !== undefined
+                ? ["map", "flatMap"].includes(method)
                     ? this.compileDataMethodCall(expression, dataType)
                     : expression.arguments.length === 2
                       ? this.compileArrayFrom(expression, dataType)
@@ -20608,10 +20835,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (ts.isCallExpression(unwrapped)) {
+            const fill = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
             const candidateOwner =
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "fill"
-                    ? this.context.unwrap(unwrapped.expression.expression)
+                fill?.name === "fill"
+                    ? this.context.unwrap(fill.expression)
                     : undefined;
             const fillOwner =
                 candidateOwner &&

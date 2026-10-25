@@ -15,6 +15,7 @@ import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
     findAnalysisNode,
+    sourceFileNodes,
 } from "./analysis-walk.js";
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -74,6 +75,7 @@ import { readOnlyDataMethods } from "./receiver-methods.js";
 import { isReadOnlyRegExpCall } from "./regexp-call-effects.js";
 import {
     callArgumentIsReadOnly,
+    callWritesReceiver,
     isEffectFunction,
     libraryWrittenArgument,
     parameterIsReadOnly,
@@ -103,6 +105,8 @@ import {
     calledDeclaration,
     calledFunction,
     memberAccessors,
+    namedMember,
+    type MemberReader,
 } from "./symbols.js";
 import {
     isDeclaredInside,
@@ -129,6 +133,7 @@ import {
     functionOfDeclaration,
     type SupportedFunction,
     variableKind,
+    jumpBinding,
 } from "./syntax.js";
 import {
     emitReachableStatements,
@@ -482,13 +487,9 @@ export function functionUsesDynamicThis(
  * recognize a write the same way, so a family added here has to reach one
  * place rather than several.
  *
- * `mutatesVia` is the third caller's axis. Asked of a value that may be any
- * data kind, the safe answer is "anything not proven read-only"
- * (`readOnlyDataMethods`, the default); asked of a value the caller already
- * knows is an array, whose method set is closed, the exact answer is
- * `mutatingArrayMethods`. Both are legitimate and neither is the other's
- * default, so the predicate is a parameter rather than a second copy of the
- * three clauses.
+ * `mutatesVia` decides which method calls write their receiver; a `typed`
+ * walk defaults to {@link callWritesReceiver} and skips primitive targets,
+ * an untyped one counts every method not known to only read.
  *
  * `isTarget` learns whether the target is assigned or is a mutated
  * receiver: assigning a bare name rebinds it, which a caller tracking the
@@ -500,11 +501,12 @@ function writesThroughRoot(
         expression: ts.Expression,
         via: "assignment" | "receiver",
     ) => boolean,
-    mutatesVia: (method: string) => boolean = (method) =>
-        !readOnlyDataMethods.has(method),
-    checker?: ts.TypeChecker,
-    sourceFiles?: readonly ts.SourceFile[],
+    options: TrackedWriteOptions,
 ): boolean {
+    const { mutatesVia, sourceFiles } = options;
+    const checker = options.typed ? options.checker : undefined;
+    const member: MemberReader = (callee) =>
+        namedMember(options.checker, callee);
     const writes = writeSites(node);
     if (writes.length > 0)
         return writes.some(({ target }) => isTarget(target, "assignment"));
@@ -514,9 +516,22 @@ function writesThroughRoot(
         isReadOnlyRegExpCall(checker, node, sourceFiles)
     )
         return false;
+    const writesReceiver =
+        mutatesVia ??
+        (checker
+            ? (
+                  method: string,
+                  receiver: ts.Expression,
+                  call: ts.CallExpression,
+              ) => callWritesReceiver(checker, method, receiver, call)
+            : (method: string) => !readOnlyDataMethods.has(method));
     const target = mutatingCallTarget(
         node,
-        mutatesVia,
+        member,
+        // Only a tracked receiver asks whether the method writes it.
+        (method, receiver, call) =>
+            isTarget(receiver, "receiver") &&
+            writesReceiver(method, receiver, call),
         checker && ((call) => libraryWrittenArgument(checker, call)),
     );
     // Calling a method on a primitive field cannot write through its owner.
@@ -529,6 +544,21 @@ function writesThroughRoot(
     );
 }
 
+/** What a write walk reads beside its node and target test. */
+export interface TrackedWriteOptions {
+    /** Reads each call's member. */
+    readonly checker: ts.TypeChecker;
+    /** Receiver writes and targets by type (otherwise by method name). */
+    readonly typed?: boolean;
+    readonly mutatesVia?: (
+        method: string,
+        receiver: ts.Expression,
+        call: ts.CallExpression,
+    ) => boolean;
+    /** Where a RegExp's `lastIndex` may be read (a typed walk's read-only RegExp calls). */
+    readonly sourceFiles?: readonly ts.SourceFile[];
+}
+
 /** `writesThroughRoot`, for a caller outside this module. */
 export const writesThroughTrackedRoot = writesThroughRoot;
 
@@ -538,8 +568,18 @@ export interface AliasedMutationScan {
     readonly namesAlias: (node: ts.Node) => boolean;
     /** Whether any identifier in the subtree names a tracked alias. */
     readonly containsAlias: (node: ts.Node) => boolean;
+    /** Whether a symbol is tracked. */
+    readonly holds: (symbol: ts.Symbol) => boolean;
     /** Track one more alias; a new symbol queues another pass. */
     readonly addAlias: (symbol: ts.Symbol | undefined) => void;
+}
+
+/** The name of the function declaration a `return` leaves, if it has one. */
+export function returningFunctionName(
+    statement: ts.ReturnStatement,
+): ts.Identifier | undefined {
+    const owner = jumpBinding(statement);
+    return owner && ts.isFunctionDeclaration(owner) ? owner.name : undefined;
 }
 
 /** A native API that retains an object and writes it after the call returns. */
@@ -552,6 +592,78 @@ export function retainedNativeMutationTarget(
         symbols.importedName(node.expression) === "createPropertyAnimationGroup"
         ? node.arguments[1]
         : undefined;
+}
+
+/** A name one node binds to what an expression yields. */
+export interface AliasSite {
+    readonly name: ts.Identifier;
+    readonly source: ts.Expression;
+    /**
+     * What the name holds: the source's value (a declaration or an
+     * assignment), a member of it (a destructured leaf, an assigned pattern
+     * or loop target), an element it iterates (a declared loop name), or what
+     * a named function's `return` yields (its calls hold it).
+     */
+    readonly holds: "value" | "member" | "element" | "returned";
+}
+
+const NO_ALIAS_SITES: readonly AliasSite[] = [];
+
+/** The names `node` binds to values: every alias an identity can gain there. */
+export function aliasSites(node: ts.Node): readonly AliasSite[] {
+    if (
+        !ts.isReturnStatement(node) &&
+        !ts.isVariableDeclaration(node) &&
+        !ts.isForOfStatement(node) &&
+        writeSites(node).length === 0
+    )
+        return NO_ALIAS_SITES;
+    const sites: AliasSite[] = [];
+    if (ts.isReturnStatement(node) && node.expression) {
+        const owner = returningFunctionName(node);
+        if (owner)
+            sites.push({
+                name: owner,
+                source: node.expression,
+                holds: "returned",
+            });
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+        if (ts.isIdentifier(node.name))
+            sites.push({
+                name: node.name,
+                source: node.initializer,
+                holds: "value",
+            });
+        else
+            for (const leaf of bindingNameIdentifiers(node.name))
+                sites.push({
+                    name: leaf,
+                    source: node.initializer,
+                    holds: "member",
+                });
+    }
+    // `for (const v of source)` binds a member of the source.
+    if (
+        ts.isForOfStatement(node) &&
+        ts.isVariableDeclarationList(node.initializer)
+    )
+        for (const declaration of node.initializer.declarations)
+            for (const leaf of bindingNameIdentifiers(declaration.name))
+                sites.push({
+                    name: leaf,
+                    source: node.expression,
+                    holds: "element",
+                });
+    for (const { target, stored, from } of writeSites(node)) {
+        if (!ts.isIdentifier(target)) continue;
+        if (stored)
+            sites.push({ name: target, source: stored, holds: "value" });
+        // A pattern leaf takes a member of what the assignment reads.
+        else if (from)
+            sites.push({ name: target, source: from, holds: "member" });
+    }
+    return sites;
 }
 
 /**
@@ -567,12 +679,24 @@ export function retainedNativeMutationTarget(
  * `addAlias` (the object walk follows call arguments into parameters).
  * A walk that tracks members too says through `aliasingMember` which name
  * a destructuring binds out of `source` (`const { b } = record`,
- * `[, s] = values`) holds one.
+ * `[, s] = values`) holds one. A cross-file walk names its `files` and the
+ * files each new alias adds; `aliasingReturn` makes a named function whose
+ * `return` carries an alias one more alias (its calls hold the identity).
  */
 export function aliasedMutationScan(
     identifier: ts.Identifier,
     valueSymbol: (identifier: ts.Identifier) => ts.Symbol | undefined,
     walk: {
+        readonly files?: {
+            readonly initial: readonly ts.SourceFile[];
+            readonly referencing: (
+                symbol: ts.Symbol,
+            ) => readonly ts.SourceFile[];
+        };
+        readonly aliasingReturn?: (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ) => boolean;
         readonly aliasingInitializer: (
             initializer: ts.Expression,
             scan: AliasedMutationScan,
@@ -599,61 +723,43 @@ export function aliasedMutationScan(
     if (!initial) return false;
     const aliases = new EmissionSet<ts.Symbol>([initial]);
     const source = identifier.getSourceFile();
-    let changed = true;
+    // The files the next pass reads: every one at first, then those that
+    // reference an alias the last pass added.
+    let pending = new Set(walk.files?.initial ?? [source]);
+    let next = new Set<ts.SourceFile>();
     const scan: AliasedMutationScan = {
         namesAlias: (node) =>
             ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
         containsAlias: (node) => someAnalysisNode(node, scan.namesAlias),
+        holds: (symbol) => aliases.has(symbol),
         addAlias: (symbol) => {
             if (symbol && !aliases.has(symbol)) {
                 aliases.add(symbol);
-                changed = true;
+                for (const file of walk.files?.referencing(symbol) ?? [source])
+                    next.add(file);
             }
         },
     };
-    while (changed) {
-        changed = false;
-        const mutated = someAnalysisNode(source, (node) => {
-            if (walk.mutates(node, scan)) return true;
-            if (ts.isVariableDeclaration(node) && node.initializer) {
-                if (ts.isIdentifier(node.name)) {
-                    if (walk.aliasingInitializer(node.initializer, scan))
-                        scan.addAlias(valueSymbol(node.name));
-                } else
-                    for (const leaf of bindingNameIdentifiers(node.name))
-                        if (walk.aliasingMember?.(node.initializer, leaf, scan))
-                            scan.addAlias(valueSymbol(leaf));
-            }
-            // `for (const v of source)` binds a member of the source.
-            if (
-                ts.isForOfStatement(node) &&
-                ts.isVariableDeclarationList(node.initializer)
-            )
-                for (const declaration of node.initializer.declarations)
-                    for (const leaf of bindingNameIdentifiers(declaration.name))
-                        if (
-                            walk.aliasingIteration?.(
-                                node.expression,
-                                leaf,
-                                scan,
-                            )
-                        )
-                            scan.addAlias(valueSymbol(leaf));
-            for (const { target, stored, from } of writeSites(node)) {
-                if (!ts.isIdentifier(target)) continue;
-                if (stored ? walk.aliasingInitializer(stored, scan) : false)
-                    scan.addAlias(valueSymbol(target));
-                // A pattern leaf takes a member of what the assignment reads.
-                else if (
-                    !stored &&
-                    from &&
-                    walk.aliasingMember?.(from, target, scan)
-                )
-                    scan.addAlias(valueSymbol(target));
-            }
-            return false;
-        });
-        if (mutated) return true;
+    const visit = (node: ts.Node): boolean => {
+        if (walk.mutates(node, scan)) return true;
+        for (const { name, source, holds } of aliasSites(node)) {
+            const aliasing =
+                holds === "value"
+                    ? walk.aliasingInitializer(source, scan)
+                    : holds === "member"
+                      ? walk.aliasingMember?.(source, name, scan)
+                      : holds === "element"
+                        ? walk.aliasingIteration?.(source, name, scan)
+                        : walk.aliasingReturn?.(source, scan);
+            if (aliasing) scan.addAlias(valueSymbol(name));
+        }
+        return false;
+    };
+    while (pending.size > 0) {
+        for (const file of pending)
+            if (sourceFileNodes(file).some(visit)) return true;
+        pending = next;
+        next = new Set();
     }
     return false;
 }
@@ -764,7 +870,7 @@ function writesSharedBinding(
     active: Set<SupportedFunction>,
 ): boolean {
     const writes = someAnalysisNode(body, (node) => {
-        if (writesThroughRoot(node, isShared, undefined, checker)) {
+        if (writesThroughRoot(node, isShared, { checker, typed: true })) {
             return true;
         }
         if (ts.isCallExpression(node)) {
@@ -1086,12 +1192,15 @@ function reassignedRecordFields(
                 }
                 if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
                     return;
-                const callee = unwrapExpression(node.expression);
+                const callee = namedMember(
+                    checker,
+                    unwrapExpression(node.expression),
+                );
                 const called = calledDeclaration(checker, node);
                 if (called && called.getSourceFile().isDeclarationFile) {
                     if (
-                        ts.isPropertyAccessExpression(callee) &&
-                        reflectingObjectMethods.has(callee.name.text) &&
+                        callee &&
+                        reflectingObjectMethods.has(callee.name) &&
                         libraryGlobal(checker, callee.expression) === "Object"
                     )
                         opaque = true;
@@ -1106,11 +1215,7 @@ function reassignedRecordFields(
                     follow(called);
                     return;
                 }
-                if (
-                    !ts.isPropertyAccessExpression(callee) ||
-                    !fieldCallbacks.has(callee.name.text)
-                )
-                    opaque = true;
+                if (!callee || !fieldCallbacks.has(callee.name)) opaque = true;
             },
             { types: "skip" },
         );
@@ -1416,8 +1521,12 @@ export class UserFunctionLowerer {
         }
     >();
     private readonly active = new EmissionSet<SupportedFunction>();
-    /** Call sites whose inlined bodies are being lowered. */
-    private readonly activeCallSites = new EmissionSet<ts.Node>();
+    /**
+     * Call sites whose inlined bodies are being lowered in the native body
+     * being emitted.
+     * @unjournaled Replaced and restored around one stored function's lowering.
+     */
+    private activeCallSites = new EmissionSet<ts.Node>();
     private readonly scalarResults = new FunctionSpecializations<
         Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
     >();
@@ -3047,7 +3156,9 @@ export class UserFunctionLowerer {
                         // including through an anonymous scheduler body or a
                         // function literal in a record or array the callee
                         // keeps. A named function in such a literal is a
-                        // value it passes, not a call.
+                        // value it passes (stored storage reuses itself),
+                        // unless async: each activation lowers its body, so
+                        // only a group bounds a cycle through it.
                         const visitArgument = (
                             argument: ts.Expression,
                             nested: boolean,
@@ -3060,14 +3171,17 @@ export class UserFunctionLowerer {
                                 for (const called of this.directCalls(value))
                                     callees.add(called);
                             }
-                            const callback =
-                                !nested && ts.isIdentifier(value)
-                                    ? tryResolveFunctionDeclaration(
-                                          this.checker,
-                                          value,
-                                      )
-                                    : undefined;
-                            if (callback) callees.add(callback);
+                            const callback = ts.isIdentifier(value)
+                                ? tryResolveFunctionDeclaration(
+                                      this.checker,
+                                      value,
+                                  )
+                                : undefined;
+                            if (
+                                callback &&
+                                (!nested || isAsyncFunction(callback))
+                            )
+                                callees.add(callback);
                             if (ts.isArrayLiteralExpression(value))
                                 for (const element of value.elements)
                                     visitArgument(
@@ -3083,6 +3197,12 @@ export class UserFunctionLowerer {
                                             property.initializer,
                                             true,
                                         );
+                                    else if (
+                                        ts.isShorthandPropertyAssignment(
+                                            property,
+                                        )
+                                    )
+                                        visitArgument(property.name, true);
                                     else if (ts.isMethodDeclaration(property))
                                         for (const called of this.directCalls(
                                             property,
@@ -4987,6 +5107,10 @@ export class UserFunctionLowerer {
         // A stored closure may be called before the later declaration runs.
         context.callbacks.hoistForwardCallbackBindings(declaration, true);
         this.loweringStoredDataFunctions.add(declaration);
+        // Its own native body: re-entering it refuses above, so its callers'
+        // inlined call sites cannot recur through it.
+        const callerSites = this.activeCallSites;
+        this.activeCallSites = new EmissionSet();
         try {
             return this.lowerStoredDataFunction(
                 context,
@@ -4998,6 +5122,7 @@ export class UserFunctionLowerer {
                 expression,
             );
         } finally {
+            this.activeCallSites = callerSites;
             this.loweringStoredDataFunctions.delete(declaration);
         }
     }
@@ -6363,16 +6488,17 @@ export class UserFunctionLowerer {
             owned?.kind === "vector"
                 ? context.dataLowerer.compileArrayFrom(source, owned)
                 : undefined;
+        const method = namedMember(context.checker, source.expression)?.name;
         if (
             mapped ||
             sinkResult?.kind !== "vector" ||
-            !ts.isPropertyAccessExpression(source.expression) ||
+            method === undefined ||
             context.dataTypes.returnsArray(
                 context.dataLowerer.dataTypeAt(source),
             )
         )
             return mapped;
-        return ["map", "flatMap"].includes(source.expression.name.text)
+        return ["map", "flatMap"].includes(method)
             ? context.dataLowerer.compileDataMethodCall(source, sinkResult)
             : context.dataLowerer.compileArrayFrom(source, sinkResult);
     }
@@ -7010,7 +7136,6 @@ export class UserFunctionLowerer {
         fail: Fail,
     ): void {
         const rest = restParameterIndex(ir.declaration);
-        const resolved = this.checker.getResolvedSignature(call);
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
@@ -7036,10 +7161,12 @@ export class UserFunctionLowerer {
             ) {
                 return;
             }
-            const resolvedParameter = resolved?.getParameters()[index];
-            const parameterType = resolvedParameter
-                ? this.checker.getTypeOfSymbol(resolvedParameter)
-                : parameter.type;
+            // The resolved signature's type at the argument's position: a
+            // rest tuple (`OmitThisParameter`'s `...args` of a bound
+            // function) gives its element there. A position the call's
+            // signature does not type checks against the declaration.
+            const parameterType =
+                this.checker.getContextualType(argument) ?? parameter.type;
             const argumentType = this.checker.getTypeAtLocation(argument);
             if (
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&

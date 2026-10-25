@@ -2,7 +2,6 @@ import {
     optionalPresentCpp,
     representedStorage,
     valueForKind,
-    withNativeMetadata,
 } from "./types.js";
 import {
     EmissionSet,
@@ -17,9 +16,11 @@ import {
     staticPropertyKey,
     calledDeclaration,
     memberAccessors,
+    accessedPropertySymbol,
+    namedMember,
+    type NamedMember,
 } from "./symbols.js";
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
 import { isJsonValue } from "./json-bridge.js";
 import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import type { DataStructField, DataType } from "./data-types.js";
@@ -27,6 +28,7 @@ import {
     classTagMember,
     dataTypesEqual,
     passesByReference,
+    structFieldKey,
     tupleComponents,
 } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -45,6 +47,7 @@ import {
     writeSites,
     isAsyncFunction,
     isGeneratorFunction,
+    type MemberAccess,
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import {
@@ -99,20 +102,38 @@ interface StoredClassField extends DataStructField {
 
 /** Store `source` into a class field slot the shared object layout allocated. */
 export function storeClassField(
-    context: Pick<LoweringServices, "emit" | "fail" | "compileForDataSink">,
+    context: Pick<
+        LoweringServices,
+        "emit" | "fail" | "compileForDataSink" | "compileValue" | "dataLowerer"
+    >,
     field: Value,
     source: ts.Expression,
     node: ts.Node,
 ): void {
     const storage = representedStorage(field);
-    if (!storage || !field.dataType)
+    const type = field.dataType;
+    if (!storage || !type)
         return context.fail(
             node,
             "Stored class field requires represented storage.",
         );
+    let stored: string;
+    if (
+        type.kind === "handle" &&
+        type.handle === "engine" &&
+        field.classStoredField
+    ) {
+        const engine = context.compileValue(source);
+        stored = context.dataLowerer.compileKnownValueForSink(
+            engine,
+            type,
+            source,
+        );
+    } else stored = context.compileForDataSink(source, type);
+    // An engine value reads through its stored wrapper, which is the slot.
     context.emit({
         kind: "expression",
-        code: `${storage.cpp} = ${context.compileForDataSink(source, field.dataType)};`,
+        code: `${field.storedEngineCpp ?? storage.cpp} = ${stored};`,
     });
 }
 
@@ -461,12 +482,14 @@ export class ClassLowerer {
 
     /** The class a static member access reads, through a class name or a static `this`. */
     private staticMember(
-        access: ts.PropertyAccessExpression,
+        access: MemberAccess,
     ): { table: ClassMemberTable; name: string } | undefined {
+        const named = namedMember(this.context.checker, access);
+        if (!named) return undefined;
         const owner = this.context.unwrap(access.expression);
         if (owner.kind === ts.SyntaxKind.ThisKeyword) {
             if (!this.context.activeThis()?.classStatics) return undefined;
-            const member = resolvedSymbol(
+            const member = accessedPropertySymbol(
                 this.context.checker,
                 access,
             )?.declarations?.find(
@@ -476,17 +499,17 @@ export class ClassLowerer {
                     ts.isClassLike(candidate.parent),
             );
             return member && ts.isClassLike(member.parent)
-                ? { table: this.table(member.parent), name: access.name.text }
+                ? { table: this.table(member.parent), name: named.name }
                 : undefined;
         }
-        return staticClassMember(this.context.checker, owner, access.name);
+        return staticClassMember(this.context.checker, owner, named);
     }
 
     /** Resolve `ClassName.staticFactory(...)` to its local method body. */
     public resolveStaticMethod(
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): ts.MethodDeclaration | undefined {
-        const found = this.staticMember(callee);
+        const found = this.staticMember(callee.access);
         return found?.table.staticMethods.get(found.name);
     }
 
@@ -503,10 +526,7 @@ export class ClassLowerer {
      * called through: `Derived.create()` runs an inherited `create` with
      * `this` naming `Derived`, as JavaScript does.
      */
-    public withStaticReceiver<T>(
-        callee: ts.PropertyAccessExpression,
-        work: () => T,
-    ): T {
+    public withStaticReceiver<T>(callee: NamedMember, work: () => T): T {
         const owner = this.context.unwrap(callee.expression);
         const receiver =
             owner.kind === ts.SyntaxKind.ThisKeyword
@@ -1051,7 +1071,11 @@ export class ClassLowerer {
             writable(instance).cpp = cpp;
             writable(instance).dataType = structType;
             for (const field of layout) {
-                fields[field.source] = this.storedFieldValue(cpp, field);
+                fields[field.source] = this.storedFieldValue(
+                    cpp,
+                    structName,
+                    field,
+                );
             }
             // What the layout left out has to come from somewhere every
             // instance shares. The one shape that can: a constructor
@@ -1464,6 +1488,7 @@ export class ClassLowerer {
     /** The lvalue one stored field of a shared instance names. */
     public storedFieldValue(
         instanceCpp: string,
+        structName: string,
         field: DataStructField,
     ): Value {
         const value = this.context.dataValue(
@@ -1472,7 +1497,7 @@ export class ClassLowerer {
         );
         writable(value).nativeLvalue = true;
         writable(value).borrowedData = true;
-        writable(value).classStoredField = true;
+        writable(value).classStoredField = structFieldKey(structName, field);
         writable(value).nativeCaptures = [
             this.context.registerNativeBinding(instanceCpp, false, true),
         ];
@@ -1572,66 +1597,24 @@ export class ClassLowerer {
         const structName = value.dataType.name;
         const binding = this.context.dataTypes.classStruct(structName);
         if (!binding) return undefined;
-        // Every field read repeats the receiver's spelling. A plain name
-        // repeats for free; anything else -- a call, an indexed read, a
-        // member of another record -- is bound once so the instance the
-        // method runs on is the one the call named.
-        let instanceCpp = value.cpp;
-        if (!cppIdentifierPattern.test(instanceCpp)) {
-            const bound = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver`,
-            );
-            const source = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver_source`,
-            );
-            const lifetime = this.context.allocateTemporaryCppName(
-                `${structName.toLowerCase()}_receiver_lifetime`,
-            );
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto&",
-                name: source,
-                initializer: instanceCpp,
-            });
-            this.context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: lifetime,
-                initializer: `${source}.lifetime_owner()`,
-                attributes: "[[maybe_unused]] ",
-            });
-            this.context.emit({
-                kind: "declaration",
-                type: this.context.dataTypes.cppType(value.dataType),
-                name: bound,
-                initializer: source,
-            });
-            this.context.registerNativeBindingType(
-                bound,
-                this.context.dataTypes.cppType(value.dataType),
-            );
-            instanceCpp = bound;
-        }
-        // A computed receiver's identity and presence spellings follow the
-        // binding, or an optional call would spell the call a second time;
-        // a storage read is stable and keeps its own.
-        const receiver =
-            instanceCpp === value.cpp || value.nativeLvalue
-                ? value
-                : withNativeMetadata(
-                      this.context.dataValue(instanceCpp, value.dataType),
-                      value,
-                  );
+        // Every field read repeats the receiver's spelling, so a computed
+        // one is bound once: the instance the method runs on is the one the
+        // call named.
+        const receiver = this.context.bindings.pinReceiverToTemporary(
+            value,
+            value.dataType,
+            `${structName.toLowerCase()}_receiver`,
+        );
         if (!this.context.dataTypes.classStructTagged(structName)) {
             return this.receiverRecord(
-                { ...receiver, cpp: instanceCpp },
+                receiver,
                 binding.declaration,
                 undefined,
                 binding.type,
             );
         }
         return this.narrowedReceiver(
-            { ...receiver, cpp: instanceCpp },
+            receiver,
             this.staticCandidates(binding.declaration, node),
             node ?? binding.declaration,
         );
@@ -1713,7 +1696,7 @@ export class ClassLowerer {
                 source,
             );
             const bound = stored
-                ? this.storedFieldValue(receiver.cpp, stored)
+                ? this.storedFieldValue(receiver.cpp, structName, stored)
                 : hoisted?.get(source);
             if (bound) {
                 fields[source] = bound;
@@ -2065,14 +2048,14 @@ export class ClassLowerer {
      */
     public compileSuperMethodCall(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): Value {
         const instance = this.superReceiver(call);
-        const method = classMethod(instance.base, callee.name.text);
+        const method = classMethod(instance.base, callee.name);
         return this.compileResolvedMethodCall(
             instance.receiver,
             method,
-            callee.name.text,
+            callee.name,
             call,
             this.context.classOf(instance.receiver) ??
                 instance.base.declaration,
@@ -2912,26 +2895,18 @@ export class ClassLowerer {
             if (explored.has(candidate) || !candidate.body) return false;
             explored.add(candidate);
             return someAnalysisNode(candidate.body, (node) => {
-                if (
-                    !ts.isCallExpression(node) ||
-                    !ts.isPropertyAccessExpression(node.expression)
-                )
-                    return false;
-                if (
-                    node.expression.expression.kind ===
-                    ts.SyntaxKind.ThisKeyword
-                ) {
-                    const called = classMethod(
-                        table,
-                        node.expression.name.text,
-                    );
+                if (!ts.isCallExpression(node)) return false;
+                const callee = namedMember(
+                    this.context.checker,
+                    node.expression,
+                );
+                if (!callee) return false;
+                if (callee.expression.kind === ts.SyntaxKind.ThisKeyword) {
+                    const called = classMethod(table, callee.name);
                     return called !== undefined && reaches(called);
                 }
                 const called = calledDeclaration(this.context.checker, node);
-                if (
-                    node.expression.expression.kind ===
-                    ts.SyntaxKind.SuperKeyword
-                )
+                if (callee.expression.kind === ts.SyntaxKind.SuperKeyword)
                     return (
                         called !== undefined &&
                         ts.isMethodDeclaration(called) &&
@@ -3063,17 +3038,12 @@ export class ClassLowerer {
             const found = new EmissionSet<ts.MethodDeclaration>();
             const visit = (node: ts.Node): void => {
                 if (node !== candidate && ts.isFunctionLike(node)) return;
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    node.expression.expression.kind ===
-                        ts.SyntaxKind.ThisKeyword
-                ) {
+                const callee = ts.isCallExpression(node)
+                    ? namedMember(this.context.checker, node.expression)
+                    : undefined;
+                if (callee?.expression.kind === ts.SyntaxKind.ThisKeyword) {
                     for (const table of tables) {
-                        const called = classMethod(
-                            table,
-                            node.expression.name.text,
-                        );
+                        const called = classMethod(table, callee.name);
                         if (called?.body) found.add(called);
                     }
                 }

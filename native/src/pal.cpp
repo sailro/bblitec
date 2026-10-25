@@ -1,9 +1,13 @@
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/physics_viewer.hpp>
+#include <bblite/features/workers.hpp>
 
 #include <bblite/pal.hpp>
 #include "pal_file_io.hpp"
 #include <bblite/runtime.hpp>
+#if BBLITE_WORKERS
+#include <bblite/pal_event_loop.hpp>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -384,6 +388,12 @@ PerformanceClockState& performance_clock_state() {
 
 double performance_milliseconds() {
     require_runtime_execution("a clock read");
+#if BBLITE_WORKERS
+    // A realm on its fixed capture clock has one time, its animation frames'.
+    if (const auto* loop = EventLoop::current_if_any())
+        if (const auto time = loop->fixed_animation_time())
+            return *time;
+#endif
     auto& state = performance_clock_state();
     return state.fixed ? state.milliseconds : monotonic_milliseconds();
 }

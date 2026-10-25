@@ -132,12 +132,10 @@ export function requireStableRetainedDescriptor(
                     )
                         return true;
                     if (
-                        writesThroughTrackedRoot(
-                            node,
-                            namesRoot,
-                            undefined,
+                        writesThroughTrackedRoot(node, namesRoot, {
                             checker,
-                        )
+                            typed: true,
+                        })
                     )
                         return true;
                     if (

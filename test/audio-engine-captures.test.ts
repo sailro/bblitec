@@ -26,10 +26,12 @@ function checkMainBusStorage(declarations: string): void {
             const engine = await createEngine({});
             const controls = createControls();
             const actions = new Set<() => void>();
-            actions.add(() => { void controls.start(); });
             actions.add(() => { controls.connect(); });
             actions.add(() => { controls.reset(); });
             for (let run = 0; run < 2; run++) {
+                // JavaScript connects only once the started engine is
+                // assigned: the run awaits it first.
+                await controls.start();
                 for (const action of actions) action();
                 controls.connect();
             }

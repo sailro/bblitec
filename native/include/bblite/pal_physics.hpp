@@ -243,6 +243,9 @@ struct PhysicsRaycastResult {
     std::array<double, 3> normal{};
     // The stable HP_Body identity, resolved through the querying world's bodies.
     std::uint32_t body_identity = 0;
+    // The struck triangle of a MESH shape, as the pin's `triangleIndex`;
+    // -1 on any other shape and without a hit.
+    std::int32_t triangle_index = -1;
 };
 
 struct PhysicsShapeQueryResult {

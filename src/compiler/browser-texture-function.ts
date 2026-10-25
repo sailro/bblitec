@@ -40,6 +40,7 @@ import {
     isBabylonModule,
     libraryGlobal,
     resolvedSymbol,
+    isLibraryStatic,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import {
@@ -130,10 +131,12 @@ export function createsElement(
             : undefined;
         return (
             ts.isCallExpression(child) &&
-            ts.isPropertyAccessExpression(child.expression) &&
-            child.expression.name.text === "createElement" &&
-            libraryGlobal(checker, child.expression.expression) ===
-                "document" &&
+            isLibraryStatic(
+                checker,
+                child.expression,
+                "document",
+                "createElement",
+            ) &&
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
             firstArgument.text === tag
@@ -278,7 +281,7 @@ export function sameFileClosure(
                             namesModuleScopeBinding(checker, root)
                         );
                     },
-                    () => false,
+                    { checker, mutatesVia: () => false },
                 )
             ) {
                 rejected = true;

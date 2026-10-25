@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
 import {
     isLogicalAssignmentOperator,
     unwrapExpression,
@@ -86,13 +86,14 @@ export class FiniteArraySources {
                 (node) => {
                     if (ts.isCallExpression(node)) {
                         add(this.calls, nameOf(node.expression), node);
-                        const callee = unwrapExpression(node.expression);
-                        if (!ts.isPropertyAccessExpression(callee)) return;
-                        const start = ["push", "unshift"].includes(
-                            callee.name.text,
-                        )
+                        const callee = namedMember(
+                            this.checker,
+                            unwrapExpression(node.expression),
+                        );
+                        if (!callee) return;
+                        const start = ["push", "unshift"].includes(callee.name)
                             ? 0
-                            : callee.name.text === "splice"
+                            : callee.name === "splice"
                               ? 2
                               : undefined;
                         if (start === undefined) return;

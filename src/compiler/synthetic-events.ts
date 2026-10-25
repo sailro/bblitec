@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { jsonAbsenceCpp } from "./values/model.js";
+import { namedMember } from "./symbols.js";
 
 type Context = Pick<
     LoweringServices,
@@ -120,12 +121,11 @@ export function compileSyntheticEventDispatch(
     context: Context,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        callee.name.text !== "dispatchEvent"
-    )
-        return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee || callee.name !== "dispatchEvent") return undefined;
     if (call.arguments.length !== 1)
         context.fail(call, "dispatchEvent requires one event.");
     const type = context.dataLowerer.dataTypeAt(call.arguments[0]!);

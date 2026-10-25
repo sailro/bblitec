@@ -51,6 +51,102 @@ check(
 );
 
 check(
+    "a-var-is-one-binding-per-function-undefined-until-assigned",
+    `
+    function blocks(c: boolean): string {
+        if (c) { var s = "yes"; } else { s = "no"; }
+        return s;
+    }
+    if (blocks(true) + blocks(false) !== "yesno") throw new Error("block " + blocks(true));
+    function redeclared(): number {
+        var z = 1;
+        var z = z + 1;
+        { var z = z * 10; }
+        return z;
+    }
+    if (redeclared() !== 20) throw new Error("redeclared " + redeclared());
+    function loops(): string {
+        const seen: string[] = [];
+        const fns: (() => number)[] = [];
+        for (let i = 0; i < 3; i++) {
+            var x: number | undefined;
+            if (i === 0) x = 5;
+            seen.push(String(x));
+            var captured = i;
+            fns.push(() => captured);
+        }
+        for (var k = 0; k < 2; k++) fns.push(() => k * 100);
+        return seen.join() + "|" + fns.map((f) => f()).join() + "|" + k;
+    }
+    if (loops() !== "5,5,5|2,2,2,200,200|2") throw new Error("loops " + loops());
+    function early(): string {
+        const read = (): number | undefined => late;
+        const before = typeof late + String(read());
+        var late: number | undefined = 7;
+        return before + read();
+    }
+    if (early() !== "undefinedundefined7") throw new Error("early " + early());
+    function patterns(c: boolean): string {
+        if (c) { var [a, b] = [1, 2]; var { t } = { t: "x" }; } else { a = 3; b = 4; t = "y"; }
+        let out = t + (a + b);
+        for (var item of ["p", "q"]) out += item;
+        var item = "r";
+        return out + item;
+    }
+    if (patterns(true) + patterns(false) !== "x3pqry7pqr") throw new Error("patterns " + patterns(true) + patterns(false));
+    function cases(k: number): string {
+        switch (k) {
+            case 1:
+                var tag: string | undefined = "one";
+            // falls through
+            case 2:
+                return String(tag);
+        }
+        return "none";
+    }
+    if (cases(1) + cases(2) !== "oneundefined") throw new Error("cases " + cases(1) + cases(2));
+    var counter = 1;
+    var counter = counter + 1;
+    function bump(): number { return ++counter; }
+    if (bump() !== 3 || counter !== 3) throw new Error("module " + counter);
+`,
+);
+
+check(
+    "a-for-in-of-head-assigns-an-existing-target-as-an-assignment-would",
+    `
+    let x = 0;
+    let sum = 0;
+    for (x of [1, 2, 3]) sum += x;
+    let a = 0, b = 0, product = 0;
+    const pairs: [number, number][] = [[1, 2], [3, 4]];
+    for ([a, b] of pairs) product += a * b;
+    let k = "";
+    const seen: string[] = [];
+    for ({ k } of [{ k: "u" }, { k: "v" }]) seen.push(k);
+    const o = { v: 0 };
+    for (o.v of [2, 5]) sum += o.v;
+    let key = "";
+    const keyed: Record<string, number> = { m: 1, n: 2 };
+    for (key in keyed) seen.push(key);
+    let found = 0;
+    for (found of [3, 8, 11, 20]) if (found > 10) break;
+    const m = new Map<string, number>([["a", 1], ["b", 2]]);
+    let mk = "", mv = 0, entries = "";
+    for ([mk, mv] of m) entries += mk + mv;
+    let cur = 0;
+    const get = (): number => cur;
+    for (cur of [5, 6]) {}
+    const items: { n: number }[] = [];
+    for (let i = 0; i < 3; i++) items.push({ n: i });
+    let item: { n: number } = { n: -1 };
+    for (item of items) item.n += 10;
+    const result = x + "|" + sum + "|" + a + "|" + b + "|" + product + "|" + seen.join("") + "|" + o.v + "|" + key + "|" + found + "|" + entries + "|" + get() + "|" + items.map((i) => i.n).join() + "|" + item.n;
+    if (result !== "3|13|3|4|14|uvmn|5|n|11|a1b2|6|10,11,12|12") throw new Error(result);
+`,
+);
+
+check(
     "a-compound-assignment-reads-its-old-value-first-and-is-a-value",
     `
     let x = 1;
@@ -5621,20 +5717,23 @@ check(
     "promise-rejection-parameters",
     `
     let seen = "";
+    let marked = "";
     let calm = 0;
     let armed = true;
     async function risky(): Promise<void> {
         if (armed) throw new Error("boom");
         calm++;
     }
+    // Each reaction touches state no later statement does, so running it
+    // at once keeps JavaScript's order.
     void risky().catch((error) => {
         if (!(error instanceof Error) || error.message !== "boom") throw new Error("catch binding");
         seen = error.message;
     });
-    void risky().then(() => { if (calm >= 0) throw new Error("fulfilled"); }, (error) => {
+    void risky().then(() => { throw new Error("fulfilled"); }, (error) => {
         if (error.message !== "boom") throw new Error("rejection binding");
     });
-    void risky().catch((error) => { if (error.message.length !== 4) return; seen += "!"; });
+    void risky().catch((error) => { if (error.message.length !== 4) return; marked = "!"; });
     armed = false;
     void risky().catch((error) => { throw new Error("unexpected " + error.message); });
 `,
@@ -8823,6 +8922,96 @@ checkInRealm(
 );
 
 checkInRealm(
+    "suspended-activations-resume-after-the-code-that-follows-them",
+    `
+    const gathered: string[] = [];
+    const returned: string[] = [];
+    const discarded: string[] = [];
+    const reacted: string[] = [];
+    async function a(into: string[]): Promise<void> { into.push("a1"); await null; into.push("a2"); }
+    async function b(into: string[]): Promise<void> { into.push("b1"); await Promise.resolve(); into.push("b2"); }
+    async function passes(into: string[]): Promise<void> { return a(into); }
+    async function one(): Promise<number> { return 1; }
+    async function main(): Promise<void> {
+        await Promise.all([a(gathered), b(gathered)]);
+        if (gathered.join() !== "a1,b1,a2,b2") throw new Error("gathered " + gathered.join());
+        await Promise.all([passes(returned), b(returned)]);
+        if (returned.join() !== "a1,b1,a2,b2") throw new Error("returned " + returned.join());
+        void a(discarded);
+        discarded.push("after");
+        await null;
+        if (discarded.join() !== "a1,after,a2") throw new Error("discarded " + discarded.join());
+        void one().then(() => { reacted.push("then"); });
+        reacted.push("after");
+        await null;
+        if (reacted.join() !== "after,then") throw new Error("reacted " + reacted.join());
+        globalThis.close();
+    }
+    void main();
+`,
+);
+
+check(
+    "number-to-string-checks-its-radix-first",
+    `
+    const rangeErrorOf = (run: () => string): string => {
+        try {
+            return run();
+        } catch (error) {
+            return error instanceof RangeError ? "RangeError" : "other";
+        }
+    };
+    const n = Number("255");
+    if (n.toString(16) !== "ff" || n.toString(Number("16.9")) !== "ff") throw new Error("radix as an integer");
+    if (rangeErrorOf(() => n.toString(Number("1"))) !== "RangeError") throw new Error("radix below 2");
+    if (rangeErrorOf(() => Number("x").toString(Number("37"))) !== "RangeError") throw new Error("NaN receiver");
+    if (rangeErrorOf(() => n.toString(Number("y"))) !== "RangeError") throw new Error("NaN radix");
+    if (rangeErrorOf(() => n.toString(Number("1e10"))) !== "RangeError") throw new Error("huge radix");
+    if (Number("Infinity").toString(16) !== "Infinity") throw new Error("infinite receiver");
+`,
+);
+
+check(
+    "a-record-parameter-stays-one-object-wherever-it-is-stored",
+    `
+    interface Count { n: number }
+    function assign(p: Count): number { let o: Count; o = p; o.n = 2; return p.n; }
+    function destructure(p: Count): number { let o: Count; [o] = [p]; o.n = 3; return p.n; }
+    function iterate(p: Count): number { for (const o of [p]) o.n = 4; return p.n; }
+    function reassigned(p: Count): number { let o: Count = { n: 0 }; o = p; p.n = 5; return o.n; }
+    function boxed(p: Count): number { const box = { item: p }; box.item.n = 6; return p.n; }
+    function nested(p: { inner: Count }): number { let o: Count; o = p.inner; o.n = 7; return p.inner.n; }
+    function twice(p: Count, by: number): number { let o: Count; o = p; o.n += by; return p.n; }
+    if (assign({ n: 1 }) !== 2) throw new Error("assignment");
+    if (destructure({ n: 1 }) !== 3) throw new Error("destructuring assignment");
+    if (iterate({ n: 1 }) !== 4) throw new Error("for-of binding");
+    if (reassigned({ n: 1 }) !== 5) throw new Error("write through the parameter");
+    if (boxed({ n: 1 }) !== 6) throw new Error("object field");
+    if (nested({ inner: { n: 1 } }) !== 7) throw new Error("nested record");
+    if (twice({ n: 1 }, 1) !== 2 || twice({ n: 10 }, 5) !== 15) throw new Error("separate calls");
+`,
+);
+
+check(
+    "gathered-activations-on-fresh-objects-run-where-they-start",
+    `
+    interface Level { lit: boolean; level: number }
+    async function make(level: number): Promise<Level> {
+        const made: Level = { lit: false, level: 0 };
+        made.lit = true;
+        await null;
+        made.level = level;
+        return made;
+    }
+    async function main(): Promise<void> {
+        const [first, second] = await Promise.all([make(1), make(2)]);
+        if (!first.lit || first.level !== 1 || second.level !== 2) throw new Error("fresh results");
+    }
+    void main();
+`,
+);
+
+checkInRealm(
     "awaited-nullish-fallbacks-run-only-when-absent",
     `
     const order: string[] = [];
@@ -8944,6 +9133,48 @@ checkInRealm(
             throw new Error("generic edit lane");
         globalThis.close();
     })();
+`,
+);
+
+checkInRealm(
+    "async-functions-a-record-carries-re-enter-their-caller",
+    `
+    const log: string[] = [];
+    function drive(frame: () => void): () => void {
+        let disposed = false;
+        setTimeout(() => { if (!disposed) frame(); }, 0);
+        return () => { disposed = true; };
+    }
+    interface Nav { goToMenu: () => Promise<void>; restart?: () => Promise<void> }
+    async function build(nav: Nav, menu: boolean): Promise<() => void> {
+        await Promise.resolve();
+        log.push(menu ? "menu" : "race");
+        const exit = menu ? null : { hint: 1 };
+        return drive(() => {
+            if (exit) void nav.goToMenu();
+            else if (nav.restart) void nav.restart();
+        });
+    }
+    async function run(): Promise<void> {
+        let stop: (() => void) | null = null;
+        async function goToMenu(): Promise<void> {
+            stop?.();
+            stop = await build({ goToMenu }, true);
+        }
+        function race(): () => Promise<void> {
+            const start = async (): Promise<void> => {
+                stop?.();
+                stop = await build({ goToMenu, restart: start }, false);
+            };
+            return start;
+        }
+        await race()();
+        setTimeout(() => setTimeout(() => {
+            if (log.join(",") !== "race,menu") throw new Error(log.join(","));
+            globalThis.close();
+        }, 0), 0);
+    }
+    void run();
 `,
 );
 
@@ -10330,6 +10561,42 @@ check(
     if (Date.UTC(2020, 13, 1) !== Date.UTC(2021, 1, 1) || Date.UTC(2020, -1, 1) !== Date.UTC(2019, 11, 1) ||
         Date.UTC(2020, 0, 1, 25) !== Date.UTC(2020, 0, 2, 1) || Date.UTC(1970, 0, 1, 0, 0, 0, 0.9) !== 0 ||
         Date.UTC(2020) !== 1577836800000 || Date.UTC(1970, 0, 2) !== 86400000) throw new Error("Date.UTC fields");
+`,
+);
+
+check(
+    "date-utc-field-setters",
+    `
+    const when = new Date(Date.UTC(2020, 0, 15, 10, 20, 30, 400));
+    const first = when.setUTCFullYear(2001);
+    when.setUTCMonth(5, 2);
+    when.setUTCHours(23, 59);
+    when.setUTCSeconds(1, 2);
+    when.setUTCMilliseconds(999);
+    when.setUTCMinutes(7);
+    when.setUTCDate(31);
+    if (when.toISOString() !== "2001-07-01T23:07:01.999Z" || first !== Date.UTC(2001, 0, 15, 10, 20, 30, 400))
+        throw new Error("setters " + when.toISOString());
+    const early = new Date(0);
+    early.setUTCFullYear(50);
+    const invalid = new Date(NaN);
+    const hours = invalid.setUTCHours(1);
+    invalid.setUTCFullYear(2000);
+    if (early.getUTCFullYear() !== 50 || !Number.isNaN(hours) || invalid.getUTCFullYear() !== 2000 || invalid.getUTCMonth() !== 0)
+        throw new Error("year and invalid time");
+`,
+);
+
+check(
+    "typed-array-and-array-length-range-errors",
+    `
+    const empty = new Float32Array(Number("x"));
+    let typed = "";
+    try { void new Uint8Array(-1); } catch (error) { typed = (error as Error).name; }
+    const values = [1, 2, 3];
+    let plain = "";
+    try { values.length = -1; } catch (error) { plain = (error as Error).name; }
+    if (empty.length !== 0 || typed !== "RangeError" || plain !== "RangeError") throw new Error("lengths " + typed + " " + plain);
 `,
 );
 
@@ -14636,6 +14903,177 @@ test("imported module records reached through holders and element reads are one 
     );
 });
 
+// A write through a selection writes the object it picks; a method writing
+// a member's array, or one of the object's own methods writing through
+// `this`, gives that array storage.
+check(
+    "writes-through-selections-and-members-reach-their-objects",
+    `
+    function local(): void {
+        const a = { n: 1 };
+        const b = { n: 2 };
+        (Number("1") > 0 ? a : b).n = 10;
+        const rows = [{ n: 1 }, { n: 2 }];
+        (Number("1") > 0 ? rows[1]! : rows[0]!).n = 7;
+        const cfg = { list: [1, 2], groups: { a: [1] as number[] } };
+        cfg.list.push(3);
+        cfg.groups.a.push(4);
+        const store = { items: [] as number[], add(v: number): void { this.items.push(v); } };
+        store.add(5);
+        if (a.n !== 10 || b.n !== 2 || rows[1]!.n !== 7 || rows[0]!.n !== 1 || cfg.list.join() !== "1,2,3" ||
+            cfg.groups.a.join() !== "1,4" || store.items.join() !== "5")
+            throw new Error("local");
+    }
+    local();
+    const left = { n: 1 };
+    const right = { n: 2 };
+    (Number("0") > 0 ? left : right).n = 20;
+    const shared = { items: [] as number[], add(v: number): void { this.items.push(v); } };
+    shared.add(6);
+    if (left.n !== 1 || right.n !== 20 || shared.items.length !== 1) throw new Error("module");
+`,
+);
+
+test("imported containers written through a destructured or exported alias are written", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-container-aliases"),
+        [
+            [
+                "state",
+                `export const state = { list: [] as string[] };
+                export const table = { xs: [1] };
+                export const xs = table.xs;`,
+            ],
+        ],
+        `import { state, table, xs } from "./state.js";
+        const { list } = state;
+        list.push("x");
+        xs.push(2);
+        if (state.list.length !== 1 || table.xs.length !== 2) throw new Error("aliases " + state.list.length + " " + table.xs.length);`,
+    );
+    await executeGeneratedAssertions(t, "imported-container-aliases", cpp);
+});
+
+// A module container a function keeps is written through its new holder;
+// one a function only reads stays a constant.
+check(
+    "module-containers-kept-by-a-function-are-written-through-the-holder",
+    `
+    const ITEMS: number[] = [1, 2];
+    const CONFIG = { size: 1 };
+    const CODES = new Set(["a", "b"]);
+    const holder: { list: number[] } = { list: [] };
+    const slots: { size: number }[] = [];
+    function keep(list: number[]): void { holder.list = list; }
+    function register(config: { size: number }): void { slots.push(config); }
+    function anyIn(codes: Set<string>, key: string): boolean {
+        for (const code of codes) if (code === key) return true;
+        return false;
+    }
+    keep(ITEMS);
+    holder.list.push(3);
+    register(CONFIG);
+    slots[0]!.size = 7;
+    if (ITEMS.length !== 3 || CONFIG.size !== 7) throw new Error("kept " + ITEMS.length + " " + CONFIG.size);
+    if (!anyIn(CODES, "b") || anyIn(CODES, "z")) throw new Error("read-only set");
+`,
+);
+
+check(
+    "functions-run-on-a-receiver-they-are-handed",
+    `
+    const box = { n: 1 };
+    function bump(this: { n: number }, by: number): void { this.n += by; }
+    bump.call(box, 2);
+    bump.apply(box, [3]);
+    Reflect.apply(bump, box, [4]);
+    const bound = bump.bind(box);
+    bound(5);
+    if (box.n !== 15) throw new Error("receiver " + box.n);
+`,
+);
+
+// An argument is checked against the call's type at its position: a
+// generic tuple parameter's instantiation, a bound function's rest element.
+check(
+    "arguments-checked-at-their-resolved-position",
+    `
+    function swap<T>(pair: [T, T]): [T, T] { return [pair[1], pair[0]]; }
+    let n = 1;
+    for (let i = 0; i < 3; i++) n += i;
+    const swapped = swap([n, 2]);
+    const box = { n: 1 };
+    function bump(this: { n: number }, by: number, label: string): void { this.n += by + label.length; }
+    const bound = bump.bind(box);
+    bound(5, "ab");
+    if (swapped[0] !== 2 || swapped[1] !== n || box.n !== 8)
+        throw new Error("arguments " + swapped[0] + " " + box.n);
+`,
+);
+
+check(
+    "numeric-logical-operators-and-array-membership",
+    `
+    const L = [3, 0, 5];
+    let calls = 0;
+    function next(): number { calls++; return 7; }
+    function pick(i: number): number { return (L[i] && 1) || 2; }
+    let far = 1;
+    for (let k = 0; k < 2; k++) far += 2;
+    const either = L[0]! || next();
+    const both = L[1]! && next();
+    if (pick(0) !== 1 || pick(1) !== 2 || pick(far) !== 2 || either !== 3 || both !== 0 || calls !== 0)
+        throw new Error("logical " + calls);
+    if (!(1 in L) || far in L || !("length" in L) || !("push" in L) || !("2" in L) || Object.hasOwn(L, "push"))
+        throw new Error("membership");
+`,
+);
+
+// A static key is an index only in its canonical form; typed arrays and
+// tuples answer as arrays do.
+check(
+    "array-membership-index-keys",
+    `
+    const xs = [1, 2, 3];
+    const bytes = new Uint8Array(2);
+    const pair: [number, string] = [1, "a"];
+    let k = 0;
+    for (let i = 0; i < 2; i++) k += i;
+    if ("-1" in xs || "01" in xs || "1.5" in xs || !("2" in xs) || "3" in xs)
+        throw new Error("vector");
+    if (!("1" in bytes) || "2" in bytes || !(k in bytes) || !Object.hasOwn(bytes, "0"))
+        throw new Error("typed");
+    if (!("1" in pair) || "2" in pair || !(k in pair))
+        throw new Error("tuple");
+`,
+);
+
+test("crypto.getRandomValues fills integer typed arrays in place", async (t) => {
+    const source = `
+        const bytes = new Uint8Array(16);
+        const same = crypto.getRandomValues(bytes);
+        const words = crypto.getRandomValues(new Uint32Array(4));
+        let filled = false;
+        for (let tries = 0; tries < 4 && !filled; tries++) {
+            crypto.getRandomValues(bytes);
+            filled = bytes.some((value) => value !== 0) && words.some((value) => value !== 0);
+        }
+        if (same !== bytes || words.length !== 4 || !filled) throw new Error("random values");
+    `;
+    const result = compileSource(source, { fileName: "random-values.ts" });
+    assert.ok(result.manifest.features.includes("data:crypto"));
+    await executeGeneratedAssertions(t, "random-values", result.cpp);
+    assert.throws(
+        () => compileSource(`crypto.getRandomValues(new Float32Array(2));`),
+        /fills an integer typed array/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`const xs = [1]; Array.prototype.push.call(xs, 2);`),
+        /borrows a library method for another receiver/,
+    );
+});
+
 // A record handed to a function that compares it is the one object its
 // literal created, whether the call is inlined or runs a compiled body.
 check(
@@ -15261,6 +15699,101 @@ check(
     `,
 );
 checkInRealm(
+    "a promise reaction completes with what every dispatched method body completes with",
+    `
+    const played: number[] = [];
+    class Voice {
+        start(value: number): void {
+            if (value < 0) return;
+            played.push(value);
+        }
+        play(value: Promise<number>): Promise<void> {
+            return value.then((settled) => this.start(settled));
+        }
+    }
+    class Echo extends Voice {
+        override start(value: number): void { played.push(value * 10); }
+    }
+    void (async () => {
+        const voices: Voice[] = [new Voice(), new Echo(), new Voice()];
+        const results = [
+            await voices[0]!.play(Promise.resolve(1)),
+            await voices[1]!.play(Promise.resolve(2)),
+            await voices[2]!.play(Promise.resolve(-1)),
+        ];
+        if (played.join() !== "1,20" || results.some((result) => result !== undefined)) throw new Error("dispatched completion " + played.join());
+        globalThis.close();
+    })();
+    `,
+);
+check(
+    "an arrow on a run-time receiver dispatches an overridden method on this",
+    `
+    const played: number[] = [];
+    class Voice {
+        start(value: number): void { played.push(value); }
+        play(values: number[]): void {
+            const go = (value: number): void => this.start(value);
+            values.forEach((value) => go(value));
+        }
+    }
+    class Echo extends Voice {
+        override start(value: number): void { played.push(value * 10); }
+    }
+    const voices: Voice[] = [new Voice(), new Echo()];
+    voices[0]!.play([1, 2]);
+    voices[1]!.play([1, 2]);
+    if (played.join() !== "1,2,10,20") throw new Error("receiver dispatch " + played.join());
+    `,
+);
+checkInRealm(
+    "a class a later store shares is one object from its first construction",
+    `
+    class Physics {
+        x = 1;
+        step(): void { this.x++; }
+    }
+    interface Items { physics: Physics; count: number; }
+    async function spawn(items: Items): Promise<number> {
+        await Promise.resolve();
+        items.physics.step();
+        return items.count;
+    }
+    class Monsters {
+        constructor(private readonly physics: Physics) {}
+        async load(): Promise<void> {
+            await Promise.resolve();
+            this.physics.step();
+        }
+    }
+    void (async () => {
+        const physics = new Physics();
+        physics.step();
+        const count = await spawn({ physics, count: 2 });
+        await new Monsters(physics).load();
+        if (physics.x !== 4 || count !== 2) throw new Error("shared instance " + physics.x);
+        globalThis.close();
+    })();
+    `,
+);
+test("a promise reaction refuses a dispatched method override that completes with a value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            class Voice {
+                start(value: number): void { if (value < 0) return; }
+                play(value: Promise<number>): Promise<void> { return value.then((settled) => this.start(settled)); }
+            }
+            class Echo extends Voice {
+                start(value: number): number { return value; }
+            }
+            const voices: Voice[] = [new Voice(), new Echo()];
+            void (async () => { await voices[1]!.play(Promise.resolve(2)); globalThis.close(); })();
+        `),
+        /Promise reaction with a void result requires a proven undefined completion/,
+    );
+});
+checkInRealm(
     "Promise.all settles to a new array",
     `
     const arr = [1, 2];
@@ -15595,5 +16128,103 @@ check(
         return get;
     }
     if (fns.map((f) => f()).join() !== "10,20" || make({ n: 1 })() !== 5) throw new Error("late write " + fns.map((f) => f()).join());
+    `,
+);
+check(
+    "a library method called by a static key is the dotted call",
+    `
+    const xs = [3, 1, 2];
+    const push = "push";
+    xs["sort"]((a, b) => a - b);
+    xs[push](4);
+    const fns: Array<(x: number) => number> = [(x) => x + 1];
+    if (xs.join() !== "1,2,3,4" || xs.length !== 4 || xs["indexOf"](3) !== 2 || fns[0](1) !== 2)
+        throw new Error("array " + xs.join());
+    const m = new Map<string, number>();
+    m["set"]("a", 1);
+    const s = "a,b";
+    if (m["get"]("a") !== 1 || m.size !== 1 || s["split"](",").length !== 2 || s["toUpperCase"]() !== "A,B")
+        throw new Error("map and string");
+    const n = 3.14159;
+    if (Math["max"](1, 2) !== 2 || JSON["stringify"]({ a: 1 }) !== '{"a":1}' || n["toFixed"](2) !== "3.14" ||
+        !Array["isArray"](xs) || Number["parseFloat"]("1.5") !== 1.5 || globalThis["parseInt"]("12", 10) !== 12)
+        throw new Error("statics");
+    class C { static f(x: number): number { return x * 3; } }
+    function g(this: { n: number }, x: number): number { return this.n + x; }
+    const o: number[] | undefined = Math.random() < 2 ? [5] : undefined;
+    if (C["f"](2) !== 6 || g["call"]({ n: 1 }, 2) !== 3 || o?.["indexOf"](5) !== 0) throw new Error("static, call, optional");
+    `,
+);
+
+test("a method key that runs code refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                'class K { m(): number { return 1; } } const k = new K(); const key = (): "m" => "m"; const unused = k[key()]();',
+            ),
+        /A method key that runs code/,
+    );
+});
+
+check(
+    "a hoisted var reads where every path assigned it",
+    `
+    function sw(k: number): string {
+        switch (k) {
+            case 1:
+                var s = "one";
+                break;
+            default:
+                s = "other";
+        }
+        return s;
+    }
+    function tc(fail: boolean): number {
+        try {
+            if (fail) throw new Error("x");
+            var v = 2;
+        } catch {
+            v = -1;
+        }
+        return v;
+    }
+    function loop(): number {
+        for (;;) {
+            var n = 4;
+            break;
+        }
+        return n!;
+    }
+    function cond(c: boolean): number {
+        {
+            var t: number;
+        }
+        c ? (t = 1) : (t = 2);
+        return t;
+    }
+    if (sw(1) + sw(2) !== "oneother") throw new Error("switch");
+    if (tc(false) !== 2 || tc(true) !== -1) throw new Error("try");
+    if (loop() !== 4) throw new Error("loop");
+    if (cond(true) + cond(false) !== 3) throw new Error("cond");
+    `,
+);
+
+check(
+    "a record nested in a variable or a parameter stays one object where a store holds it",
+    `
+    function viaParameter(p: { inner: { n: number } }): number {
+        const held = [p.inner];
+        held[0]!.n = 2;
+        return p.inner.n;
+    }
+    if (viaParameter({ inner: { n: 1 } }) !== 2) throw new Error("parameter");
+    function viaSpread(seed: number): number {
+        const outer = { inner: { n: seed }, m: 1 };
+        const copy = { ...outer };
+        const kept = [copy.inner];
+        kept[0]!.n = 4;
+        return outer.inner.n;
+    }
+    if (viaSpread(1) !== 4) throw new Error("spread copy " + viaSpread(1));
     `,
 );

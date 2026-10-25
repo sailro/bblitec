@@ -12,6 +12,7 @@ import {
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
 } from "./user-functions.js";
+import { libraryStaticMember } from "./symbols.js";
 
 /** Finite record proxies keep the target's typed slots and their own object identity. */
 export class RecordProxies {
@@ -327,21 +328,23 @@ export class RecordProxies {
 
     public reflect(call: ts.CallExpression): Value | undefined {
         const context: LoweringServices = this.context;
-        const callee = context.unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return undefined;
-        const library = context.libraryGlobal(callee.expression);
+        const callee = libraryStaticMember(
+            context.checker,
+            context.unwrap(call.expression),
+        );
+        if (!callee) return undefined;
+        const library = callee.owner;
         if (
             (library === "Reflect" &&
                 ["set", "deleteProperty", "defineProperty"].includes(
-                    callee.name.text,
+                    callee.name,
                 )) ||
-            (library === "Object" && callee.name.text === "defineProperty")
+            (library === "Object" && callee.name === "defineProperty")
         )
             return context.probeEmission(() =>
-                this.mutate(call, callee.name.text, library === "Object"),
+                this.mutate(call, callee.name, library === "Object"),
             );
-        if (library !== "Reflect" || callee.name.text !== "get")
-            return undefined;
+        if (library !== "Reflect" || callee.name !== "get") return undefined;
         const [targetNode, keyNode, receiverNode] = call.arguments;
         if (!targetNode || !keyNode || call.arguments.length > 3)
             context.fail(

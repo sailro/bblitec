@@ -95,6 +95,7 @@ interface BindingScopesContext extends Pick<
     | "fail"
     | "sharedClosures"
     | "options"
+    | "parameterObjects"
     | "probeEmission"
     | "reachJsData"
     | "registerNativeBinding"
@@ -104,6 +105,7 @@ interface BindingScopesContext extends Pick<
     | "symbols"
     | "takeNativeTemporary"
     | "useNativeValue"
+    | "varBindings"
 > {
     describeNativeValue(value: Value): void;
     hasStableNativeBinding(value: Value): boolean;
@@ -125,6 +127,17 @@ interface CodeReads {
     /** The function bodies the code's calls resolve to. */
     readonly calls: readonly ts.Node[];
 }
+
+/**
+ * What a value says of its initializer alone: a regular expression's
+ * captures and flags, the engine owner it was created from, a packaged
+ * body's source. A binding code reassigns holds none of them.
+ */
+const INITIALIZER_FACTS = [
+    "regexpLayout",
+    "engineOwnerIdentity",
+    "packagedBodySource",
+] as const satisfies readonly (keyof Value)[];
 
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
@@ -258,33 +271,12 @@ export class BindingScopes {
     }
 
     public lookup(identifier: ts.Identifier): Value {
-        const symbol = this.context.symbols.valueSymbol(identifier);
-        if (!symbol) {
+        return (
+            this.lookupOptional(identifier) ??
             this.context.fail(
                 identifier,
                 `Unknown or unsupported variable '${identifier.text}'.`,
-            );
-        }
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            const binding = this.variableScopes[index]!.get(symbol);
-            if (binding) {
-                this.refuseEscapingPlatformEventCapture(
-                    identifier,
-                    index,
-                    binding.value,
-                );
-                this.refusePoisonedRebind(identifier, binding);
-                this.context.useNativeValue(binding.value);
-                return binding.value;
-            }
-        }
-        this.context.fail(
-            identifier,
-            `Unknown or unsupported variable '${identifier.text}'.`,
+            )
         );
     }
 
@@ -306,6 +298,8 @@ export class BindingScopes {
                     binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
+                if (binding.unassignedVar)
+                    this.context.varBindings.refuseUnassignedRead(identifier);
                 this.context.useNativeValue(binding.value);
                 return binding.value;
             }
@@ -343,6 +337,32 @@ export class BindingScopes {
         );
     }
 
+    /**
+     * The earliest live binding holding this compile-time record, as itself
+     * or nested in its fields: a variable (before its const aliases) or a
+     * parameter. A store's unbound source name stands in for a record no
+     * live binding holds.
+     */
+    public recordHolder(
+        value: Value,
+        expression: ts.Expression | undefined,
+    ): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
+        const members = value.recordProperties;
+        if (!members) return undefined;
+        const seen = new Set<Value>();
+        const holds = (owner: Value): boolean => {
+            if (seen.has(owner)) return false;
+            seen.add(owner);
+            return (
+                owner.recordProperties === members ||
+                Object.values(owner.recordProperties ?? {}).some(
+                    (member) => member.kind === "record" && holds(member),
+                )
+            );
+        };
+        return this.aggregateHolder(holds, expression, true);
+    }
+
     /** The earliest live declaration sharing this compile-time tuple, before any lexical aliases. */
     public tupleDeclaration(
         value: Value,
@@ -377,21 +397,41 @@ export class BindingScopes {
         expression: ts.Expression | undefined,
     ): ts.VariableDeclaration | undefined {
         if (!members) return undefined;
+        const holder = this.aggregateHolder(
+            (bound) => membersOf(bound) === members,
+            expression,
+            false,
+        );
+        return holder && ts.isVariableDeclaration(holder) ? holder : undefined;
+    }
+
+    /**
+     * The earliest live declaration whose binding `holds` the aggregate: an
+     * initialized variable, followed through its const aliases, or where
+     * `parameters` allows, a parameter.
+     */
+    private aggregateHolder(
+        holds: (value: Value) => boolean,
+        expression: ts.Expression | undefined,
+        parameters: boolean,
+    ): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
         let origin: ts.Declaration | undefined;
         for (const scope of this.variableScopes) {
             for (const [symbol, binding] of scope) {
-                if (membersOf(binding.value) !== members) continue;
+                if (!holds(binding.value)) continue;
                 const declaration = symbol.valueDeclaration;
                 if (
                     declaration &&
-                    ts.isVariableDeclaration(declaration) &&
-                    declaration.initializer
+                    ((ts.isVariableDeclaration(declaration) &&
+                        declaration.initializer) ||
+                        (parameters && ts.isParameter(declaration)))
                 )
                     origin = declaration;
                 if (origin) break;
             }
             if (origin) break;
         }
+        if (origin && ts.isParameter(origin)) return origin;
         const source = expression && unwrapExpression(expression);
         const symbol =
             source && ts.isIdentifier(source)
@@ -998,33 +1038,22 @@ export class BindingScopes {
     }
 
     public defineVariable(identifier: ts.MemberName, value: Value): void {
+        // A hoisted `var` declared here is assigned, not bound again.
+        if (this.context.varBindings.assignsDeclared(identifier, value)) return;
         // A parameter's record was settled where the call built it: what the
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
         value = this.closureSharedCell(identifier, value);
-        const storedType =
-            value.dataType?.kind === "optional"
-                ? value.dataType.inner
-                : value.dataType;
+        // A later assignment, even through a closure or a loop, replaces
+        // what the initializer's value alone says.
         if (
-            storedType?.kind === "regexp" &&
-            ts.isIdentifier(identifier) &&
-            this.context.sharedClosures.identifierIsRebound(identifier)
-        ) {
-            // A later assignment may change the grammar even through a
-            // closure or loop; the initializer's captures and flags no
-            // longer describe this binding's runtime value.
-            value = { ...value };
-            delete writable(value).regexpLayout;
-        }
-        if (
-            value.engineOwnerIdentity &&
+            INITIALIZER_FACTS.some((fact) => value[fact] !== undefined) &&
             ts.isIdentifier(identifier) &&
             this.context.sharedClosures.identifierIsRebound(identifier)
         ) {
             value = { ...value };
-            delete writable(value).engineOwnerIdentity;
+            for (const fact of INITIALIZER_FACTS) delete writable(value)[fact];
         }
         if (value.kind === "engine" && !value.engineIdentity)
             value = { ...value, engineIdentity: Symbol() };
@@ -1105,6 +1134,35 @@ export class BindingScopes {
             name: identifier.text,
             value,
         });
+    }
+
+    /** A hoisted `var` just declared holds nothing its type admits yet. */
+    public markVarUnassigned(symbol: ts.Symbol): void {
+        const owner = this.bindingScope(symbol);
+        const binding = owner?.get(symbol);
+        if (owner && binding)
+            owner.set(symbol, { ...binding, unassignedVar: true });
+    }
+
+    /**
+     * An assignment to a hoisted `var` makes it readable for the rest of
+     * the scope it ran in: the binding's own scope when every scope between
+     * runs with it, else the innermost, which ends with that branch.
+     */
+    public markVarAssigned(identifier: ts.Identifier): void {
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        if (!symbol) return;
+        const owner = this.bindingScope(symbol);
+        const binding = owner?.get(symbol);
+        if (!owner || !binding?.unassignedVar) return;
+        const { unassignedVar: _unassigned, ...assigned } = binding;
+        const scopes = this.variableScopes.slice(
+            this.variableScopes.indexOf(owner) + 1,
+        );
+        (scopes.every((scope) => this.transparentRebindingScopes.has(scope))
+            ? owner
+            : this.variableScopes.at(-1)!
+        ).set(symbol, assigned);
     }
 
     /**
@@ -1270,10 +1328,11 @@ export class BindingScopes {
             !this.context.classOf(narrowed) &&
             !this.containsPlatformEvent(narrowed) &&
             ts.isParameter(identifier.parent) &&
-            this.context.sharedClosures.needsSharedClosureStorage(
+            (this.context.sharedClosures.needsSharedClosureStorage(
                 identifier.parent,
                 identifier,
-            )
+            ) ||
+                this.context.parameterObjects.has(identifier.parent))
         ) {
             const declared = this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(identifier),
@@ -1286,6 +1345,13 @@ export class BindingScopes {
                     declared,
                     identifier,
                 );
+            // A store demanded this parameter's object: its record type
+            // holds objects by reference wherever the store happens.
+            if (
+                represented?.kind === "struct" &&
+                this.context.parameterObjects.has(identifier.parent)
+            )
+                this.context.dataTypes.markStoredObjectReferences(represented);
             if (
                 represented?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(represented.name)
@@ -1385,6 +1451,8 @@ export class BindingScopes {
             !this.containsPlatformEvent(value) &&
             ts.isIdentifier(identifier) &&
             parameterDeclaration !== undefined &&
+            // A demand gave the parameter its argument's object to keep.
+            !this.context.parameterObjects.has(parameterDeclaration) &&
             isSupportedFunction(parameterDeclaration.parent) &&
             parameterIsMutated(
                 this.context.checker,
@@ -2377,6 +2445,58 @@ export class BindingScopes {
             nativeCaptures: [binding],
             nativeBinding: true,
         };
+    }
+
+    /**
+     * `pinValueToTemporary` for the class instance a method runs on: a
+     * receiver other than a plain name is bound once to a writable local,
+     * and its object stays owned (`lifetime_owner`) while that local lives.
+     * A closure reading the receiver (a dispatch's tag test) captures the
+     * local, as one reading its fields does.
+     */
+    public pinReceiverToTemporary(
+        value: Value,
+        dataType: DataType & { kind: "struct" },
+        label: string,
+    ): Value {
+        if (cppIdentifierPattern.test(value.cpp)) return value;
+        const name = this.context.allocateTemporaryCppName(label);
+        const source = this.context.allocateTemporaryCppName(`${label}_source`);
+        const lifetime = this.context.allocateTemporaryCppName(
+            `${label}_lifetime`,
+        );
+        const cppType = this.context.dataTypes.cppType(dataType);
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name: source,
+            initializer: value.cpp,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: lifetime,
+            initializer: `${source}.lifetime_owner()`,
+            attributes: "[[maybe_unused]] ",
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: cppType,
+            name,
+            initializer: source,
+        });
+        this.context.registerNativeBindingType(name, cppType);
+        const capture = this.context.registerNativeBinding(name, false, true);
+        // The identity and presence spellings follow the binding, or an
+        // optional call would spell the call a second time; a storage read
+        // is stable and keeps its own.
+        const receiver = value.nativeLvalue
+            ? value
+            : withNativeMetadata(
+                  this.context.dataLowerer.leafValue(name, dataType),
+                  value,
+              );
+        return { ...receiver, cpp: name, nativeCaptures: [capture] };
     }
 
     /**

@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 
 /**
@@ -10,9 +12,13 @@ import { dataTypesEqual, type DataType } from "./data-types.js";
  * members (`DataTypeRegistry.enumLiterals`), which survive a replay where
  * the generated enum names may not.
  */
-export class EnumArrayStorageRequired extends Error {
+export class EnumArrayStorageRequired extends StorageDemand {
     constructor(readonly unions: readonly string[]) {
         super("Arrays of a literal union read as string arrays store strings.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "enum-array", unions: this.unions };
     }
 }
 

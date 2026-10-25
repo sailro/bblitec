@@ -2,11 +2,23 @@ import ts from "typescript";
 import { EmissionSet } from "./emission-transaction.js";
 import {
     declarationInDefaultLibrary,
+    declaredInDomLibrary,
     libraryGlobal,
+    libraryName,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
-import { callSignatures } from "./type-facts.js";
+import {
+    callSignatures,
+    PRIMITIVE_KINDS,
+    unionMembers,
+    valueKindOf,
+} from "./type-facts.js";
 import { unwrapExpression } from "./syntax.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
 
 /**
  * The built-in methods that change the container they are called on, read
@@ -42,19 +54,95 @@ export const lengthPreservingArrayMethods: ReadonlySet<string> =
         ),
     );
 
-/**
- * The methods that change the container they are called on: every
- * mutating array method plus the Map/Set writers. A name outside this set
- * writes nothing through its receiver, so a container only ever read
- * through `get`, `has`, `map` or `find` stays folded.
- */
-export const receiverWritingMethods: ReadonlySet<string> = new EmissionSet([
-    ...mutatingArrayMethods,
-    "set",
+/** Map, Set, WeakMap and WeakSet methods that change the collection. */
+const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
     "add",
     "clear",
     "delete",
+    "set",
 ]);
+
+/** The keyed collections whose writers `collectionWritingMethods` names. */
+const KEYED_COLLECTIONS: ReadonlySet<string> = new Set([
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+]);
+
+/** Typed array methods that change the array in place. */
+const typedArrayWritingMethods: ReadonlySet<string> = new EmissionSet([
+    ...lengthPreservingArrayMethods,
+    "set",
+]);
+
+/** `Object.prototype` methods, which read their receiver. */
+const OBJECT_READING_METHODS: ReadonlySet<string> = new Set([
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+]);
+
+/**
+ * Default-library classes whose methods leave the receiver as it was, but
+ * for the ones each names: setters, a RegExp's lastIndex readers.
+ */
+const LIBRARY_READING_METHODS: ReadonlyMap<
+    string,
+    (method: string) => boolean
+> = new Map<string, (method: string) => boolean>([
+    ["ArrayBuffer", (method) => method === "slice"],
+    ["DataView", (method) => !method.startsWith("set")],
+    ["Date", (method) => !method.startsWith("set")],
+    ["Error", () => true],
+    ["Object", (method) => OBJECT_READING_METHODS.has(method)],
+    ["Promise", () => true],
+    [
+        "RegExp",
+        (method) =>
+            method !== "compile" && method !== "exec" && method !== "test",
+    ],
+    ["SharedArrayBuffer", (method) => method === "slice"],
+    ["WeakRef", () => true],
+]);
+
+/**
+ * Whether calling the library method `method` on `receiver` writes it, by
+ * the receiver's checked type: an array's or typed array's mutating
+ * methods, a collection's writers, none on a primitive, a library class's
+ * own writers, none a DOM interface declares (host state, which the
+ * platform effect tables own, not program data), and on any other receiver
+ * every method not known to only read. A name every owner only reads is
+ * answered without the checker.
+ */
+export function libraryMethodWritesReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+    method: string,
+): boolean {
+    if (readOnlyDataMethods.has(method)) return false;
+    return unionMembers(
+        checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
+    ).some((member) => {
+        if (PRIMITIVE_KINDS.includes(valueKindOf(member))) return false;
+        if (checker.isArrayType(member) || checker.isTupleType(member))
+            return mutatingArrayMethods.has(method);
+        const name = libraryName(member) ?? "";
+        if (TYPED_ARRAY_KINDS.has(name) || BIGINT_ARRAY_KINDS.has(name))
+            return typedArrayWritingMethods.has(method);
+        if (KEYED_COLLECTIONS.has(name))
+            return collectionWritingMethods.has(method);
+        const reads = LIBRARY_READING_METHODS.get(name);
+        if (reads) return !reads(method);
+        const declared = checker.getPropertyOfType(member, method);
+        return (
+            !declaredInDomLibrary(declared) && !readOnlyDataMethods.has(method)
+        );
+    });
+}
 
 /** Data-container methods whose receiver is not mutated. */
 export const readOnlyDataMethods: ReadonlySet<string> = new EmissionSet([
@@ -147,10 +235,10 @@ export function callsArgumentInPlace(
         return (
             index === 0 && libraryGlobal(checker, call.expression) === "Promise"
         );
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee) return false;
     if (
-        callee.name.text === "from" &&
+        callee.name === "from" &&
         libraryGlobal(checker, callee.expression) === "Array"
     )
         return index === 1;
@@ -158,17 +246,18 @@ export function callsArgumentInPlace(
     return (
         declaration !== undefined &&
         declarationInDefaultLibrary(declaration) &&
-        synchronousCallbackMethods.has(callee.name.text)
+        synchronousCallbackMethods.has(callee.name)
     );
 }
 
 /** `target.addEventListener(type, listener)`: it keeps the listener. */
-export function isListenerRegistration(call: ts.CallExpression): boolean {
-    const callee = unwrapExpression(call.expression);
+export function isListenerRegistration(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): boolean {
     return (
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "addEventListener" &&
-        call.arguments.length >= 2
+        namedMember(checker, unwrapExpression(call.expression))?.name ===
+            "addEventListener" && call.arguments.length >= 2
     );
 }
 
@@ -213,8 +302,9 @@ export function isStoringDataCall(
     }
     return (
         (ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            storingDataMethods.has(node.expression.name.text)) ||
+            storingDataMethods.has(
+                namedMember(checker, node.expression)?.name ?? "",
+            )) ||
         (ts.isNewExpression(node) &&
             ["Map", "Set"].includes(
                 libraryGlobal(checker, node.expression) ?? "",

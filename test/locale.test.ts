@@ -703,6 +703,50 @@ test("native local-time Date getters match JavaScript in the host zone", (t) => 
     execFileSync(executable, { stdio: "pipe" });
 });
 
+test("native local-time Date setters and the local fields constructor match JavaScript in the host zone", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required");
+        return;
+    }
+    // Local fields around both daylight-saving transitions of most zones.
+    const steps = [
+        "new Date(2020, 5, 15, 12, 0, 0, 0)",
+        "new Date(2021, 2, 28, 2, 30)",
+        "new Date(2021, 9, 31, 2, 30)",
+        "new Date(99, 0)",
+    ];
+    const edit = (date: string): string =>
+        `(() => { const when = ${date}; const results = [when.getTime(), when.setHours(3, 4, 5, 6), when.setDate(20), when.setMonth(1, 2), when.setFullYear(2019), when.setMinutes(30), when.setSeconds(7), when.setMilliseconds(8)]; return results.join(","); })()`;
+    const expectations = steps
+        .map((date) => {
+            const expected = runInNewContext(
+                ts.transpileModule(edit(date), {
+                    compilerOptions: { target: ts.ScriptTarget.ESNext },
+                }).outputText,
+            ) as string;
+            return `if (${edit(date)} !== "${expected}") throw new Error("${date} " + ${edit(date)});`;
+        })
+        .join("\n");
+    const result = compileSource(expectations, {
+        fileName: "test/locale-date-setters.ts",
+    });
+    assert.ok(result.manifest.features.includes("data:locale"));
+    const directory = resolve("artifacts/locale-date-setters");
+    mkdirSync(directory, { recursive: true });
+    const file = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(file, result.cpp);
+    runNativeFixtureCompiler(native, [
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        file,
+        "native/src/pal_locale.cpp",
+        "icu.lib",
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("unlowered collation option contracts refuse explicitly", () => {
     assert.throws(
         () =>

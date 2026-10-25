@@ -3,7 +3,7 @@ import {
     deferredPropertyDescriptor,
 } from "./deferred-capabilities.js";
 import { hasDomLowering } from "./dom-lowerings.js";
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import { gpuValue } from "./gpu-value.js";
 import {
     emissionArray,
@@ -32,6 +32,7 @@ import {
     equalityOperator,
     functionKind,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -48,7 +49,11 @@ import {
     declaredInDomLibrary,
     ecmascriptGlobalTypeof,
     libraryName,
-    resolvedSymbol,
+    namedMember,
+    libraryStaticMember,
+    isLibraryStatic,
+    accessedPropertySymbol,
+    GLOBAL_OBJECT_NAMES,
 } from "./symbols.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -80,21 +85,19 @@ import {
  */
 export function isParseFloatCallee(
     callee: ts.Expression,
-    context: Pick<LoweringServices, "libraryGlobal">,
+    context: Pick<LoweringServices, "libraryGlobal" | "checker">,
 ): boolean {
     return isNumberParserCallee(callee, context, "parseFloat");
 }
 
 export function isNumberParserCallee(
     callee: ts.Expression,
-    context: Pick<LoweringServices, "libraryGlobal">,
+    context: Pick<LoweringServices, "libraryGlobal" | "checker">,
     method: "parseFloat" | "parseInt",
 ): boolean {
     return (
         context.libraryGlobal(callee) === method ||
-        (ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === method &&
-            context.libraryGlobal(callee.expression) === "Number")
+        isLibraryStatic(context.checker, callee, "Number", method)
     );
 }
 
@@ -147,13 +150,6 @@ export function isPrimitiveBrowserValue(
         value.kind,
     );
 }
-
-/** The names the library binds the global object itself to. */
-const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
-    "globalThis",
-    "self",
-    "window",
-]);
 
 /**
  * Members of the browser's global object the native realm does not have. A
@@ -224,6 +220,7 @@ const primaryCanvasIdsByEntry = new WeakMap<
 
 type PrimaryCanvasContext = Pick<
     LoweringServices,
+    | "checker"
     | "sourceFile"
     | "sourceFiles"
     | "symbols"
@@ -325,11 +322,13 @@ function engineCanvasLookups(context: PrimaryCanvasContext) {
                 : undefined,
         (value) => {
             if (ts.isCallExpression(value)) {
-                const callee = context.unwrap(value.expression);
                 if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.name.text === "querySelector" &&
-                    context.libraryGlobal(callee.expression) === "document" &&
+                    isLibraryStatic(
+                        context.checker,
+                        context.unwrap(value.expression),
+                        "document",
+                        "querySelector",
+                    ) &&
                     value.arguments.length === 1 &&
                     lookupText(context, argumentAt(value, 0)) === "canvas"
                 )
@@ -385,10 +384,12 @@ export function canvasContextIds(
     const cached = canvasContextIdsByEntry.get(context.sourceFile);
     if (cached) return cached;
     const ids = documentIdsReaching(context, (call) => {
-        const callee = context.unwrap(call.expression);
+        const callee = namedMember(
+            context.checker,
+            context.unwrap(call.expression),
+        );
         const [kind] = call.arguments;
-        return ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "getContext" &&
+        return callee?.name === "getContext" &&
             kind !== undefined &&
             stringLiteralText(context.unwrap(kind)) === "2d"
             ? callee.expression
@@ -402,25 +403,24 @@ export function canvasContextIds(
  * The id a library `document.getElementById`/`querySelector` call finds one
  * element by (`documentLookupId`), its argument's text read by `textOf`.
  */
-function documentLookupCallId(
-    context: BrowserGlobalContext,
+export function documentLookupCallId(
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     expression: ts.Expression,
     textOf: (argument: ts.Expression) => string | undefined,
 ): string | undefined {
     if (!ts.isCallExpression(expression) || expression.arguments.length !== 1)
         return undefined;
-    const callee = context.unwrap(expression.expression);
+    const callee = libraryStaticMember(
+        context.checker,
+        context.unwrap(expression.expression),
+    );
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        (callee.name.text !== "getElementById" &&
-            callee.name.text !== "querySelector") ||
-        context.libraryGlobal(callee.expression) !== "document"
+        callee?.owner !== "document" ||
+        (callee.name !== "getElementById" && callee.name !== "querySelector")
     )
         return undefined;
     const text = textOf(argumentAt(expression, 0));
-    return text === undefined
-        ? undefined
-        : documentLookupId(callee.name.text, text);
+    return text === undefined ? undefined : documentLookupId(callee.name, text);
 }
 
 /** The id a library document lookup of one element looks up, read without a scope. */
@@ -475,7 +475,7 @@ type HelperOutcome =
 
 export type BrowserGlobalContext = Pick<
     BrowserErasureContext,
-    "unwrap" | "libraryGlobal"
+    "unwrap" | "libraryGlobal" | "checker"
 >;
 
 export function browserEnvironmentPropertyValue(
@@ -734,7 +734,7 @@ export class BrowserErasure {
             return false;
         const callee = this.context.unwrap(call.expression);
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            namedMember(this.context.checker, callee) &&
             this.isBrowserOnlyNullableClassFactoryCall(call)
         ) {
             return true;
@@ -857,12 +857,15 @@ export class BrowserErasure {
     public isBrowserOnlyNullableClassFactoryCall(
         call: ts.CallExpression,
     ): boolean {
-        const callee = this.context.unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (!callee) return false;
         const found = staticClassMember(
             this.context.checker,
             this.context.unwrap(callee.expression),
-            callee.name,
+            callee,
         );
         const method = found?.table.staticMethods.get(found.name);
         if (!found || !method?.body) return false;
@@ -1076,10 +1079,7 @@ export class BrowserErasure {
             );
         if (!ts.isCallExpression(unwrapped)) return false;
         const callee = this.context.unwrap(unwrapped.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) ||
-            ts.isElementAccessExpression(callee)
-        )
+        if (isMemberAccess(callee))
             return this.isBrowserOwner(callee.expression);
         return (
             this.context.libraryGlobal(callee) !== undefined ||
@@ -1261,25 +1261,28 @@ export class BrowserErasure {
 
     /** A member access that names, through the global object, a global only the language library declares. */
     private languageGlobalRead(node: ts.Expression): boolean {
-        for (
-            let current = node;
-            ts.isPropertyAccessExpression(current) ||
-            ts.isCallExpression(current);
-            current = this.context.unwrap(current.expression)
-        ) {
-            if (!ts.isPropertyAccessExpression(current)) continue;
+        let current = node;
+        while (ts.isCallExpression(current) || isMemberAccess(current)) {
+            const member = namedMember(this.context.checker, current);
+            // A key only the run time knows ends the walk.
+            if (!ts.isCallExpression(current) && !member) return false;
             const owner = this.context.unwrap(current.expression);
             if (
+                member &&
                 ts.isIdentifier(owner) &&
                 GLOBAL_OBJECT_NAMES.has(owner.text) &&
                 this.context.libraryGlobal(current) !== undefined
             ) {
-                const symbol = resolvedSymbol(this.context.checker, current);
+                const symbol = accessedPropertySymbol(
+                    this.context.checker,
+                    member.access,
+                );
                 return (
                     declaredIn(symbol, "default-lib") &&
                     !declaredIn(symbol, "dom")
                 );
             }
+            current = owner;
         }
         return false;
     }
@@ -1305,12 +1308,14 @@ export class BrowserErasure {
             deferredPropertyDescriptor(this.context.checker, unwrapped)
         )
             return false;
-        if (devicePixelRatioValue(this.context, unwrapped)) return false;
+        if (hostAccessorValue(this.context, unwrapped)) return false;
+        const calledMember = ts.isCallExpression(unwrapped)
+            ? namedMember(this.context.checker, unwrapped.expression)
+            : undefined;
         if (
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ["set", "toString"].includes(unwrapped.expression.name.text) &&
-            this.browserValueOf(unwrapped.expression.expression)?.kind ===
+            calledMember &&
+            ["set", "toString"].includes(calledMember.name) &&
+            this.browserValueOf(calledMember.expression)?.kind ===
                 "search-params"
         )
             return false;
@@ -1379,9 +1384,8 @@ export class BrowserErasure {
         if (
             ts.isCallExpression(unwrapped) &&
             unwrapped.arguments.length === 0 &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.expression.name.text === "focus" &&
-            this.context.isCanvasElement(unwrapped.expression.expression)
+            calledMember?.name === "focus" &&
+            this.context.isCanvasElement(calledMember.expression)
         ) {
             return false;
         }
@@ -1502,11 +1506,8 @@ export class BrowserErasure {
                 return true;
             }
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.browserReceiverTaint(
-                    unwrapped.expression.expression,
-                    unwrapped,
-                )
+                calledMember &&
+                this.browserReceiverTaint(calledMember.expression, unwrapped)
             ) {
                 return true;
             }
@@ -1529,11 +1530,13 @@ export class BrowserErasure {
             ) {
                 return browserArgument;
             }
+            const libraryCall = libraryStaticMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.context.libraryGlobal(unwrapped.expression.expression) ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                libraryCall?.owner === "Number" &&
+                libraryCall.name === "isFinite"
             ) {
                 return browserArgument;
             }
@@ -1547,11 +1550,7 @@ export class BrowserErasure {
             // anything. The conversions above need no such test: each
             // folds in `evaluateBrowserValue`, so a resolved one never
             // reaches a consumer as a browser value in the first place.
-            if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.context.libraryGlobal(unwrapped.expression.expression) ===
-                    "Math"
-            ) {
+            if (libraryCall?.owner === "Math") {
                 return (
                     browserArgument &&
                     unwrapped.arguments.some(
@@ -1574,12 +1573,11 @@ export class BrowserErasure {
         evaluate = (expression: ts.Expression) =>
             this.browserValueOf(expression),
     ): boolean {
-        const callee = this.context.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "getContext" ||
-            call.arguments.length !== 1
-        )
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (callee?.name !== "getContext" || call.arguments.length !== 1)
             return false;
         const canvas = evaluate(callee.expression);
         const context = evaluate(argumentAt(call, 0));
@@ -1598,11 +1596,14 @@ export class BrowserErasure {
             this.isPrimaryCanvas2DContext(call)
         )
             return true;
-        const callee = this.context.unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (!callee) return false;
 
         if (
-            callee.name.text === "createElement" &&
+            callee.name === "createElement" &&
             this.context.libraryGlobal(callee.expression) === "document"
         ) {
             return true;
@@ -1610,16 +1611,17 @@ export class BrowserErasure {
 
         if (this.isNativeDomBridge(callee.expression)) return true;
 
+        const root = libraryStaticMember(
+            this.context.checker,
+            callee.expression,
+        );
         return (
-            (callee.name.text === "append" ||
-                (callee.name.text === "appendChild" &&
+            (callee.name === "append" ||
+                (callee.name === "appendChild" &&
                     call.arguments.length === 1 &&
                     this.isNativeDomBridge(argumentAt(call, 0)))) &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            (callee.expression.name.text === "body" ||
-                callee.expression.name.text === "head") &&
-            this.context.libraryGlobal(callee.expression.expression) ===
-                "document"
+            root?.owner === "document" &&
+            (root.name === "body" || root.name === "head")
         );
     }
 
@@ -1694,11 +1696,11 @@ export class BrowserErasure {
             ) {
                 return { kind: "ui-element", cpp: "" };
             }
-            if (
-                ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(unwrapped.expression)
-            ) {
-                return owner(unwrapped.expression.expression);
+            const callee = ts.isCallExpression(unwrapped)
+                ? namedMember(this.context.checker, unwrapped.expression)
+                : undefined;
+            if (callee) {
+                return owner(callee.expression);
             }
             return undefined;
         };
@@ -1712,10 +1714,12 @@ export class BrowserErasure {
         return (
             ts.isCallExpression(expression) &&
             expression.arguments.length === 0 &&
-            ts.isPropertyAccessExpression(expression.expression) &&
-            expression.expression.name.text === "now" &&
-            this.context.libraryGlobal(expression.expression.expression) ===
-                "performance"
+            isLibraryStatic(
+                this.context.checker,
+                expression.expression,
+                "performance",
+                "now",
+            )
         );
     }
 
@@ -1723,15 +1727,15 @@ export class BrowserErasure {
     private isPlatformPointerLockCall(
         expression: ts.Expression,
     ): expression is ts.CallExpression {
-        if (
-            !ts.isCallExpression(expression) ||
-            expression.arguments.length !== 0 ||
-            !ts.isPropertyAccessExpression(expression.expression)
-        ) {
+        const callee =
+            ts.isCallExpression(expression) && expression.arguments.length === 0
+                ? namedMember(this.context.checker, expression.expression)
+                : undefined;
+        if (!callee) {
             return false;
         }
-        const receiver = expression.expression.expression;
-        const method = expression.expression.name.text;
+        const receiver = callee.expression;
+        const method = callee.name;
         return (
             (method === "requestPointerLock" &&
                 this.isBrowserDomValue(receiver)) ||
@@ -1798,11 +1802,11 @@ export class BrowserErasure {
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
-        const ratio = devicePixelRatioValue(this.context, unwrapped);
-        if (ratio)
-            return ratio.staticNumber === undefined
+        const accessor = hostAccessorValue(this.context, unwrapped);
+        if (accessor)
+            return accessor.staticNumber === undefined
                 ? undefined
-                : { kind: "number", value: ratio.staticNumber };
+                : { kind: "number", value: accessor.staticNumber };
         const deployed = browserDeploymentValue(this.context, unwrapped);
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -1948,8 +1952,8 @@ export class BrowserErasure {
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.expression.name.text === "style" &&
+            namedMember(this.context.checker, unwrapped.expression)?.name ===
+                "style" &&
             this.isBrowserDomValue(unwrapped)
         ) {
             // CSS state has no native object. Treat a read as absent so a
@@ -1972,11 +1976,12 @@ export class BrowserErasure {
             unwrapped.name.text === "matches" &&
             !this.context.options.workers &&
             ts.isCallExpression(unwrapped.expression) &&
-            ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
-            unwrapped.expression.expression.name.text === "matchMedia" &&
-            this.context.libraryGlobal(
-                unwrapped.expression.expression.expression,
-            ) === "window" &&
+            isLibraryStatic(
+                this.context.checker,
+                unwrapped.expression.expression,
+                "window",
+                "matchMedia",
+            ) &&
             unwrapped.expression.arguments.length === 1 &&
             this.browserValueOf(argumentAt(unwrapped.expression, 0))?.kind ===
                 "string"
@@ -2125,7 +2130,11 @@ export class BrowserErasure {
                 // over the result remain deterministic.
                 return { kind: "null" };
             }
-            if (ts.isPropertyAccessExpression(unwrapped.expression)) {
+            const callee = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
+            if (callee) {
                 const elementId = documentLookupCallId(
                     this.context,
                     unwrapped,
@@ -2149,14 +2158,12 @@ export class BrowserErasure {
                 // The receiver is evaluated rather than looked up, because
                 // the corpus writes the query read both ways: bound to a
                 // local first, and read straight off the constructor.
-                const owner = this.browserValueOf(
-                    unwrapped.expression.expression,
-                );
-                const method = unwrapped.expression.name.text;
+                const owner = this.browserValueOf(callee.expression);
+                const method = callee.name;
                 if (
                     method === "getBoundingClientRect" &&
                     unwrapped.arguments.length === 0 &&
-                    this.isBrowserDomValue(unwrapped.expression.expression)
+                    this.isBrowserDomValue(callee.expression)
                 ) {
                     // The primary canvas starts at the client origin. Its
                     // CSS extent is independent of its backing resolution.
@@ -2251,10 +2258,12 @@ export class BrowserErasure {
                     : undefined;
             }
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                this.context.libraryGlobal(unwrapped.expression.expression) ===
-                    "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                isLibraryStatic(
+                    this.context.checker,
+                    unwrapped.expression,
+                    "Number",
+                    "isFinite",
+                )
             ) {
                 const argument = this.browserValueOf(argumentAt(unwrapped, 0));
                 return argument?.kind === "number"
@@ -2269,8 +2278,10 @@ export class BrowserErasure {
             // taint rule in `isBrowserOnlyExpression` already documents
             // this call as one whose argument the query answers; folding
             // it here is what lets the helper around it answer too.
-            const math = mathMemberCall(unwrapped, (expression) =>
-                this.context.libraryGlobal(expression),
+            const math = mathMemberCall(
+                unwrapped,
+                (expression) => this.context.libraryGlobal(expression),
+                (node) => namedMember(this.context.checker, node),
             );
             if (math) {
                 // The fold every reader shares, so this rule and the taint
@@ -2868,21 +2879,19 @@ export class BrowserErasure {
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
+        const callee = namedMember(this.context.checker, call.expression);
         const objectInstrumentation =
-            ts.isPropertyAccessExpression(call.expression) &&
-            this.context.libraryGlobal(call.expression.expression) ===
-                "Object" &&
+            callee !== undefined &&
+            this.context.libraryGlobal(callee.expression) === "Object" &&
             // Writing into a browser object instruments the page; writing
             // into the scene's own data is an ordinary store.
-            (call.expression.name.text === "assign" ||
-                call.expression.name.text === "defineProperty") &&
+            (callee.name === "assign" || callee.name === "defineProperty") &&
             call.arguments[0] !== undefined &&
             this.isBrowserOnlyNode(call.arguments[0]);
         const deviceEvent =
-            ts.isPropertyAccessExpression(call.expression) &&
-            call.expression.name.text === "addEventListener" &&
-            ts.isPropertyAccessExpression(call.expression.expression) &&
-            call.expression.expression.name.text === "_device";
+            callee?.name === "addEventListener" &&
+            namedMember(this.context.checker, callee.expression)?.name ===
+                "_device";
         return objectInstrumentation || deviceEvent;
     }
 }

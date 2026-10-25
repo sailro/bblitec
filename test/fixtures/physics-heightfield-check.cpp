@@ -39,6 +39,8 @@ int main() {
             assert(hit.has_hit);
             assert(std::abs(hit.point[1] - (4 + 1.5 * x + z / 3)) < 0.0001);
             assert(hit.normal[1] > 0);
+            // A heightfield is not a MESH shape: no triangle index.
+            assert(hit.triangle_index == -1);
         }
     const auto saddle = p::physics_shape_create_heightfield(2, 2, {2, 1, 2}, {0, 0, 0, 2});
     const auto saddle_body = p::physics_body_create();

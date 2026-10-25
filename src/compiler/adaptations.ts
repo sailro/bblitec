@@ -44,7 +44,25 @@ export function featureKeyedAdaptations(
     appendGizmoAdaptations(features, adaptations);
     appendPhysicsAdaptations(features, adaptations);
     appendTransmissionAdaptations(features, adaptations);
+    appendEntropyAdaptations(features, adaptations);
     return adaptations;
+}
+
+function appendEntropyAdaptations(
+    features: readonly Feature[],
+    adaptations: CompileAdaptation[],
+): void {
+    if (features.includes("data:crypto"))
+        adaptations.push({
+            id: "host-entropy-random-values",
+            category: "determinism",
+            sourceSemantics:
+                "crypto.getRandomValues fills a typed array from the browser's cryptographic generator.",
+            nativeSemantics:
+                "crypto.getRandomValues fills it from the host's entropy source; neither runtime is seeded, so a frame that depends on the values is not reproducible against a capture.",
+            risk: "low",
+            validation: ["random-values construct test"],
+        });
 }
 
 /**

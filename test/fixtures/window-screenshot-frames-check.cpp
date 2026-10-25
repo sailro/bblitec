@@ -6,9 +6,20 @@
 static SDL_Window* hidden_window(const char* title, int width, int height, SDL_WindowFlags flags) {
     return SDL_CreateWindow(title, width, height, flags | SDL_WINDOW_HIDDEN);
 }
+namespace bbl::pal {
+/** The latest realm capture time the Window display ran its CSS animations at. */
+double fixture_followed_milliseconds = 0;
+void fixture_set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) {
+    if (milliseconds)
+        fixture_followed_milliseconds = std::max(fixture_followed_milliseconds, *milliseconds);
+    set_ui_rml_time(runtime, milliseconds);
+}
+} // namespace bbl::pal
 #define SDL_CreateWindow hidden_window
 #define WindowFrameClock FixtureWindowFrameClock
+#define set_ui_rml_time fixture_set_ui_rml_time
 #include "pal_window_realm.cpp"
+#undef set_ui_rml_time
 #undef WindowFrameClock
 #undef SDL_CreateWindow
 #include "pal_media_query.cpp"
@@ -183,6 +194,7 @@ int main() {
             capture_ui = false;
             frame_times.clear();
             timer_time = -1;
+            fixture_followed_milliseconds = 0;
             assert(run_window_application(
                        [](WorkerRealm& realm) {
                            auto& loop = EventLoop::current();
@@ -197,6 +209,9 @@ int main() {
                 assert(entry_time == 0 && timer_time == 30);
                 for (std::size_t index = 0; index < frame_times.size(); ++index)
                     assert(frame_times[index] == static_cast<double>(index) * step);
+                // The display's CSS clock followed the realm's frames.
+                assert(fixture_followed_milliseconds > 0 &&
+                       fixture_followed_milliseconds <= frame_times.back());
             } else {
                 assert(entry_time > 0 && frame_times.front() > 0);
                 for (std::size_t index = 1; index < frame_times.size(); ++index)

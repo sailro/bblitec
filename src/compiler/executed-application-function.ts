@@ -33,6 +33,7 @@ import {
     declarationOrigin,
     declaredSymbol,
     libraryGlobal,
+    namedMember,
 } from "./symbols.js";
 import {
     rootIdentifier,
@@ -43,7 +44,7 @@ import {
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
-import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
+import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
@@ -455,9 +456,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                                 this.namesClosureBinding(identifier, root)
                             );
                         },
-                        undefined,
-                        this.context.checker,
-                        this.context.sourceFiles,
+                        {
+                            checker: this.context.checker,
+                            typed: true,
+                            ...(this.context.sourceFiles
+                                ? { sourceFiles: this.context.sourceFiles }
+                                : {}),
+                        },
                     )
                 ) {
                     this.context.fail(
@@ -491,11 +496,16 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 ? "the clock ('Date')"
                 : undefined;
         }
-        if (!ts.isPropertyAccessExpression(node)) return undefined;
-        const member = node.name.text;
+        const access = namedMember(checker, node);
+        if (!access) return undefined;
+        const member = access.name;
         if (
             mathMemberIsImpure(member) &&
-            mathMemberAccess(node, (owner) => libraryGlobal(checker, owner))
+            mathMemberAccess(
+                node,
+                (owner) => libraryGlobal(checker, owner),
+                (read) => namedMember(checker, read),
+            )
         ) {
             return "'Math.random'";
         }

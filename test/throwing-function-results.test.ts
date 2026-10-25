@@ -65,7 +65,7 @@ test("throwing void functions cannot become represented result values", () => {
         function fail():void {throw new Error('expected');}
         fail()['callback']?.();
     `),
-        /Element access is not supported for void/,
+        /A method call on an absent receiver requires a represented result type/,
     );
 });
 

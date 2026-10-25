@@ -83,22 +83,36 @@ struct FrameSession {
 /**
  * The frame phases every standalone rendering context (the 2D, effect and
  * frame-graph hosts) shares on both backends: the run loop, input, canvas
- * size, clock, benchmark samples, the memory profile and the benchmark
- * report. `Derived` owns its device and supplies `setup()`, `sdl_window()`,
+ * size, clock, benchmark samples, the memory profile, the benchmark report
+ * and, in an application realm, the presentation endpoint's lifetime.
+ * `Derived` owns its device and supplies `setup()`, `sdl_window()`,
  * `acquire()`, `synchronize()`, `encode()`, `present()`, `backend_label` and
- * `driver()`; it may replace `poll_events()`, `prepare_surface()`,
+ * `driver()`, presenting through its backend's frame presentation
+ * (`pal_sdl_gpu_presentation.hpp`, `pal_dawn_presentation.hpp`) opened on
+ * `offscreen`; it may replace `poll_events()`, `prepare_surface()`,
  * `update()`, `discard_frame()` and `finish_run()`.
  */
 template <typename Derived> class RendererRun : public FrameSession {
 public:
+    /** The application realm's presentation endpoint, bound for the whole run; null in a window. */
+    OffscreenRun* const offscreen = OffscreenRun::current();
+
     explicit RendererRun(Engine& target) : FrameSession(target) {}
 
-    /** Drive one renderer from setup until its session stops. */
+    /**
+     * Drive one renderer from setup until its session stops. Each frame
+     * yields whether it rendered: a realm animation task resolves readiness
+     * on a rendered frame and retries a skipped one at its next animation
+     * frame.
+     */
     static SceneRun run(Engine& engine) {
         Derived renderer(engine);
         renderer.setup();
-        while (conduct_frame(renderer) != FrameOutcome::stopped) {
-            co_yield true;
+        for (;;) {
+            const FrameOutcome outcome = conduct_frame(renderer);
+            if (outcome == FrameOutcome::stopped)
+                break;
+            co_yield outcome == FrameOutcome::rendered;
         }
         renderer.finish_run();
         co_return true;
@@ -106,6 +120,9 @@ public:
 
     FramePreparation prepare() {
         derived().poll_events();
+        // A closed endpoint or a disposed shared device takes no further frame.
+        if (offscreen && !running)
+            return FramePreparation::stop;
         input_replay.dispatch(frame, derived().sdl_window(), engine);
         sync_engine_canvas_size(derived().sdl_window(), engine);
         return derived().prepare_surface();

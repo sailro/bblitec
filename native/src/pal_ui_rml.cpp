@@ -3259,7 +3259,12 @@ public:
         SDL_DestroyProperties(properties);
     }
 
-    double GetElapsedTime() override { return ::bbl::pal::performance_milliseconds() / 1000.0; }
+    /** A Window display's published capture time (`set_ui_rml_time`). */
+    std::optional<double> time_ms;
+
+    double GetElapsedTime() override {
+        return (time_ms ? *time_ms : ::bbl::pal::performance_milliseconds()) / 1000.0;
+    }
 
     void SetMouseCursor(const Rml::String& name) override {
         // A scene canvas may have hidden the cursor before this UI took over.
@@ -7905,6 +7910,10 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
     // Canvas DOM listeners make it a RmlUi hit target, not an overlay that owns
     // the scene's camera input. Its canceled defaults still remain canceled.
     return result || (canvas_target && !runtime.default_prevented);
+}
+
+void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) {
+    runtime.system_interface.time_ms = milliseconds;
 }
 
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height) {

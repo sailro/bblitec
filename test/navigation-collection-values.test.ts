@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { planImportedModuleInitializers } from "../src/compiler/module-initializers.js";
+import { planImportedModuleState } from "../src/compiler/module-initializers.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -48,7 +48,7 @@ test("nested copying factories do not make their inputs aliases of a retained re
     const fileName = join(directory, "entry.ts");
     const planned = createCompilerProgram(source, fileName);
     assert.deepEqual(
-        planImportedModuleInitializers(
+        planImportedModuleState(
             planned.program,
             planned.sourceFile,
             planned.checker,
@@ -61,7 +61,7 @@ test("nested copying factories do not make their inputs aliases of a retained re
         fileName,
     );
     assert.deepEqual(
-        planImportedModuleInitializers(
+        planImportedModuleState(
             opaque.program,
             opaque.sourceFile,
             opaque.checker,

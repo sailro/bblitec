@@ -29,6 +29,17 @@ export const textureFilterByPin: Readonly<Record<string, string>> = {
     linear: "TextureFilter::linear",
 };
 
+const spelledInBbl = (
+    table: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> =>
+    Object.fromEntries(
+        Object.entries(table).map(([pin, native]) => [pin, `bbl::${native}`]),
+    );
+
+/** {@link addressModeByPin} and {@link textureFilterByPin} as C++ spellings. */
+export const addressModeCppByPin = spelledInBbl(addressModeByPin);
+export const textureFilterCppByPin = spelledInBbl(textureFilterByPin);
+
 export const pixelsTexture2DOptionFields: readonly string[] = [
     "addressModeU",
     "addressModeV",

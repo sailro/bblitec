@@ -7,7 +7,7 @@ import { documentEngine } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 import { isStringValue, type Value } from "./types.js";
-import { libraryName } from "./symbols.js";
+import { libraryName, namedMember, type NamedMember } from "./symbols.js";
 
 /**
  * The bounded browser file surface is a host service, like Web Storage.  This
@@ -287,12 +287,14 @@ export function compileBrowserFileCall(
     context: BrowserFileContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (!callee) return undefined;
     if (
         isDefaultGlobal(context, callee.expression, "URL") &&
-        (callee.name.text === "createObjectURL" ||
-            callee.name.text === "revokeObjectURL")
+        (callee.name === "createObjectURL" || callee.name === "revokeObjectURL")
     ) {
         context.expectArgumentCount(call, 1, 1);
         const argument = context.compileValue(argumentAt(call, 0));
@@ -301,13 +303,13 @@ export function compileBrowserFileCall(
         // perform, so the call is no statement here and reaches no file
         // bridge.
         if (
-            callee.name.text === "revokeObjectURL" &&
+            callee.name === "revokeObjectURL" &&
             argument.kind === "executed-url"
         ) {
             return { kind: "void", cpp: "" };
         }
         context.reachFeature("browser:file", call);
-        if (callee.name.text === "createObjectURL") {
+        if (callee.name === "createObjectURL") {
             if (!isFileValue(argument, "blob"))
                 context.fail(
                     argumentAt(call, 0),
@@ -360,10 +362,10 @@ export function compileBrowserFileCall(
         receiver,
     );
     if (!isFileValue(owner, "file")) return undefined;
-    if (callee.name.text !== "text") {
+    if (callee.name !== "text") {
         context.fail(
-            callee.name,
-            `File method '${callee.name.text}' is not lowered; only text() is supported.`,
+            callee.key,
+            `File method '${callee.name}' is not lowered; only text() is supported.`,
         );
     }
     context.expectArgumentCount(call, 0, 0);
@@ -387,13 +389,13 @@ export function compileBrowserFileCall(
 function compileFileReaderCall(
     context: BrowserFileContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     reader: Value,
 ): Value {
-    if (callee.name.text !== "readAsText")
+    if (callee.name !== "readAsText")
         context.fail(
-            callee.name,
-            `FileReader method '${callee.name.text}' is not lowered; only readAsText is supported.`,
+            callee.key,
+            `FileReader method '${callee.name}' is not lowered; only readAsText is supported.`,
         );
     context.expectArgumentCount(call, 1, 1);
     const source = context.compileValue(argumentAt(call, 0));
@@ -691,7 +693,10 @@ export function validateFileAccept(
  * still owned by that producer's Chromium path.
  */
 export function isNativeBrowserFileExpression(
-    context: Pick<BrowserFileContext, "libraryGlobal" | "bindings" | "unwrap">,
+    context: Pick<
+        BrowserFileContext,
+        "libraryGlobal" | "bindings" | "unwrap" | "checker"
+    >,
     expression: ts.Expression,
 ): boolean {
     const value = context.unwrap(expression);
@@ -702,12 +707,13 @@ export function isNativeBrowserFileExpression(
     ) {
         return true;
     }
+    const callee = ts.isCallExpression(value)
+        ? namedMember(context.checker, value.expression)
+        : undefined;
     if (
-        ts.isCallExpression(value) &&
-        ts.isPropertyAccessExpression(value.expression) &&
-        isDefaultGlobal(context, value.expression.expression, "URL") &&
-        (value.expression.name.text === "createObjectURL" ||
-            value.expression.name.text === "revokeObjectURL")
+        callee &&
+        isDefaultGlobal(context, callee.expression, "URL") &&
+        (callee.name === "createObjectURL" || callee.name === "revokeObjectURL")
     ) {
         return true;
     }

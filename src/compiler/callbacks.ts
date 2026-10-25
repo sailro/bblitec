@@ -27,7 +27,7 @@ import type {
     LoweringStatement,
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
-import { functionOfDeclaration } from "./syntax.js";
+import { functionOfDeclaration, isBlockScopedVariable } from "./syntax.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -67,6 +67,7 @@ interface CallbackContext extends Pick<
     | "unwrap"
     | "useNativeValue"
     | "withRecordScopes"
+    | "withCallbackScopes"
 > {
     /** The emitted entry-body lines. */
     readonly body: NativeEmission[];
@@ -647,10 +648,12 @@ export class CallbackLowerer {
         | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
         | undefined {
         const declaration = symbol.valueDeclaration;
+        // A `var` read before its declaration is undefined, not its initializer.
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
+            !isBlockScopedVariable(declaration) ||
             !ts.isVariableStatement(declaration.parent.parent) ||
             this.context.bindings.peekBinding(symbol)
         )
@@ -927,12 +930,10 @@ export class CallbackLowerer {
                             values,
                             callback,
                         );
-                    const result = bound.callbackRecordOwner
-                        ? this.context.withRecordScopes(
-                              bound.callbackRecordOwner,
-                              compile,
-                          )
-                        : compile();
+                    const result = this.context.withCallbackScopes(
+                        bound,
+                        compile,
+                    );
                     consumeResult(result);
                 },
                 captureByValue ? false : "entry",

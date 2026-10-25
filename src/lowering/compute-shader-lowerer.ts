@@ -10,6 +10,8 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
+    collectionBinding,
+    memberElement,
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
@@ -111,13 +113,13 @@ function scope(
         "shader",
         "kind",
         "entryPoint",
-        "decls",
         "slots",
         "pairs",
         "dynamicCounts",
         "limits",
     ])
         bindings.set(name, { cpp: name, type: "opaque" });
+    bindings.set("decls", collectionBinding("decls", memberElement(bindings)));
     bindings.set("name", {
         cpp: "name",
         type: "opaque",
@@ -305,22 +307,6 @@ function scope(
                 return `js::make_gc_shared<ComputeShader>(${pinnedRecordLiteral(context, lowerer, node, schema)})`;
             }
             return undefined;
-        },
-        forOf(iterated, element) {
-            if (
-                !context.expressionMatchesShape(iterated, "decls") ||
-                element !== "decl"
-            )
-                return undefined;
-            return {
-                range: "decls",
-                bindings: new Map([
-                    ...[...bindings].filter(([name]) =>
-                        name.startsWith(`${element}.`),
-                    ),
-                    [element, { cpp: element, type: "opaque" }],
-                ]),
-            };
         },
         statement(node, lowerer, indent) {
             if (

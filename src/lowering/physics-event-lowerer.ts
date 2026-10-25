@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
+    opaqueElement,
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
@@ -34,7 +35,14 @@ export function lowerPhysicsEvents(
             "removed",
             { ...binding("events.removed"), absentCpp: "!events.removed" },
         ],
-        ["deferred", { ...binding("deferred"), absentCpp: "!deferred" }],
+        [
+            "deferred",
+            {
+                ...binding("deferred"),
+                absentCpp: "!deferred",
+                elements: { range: "*deferred", element: opaqueElement },
+            },
+        ],
         ["nativeId", binding("native_id", "scalar")],
         ["body", binding("body")],
         ["body._hkBody", binding("body.handle")],
@@ -143,14 +151,6 @@ export function lowerPhysicsEvents(
                 )
                     return "physics_event_lookup(events, native_id)";
                 return undefined;
-            },
-            forOf(iterated, element) {
-                return sameSource(iterated, "deferred")
-                    ? {
-                          range: "*deferred",
-                          bindings: new Map([[element, binding(element)]]),
-                      }
-                    : undefined;
             },
             returnValue: (expression, numeric) =>
                 expression ? numeric.expression(expression) : "",

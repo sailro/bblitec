@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { LIBRARY_CALL_FACTS } from "./library-call-facts.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import {
@@ -6,33 +7,65 @@ import {
     localClassOfSymbol,
     type ClassHierarchy,
 } from "./class-members.js";
-import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
-import { receiverWritingMethods } from "./receiver-methods.js";
-import { propertyIsReadOnly } from "./data-types.js";
-import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import {
+    engineBodies,
+    isEngineDeclaration,
+    type EngineBodies,
+} from "./engine-bodies.js";
+import { libraryMethodWritesReceiver } from "./receiver-methods.js";
+import { propertyIsReadOnly } from "./data-types.js";
+import {
+    BIGINT_ARRAY_KINDS,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+} from "./data-types/typed-arrays.js";
+import { returnsOnly, yieldsFreshObject } from "./fresh-records.js";
+import {
+    callTarget,
+    engineCallMutatesArgument,
+    libraryWrittenArgument,
+} from "./parameter-effects.js";
+import { constInitializer, documentLookupCallId } from "./browser-erasure.js";
+import {
+    CompilerSymbols,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
     declarationOrigin,
+    declaredSymbol,
     libraryGlobal,
+    libraryName,
+    libraryStaticMember,
     pinnedConstantProperty,
     resolvedSymbol,
     calledDeclaration,
+    calledOrigin,
     memberAccessors,
+    namedMember,
+    accessedPropertySymbol,
 } from "./symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
+    evaluationContainer,
     unwrapExpression,
     rootExpression,
     writeSites,
     isSuspensionPoint,
+    equalityOperator,
+    isMemberAccess,
+    isOperandSelection,
+    isValueReference,
+    objectLiteralMembers,
+    operandYield,
+    outermostWrapper,
 } from "./syntax.js";
 import {
     holdsOnly,
+    isTypeReference,
     PRIMITIVE_KINDS,
+    typeCanCarryReference,
     valueKinds,
     valueKindOf,
     callSignatures,
@@ -40,108 +73,293 @@ import {
 } from "./type-facts.js";
 
 /**
+ * What evaluating code reads and writes, one model for two questions.
+ *
  * JavaScript evaluates the operands of one expression left to right. The
  * lowering does not always keep that order: an operand whose call is
  * inlined or shared runs its work in statements emitted ahead of the
  * expression, and C++ leaves the order of operands inside one expression
  * unspecified. An operand is therefore read into a temporary before the
  * later operands lower whenever the two touch the same storage and one of
- * them writes it.
+ * them writes it (`operandsToPin`). Outside the application realm, code
+ * JavaScript defers runs where it starts; that keeps JavaScript's order only
+ * where the deferred code and the code JavaScript runs first touch disjoint
+ * state (`footprint`, read by `continuation-order.ts`).
  *
- * What an operand touches is answered from the source: the variables it
- * reads and writes, whether it reads or writes objects that existed before
- * it ran (their properties and elements, as one store), and, through the
- * functions it calls, everything they touch. A call the analysis cannot
- * follow -- a function value it cannot name, an abstract method, an
- * `await` -- touches everything. An engine function or class method is read
- * from the pin's own body behind its typing (`engine-bodies.ts`), the
- * engine's module state counting as object state; an engine member with no
- * pinned body (an interface method) touches everything. A function of the
- * language's library has no body to read: it is taken to read its receiver
- * and the objects it is handed, to write only through the mutating
- * container methods (`push`, `set`, `sort`, ...), and to run the callbacks
- * it is handed. `Math.random` reads and writes its generator, so two draws
- * keep their order.
+ * What code touches is answered from the source: the variables it reads and
+ * writes (a binding no code reassigns is no state), the objects that existed
+ * before it ran by family (`ObjectFamily`), the clock and `Math.random`'s
+ * generator, and, through the functions it runs, everything they touch. An
+ * object only one run of a function reaches is that run's own
+ * (`privateObjects`). A call the analysis cannot follow -- a function value
+ * it cannot name, an abstract method -- touches everything.
+ *
+ * A library is seen through what it is handed and returns: it reads its
+ * receiver and the objects it is handed, writes its receiver through a
+ * mutating method and the argument it fills (`Object.assign`), runs the
+ * callbacks it is handed, and a page method changes the page unless it
+ * only reads or creates nodes. Two things only the operand question sees:
+ * the engine's own code, read from the pin's bodies behind its typing
+ * (`engine-bodies.ts`), the engine's module state counting as object state,
+ * and an `await`, which lets any other job run. The order question treats
+ * both as JavaScript's later run does: a library operation's work shows in
+ * its result, and what runs while a job waits is another start's.
  */
 
 /**
- * DOM platform methods with state behind their receiver: a streaming
- * decoder's pending bytes, a byte stream's queue and lock, an abort.
+ * The objects of one family, by the checked type of an expression: the
+ * page's (one element when an id finds it, `page:<id>`), the engine's, the
+ * language library's (`data`: arrays, maps, errors), or any object at all,
+ * which may be any of them.
  */
-type PlatformMethodEffect = "writes-receiver" | "runs-code";
+export type ObjectFamily =
+    "page" | `page:${string}` | "engine" | "data" | "objects";
+
+/**
+ * Whether the element with id `outer` may be or hold the one with id
+ * `inner` while the program runs (`PageNesting`).
+ */
+export type PageNests = (outer: string, inner: string) => boolean;
+
+/**
+ * Whether two families may hold one object: an element found by id holds
+ * the elements the page puts inside it, so a write to it changes them and
+ * a write to one of them changes it.
+ */
+function familiesOverlap(
+    a: ObjectFamily,
+    b: ObjectFamily,
+    nests: PageNests,
+): boolean {
+    if (a === b || a === "objects" || b === "objects") return true;
+    const element = (family: ObjectFamily): string | undefined =>
+        family.startsWith("page:") ? family.slice("page:".length) : undefined;
+    const [first, second] = [element(a), element(b)];
+    if (first !== undefined && second !== undefined)
+        return nests(first, second) || nests(second, first);
+    return (
+        (a === "page" && second !== undefined) ||
+        (b === "page" && first !== undefined)
+    );
+}
+
+/** What a platform method does beyond reading its receiver. */
+type PlatformMethodEffect =
+    "reads" | "creates" | "writes-receiver" | "runs-code";
+
+function methodEffects(
+    effect: PlatformMethodEffect,
+    ...names: string[]
+): [string, PlatformMethodEffect][] {
+    return names.map((name) => [name, effect]);
+}
+
+/**
+ * Platform methods by the interface declaring them (a global function is
+ * the Window's): a lookup or a read leaves its receiver and the page as
+ * they were, a creation makes a node outside the page, a decoder or a
+ * stream keeps state behind its receiver (pending bytes, a queue and a
+ * lock), and a dispatch runs the listeners of the event it fires before it
+ * returns. Any other page method changes its receiver and what it is
+ * handed.
+ */
 const PLATFORM_METHOD_EFFECTS: ReadonlyMap<
     string,
     ReadonlyMap<string, PlatformMethodEffect>
-> = new Map([
+> = new Map<string, ReadonlyMap<string, PlatformMethodEffect>>([
     [
-        "TextDecoder",
-        new Map<string, PlatformMethodEffect>([["decode", "writes-receiver"]]),
+        "Document",
+        new Map([
+            ...methodEffects(
+                "reads",
+                "getElementById",
+                "getElementsByClassName",
+                "getElementsByName",
+                "getElementsByTagName",
+            ),
+            ...methodEffects(
+                "creates",
+                "createComment",
+                "createDocumentFragment",
+                "createElement",
+                "createElementNS",
+                "createTextNode",
+            ),
+        ]),
+    ],
+    ["DocumentFragment", new Map(methodEffects("reads", "getElementById"))],
+    ["NonElementParentNode", new Map(methodEffects("reads", "getElementById"))],
+    [
+        "ParentNode",
+        new Map(methodEffects("reads", "querySelector", "querySelectorAll")),
     ],
     [
-        "ReadableStream",
-        new Map<string, PlatformMethodEffect>([
-            ["getReader", "writes-receiver"],
-            ["cancel", "writes-receiver"],
+        "Element",
+        new Map(
+            methodEffects(
+                "reads",
+                "closest",
+                "getAttribute",
+                "getAttributeNames",
+                "getBoundingClientRect",
+                "getClientRects",
+                "getElementsByClassName",
+                "getElementsByTagName",
+                "hasAttribute",
+                "hasAttributes",
+                "matches",
+            ),
+        ),
+    ],
+    [
+        "Node",
+        new Map(
+            methodEffects(
+                "reads",
+                "compareDocumentPosition",
+                "contains",
+                "getRootNode",
+                "hasChildNodes",
+                "isEqualNode",
+                "isSameNode",
+            ),
+        ),
+    ],
+    ["DOMTokenList", new Map(methodEffects("reads", "contains"))],
+    [
+        "Window",
+        new Map([
+            ...methodEffects("reads", "getComputedStyle", "matchMedia"),
+            ...methodEffects("runs-code", "blur", "focus"),
         ]),
+    ],
+    ["EventTarget", new Map(methodEffects("runs-code", "dispatchEvent"))],
+    ["HTMLElement", new Map(methodEffects("runs-code", "click"))],
+    ["HTMLOrSVGElement", new Map(methodEffects("runs-code", "blur", "focus"))],
+    [
+        "HTMLFormElement",
+        new Map(methodEffects("runs-code", "requestSubmit", "reset")),
+    ],
+    ["AbortController", new Map(methodEffects("runs-code", "abort"))],
+    ["FileReader", new Map(methodEffects("runs-code", "abort"))],
+    ["XMLHttpRequest", new Map(methodEffects("runs-code", "abort"))],
+    ["TextDecoder", new Map(methodEffects("writes-receiver", "decode"))],
+    [
+        "ReadableStream",
+        new Map(methodEffects("writes-receiver", "cancel", "getReader")),
+    ],
+    [
+        "ReadableStreamGenericReader",
+        new Map(methodEffects("writes-receiver", "cancel")),
     ],
     [
         "ReadableStreamDefaultReader",
-        new Map<string, PlatformMethodEffect>([
-            ["read", "writes-receiver"],
-            ["cancel", "writes-receiver"],
-            ["releaseLock", "writes-receiver"],
-        ]),
-    ],
-    [
-        "AbortController",
-        new Map<string, PlatformMethodEffect>([["abort", "runs-code"]]),
+        new Map(methodEffects("writes-receiver", "read", "releaseLock")),
     ],
 ]);
 
+/** The effect of the platform method a declaration declares, by its interface. */
 function platformMethodEffect(
-    receiver: ts.Type,
-    method: string,
+    declaration: ts.Declaration | undefined,
 ): PlatformMethodEffect | undefined {
-    for (const member of unionMembers(receiver)) {
-        const symbol = member.getSymbol();
-        if (!symbol || !declaredInDomLibrary(symbol)) continue;
-        const effect = PLATFORM_METHOD_EFFECTS.get(symbol.name)?.get(method);
-        if (effect) return effect;
-    }
-    return undefined;
+    if (!declaration || declarationOrigin(declaration) !== "dom")
+        return undefined;
+    const name = ts.getNameOfDeclaration(declaration);
+    const owner = ts.isInterfaceDeclaration(declaration.parent)
+        ? declaration.parent.name.text
+        : ts.isSourceFile(declaration.parent)
+          ? "Window"
+          : undefined;
+    return name && ts.isIdentifier(name) && owner !== undefined
+        ? PLATFORM_METHOD_EFFECTS.get(owner)?.get(name.text)
+        : undefined;
 }
+
+/** Library calls that read the clock (`Math.random` advances its sequence). */
+const CLOCK_LIBRARY_CALLS: ReadonlySet<string> = new Set([
+    "Date",
+    "Date.now",
+    "performance.now",
+]);
+
+/** The language library's classes: an object of one is no page or engine object. */
+const LIBRARY_DATA: ReadonlySet<string> = new Set([
+    "Date",
+    "Error",
+    "Map",
+    "Promise",
+    "ReadonlyMap",
+    "ReadonlySet",
+    "RegExp",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    ...TYPED_ARRAY_KINDS.keys(),
+    ...BIGINT_ARRAY_KINDS.keys(),
+    ...BUFFER_VIEW_KINDS.keys(),
+]);
+
+/** Iteration protocols a program's own generator or class may implement. */
+const ITERATION_PROTOCOLS: ReadonlySet<string> = new Set([
+    "AsyncGenerator",
+    "AsyncIterable",
+    "AsyncIterableIterator",
+    "AsyncIterator",
+    "AsyncIteratorObject",
+    "Generator",
+    "Iterable",
+    "IterableIterator",
+    "Iterator",
+    "IteratorObject",
+]);
+
+/** The generator `Math.random` advances: each call reads and writes it. */
+const randomState = Symbol("Math.random");
+/** The clock `Date.now()` reads. */
+const clockState = Symbol("clock");
 
 /** Storage an evaluation reads or writes. */
 interface Storage {
     /** Code the analysis cannot follow ran: anything may be touched. */
     any: boolean;
-    /** Properties and elements of objects that existed before the evaluation. */
-    heap: boolean;
+    /** Objects that existed before the evaluation, by family. */
+    objects: Set<ObjectFamily>;
     /**
-     * Part of `heap`: an object that may be an array or typed array -- its
-     * type admits one (`mayHoldArray`) -- through a property, an element or
-     * a mutating method.
+     * Part of `objects`: an object that may be an array or typed array --
+     * its type admits one (`mayHoldArray`) -- through a property, an
+     * element or a mutating method.
      */
     arrays: boolean;
-    /** Variables by symbol, and the state behind `Math.random`. */
-    variables: Set<ts.Symbol | typeof randomState>;
+    /** Variables by symbol, the clock and `Math.random`'s generator. */
+    variables: Set<ts.Symbol | typeof randomState | typeof clockState>;
 }
 
-interface Access {
+/** What evaluating some code reads and writes. */
+export interface Access {
     readonly reads: Storage;
     readonly writes: Storage;
 }
 
-/** What one function body touches itself, and the functions it runs. */
+/** What one function body or region touches itself, and the functions it runs. */
 interface DirectAccess extends Access {
     readonly callees: Set<Unit>;
     /**
      * It runs program code the analysis cannot follow (a function value it
-     * cannot name, an overridable accessor, an `await`), not only an engine
-     * body that does.
+     * cannot name, an overridable accessor), not only an engine body that
+     * does.
      */
     opaque: boolean;
+    /** It awaits: any other job may run before it resumes. */
+    suspends: boolean;
+    /**
+     * What library code does that only its result shows: the engine's own
+     * code from its pinned bodies, an asynchronous operation's work.
+     */
+    readonly library: Access;
 }
+
+/** The question an access answers: evaluating operands, or the order JavaScript defers code in. */
+type View = "operands" | "order";
 
 /** Record program code the analysis cannot follow. */
 function cannotFollow(access: DirectAccess): void {
@@ -151,6 +369,27 @@ function cannotFollow(access: DirectAccess): void {
 
 /** Code a call runs: a function body, or a class field's initializer. */
 type Unit = ts.FunctionLikeDeclaration | ts.PropertyDeclaration;
+
+function isUnit(node: ts.Node): node is ts.FunctionLikeDeclaration {
+    return (
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isConstructorDeclaration(node) ||
+        ts.isAccessor(node)
+    );
+}
+
+/**
+ * Code that runs: a function, or a node without one of its subtrees,
+ * inside `owner` when the node is part of one run of it.
+ */
+export interface CodePart {
+    readonly node: ts.Node;
+    readonly without?: ts.Node | undefined;
+    readonly owner?: ts.Node;
+}
 
 /** Eager expressions in one callable or field initializer. */
 function unitRoots(unit: Unit): readonly ts.Node[] {
@@ -166,32 +405,30 @@ function unitRoots(unit: Unit): readonly ts.Node[] {
           ];
 }
 
-/** The generator `Math.random` advances: each call reads and writes it. */
-const randomState = Symbol("Math.random");
-
-/** The global library functions whose answer is a conversion of their arguments. */
-const argumentAnsweringGlobals = new Set([
-    "String",
-    "Number",
-    "Boolean",
-    "parseInt",
-    "parseFloat",
-    "isNaN",
-    "isFinite",
-]);
-
 function emptyStorage(): Storage {
-    return { any: false, heap: false, arrays: false, variables: new Set() };
+    return {
+        any: false,
+        objects: new Set(),
+        arrays: false,
+        variables: new Set(),
+    };
+}
+
+function emptyAccess(): Access {
+    return { reads: emptyStorage(), writes: emptyStorage() };
 }
 
 function touchesAnything(storage: Storage): boolean {
-    return storage.any || storage.heap || storage.variables.size > 0;
+    return (
+        storage.any || storage.objects.size > 0 || storage.variables.size > 0
+    );
 }
 
+/** The operand question: any two objects may be one, as the lowering's C++ sees them. */
 function touches(left: Storage, right: Storage): boolean {
     if (left.any) return touchesAnything(right);
     if (right.any) return touchesAnything(left);
-    if (left.heap && right.heap) return true;
+    if (left.objects.size > 0 && right.objects.size > 0) return true;
     return [...left.variables].some((variable) =>
         right.variables.has(variable),
     );
@@ -205,9 +442,22 @@ function touchEverything(access: Access): void {
 
 function merge(into: Storage, from: Storage): void {
     into.any ||= from.any;
-    into.heap ||= from.heap;
     into.arrays ||= from.arrays;
+    from.objects.forEach((family) => into.objects.add(family));
     from.variables.forEach((variable) => into.variables.add(variable));
+}
+
+function mergeAccess(into: Access, from: Access): void {
+    merge(into.reads, from.reads);
+    merge(into.writes, from.writes);
+}
+
+/** What one body's own work touches, as `view` sees it. */
+function mergeDirect(into: Access, direct: DirectAccess, view: View): void {
+    mergeAccess(into, direct);
+    if (view === "order") return;
+    mergeAccess(into, direct.library);
+    if (direct.suspends) touchEverything(into);
 }
 
 /** Whether the later operand's evaluation must not overtake the earlier one's. */
@@ -219,14 +469,40 @@ function conflicts(earlier: Access, later: Access): boolean {
     );
 }
 
-/** The function (or file) whose frame a declaration's variable lives in. */
-function evaluationContainer(node: ts.Node): ts.Node {
-    for (let current = node.parent; current; current = current.parent) {
-        if (ts.isFunctionLike(current) || ts.isSourceFile(current))
-            return current;
-        if (ts.isClassStaticBlockDeclaration(current)) return current;
-    }
-    return node.getSourceFile();
+/** Whether running code with this footprint touches no state at all. */
+export function touchesNoState(footprint: Access): boolean {
+    return (
+        !touchesAnything(footprint.reads) && !touchesAnything(footprint.writes)
+    );
+}
+
+/**
+ * Whether two runs of code observe their order: one writes state the other
+ * reads or writes, an object of one family meeting its own or `objects`.
+ */
+export function footprintsConflict(
+    a: Access,
+    b: Access,
+    nests: PageNests,
+): boolean {
+    const any = (footprint: Access): boolean =>
+        footprint.reads.any || footprint.writes.any;
+    if ((any(a) && !touchesNoState(b)) || (any(b) && !touchesNoState(a)))
+        return true;
+    const meets = (writes: Storage, other: Storage): boolean =>
+        [...writes.variables].some((variable) =>
+            other.variables.has(variable),
+        ) ||
+        [...writes.objects].some((written) =>
+            [...other.objects].some((family) =>
+                familiesOverlap(written, family, nests),
+            ),
+        );
+    return (
+        meets(a.writes, b.reads) ||
+        meets(a.writes, b.writes) ||
+        meets(b.writes, a.reads)
+    );
 }
 
 /** Whether `outer` lexically contains `inner`. */
@@ -236,7 +512,479 @@ function encloses(outer: ts.Node, inner: ts.Node): boolean {
     return false;
 }
 
-/** The object an access chain starts from: `a` for `a.b[0].c`. */
+/** A function or a class: what it declares belongs to one run of it. */
+function runsAsOwner(node: ts.Node): boolean {
+    return ts.isFunctionLike(node) || ts.isClassLike(node);
+}
+
+/**
+ * The id a document lookup found one element by, through a `const`: the
+ * key of the element's family (`page:<id>`).
+ */
+export function lookedUpElementId(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): string | undefined {
+    const context = {
+        checker,
+        unwrap: unwrapExpression,
+        symbols: new CompilerSymbols(checker),
+    };
+    const node = unwrapExpression(expression);
+    const lookup = ts.isIdentifier(node)
+        ? constInitializer(context, node)
+        : node;
+    return (
+        lookup &&
+        documentLookupCallId(context, lookup, (argument) => {
+            const text = unwrapExpression(argument);
+            return ts.isStringLiteralLike(text) ? text.text : undefined;
+        })
+    );
+}
+
+/**
+ * The family of the object an expression evaluates to, by its checked
+ * type: an element an id finds, the page's other objects, the engine's, or
+ * any. A program type may hold either of the first two, so it is any. A
+ * primitive is no object: reading its members reads no state.
+ */
+function objectFamily(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ObjectFamily | undefined {
+    const id = lookedUpElementId(checker, expression);
+    if (id !== undefined) return `page:${id}`;
+    const members = unionMembers(
+        checker.getTypeAtLocation(expression).getNonNullableType(),
+    );
+    if (
+        members.every((member) => PRIMITIVE_KINDS.includes(valueKindOf(member)))
+    )
+        return undefined;
+    const families = new Set(
+        members.map((member): ObjectFamily => {
+            if (checker.isArrayLikeType(member)) return "data";
+            const symbol = member.getSymbol() ?? member.aliasSymbol;
+            const declaration = symbol?.declarations?.[0];
+            const origin = declaration && declarationOrigin(declaration);
+            return origin === "dom"
+                ? "page"
+                : origin === "babylon"
+                  ? "engine"
+                  : origin === "default-lib" &&
+                      LIBRARY_DATA.has(symbol?.name ?? "")
+                    ? "data"
+                    : "objects";
+        }),
+    );
+    const [family] = families;
+    return families.size === 1 && family !== undefined ? family : "objects";
+}
+
+/**
+ * The shared state a library call reads or writes besides objects: the
+ * clock, or `Math.random`'s generator.
+ */
+function sharedLibraryState(
+    checker: ts.TypeChecker,
+    node: ts.CallExpression | ts.NewExpression,
+): typeof randomState | typeof clockState | undefined {
+    const target = unwrapExpression(node.expression);
+    const member = libraryStaticMember(checker, target);
+    if (member?.owner === "Math")
+        return mathMemberIsImpure(member.name) ? randomState : undefined;
+    const name = member
+        ? `${member.owner}.${member.name}`
+        : libraryGlobal(checker, target);
+    return name !== undefined && CLOCK_LIBRARY_CALLS.has(name)
+        ? clockState
+        : undefined;
+}
+
+/**
+ * Whether iterating `expression` runs only library code: an array, a
+ * string, or a library object (a map, a `matchAll` iterator, a node list),
+ * not a protocol a program's generator may stand behind.
+ */
+function iteratesLibraryCollection(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return unionMembers(checker.getTypeAtLocation(expression)).every(
+        (member) => {
+            const name = libraryName(member);
+            return (
+                checker.isArrayLikeType(member) ||
+                valueKindOf(member) === "string" ||
+                (name !== undefined && !ITERATION_PROTOCOLS.has(name))
+            );
+        },
+    );
+}
+
+/**
+ * Whether an expression yields an object nothing else reaches: a fresh
+ * object ({@link yieldsFreshObject}), or an engine call whose pinned bodies
+ * return only one.
+ */
+function freshValue(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    if (yieldsFreshObject(checker, expression)) return true;
+    const call = unwrapExpression(expression);
+    if (!ts.isCallExpression(call)) return false;
+    const target = callTarget(checker, call);
+    return (
+        target.kind === "bodies" &&
+        target.engine &&
+        target.bodies.every((body) =>
+            returnsOnly(body, new Set(), (returned) =>
+                yieldsFreshObject(engineBodies().checkerFor(body), returned),
+            ),
+        )
+    );
+}
+
+/** @unjournaled Pure functions of the checked source, kept across replays. */
+const ownedObjects = new WeakMap<ts.Node, ReadonlySet<ts.Symbol>>();
+
+/**
+ * The bindings of `owner` that hold an object only one run of it reaches
+ * until it returns: a binding never reassigned, holding an object created
+ * here (a fresh object or closure, a page node) or one such an object owns
+ * (a canvas's context). Its object may be read through, called, returned,
+ * captured by a closure or kept in a literal or binding that stays private
+ * itself; passing, storing, awaiting or throwing it hands it on.
+ */
+function privateObjects(
+    checker: ts.TypeChecker,
+    owner: ts.Node,
+): ReadonlySet<ts.Symbol> {
+    const known = ownedObjects.get(owner);
+    if (known) return known;
+    const candidates = new Set<ts.Symbol>();
+    // A candidate stays private only while each binding it is kept in does.
+    const keptIn = new Map<ts.Symbol, ts.Symbol[]>();
+    const keep = (symbol: ts.Symbol, holder: ts.Symbol): void => {
+        const holders = keptIn.get(symbol);
+        if (holders) holders.push(holder);
+        else keptIn.set(symbol, [holder]);
+    };
+    forEachAnalysisNode(
+        owner,
+        (node) => {
+            if (node !== owner && runsAsOwner(node)) return "skip";
+            if (
+                !ts.isVariableDeclaration(node) ||
+                !ts.isIdentifier(node.name) ||
+                !node.initializer
+            )
+                return;
+            const symbol = declaredSymbol(checker, node.name);
+            if (!symbol) return;
+            const initializer = unwrapExpression(node.initializer);
+            const method =
+                ts.isCallExpression(initializer) &&
+                calledOrigin(checker, initializer) === "dom"
+                    ? namedMember(
+                          checker,
+                          unwrapExpression(initializer.expression),
+                      )
+                    : undefined;
+            if (
+                freshValue(checker, initializer) ||
+                ts.isArrowFunction(initializer) ||
+                ts.isFunctionExpression(initializer) ||
+                (ts.isCallExpression(initializer) &&
+                    platformMethodEffect(
+                        calledDeclaration(checker, initializer),
+                    ) === "creates")
+            ) {
+                candidates.add(symbol);
+                return;
+            }
+            const receiver = method && unwrapExpression(method.expression);
+            const base =
+                receiver && ts.isIdentifier(receiver)
+                    ? resolvedSymbol(checker, receiver)
+                    : undefined;
+            if (base && candidates.has(base)) {
+                candidates.add(symbol);
+                keep(symbol, base);
+            }
+        },
+        { types: "skip" },
+    );
+    if (candidates.size > 0) {
+        // Values read out of a candidate, which may be what it keeps.
+        const readOut = new Map<ts.Symbol, ts.Expression[]>();
+        forEachAnalysisNode(
+            owner,
+            (node) => {
+                if (!ts.isIdentifier(node) || !isValueReference(node)) return;
+                const symbol = resolvedSymbol(checker, node);
+                if (!symbol || !candidates.has(symbol)) return;
+                const holder = useHolder(owner, node);
+                if (holder === "escapes") candidates.delete(symbol);
+                else if (holder !== "kept") {
+                    const held = declaredSymbol(checker, holder);
+                    if (held && candidates.has(held)) keep(symbol, held);
+                    else candidates.delete(symbol);
+                }
+                const position = outermostWrapper(node);
+                const access = position.parent;
+                if (isMemberAccess(access) && access.expression === position) {
+                    const call = access.parent;
+                    const read =
+                        ts.isCallExpression(call) && call.expression === access
+                            ? call
+                            : access;
+                    const list = readOut.get(symbol);
+                    if (list) list.push(read);
+                    else readOut.set(symbol, [read]);
+                }
+            },
+            { types: "skip" },
+        );
+        // A candidate keeping others hands them on through what it gives out.
+        for (const holder of new Set([...keptIn.values()].flat()))
+            if (
+                readOut
+                    .get(holder)
+                    ?.some(
+                        (read) =>
+                            typeCanCarryReference(
+                                checker.getTypeAtLocation(read),
+                            ) && useHolder(owner, read) !== "kept",
+                    )
+            )
+                candidates.delete(holder);
+        // What an escaped object keeps escapes with it.
+        for (let changed = true; changed;) {
+            changed = false;
+            for (const [symbol, holders] of keptIn)
+                if (
+                    candidates.has(symbol) &&
+                    holders.some((holder) => !candidates.has(holder))
+                ) {
+                    candidates.delete(symbol);
+                    changed = true;
+                }
+        }
+    }
+    ownedObjects.set(owner, candidates);
+    return candidates;
+}
+
+/**
+ * Where a value `owner` evaluates can be reached from: only this run of
+ * `owner` ("kept": read through, called, tested, returned by `owner`), the
+ * binding a declaration of `owner` initializes, or anywhere ("escapes"). A
+ * use inside a closure of `owner` keeps it when the closure keeps it and is
+ * itself kept; what a closure returns escapes.
+ */
+function useHolder(
+    owner: ts.Node,
+    value: ts.Expression,
+): "kept" | "escapes" | ts.Identifier {
+    const closure = ts.findAncestor(value.parent, runsAsOwner);
+    if (closure === owner) return heldAt(value, true);
+    if (
+        !closure ||
+        (!ts.isArrowFunction(closure) && !ts.isFunctionExpression(closure)) ||
+        ts.findAncestor(closure.parent, runsAsOwner) !== owner ||
+        heldAt(value, false) !== "kept"
+    )
+        return "escapes";
+    return useHolder(owner, closure);
+}
+
+/** The literal a value is a member or element of: it goes where that goes. */
+function enclosingLiteral(position: ts.Expression): ts.Expression | undefined {
+    const parent = position.parent;
+    if (
+        (ts.isShorthandPropertyAssignment(parent) ||
+            (ts.isPropertyAssignment(parent) &&
+                parent.initializer === position)) &&
+        ts.isObjectLiteralExpression(parent.parent)
+    )
+        return parent.parent;
+    return ts.isArrayLiteralExpression(parent) ? parent : undefined;
+}
+
+/** {@link useHolder} for a value its own run evaluates. */
+function heldAt(
+    value: ts.Expression,
+    returnsKeep: boolean,
+): "kept" | "escapes" | ts.Identifier {
+    const position = outermostWrapper(value);
+    const parent = position.parent;
+    const literal = enclosingLiteral(position);
+    if (literal) return heldAt(literal, returnsKeep);
+    if (
+        ts.isReturnStatement(parent) ||
+        (ts.isArrowFunction(parent) && parent.body === position)
+    )
+        return returnsKeep ? "kept" : "escapes";
+    if (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === position &&
+        ts.isIdentifier(parent.name)
+    )
+        return returnsKeep ? parent.name : "escapes";
+    if (ts.isCallExpression(parent) && parent.expression === position)
+        return "kept";
+    return handsOn(value) ? "escapes" : "kept";
+}
+
+/**
+ * Whether a use of a reference can keep it somewhere else: an argument, a
+ * stored or bound value, an awaited, yielded or thrown value, a
+ * reassignment, an element of a literal handed on itself. Reading through
+ * it, testing it and returning it cannot.
+ */
+function handsOn(value: ts.Expression): boolean {
+    const position = outermostWrapper(value);
+    const parent = position.parent;
+    const literal = enclosingLiteral(position);
+    if (literal) return handsOn(literal);
+    if (isMemberAccess(parent) && parent.expression === position) return false;
+    if (writeSites(parent).length > 0) return true;
+    if (
+        ts.isReturnStatement(parent) ||
+        (ts.isArrowFunction(parent) && parent.body === position) ||
+        ts.isIfStatement(parent) ||
+        ts.isPrefixUnaryExpression(parent) ||
+        ts.isTypeOfExpression(parent)
+    )
+        return false;
+    // A selected operand is the selection's value; a tested one is not.
+    if (isOperandSelection(parent))
+        return (
+            operandYield(parent, position) !== undefined &&
+            ts.isExpression(parent) &&
+            handsOn(parent)
+        );
+    return !(
+        ts.isBinaryExpression(parent) &&
+        (equalityOperator(parent.operatorToken.kind) !== undefined ||
+            parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
+    );
+}
+
+/** Types the checker leaves open: a value of one may be anything. */
+const OPEN_TYPES =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.NonPrimitive |
+    ts.TypeFlags.TypeParameter;
+
+/** Whether a value of `type` may be a function. */
+function mayBeFunction(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return unionMembers(type).some(
+        (member) =>
+            (member.flags & OPEN_TYPES) !== 0 ||
+            callSignatures(checker, member, "present").length > 0,
+    );
+}
+
+/** A method a class or a library type declares lives on its prototype. */
+function isPrototypeMethod(declaration: ts.Declaration): boolean {
+    return (
+        (ts.isMethodDeclaration(declaration) &&
+            ts.isClassLike(declaration.parent)) ||
+        (ts.isMethodSignature(declaration) &&
+            declaration.getSourceFile().isDeclarationFile)
+    );
+}
+
+/**
+ * Whether spreading `source` hands on a function: an element it iterates,
+ * or an own property it copies.
+ */
+function spreadsFunction(
+    checker: ts.TypeChecker,
+    source: ts.Expression,
+    into: "elements" | "properties",
+): boolean {
+    return unionMembers(checker.getTypeAtLocation(source)).some((member) => {
+        if ((member.flags & OPEN_TYPES) !== 0) return true;
+        if (PRIMITIVE_KINDS.includes(valueKindOf(member))) return false;
+        if (into === "elements")
+            return isTypeReference(member)
+                ? checker
+                      .getTypeArguments(member)
+                      .some((element) => mayBeFunction(checker, element))
+                : true;
+        return member
+            .getProperties()
+            .some(
+                (property) =>
+                    !(property.declarations ?? []).every(isPrototypeMethod) &&
+                    mayBeFunction(checker, checker.getTypeOfSymbol(property)),
+            );
+    });
+}
+
+/**
+ * The function-valued arguments of a call, the members of object literals
+ * and the elements of array literals included; undefined when a spread
+ * hands values the analysis does not list.
+ */
+export function handedFunctions(
+    checker: ts.TypeChecker,
+    arguments_: readonly ts.Expression[],
+): ts.Node[] | undefined {
+    const handed: ts.Node[] = [];
+    let complete = true;
+    const visit = (expression: ts.Expression): void => {
+        const value = unwrapExpression(expression);
+        if (ts.isObjectLiteralExpression(value)) {
+            for (const member of objectLiteralMembers(value))
+                if (member.kind === "spread")
+                    complete &&= !spreadsFunction(
+                        checker,
+                        member.node.expression,
+                        "properties",
+                    );
+                else if (
+                    member.kind === "property" ||
+                    member.kind === "shorthand"
+                )
+                    visit(member.value);
+                else handed.push(member.node);
+            return;
+        }
+        if (ts.isArrayLiteralExpression(value)) {
+            for (const element of value.elements)
+                if (ts.isSpreadElement(element))
+                    complete &&= !spreadsFunction(
+                        checker,
+                        element.expression,
+                        "elements",
+                    );
+                else visit(element);
+            return;
+        }
+        if (
+            callSignatures(checker, checker.getTypeAtLocation(value), "present")
+                .length > 0
+        )
+            handed.push(value);
+    };
+    for (const argument of arguments_)
+        if (ts.isSpreadElement(argument))
+            complete &&= !spreadsFunction(
+                checker,
+                argument.expression,
+                "elements",
+            );
+        else visit(argument);
+    return complete ? handed : undefined;
+}
+
 /** One analysis of the pinned program per resolver, shared by every scene. */
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
@@ -245,6 +993,10 @@ export class EvaluationOrder {
     private readonly direct = new Map<Unit, DirectAccess>();
     /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
     private readonly summaries = new Map<Unit, Access>();
+    /** @unjournaled `summaries` as the order question sees them, from source alone. */
+    private readonly orderSummaries = new Map<Unit, Access>();
+    /** @unjournaled A cache of one region's footprint, from source alone. */
+    private readonly regions = new WeakMap<ts.Node, Access>();
     /** @unjournaled A cache of one node's reachable accesses, from source alone. */
     private readonly accesses = new WeakMap<ts.Node, Access>();
     /** @unjournaled A cache of whether one unit answers from its arguments alone. */
@@ -441,11 +1193,13 @@ export class EvaluationOrder {
             }
             // Fresh-local heap facts differ, but module admission reads only
             // unknown accesses and callees, which are independent of that frame.
-            const access = unit
+            const direct = unit
                 ? this.directAccess(unit)
                 : this.walk(roots, undefined);
+            const access = emptyAccess();
+            mergeDirect(access, direct, "operands");
             if (access.reads.any || access.writes.any) return true;
-            for (const callee of access.callees)
+            for (const callee of direct.callees)
                 if (visitUnit(callee)) return true;
             return false;
         };
@@ -462,18 +1216,21 @@ export class EvaluationOrder {
         if (!declaration || declarationOrigin(declaration) !== "default-lib")
             return false;
         if (this.libraryAnswersFromArguments(call)) {
-            const callee = unwrapExpression(call.expression);
+            const callee = namedMember(
+                this.checker,
+                unwrapExpression(call.expression),
+            );
             // These conversions can throw for a source-provided precision or
             // radix even though their answer otherwise depends only on it.
             return !(
                 (call.arguments?.length ?? 0) > 0 &&
-                ts.isPropertyAccessExpression(callee) &&
+                callee !== undefined &&
                 [
                     "toFixed",
                     "toExponential",
                     "toPrecision",
                     "toString",
-                ].includes(callee.name.text)
+                ].includes(callee.name)
             );
         }
         const owner = declaration.parent;
@@ -571,8 +1328,11 @@ export class EvaluationOrder {
             );
         }
         if (owner.name.text.startsWith("Weak")) return false;
-        const callee = unwrapExpression(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const callee = namedMember(
+            this.checker,
+            unwrapExpression(call.expression),
+        );
+        if (!callee) return false;
         const receiver = this.checker.getTypeAtLocation(
             unwrapExpression(callee.expression),
         );
@@ -623,7 +1383,7 @@ export class EvaluationOrder {
                 "keys",
                 "values",
                 "entries",
-            ].includes(callee.name.text)
+            ].includes(callee.name)
         )
             return false;
         // Reducing an empty sequence without an initial value throws.
@@ -728,15 +1488,16 @@ export class EvaluationOrder {
         if (ts.isIdentifier(callee))
             return (
                 libraryGlobal(this.checker, callee) !== undefined &&
-                argumentAnsweringGlobals.has(callee.text)
+                LIBRARY_CALL_FACTS.get(callee.text)?.converts === true
             );
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        if (libraryGlobal(this.checker, callee.expression) === "Math")
-            return !mathMemberIsImpure(callee.name.text);
+        const member = namedMember(this.checker, callee);
+        if (!member) return false;
+        if (libraryGlobal(this.checker, member.expression) === "Math")
+            return !mathMemberIsImpure(member.name);
         return (
-            this.isPrimitive(callee.expression) &&
-            !callee.name.text.startsWith("toLocale") &&
-            callee.name.text !== "localeCompare"
+            this.isPrimitive(member.expression) &&
+            !member.name.startsWith("toLocale") &&
+            member.name !== "localeCompare"
         );
     }
 
@@ -745,17 +1506,51 @@ export class EvaluationOrder {
         const known = this.accesses.get(node);
         if (known) return known;
         const direct = this.walk([node], undefined);
-        const access: Access = {
-            reads: direct.reads,
-            writes: direct.writes,
-        };
-        direct.callees.forEach((callee) => {
-            const summary = this.summary(callee);
-            merge(access.reads, summary.reads);
-            merge(access.writes, summary.writes);
-        });
+        const access = emptyAccess();
+        mergeDirect(access, direct, "operands");
+        direct.callees.forEach((callee) =>
+            mergeAccess(access, this.summary(callee)),
+        );
         this.accesses.set(node, access);
         return access;
+    }
+
+    /**
+     * Everything `parts` and the functions they run read and write, as the
+     * order JavaScript defers code in sees it: a library operation's work
+     * shows only in its result, and what runs while a job waits is another
+     * start's.
+     */
+    public footprint(parts: readonly CodePart[]): Access {
+        const total = emptyAccess();
+        for (const part of parts) mergeAccess(total, this.partFootprint(part));
+        return total;
+    }
+
+    private partFootprint(part: CodePart): Access {
+        const region = !part.owner && !part.without;
+        if (region && isUnit(part.node))
+            return this.summary(part.node, "order");
+        const known = region ? this.regions.get(part.node) : undefined;
+        if (known) return known;
+        const owner = part.owner && isUnit(part.owner) ? part.owner : undefined;
+        const direct = this.walk([part.node], owner, part.without);
+        const footprint = emptyAccess();
+        mergeDirect(footprint, direct, "order");
+        for (const callee of direct.callees)
+            mergeAccess(footprint, this.summary(callee, "order"));
+        // The variables of the run `part` belongs to are that run's own.
+        if (owner)
+            for (const storage of [footprint.reads, footprint.writes])
+                storage.variables.forEach((variable) => {
+                    if (
+                        typeof variable !== "symbol" &&
+                        this.frameOf(variable) === owner
+                    )
+                        storage.variables.delete(variable);
+                });
+        if (region) this.regions.set(part.node, footprint);
+        return footprint;
     }
 
     /**
@@ -773,17 +1568,24 @@ export class EvaluationOrder {
         readonly opaque: boolean;
     } {
         const direct = this.walk([node], undefined);
-        let opaque = direct.opaque;
+        let opaque = direct.opaque || direct.suspends;
         const units = new Set<ts.Node>();
         const pending = [...direct.callees];
         for (let next = pending.pop(); next; next = pending.pop()) {
             if (units.has(next)) continue;
             units.add(next);
             const access = this.directAccess(next);
-            opaque ||= access.opaque;
+            opaque ||= access.opaque || access.suspends;
             pending.push(...access.callees);
         }
         return { units, opaque };
+    }
+
+    /** The calls that may run a class's method ({@link ClassHierarchy.methodCallers}). */
+    public methodCallers(
+        method: ts.MethodDeclaration,
+    ): readonly ts.CallExpression[] | undefined {
+        return this.hierarchy.methodCallers(method);
     }
 
     /**
@@ -834,15 +1636,8 @@ export class EvaluationOrder {
      * access a call reaching any of them may have.
      */
     public bodyAccess(units: readonly Unit[]): Access {
-        const access: Access = {
-            reads: emptyStorage(),
-            writes: emptyStorage(),
-        };
-        units.forEach((unit) => {
-            const summary = this.summary(unit);
-            merge(access.reads, summary.reads);
-            merge(access.writes, summary.writes);
-        });
+        const access = emptyAccess();
+        units.forEach((unit) => mergeAccess(access, this.summary(unit)));
         return access;
     }
 
@@ -853,19 +1648,17 @@ export class EvaluationOrder {
      * encloses `unit` is the exception: its variables are the ones `unit`
      * closes over.
      */
-    private summary(unit: Unit): Access {
-        const known = this.summaries.get(unit);
+    private summary(unit: Unit, view: View = "operands"): Access {
+        const cache =
+            view === "operands" ? this.summaries : this.orderSummaries;
+        const known = cache.get(unit);
         if (known) return known;
-        const summary: Access = {
-            reads: emptyStorage(),
-            writes: emptyStorage(),
-        };
+        const summary = emptyAccess();
         const reached = new Set<Unit>([unit]);
         const pending: Unit[] = [unit];
         for (let next = pending.pop(); next; next = pending.pop()) {
             const direct = this.directAccess(next);
-            merge(summary.reads, direct.reads);
-            merge(summary.writes, direct.writes);
+            mergeDirect(summary, direct, view);
             if (summary.reads.any && summary.writes.any) break;
             direct.callees.forEach((callee) => {
                 if (reached.has(callee)) return;
@@ -885,7 +1678,7 @@ export class EvaluationOrder {
                     storage.variables.delete(variable);
             });
         }
-        this.summaries.set(unit, summary);
+        cache.set(unit, summary);
         return summary;
     }
 
@@ -898,23 +1691,28 @@ export class EvaluationOrder {
         return direct;
     }
 
-    /** The storage `roots` touch themselves, and the functions they call. */
+    /**
+     * The storage `roots` touch themselves, and the functions they call;
+     * `without` is a subtree that does not run.
+     */
     private walk(
         roots: readonly ts.Node[],
         unit: Unit | undefined,
+        without?: ts.Node,
     ): DirectAccess {
         const access: DirectAccess = {
-            reads: emptyStorage(),
-            writes: emptyStorage(),
+            ...emptyAccess(),
             callees: new Set(),
             opaque: false,
+            suspends: false,
+            library: emptyAccess(),
         };
         const visit = (current: ts.Node): "skip" | void => {
-            const targets = writeSites(current).map((site) => site.target);
-            if (targets.length > 0) {
-                targets.forEach((target) => this.write(access, target, unit));
-            } else if (ts.isAwaitExpression(current)) {
-                cannotFollow(access);
+            if (current === without) return "skip";
+            for (const site of writeSites(current))
+                this.write(access, site.target, unit);
+            if (ts.isAwaitExpression(current)) {
+                access.suspends = true;
             } else if (ts.isTaggedTemplateExpression(current)) {
                 this.taggedTemplate(access, current);
             } else if (
@@ -922,21 +1720,23 @@ export class EvaluationOrder {
                 ts.isNewExpression(current)
             ) {
                 this.call(access, current, unit);
-            } else if (
-                ts.isPropertyAccessExpression(current) ||
-                ts.isElementAccessExpression(current)
-            ) {
+            } else if (isMemberAccess(current)) {
                 return this.read(access, current, unit);
             } else if (ts.isIdentifier(current)) {
                 const symbol = resolvedSymbol(this.checker, current);
                 if (symbol && this.isWrittenVariable(symbol))
                     access.reads.variables.add(symbol);
             } else if (
-                ts.isSpreadElement(current) &&
-                !this.isFresh(current.expression, unit)
+                ts.isSpreadElement(current) ||
+                ts.isForOfStatement(current)
             ) {
-                // An iterable spread reads the elements it copies.
-                access.reads.heap = true;
+                this.iterate(access, current.expression, unit);
+            } else if (
+                ts.isVariableDeclaration(current) &&
+                ts.isArrayBindingPattern(current.name) &&
+                current.initializer
+            ) {
+                this.iterate(access, current.initializer, unit);
             }
         };
         roots.forEach((root) =>
@@ -949,33 +1749,51 @@ export class EvaluationOrder {
         return access;
     }
 
+    /**
+     * Iterating reads the elements it walks; a protocol a program's
+     * generator or class may implement runs code the analysis cannot follow.
+     */
+    private iterate(
+        access: DirectAccess,
+        iterated: ts.Expression,
+        unit: Unit | undefined,
+    ): void {
+        const family = this.objectOf(iterated, unit);
+        if (family) access.reads.objects.add(family);
+        if (!iteratesLibraryCollection(this.checker, iterated))
+            cannotFollow(access);
+    }
+
     private read(
         access: DirectAccess,
         node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
         unit: Unit | undefined,
     ): "skip" | void {
+        if (this.isConstant(node)) return "skip";
+        this.runs(access, this.accessorUnits(node, "get"));
+        const family = this.objectOf(node.expression, unit);
+        if (family) access.reads.objects.add(family);
+    }
+
+    /**
+     * Whether a member read reads a value that never changes: an enum
+     * member, a pinned constant, or a library global's own constant
+     * (`Math.PI`) or function (`Math.sin`).
+     */
+    private isConstant(
+        node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): boolean {
         const symbol = resolvedSymbol(this.checker, node);
-        // Enum members and pinned or language-library readonly constants
-        // (`Math.PI`) never change; a library function read off
-        // a namespace object (`Math.sin`) is no object's state.
-        if (
-            symbol &&
-            ((symbol.flags & ts.SymbolFlags.EnumMember) !== 0 ||
-                (ts.isPropertyAccessExpression(node) &&
-                    pinnedConstantProperty(this.checker, node) !== undefined) ||
-                (declaredInDefaultLibrary(symbol) &&
-                    (propertyIsReadOnly(symbol) ||
-                        (libraryGlobal(this.checker, node.expression) !==
-                            undefined &&
-                            (symbol.flags & ts.SymbolFlags.Method) !== 0))))
-        )
-            return "skip";
-        if (
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-        )
-            this.runs(access, this.accessorUnits(node, "get"));
-        if (!this.isFresh(node, unit)) access.reads.heap = true;
+        if (!symbol) return false;
+        return (
+            (symbol.flags & ts.SymbolFlags.EnumMember) !== 0 ||
+            (ts.isPropertyAccessExpression(node) &&
+                pinnedConstantProperty(this.checker, node) !== undefined) ||
+            (declaredInDefaultLibrary(symbol) &&
+                libraryGlobal(this.checker, node.expression) !== undefined &&
+                ((symbol.flags & ts.SymbolFlags.Method) !== 0 ||
+                    propertyIsReadOnly(symbol)))
+        );
     }
 
     private write(
@@ -986,18 +1804,25 @@ export class EvaluationOrder {
         const node = unwrapExpression(target);
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.checker, node);
-            if (symbol) access.writes.variables.add(symbol);
-            else access.writes.any = true;
+            if (!symbol) access.writes.any = true;
+            // A host global (`onresize = ...`) is a property of its object.
+            else if (
+                symbol.declarations?.some(
+                    (declaration) =>
+                        declaration.getSourceFile().isDeclarationFile,
+                )
+            )
+                access.writes.objects.add("objects");
+            else access.writes.variables.add(symbol);
             return;
         }
-        const member =
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-                ? node
-                : undefined;
+        const member = isMemberAccess(node) ? node : undefined;
         if (member) this.runs(access, this.accessorUnits(member, "set"));
-        if (this.isFresh(node, unit)) return;
-        access.writes.heap = true;
+        const family = member
+            ? this.objectOf(member.expression, unit)
+            : "objects";
+        if (!family) return;
+        access.writes.objects.add(family);
         if (
             !member ||
             this.mayHoldArray(this.checker.getTypeAtLocation(member.expression))
@@ -1103,15 +1928,10 @@ export class EvaluationOrder {
         call: ts.CallExpression | ts.NewExpression,
         unit: Unit | undefined,
     ): void {
-        if (this.isRandom(call.expression)) {
-            access.reads.variables.add(randomState);
-            access.writes.variables.add(randomState);
-            return;
-        }
-        const engine = this.engineAccess(call);
-        if (engine) {
-            merge(access.reads, engine.reads);
-            merge(access.writes, engine.writes);
+        const shared = sharedLibraryState(this.checker, call);
+        if (shared) {
+            access.reads.variables.add(shared);
+            if (shared === randomState) access.writes.variables.add(shared);
             return;
         }
         const units = this.callUnits(call);
@@ -1132,13 +1952,11 @@ export class EvaluationOrder {
         access: DirectAccess,
         node: ts.TaggedTemplateExpression,
     ): void {
-        const engine = this.engineAccess(node);
-        if (engine) {
-            merge(access.reads, engine.reads);
-            merge(access.writes, engine.writes);
+        const declaration = calledDeclaration(this.checker, node);
+        if (declaration && isEngineDeclaration(declaration)) {
+            mergeAccess(access.library, this.engineCode(node));
             return;
         }
-        const declaration = calledDeclaration(this.checker, node);
         const tag = unwrapExpression(node.tag);
         const named =
             declaration &&
@@ -1151,22 +1969,22 @@ export class EvaluationOrder {
     }
 
     /**
-     * What an engine call touches, from the pinned bodies its typing names:
-     * everything when it names none or runs code the pinned bodies cannot
-     * follow, otherwise the objects and engine state they read and write.
-     * Undefined for a call that is not the engine's.
+     * What an engine call's own code touches, from the pinned bodies its
+     * typing names: everything when it names none or runs code the pinned
+     * bodies cannot follow, otherwise the objects and engine state they
+     * read and write. Nothing for a construction, or without the pin.
      */
-    private engineAccess(
+    private engineCode(
         call:
             ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression,
-    ): Access | undefined {
-        if (!this.engine || ts.isNewExpression(call)) return undefined;
+    ): Access {
+        const access = emptyAccess();
+        if (!this.engine || ts.isNewExpression(call)) return access;
         const declaration = calledDeclaration(this.checker, call);
-        if (!declaration || !isEngineDeclaration(declaration)) return undefined;
+        if (!declaration) return access;
         const engine = this.engine();
         const bodies = engine.bodies(declaration);
         if (!bodies) {
-            const access = { reads: emptyStorage(), writes: emptyStorage() };
             touchEverything(access);
             return access;
         }
@@ -1178,99 +1996,159 @@ export class EvaluationOrder {
         const summary = pinned.bodyAccess(bodies);
         // The engine's own variables are state only its calls reach: to the
         // scene they are one store with the objects it holds.
-        const asScene = (storage: Storage): Storage => ({
-            any: storage.any,
-            heap: storage.heap || storage.variables.size > 0,
-            arrays: storage.arrays,
-            variables: new Set(),
-        });
-        return {
-            reads: asScene(summary.reads),
-            writes: asScene(summary.writes),
+        const asScene = (from: Storage, into: Storage): void => {
+            into.any = from.any;
+            into.arrays = from.arrays;
+            if (from.objects.size > 0 || from.variables.size > 0)
+                into.objects.add("engine");
         };
+        asScene(summary.reads, access.reads);
+        asScene(summary.writes, access.writes);
+        return access;
     }
 
     /**
-     * A library call reads the objects it is handed and its receiver's
-     * state, writes that state through a mutating built-in method, and runs
-     * the callbacks it is given.
+     * A library call as its result and what it is handed show it: it reads
+     * its receiver and the objects it is handed, writes its receiver through
+     * a mutating method and the argument it fills, and runs the functions
+     * it is handed. A page method changes its object and what it is handed
+     * unless it only reads the page or creates a node, one that dispatches
+     * an event runs its listeners, and a global page function changes the
+     * page. What an asynchronous operation reads and changes of what it
+     * is handed is its own work until it settles, and the engine's code is
+     * its pinned bodies': both only the operand question reads.
      */
     private libraryCall(
         access: DirectAccess,
         call: ts.CallExpression | ts.NewExpression,
         unit: Unit | undefined,
     ): void {
-        const callee = unwrapExpression(call.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            libraryGlobal(this.checker, callee.expression) === undefined &&
-            !this.isPrimitive(callee.expression) &&
-            !this.isFresh(callee.expression, unit)
-        ) {
-            access.reads.heap = true;
-            const platform = platformMethodEffect(
-                this.checker.getTypeAtLocation(callee.expression),
-                callee.name.text,
-            );
-            // Aborting runs the signal's listeners: any program code.
-            if (platform === "runs-code") {
-                access.reads.any = true;
-                access.writes.any = true;
-            } else if (platform === "writes-receiver")
-                access.writes.heap = true;
-            if (receiverWritingMethods.has(callee.name.text)) {
-                access.writes.heap = true;
-                if (
-                    this.mayHoldArray(
-                        this.checker.getTypeAtLocation(callee.expression),
-                    )
-                )
-                    access.writes.arrays = true;
-            }
+        const checker = this.checker;
+        const declaration = calledDeclaration(checker, call);
+        const origin = declaration && declarationOrigin(declaration);
+        if (origin === "babylon")
+            mergeAccess(access.library, this.engineCode(call));
+        const callee = ts.isCallExpression(call)
+            ? namedMember(checker, unwrapExpression(call.expression))
+            : undefined;
+        // What an asynchronous operation does with what it is handed is its
+        // own work until it settles.
+        const work =
+            ts.isCallExpression(call) &&
+            libraryName(checker.getTypeAtLocation(call)) === "Promise"
+                ? access.library
+                : access;
+        const change = (expression: ts.Expression): void => {
+            const family = this.objectOf(expression, unit);
+            if (!family) return;
+            work.writes.objects.add(family);
+            if (this.mayHoldArray(checker.getTypeAtLocation(expression)))
+                work.writes.arrays = true;
+        };
+        const effect = ts.isCallExpression(call)
+            ? platformMethodEffect(declaration)
+            : undefined;
+        if (effect === "runs-code") touchEverything(access);
+        const receiver = callee?.expression;
+        // A library global (`Math`, `document`) is no object a program
+        // reads; a lookup of the page reads the element it finds by id, or
+        // the whole page.
+        const global =
+            receiver === undefined ||
+            libraryGlobal(checker, receiver) !== undefined;
+        if (effect === "reads" && global && ts.isCallExpression(call)) {
+            const id = lookedUpElementId(checker, call);
+            work.reads.objects.add(id === undefined ? "page" : `page:${id}`);
         }
-        for (const argument of call.arguments ?? []) {
-            const expression = unwrapExpression(argument);
-            if (
-                ts.isArrowFunction(expression) ||
-                ts.isFunctionExpression(expression)
-            ) {
-                access.callees.add(expression);
-                continue;
-            }
-            const type = this.checker.getTypeAtLocation(argument);
-            if (callSignatures(this.checker, type, "present").length > 0) {
-                // A library function handed on (`map(Number)`) runs as a
-                // library call over the values it is given.
-                if (this.isRandom(expression)) {
-                    access.reads.variables.add(randomState);
-                    access.writes.variables.add(randomState);
-                    continue;
-                }
-                const declarations =
-                    resolvedSymbol(this.checker, expression)?.declarations ??
-                    [];
-                if (
-                    declarations.length > 0 &&
-                    declarations.every(
-                        (declaration) =>
-                            declaration.getSourceFile().isDeclarationFile,
-                    )
-                )
-                    continue;
-                const declaration = this.namedFunction(expression);
-                if (declaration) access.callees.add(declaration);
-                else cannotFollow(access);
-                continue;
+        if (receiver && !this.isPrimitive(receiver)) {
+            if (!global) {
+                const family = this.objectOf(receiver, unit);
+                if (family) work.reads.objects.add(family);
             }
             if (
-                !this.isPrimitive(argument) &&
-                !ts.isArrayLiteralExpression(expression) &&
-                !ts.isObjectLiteralExpression(expression) &&
-                !ts.isNewExpression(expression) &&
-                !this.isFresh(expression, unit)
+                effect === "writes-receiver" ||
+                (origin === "dom"
+                    ? effect === undefined
+                    : !global &&
+                      libraryMethodWritesReceiver(
+                          checker,
+                          receiver,
+                          callee.name,
+                      ))
             )
-                access.reads.heap = true;
+                change(receiver);
         }
+        const handed = handedFunctions(checker, call.arguments ?? []);
+        if (!handed) cannotFollow(access);
+        for (const fn of handed ?? []) this.handed(access, fn);
+        for (const argument of call.arguments ?? []) {
+            const type = checker.getTypeAtLocation(argument);
+            if (callSignatures(checker, type, "present").length > 0) continue;
+            const family = this.objectOf(argument, unit);
+            if (family) work.reads.objects.add(family);
+        }
+        if (!ts.isCallExpression(call)) return;
+        if (origin === "babylon") {
+            const target = callTarget(checker, call);
+            call.arguments.forEach((argument, index) => {
+                if (
+                    target.kind !== "bodies" ||
+                    engineCallMutatesArgument(checker, call, index, target)
+                )
+                    change(argument);
+            });
+            return;
+        }
+        const written = libraryWrittenArgument(checker, call);
+        if (written) change(written);
+        if (origin !== "dom" || effect !== undefined) return;
+        if (!callee) work.writes.objects.add("page");
+        else
+            for (const argument of call.arguments)
+                if (typeCanCarryReference(checker.getTypeAtLocation(argument)))
+                    change(argument);
+    }
+
+    /**
+     * A function a library call is handed, which it may run: a function
+     * literal or method, a named function, or a library function handed on
+     * (`map(Number)`), which runs as a library call over the values it is
+     * given. Any other function value cannot be followed.
+     */
+    private handed(access: DirectAccess, fn: ts.Node): void {
+        if (isUnit(fn)) {
+            access.callees.add(fn);
+            return;
+        }
+        if (!ts.isExpression(fn)) {
+            cannotFollow(access);
+            return;
+        }
+        const expression = unwrapExpression(fn);
+        if (
+            ts.isArrowFunction(expression) ||
+            ts.isFunctionExpression(expression)
+        ) {
+            access.callees.add(expression);
+            return;
+        }
+        if (this.isRandom(expression)) {
+            access.reads.variables.add(randomState);
+            access.writes.variables.add(randomState);
+            return;
+        }
+        const declarations =
+            resolvedSymbol(this.checker, expression)?.declarations ?? [];
+        if (
+            declarations.length > 0 &&
+            declarations.every(
+                (declaration) => declaration.getSourceFile().isDeclarationFile,
+            )
+        )
+            return;
+        const declaration = this.namedFunction(expression);
+        if (declaration) access.callees.add(declaration);
+        else cannotFollow(access);
     }
 
     /**
@@ -1325,7 +2203,7 @@ export class EvaluationOrder {
             return this.declarationUnits(declaration);
         // A function reached through a variable or a property is that
         // function only while nothing stores another one there.
-        if (ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)) {
+        if (ts.isIdentifier(callee) || namedMember(this.checker, callee)) {
             const named = this.namedFunction(callee);
             return named ? [named] : undefined;
         }
@@ -1336,10 +2214,12 @@ export class EvaluationOrder {
 
     /** Whether an expression is the language's `Math.random`. */
     private isRandom(expression: ts.Expression): boolean {
-        const access = mathMemberAccess(unwrapExpression(expression), (owner) =>
-            libraryGlobal(this.checker, owner),
+        const access = mathMemberAccess(
+            unwrapExpression(expression),
+            (owner) => libraryGlobal(this.checker, owner),
+            (node) => namedMember(this.checker, node),
         );
-        return access !== undefined && mathMemberIsImpure(access.name.text);
+        return access !== undefined && mathMemberIsImpure(access.name);
     }
 
     /** Whether every value an expression can have is a primitive, which no code can change in place. */
@@ -1354,10 +2234,11 @@ export class EvaluationOrder {
     private namedFunction(
         expression: ts.Expression,
     ): ts.FunctionLikeDeclaration | undefined {
-        const symbol = resolvedSymbol(
-            this.checker,
-            unwrapExpression(expression),
-        );
+        const unwrapped = unwrapExpression(expression);
+        const member = namedMember(this.checker, unwrapped);
+        const symbol = member
+            ? accessedPropertySymbol(this.checker, member.access)
+            : resolvedSymbol(this.checker, unwrapped);
         const declaration = symbol?.valueDeclaration;
         if (!symbol || !declaration) return undefined;
         if (ts.isFunctionDeclaration(declaration)) {
@@ -1400,39 +2281,42 @@ export class EvaluationOrder {
     }
 
     /**
-     * Whether an access chain starts at an object the current run created
-     * and nothing else holds yet: a local initialized with a literal or a
-     * `new` and never reassigned, or the object a constructor or field
+     * The family of the object `expression` evaluates to, or undefined for
+     * a primitive or an object only this run of `unit` reaches.
+     */
+    private objectOf(
+        expression: ts.Expression,
+        unit: Unit | undefined,
+    ): ObjectFamily | undefined {
+        return this.isPrivate(expression, unit)
+            ? undefined
+            : objectFamily(this.checker, expression);
+    }
+
+    /**
+     * Whether `expression` evaluates to an object only one run of `unit`
+     * reaches: a fresh object, the module's metadata, one a private binding
+     * holds ({@link privateObjects}), or the object a constructor or field
      * initializer is building.
      */
-    private isFresh(
+    private isPrivate(
         expression: ts.Expression,
         unit: Unit | undefined,
     ): boolean {
+        const base = unwrapExpression(expression);
+        if (ts.isMetaProperty(base) || freshValue(this.checker, base))
+            return true;
         if (!unit) return false;
-        const root = rootExpression(expression);
-        if (root.kind === ts.SyntaxKind.ThisKeyword)
+        if (base.kind === ts.SyntaxKind.ThisKeyword)
             return (
                 ts.isConstructorDeclaration(unit) ||
                 ts.isPropertyDeclaration(unit)
             );
-        if (!ts.isIdentifier(root)) return false;
-        const symbol = resolvedSymbol(this.checker, root);
-        const declaration = symbol?.valueDeclaration;
-        if (
-            !symbol ||
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !declaration.initializer ||
-            this.isWrittenVariable(symbol) ||
-            evaluationContainer(declaration) !== unit
-        )
-            return false;
-        const initializer = unwrapExpression(declaration.initializer);
+        if (!ts.isIdentifier(base)) return false;
+        const symbol = resolvedSymbol(this.checker, base);
         return (
-            ts.isArrayLiteralExpression(initializer) ||
-            ts.isObjectLiteralExpression(initializer) ||
-            ts.isNewExpression(initializer)
+            symbol !== undefined &&
+            privateObjects(this.checker, unit).has(symbol)
         );
     }
 
@@ -1443,7 +2327,8 @@ export class EvaluationOrder {
             !declaration ||
             !(
                 ts.isVariableDeclaration(declaration) ||
-                ts.isParameter(declaration)
+                ts.isParameter(declaration) ||
+                ts.isBindingElement(declaration)
             )
         )
             return undefined;
@@ -1452,7 +2337,6 @@ export class EvaluationOrder {
             ? container
             : undefined;
     }
-
     /** Whether any code in its file assigns the variable after its declaration. */
     private isWrittenVariable(symbol: ts.Symbol): boolean {
         if ((symbol.flags & ts.SymbolFlags.Variable) === 0) return false;

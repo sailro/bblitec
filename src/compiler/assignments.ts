@@ -2,6 +2,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
+import { refuseRealmHostWrite } from "./host-globals.js";
 import { shadowCasterMaterialWrite } from "./shadow-caster-material.js";
 import {
     compositeScalarAccessors,
@@ -587,6 +588,7 @@ export interface AssignmentContext
             | "probeStaticArrayLiteral"
             | "staticStringElements"
             | "compileStaticString"
+            | "compileStringLiteral"
             | "withRecordScopes"
             | "compileStoredDataFunction"
             | "cppString"
@@ -1317,7 +1319,13 @@ export function emitPropertyAssignment(
     ) {
         const instance = context.compileValue(left.expression);
         const fields = instance.recordProperties;
-        if (!fields || fields[left.name.text]) {
+        const existing = fields?.[left.name.text];
+        // A shared instance stores the element in its slot like any value.
+        if (existing?.classStoredField && existing.dataType) {
+            storeClassField(context, existing, expression.right, left);
+            return;
+        }
+        if (!fields || existing) {
             context.fail(
                 left,
                 `Native UI field '${left.name.text}' must be wired exactly once.`,
@@ -1335,6 +1343,7 @@ export function emitPropertyAssignment(
             left,
             "Builtin constructor fields require an immutable generation-known binding.",
         );
+    refuseRealmHostWrite(context, left);
     if (
         context.browserErasure.isBrowserOnlyExpression(left) ||
         context.browserErasure.isBrowserDomValue(left)
@@ -2441,6 +2450,44 @@ import {
 } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { staticTableEntry, type TableOption } from "./table-options.js";
+
+/**
+ * A mesh's primitive state fields: the topology's native name, and the
+ * cull and front-face flags (`cullMode: "none"` disables culling,
+ * `frontFace: "cw"` flips the winding). Only uint32 strip indices exist.
+ */
+const meshPrimitiveOptions: Readonly<Record<string, TableOption>> = {
+    topology: {
+        table: {
+            "triangle-list": "bbl::MeshTopology::triangles",
+            "point-list": "bbl::MeshTopology::points",
+            "line-list": "bbl::MeshTopology::lines",
+            "line-strip": "bbl::MeshTopology::line_strip",
+        },
+        refusal: (topology) => `Unrepresented mesh topology '${topology}'.`,
+        name: "mesh topology",
+        label: "topology",
+    },
+    cullMode: {
+        table: { none: "true", back: "false" },
+        refusal: "Unrepresented mesh primitive field or value.",
+        name: "mesh cull mode",
+        label: "cull_mode",
+    },
+    frontFace: {
+        table: { cw: "true", ccw: "false" },
+        refusal: "Unrepresented mesh primitive field or value.",
+        name: "mesh front face",
+        label: "front_face",
+    },
+    stripIndexFormat: {
+        table: { uint32: "" },
+        refusal: "Unrepresented mesh primitive field or value.",
+        name: "mesh strip index format",
+        label: "strip_index_format",
+    },
+};
 import { surfaceResizeFunction } from "./surface-pixel-ratio.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
@@ -2523,30 +2570,18 @@ function compileMeshPrimitiveState(
         const value = ts.isPropertyAssignment(property)
             ? property.initializer
             : property.name;
-        const literal = context.compileStaticString(value);
-        if (key === "topology") {
-            const mapped: Record<string, string> = {
-                "triangle-list": "triangles",
-                "point-list": "points",
-                "line-list": "lines",
-                "line-strip": "line_strip",
-            };
-            if (!mapped[literal])
-                return context.fail(
-                    value,
-                    `Unrepresented mesh topology '${literal}'.`,
-                );
-            topology = `bbl::MeshTopology::${mapped[literal]}`;
-        } else if (key === "cullMode" && ["none", "back"].includes(literal))
-            cull = literal === "none" ? "true" : "false";
-        else if (key === "frontFace" && ["cw", "ccw"].includes(literal))
-            front = literal === "cw" ? "true" : "false";
-        else if (key === "stripIndexFormat" && literal === "uint32") continue;
-        else
-            return context.fail(
-                property,
-                "Unrepresented mesh primitive field or value.",
-            );
+        const option =
+            key !== undefined &&
+            Object.prototype.hasOwnProperty.call(meshPrimitiveOptions, key)
+                ? meshPrimitiveOptions[key]!
+                : context.fail(
+                      property,
+                      "Unrepresented mesh primitive field or value.",
+                  );
+        const spelling = staticTableEntry(context, option, value);
+        if (key === "topology") topology = spelling;
+        else if (key === "cullMode") cull = spelling;
+        else if (key === "frontFace") front = spelling;
     }
     return `std::optional<bbl::MeshPrimitiveState>{bbl::MeshPrimitiveState{${topology}, ${cull}, ${front}}}`;
 }
@@ -3216,7 +3251,13 @@ function emitLocalMatrixAssignment(
     state: TargetPropertyAssignment,
 ): boolean {
     const { expression, target, property } = state;
-    if (target.kind === "asset-root" && property === "_localMatrix") {
+    // A widened clone is a mesh or imported-root clone (a standalone
+    // TransformNode clone throws); native holds neither as a raw matrix.
+    if (
+        (target.kind === "asset-root" ||
+            (target.kind === "scene-node" && target.sceneNodeClone)) &&
+        property === "_localMatrix"
+    ) {
         requireSimpleAssignment(
             context,
             expression,
@@ -3230,7 +3271,7 @@ function emitLocalMatrixAssignment(
         ) {
             context.fail(
                 expression.right,
-                "An imported synthetic root only exposes clearing _localMatrix with undefined.",
+                "An imported root or its clone only exposes clearing _localMatrix with undefined.",
             );
         }
         context.assetRegistry.assertAssetRootWritable(target, expression);

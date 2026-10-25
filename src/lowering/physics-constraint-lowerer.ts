@@ -1,12 +1,12 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
+    collectionBinding,
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
 
 const module = "src/physics/havok.ts";
 
@@ -231,6 +231,7 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                 staticallyAbsent: true,
             });
             scopeBindings.set("l.axis", scalar("l.axis"));
+            scopeBindings.set("limits", collectionBinding("limits"));
             const element = (axis: string) =>
                 `axes.at(static_cast<std::size_t>(${axis}))`;
             const lowerer = new PinnedNumericLowerer(factory.file, {
@@ -316,15 +317,6 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                         (args) => `${element(args[1]!)}.maximum = ${args[2]}`,
                     ],
                 ]),
-                forOf: (range, name) =>
-                    sameSource(range, "limits") && name === "l"
-                        ? {
-                              range: "limits",
-                              bindings: new Map([
-                                  [name, { cpp: name, type: "opaque" }],
-                              ]),
-                          }
-                        : undefined,
             });
             scopeBindings.set("axis", { cpp: "0", type: "opaque" });
             scopeBindings.set("joint", { cpp: "0", type: "opaque" });

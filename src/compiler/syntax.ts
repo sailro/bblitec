@@ -21,7 +21,7 @@ export function regularExpressionParts(
     };
 }
 import { someAnalysisNode } from "./analysis-walk.js";
-import type { LibraryGlobal } from "./symbols.js";
+import type { LibraryGlobal, MemberReader } from "./symbols.js";
 
 /** What may run code or change state when an expression is evaluated now. */
 interface EffectOptions {
@@ -247,6 +247,14 @@ export function operandYield(
     }
 }
 
+/** The `c ? a : b` an expression is, past its wrappers. */
+export function conditionalExpression(
+    expression: ts.Expression,
+): ts.ConditionalExpression | undefined {
+    const node = unwrapExpression(expression);
+    return ts.isConditionalExpression(node) ? node : undefined;
+}
+
 /** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
 export function isOperandSelection(node: ts.Node): boolean {
     return (
@@ -404,6 +412,23 @@ export function rootExpression(
     return current;
 }
 
+/**
+ * The expressions whose objects `expression` evaluates to or into: the root
+ * of its access chain, and through a selection the root of each operand it
+ * may yield (`(c ? a : b).n` is in `a` or in `b`). A root that is no name
+ * -- a call, a literal -- is its caller's to follow.
+ */
+export function referenceBases(
+    expression: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+): readonly ts.Expression[] {
+    const root = rootExpression(expression, unwrap);
+    if (!isOperandSelection(root)) return [root];
+    return valueOperands(root, unwrap).flatMap((operand) =>
+        operand === root ? [root] : referenceBases(operand, unwrap),
+    );
+}
+
 /** The identifier a property/element-access chain is rooted at, if any. */
 export function rootIdentifier(
     expression: ts.Expression,
@@ -531,25 +556,28 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
  */
 export function mutatingCallTarget(
     node: ts.Node,
-    mutatesVia: (method: string) => boolean,
+    member: MemberReader,
+    mutatesVia: (
+        method: string,
+        receiver: ts.Expression,
+        call: ts.CallExpression,
+    ) => boolean,
     writtenArgument?: (call: ts.CallExpression) => ts.Expression | undefined,
 ): ts.Expression | undefined {
-    if (
-        !ts.isCallExpression(node) ||
-        !ts.isPropertyAccessExpression(node.expression)
-    ) {
-        return undefined;
-    }
-    const callee = node.expression;
+    if (!ts.isCallExpression(node)) return undefined;
+    const callee = member(node.expression);
+    if (!callee) return undefined;
     const written = writtenArgument
         ? writtenArgument(node)
-        : callee.name.text === "assign" &&
+        : callee.name === "assign" &&
             ts.isIdentifier(callee.expression) &&
             callee.expression.text === "Object"
           ? node.arguments[0]
           : undefined;
     if (written) return written;
-    return mutatesVia(callee.name.text) ? callee.expression : undefined;
+    return mutatesVia(callee.name, callee.expression, node)
+        ? callee.expression
+        : undefined;
 }
 
 /**
@@ -562,6 +590,7 @@ export function mutatingCallTarget(
 export function iteratorMethodCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
 ):
     | {
@@ -571,18 +600,15 @@ export function iteratorMethodCall(
       }
     | undefined {
     const call = unwrap(expression);
-    if (
-        !ts.isCallExpression(call) ||
-        call.arguments.length !== 0 ||
-        !ts.isPropertyAccessExpression(call.expression)
-    ) {
+    if (!ts.isCallExpression(call) || call.arguments.length !== 0)
         return undefined;
-    }
-    const method = call.expression.name.text;
+    const callee = member(call.expression);
+    if (!callee) return undefined;
+    const method = callee.name;
     if (method !== "entries" && method !== "keys" && method !== "values") {
         return undefined;
     }
-    const receiver = call.expression.expression;
+    const receiver = callee.expression;
     if (
         (ts.isIdentifier(receiver) && libraryGlobal(receiver) !== undefined) ||
         someAnalysisNode(
@@ -806,8 +832,55 @@ function inDestructuringPattern(node: ts.Node): boolean {
     );
 }
 
+/** @unjournaled Parsed syntax is immutable: an assignment's or loop head's write sites, kept. */
+const parsedWriteSites = new WeakMap<ts.Node, readonly WriteSite[]>();
+
+const NO_WRITE_SITES: readonly WriteSite[] = [];
+
 /** The places `node` itself writes; writes nested in its operands are their own sites. */
 export function writeSites(node: ts.Node): readonly WriteSite[] {
+    // Only an assignment, an update, a `delete` or a loop head writes: any
+    // other node answers by its kind alone, the hot path of whole-file scans.
+    switch (node.kind) {
+        case ts.SyntaxKind.BinaryExpression:
+            if (
+                ts.isBinaryExpression(node) &&
+                isAssignmentOperator(node.operatorToken.kind)
+            )
+                break;
+            return NO_WRITE_SITES;
+        case ts.SyntaxKind.PrefixUnaryExpression:
+        case ts.SyntaxKind.PostfixUnaryExpression:
+        case ts.SyntaxKind.DeleteExpression:
+        case ts.SyntaxKind.ForOfStatement:
+        case ts.SyntaxKind.ForInStatement:
+            break;
+        default:
+            return NO_WRITE_SITES;
+    }
+    // Only an assignment or a loop head walks a pattern; any other node
+    // answers at once. Factory nodes may acquire another parent, which a
+    // pattern's role reads.
+    const parsed =
+        node.pos >= 0 && (node.flags & ts.NodeFlags.Synthesized) === 0;
+    if (
+        !parsed ||
+        !(
+            ts.isBinaryExpression(node) ||
+            ts.isForOfStatement(node) ||
+            ts.isForInStatement(node)
+        )
+    )
+        return nodeWriteSites(node);
+    let sites = parsedWriteSites.get(node);
+    if (!sites) {
+        sites = nodeWriteSites(node);
+        parsedWriteSites.set(node, sites);
+    }
+    return sites;
+}
+
+function nodeWriteSites(node: ts.Node): readonly WriteSite[] {
     // `[a = 1] = values`: a pattern's default is read, not assigned.
     if (isAssignmentExpression(node) && inDestructuringPattern(node)) return [];
     if (isAssignmentExpression(node)) {
@@ -846,7 +919,7 @@ export function writeSites(node: ts.Node): readonly WriteSite[] {
             node,
             from: node.expression,
         }));
-    return [];
+    return NO_WRITE_SITES;
 }
 
 /**
@@ -1209,15 +1282,16 @@ export function classBaseExpression(
     )?.types[0];
 }
 
-/** A member access a call can name: `o.m`, or `o["m"]` with a literal key. */
+/** A member access, dotted or keyed: `o.m`, `o["m"]`, `o[k]`. */
 export type MemberAccess =
     ts.PropertyAccessExpression | ts.ElementAccessExpression;
 
-/** The node that spells a member access's key, for diagnostics. */
-export function memberKeyNode(access: MemberAccess): ts.Expression {
-    return ts.isPropertyAccessExpression(access)
-        ? access.name
-        : access.argumentExpression;
+/** Whether a node is a member access, whatever its key. */
+export function isMemberAccess(node: ts.Node): node is MemberAccess {
+    return (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)
+    );
 }
 
 /**
@@ -1638,6 +1712,36 @@ export function bindingNameIdentifiers(name: ts.BindingName): ts.Identifier[] {
         ts.isBindingElement(element)
             ? bindingNameIdentifiers(element.name)
             : [],
+    );
+}
+
+/**
+ * What owns a frame a function-scoped binding lives in: a function, a class
+ * static block, a namespace body (a function of its own at run time) or
+ * the file.
+ */
+export type EvaluationContainer =
+    | ts.SignatureDeclaration
+    | ts.ClassStaticBlockDeclaration
+    | ts.ModuleBlock
+    | ts.SourceFile;
+
+export function isEvaluationContainer(
+    node: ts.Node,
+): node is EvaluationContainer {
+    return (
+        ts.isFunctionLike(node) ||
+        ts.isClassStaticBlockDeclaration(node) ||
+        ts.isModuleBlock(node) ||
+        ts.isSourceFile(node)
+    );
+}
+
+/** The container whose frame a declaration's variable lives in. */
+export function evaluationContainer(node: ts.Node): EvaluationContainer {
+    return (
+        ts.findAncestor(node.parent, isEvaluationContainer) ??
+        node.getSourceFile()
     );
 }
 

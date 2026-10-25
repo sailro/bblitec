@@ -1880,6 +1880,11 @@ export interface VariableBinding {
      * guessed.
      */
     reboundInNestedScope?: true;
+    /**
+     * A hoisted `var` whose storage cannot hold undefined, not yet assigned
+     * on the walk to here: a read that may run now refuses.
+     */
+    unassignedVar?: true;
 }
 
 /**
@@ -2410,6 +2415,8 @@ export interface ValueFields {
     };
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
+    /** The receiver `bind` fixed for a dynamic-`this` function. */
+    callbackThis?: Value;
     /** The function/object expression is re-evaluated by emitted native code. */
     repeatedCallbackEvaluation?: true;
     /** Distinguishes one statically emitted evaluation of a function expression. */
@@ -2444,9 +2451,10 @@ export interface ValueFields {
      * a binding of its own.
      *
      * Construction uses it to tell the fields its layout stores from the ones
-     * it hoisted, and the hoisting proof reads the same mark.
+     * it hoisted, and the hoisting proof reads the same mark. It names the
+     * slot as `Struct.field`.
      */
-    classStoredField?: true;
+    classStoredField?: string;
     /**
      * The one constructor assignment the hoisting proof selected, already
      * performed from the constructor argument the caller evaluated.
@@ -3365,6 +3373,7 @@ export type Feature =
     | "data:bigint"
     /** Symbol values: brings js_symbol.hpp. */
     | "data:symbol"
+    | "data:crypto"
     /** Tagged template string arrays: brings js_template.hpp. */
     | "data:tagged-template"
     /** Web Storage: the durable per-user key/value store behind `localStorage`. */

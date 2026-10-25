@@ -43,7 +43,11 @@ import {
     withKindValueFacts,
     type Value,
 } from "./types.js";
-import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import {
+    findAnalysisNode,
+    forEachAnalysisNode,
+    someAnalysisNode,
+} from "./analysis-walk.js";
 import {
     dataTypesEqual,
     propertyIsReadOnly,
@@ -200,21 +204,64 @@ export class AsyncLowerer {
         return convert(value, type, expression);
     }
 
+    /**
+     * Code erasure drops still suspends where JavaScript would: one turn per
+     * `await` it holds, as an erased void await takes. Code that may not run
+     * (`maybe`: an erased guard's branch) cannot take a known number of
+     * turns, so an `await` in it refuses. Outside a realm activation
+     * nothing suspends.
+     */
+    emitErasedSuspensions(
+        node: ts.Node,
+        runs: "always" | "maybe" = "always",
+    ): void {
+        if (!this.depth) return;
+        forEachAnalysisNode(
+            node,
+            (child) => {
+                if (!ts.isAwaitExpression(child)) return;
+                if (runs === "maybe")
+                    this.context.fail(
+                        child,
+                        "An await under a browser-only guard inside an asynchronous function is not supported: the browser decides whether its turn is taken.",
+                    );
+                this.suspend(this.asPromise(undefined, child), "erased_await");
+            },
+            { functions: "skip", types: "skip" },
+        );
+    }
+
+    /** `co_await` of a promise into a temporary named after `label`. */
+    private suspend(awaited: Value, label: string): string {
+        const temporary = this.context.allocateTemporaryCppName(label);
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: temporary,
+            initializer: `co_await ${awaited.cpp}`,
+            attributes: "[[maybe_unused]] ",
+        });
+        return temporary;
+    }
+
     compile(expression: ts.Expression): Value | undefined {
         const context = this.context;
         // unwrap intentionally removes awaits for the existing immediate path;
         // this realm path must see the suspension before that happens.
         const node = unwrapExpression(expression);
         if (ts.isTypeOfExpression(node)) {
-            const property = context.unwrap(node.expression);
-            if (this.isPromiseMethod(property)) {
+            const property = promiseReactionOf(
+                context.unwrap(node.expression),
+                context.checker,
+            );
+            if (property) {
                 const receiver = context.dataLowerer.narrowOptional(
                     context.compileValue(property.expression),
                     property.expression,
                 );
                 if (receiver.kind !== "promise")
                     return context.fail(
-                        property,
+                        property.access,
                         "Promise method inspection requires a present native promise.",
                     );
                 context.emitDiscardedValue(receiver);
@@ -240,20 +287,19 @@ export class AsyncLowerer {
                 ) &&
                 awaitedType !== undefined &&
                 isVoid(awaitedType);
-            const awaited = this.asPromise(
-                erasedVoid
-                    ? { kind: "void", cpp: "" }
-                    : context.compileValue(node.expression),
-                node,
-            );
-            const temporary = context.allocateTemporaryCppName("await_result");
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name: temporary,
-                initializer: `co_await ${awaited.cpp}`,
-                attributes: "[[maybe_unused]] ",
-            });
+            let operand = erasedVoid
+                ? undefined
+                : context.compileValue(node.expression);
+            // `await null;` yields like any await; nothing reads its null.
+            if (
+                operand?.kind === "json-null" &&
+                ts.isExpressionStatement(outermostWrapper(node).parent)
+            ) {
+                context.emitDiscardedValue(operand);
+                operand = undefined;
+            }
+            const awaited = this.asPromise(operand, node);
+            const temporary = this.suspend(awaited, "await_result");
             const settled = awaited.promiseResult!;
             // An owned engine pair is never taken or rebound, so a
             // declaration it initializes aliases it.
@@ -289,9 +335,7 @@ export class AsyncLowerer {
             return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
-        const statics = promiseStatic(node, (expression) =>
-            context.libraryGlobal(expression),
-        );
+        const statics = promiseStatic(context.checker, node);
         if (statics === "resolve") {
             if (node.arguments.length > 1)
                 return context.fail(
@@ -332,7 +376,8 @@ export class AsyncLowerer {
             return this.compileAll(node, statics === "allSettled");
         if (statics === "race" || statics === "any")
             return this.compileRace(node, statics);
-        if (this.isPromiseMethod(callee)) {
+        const reaction = promiseReactionOf(callee, context.checker);
+        if (reaction) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes
             // the settlement on. `then(absent, onRejected)` is
@@ -347,11 +392,11 @@ export class AsyncLowerer {
                 );
             };
             const absentFulfillment =
-                callee.name.text === "then" &&
+                reaction.name === "then" &&
                 node.arguments.length === 2 &&
                 absent(0);
             const absentRejection =
-                callee.name.text === "then" &&
+                reaction.name === "then" &&
                 node.arguments.length === 2 &&
                 !absentFulfillment &&
                 absent(1);
@@ -359,9 +404,9 @@ export class AsyncLowerer {
                 node.arguments.length === 2 &&
                 !absentFulfillment &&
                 !absentRejection;
-            const rejection = callee.name.text === "catch" || absentFulfillment;
+            const rejection = reaction.name === "catch" || absentFulfillment;
             const reactionIndex = absentFulfillment ? 1 : 0;
-            const cleanup = callee.name.text === "finally";
+            const cleanup = reaction.name === "finally";
             if (cleanup && node.arguments.length > 1)
                 return context.fail(
                     node,
@@ -380,11 +425,11 @@ export class AsyncLowerer {
                 );
             }
             const receiver = this.asPromise(
-                context.compileValue(callee.expression),
+                context.compileValue(reaction.expression),
                 node,
             );
             const promise = this.orderedReceiver(receiver, [
-                callee.expression,
+                reaction.expression,
                 ...node.arguments,
             ]);
             if (cleanup) {
@@ -1910,16 +1955,12 @@ export class AsyncLowerer {
         );
     }
 
-    private isPromiseMethod(
-        expression: ts.Expression,
-    ): expression is ts.PropertyAccessExpression {
-        return (
-            ts.isPropertyAccessExpression(expression) &&
-            promiseReactionOf(expression, this.context.checker) !== undefined
-        );
-    }
     private cppType(value: Value, node: ts.Node): string {
-        if (value.kind === "void" || value.kind === "physics-engine-module")
+        if (
+            value.kind === "void" ||
+            value.kind === "physics-engine-module" ||
+            value.kind === "browser"
+        )
             return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
             return `std::tuple<${(value.tupleElements ?? []).map((element) => this.cppType(element, node)).join(", ")}>`;
@@ -1944,6 +1985,8 @@ export class AsyncLowerer {
         cpp: string,
         binding: NativeCaptureBinding,
     ): Value {
+        // An erased browser value has no run-time state: it settles to itself.
+        if (source.kind === "browser") return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
             const owned = {
@@ -2235,30 +2278,39 @@ export class AsyncLowerer {
         );
     }
 
+    /**
+     * `value` as a settled promise, converted against `source` (the awaited
+     * expression's type). No value -- an erased await's -- settles void and
+     * reads no type.
+     */
     private asPromise(
-        value: Value,
+        value: Value | undefined,
         node: ts.Node,
-        source = this.context.checker.getTypeAtLocation(node),
+        source?: ts.Type,
         target?: DataType<"promise">,
     ): Value {
-        if (value.kind === "promise") return value;
-        const adopted = this.adoptPromiseUnion(value, node, source, target);
-        if (adopted) return adopted;
-        value = this.normalizeUndefined(value, source);
-        this.refuseThenable(value, node, source);
-        value = this.ownResult(value, node, source);
-        const type = this.cppType(value, node);
-        if (value.kind === "void") {
-            this.context.emitDiscardedValue(value);
-            value = { ...value, cpp: "" };
+        if (value?.kind === "promise") return value;
+        if (value) {
+            source ??= this.context.checker.getTypeAtLocation(node);
+            const adopted = this.adoptPromiseUnion(value, node, source, target);
+            if (adopted) return adopted;
+            value = this.normalizeUndefined(value, source);
+            this.refuseThenable(value, node, source);
+            value = this.ownResult(value, node, source);
         }
-        const cpp =
-            value.kind === "void"
-                ? "bbl::js::PromiseVoid{}"
-                : this.resultCpp(value, node);
+        if (!value || value.kind === "void") {
+            if (value) this.context.emitDiscardedValue(value);
+            return {
+                kind: "promise",
+                cpp: "bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{})",
+                promiseResult: { ...value, kind: "void", cpp: "" },
+                promiseType: "bbl::js::PromiseVoid",
+            };
+        }
+        const type = this.cppType(value, node);
         return {
             kind: "promise",
-            cpp: `bbl::js::Promise<${type}>::resolved(${cpp})`,
+            cpp: `bbl::js::Promise<${type}>::resolved(${this.resultCpp(value, node)})`,
             promiseResult: value,
             promiseType: type,
         };
@@ -2705,7 +2757,7 @@ export class AsyncLowerer {
     }
     private resultCpp(value: Value, node: ts.Node): string {
         this.context.dataLowerer.markEscaped(value);
-        if (value.kind === "physics-engine-module")
+        if (value.kind === "physics-engine-module" || value.kind === "browser")
             return "bbl::js::PromiseVoid{}";
         if (
             value.kind === "string" &&

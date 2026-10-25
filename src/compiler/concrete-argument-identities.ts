@@ -5,6 +5,7 @@ import {
     resolvedSymbol,
     calledDeclaration,
     memberAccessors,
+    namedMember,
 } from "./symbols.js";
 import {
     isOperandSelection,
@@ -263,6 +264,7 @@ export function concreteArgumentIdentityPaths(
         )
             return [];
         const declaration = calledDeclaration(checker, node);
+        const fill = namedMember(checker, node.expression);
         // Default-library scalar arrays cannot carry the selected record.
         // Resolve the declaration so an authored method with the same name
         // cannot acquire this rule.
@@ -271,11 +273,10 @@ export function concreteArgumentIdentityPaths(
             declarationInDefaultLibrary(declaration) &&
             ts.isInterfaceDeclaration(declaration.parent) &&
             declaration.parent.name.text === "Array" &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === "fill" &&
+            fill?.name === "fill" &&
             node.arguments.every(scalar)
         ) {
-            const receiver = child(node.expression.expression);
+            const receiver = child(fill.expression);
             return receiver?.length === 0 ? [] : undefined;
         }
         if (

@@ -40,6 +40,21 @@ struct CollationOptions {
                             : js::date_time_field(time + local_time_zone_offset(time), field);
 }
 
+/**
+ * UTC(t): the instant a local time value names, clipped. A local time the
+ * zone repeats or skips at a transition takes the offset before it.
+ */
+[[nodiscard]] double utc_from_local(double local);
+
+/** `Date.prototype.set<Field>`: the fields of LocalTime(t) replaced, back through UTC(t). */
+inline double date_set_local(const js::Date& date, js::DateField first,
+                             std::initializer_list<double> given) {
+    const double time = *date;
+    const double local = std::isnan(time) ? time : time + local_time_zone_offset(time);
+    *date = utc_from_local(js::date_with_fields(local, first, given));
+    return *date;
+}
+
 /** `Date.prototype.getTimezoneOffset`: (t - LocalTime(t)) in minutes. */
 [[nodiscard]] inline double date_time_zone_offset(const js::Date& date) {
     const double time = *date;

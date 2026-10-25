@@ -1,6 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
+import type { NamedMember } from "../symbols.js";
 import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
@@ -202,16 +203,16 @@ export function compileVatIntrinsic(
 export function compileVatMethodCall(
     context: VatMethodContext,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
     const receiverExpression = context.unwrap(callee.expression);
     if (!ts.isIdentifier(receiverExpression)) return undefined;
     const receiver = context.bindings.lookupOptional(receiverExpression);
     if (!receiver || receiver.kind !== "vat-handle") return undefined;
-    const method = callee.name.text;
+    const method = callee.name;
     if (!["play", "update", "setInstances"].includes(method)) {
         context.fail(
-            callee.name,
+            callee.key,
             `A VatHandle carries play, update and setInstances; '${method}' is not lowered.`,
         );
     }

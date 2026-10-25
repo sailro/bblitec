@@ -15,9 +15,9 @@ import { compileSymbolMethod } from "./symbol-values.js";
 import { compileBigIntMethod } from "./bigint-values.js";
 import {
     callbackTakesReceiver,
+    libraryMethodWritesReceiver,
     mutatingArrayMethods,
     readOnlyDataMethods,
-    receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
 import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
@@ -31,6 +31,7 @@ import {
     isTypeAssertion,
     wrappersAround,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isObjectIdentityFunction } from "./static-evaluator.js";
@@ -72,7 +73,15 @@ import {
     runtimeMeshValue,
     type Value,
 } from "./types.js";
-import { libraryGlobal, resolvedSymbol } from "./symbols.js";
+import {
+    calledDeclaration,
+    declarationInDefaultLibrary,
+    libraryGlobal,
+    namedMember,
+    resolvedSymbol,
+    type NamedMember,
+    arrayMemberName,
+} from "./symbols.js";
 import { callsFreshArrayBuiltin } from "./fresh-records.js";
 import {
     regexpCaptureFacts,
@@ -93,6 +102,17 @@ import {
 } from "./type-facts.js";
 import { jsToUint32Call } from "../lowering/pinned-operators.js";
 
+/** The member a call names ({@link namedMember}). */
+function calledMember(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+): NamedMember | undefined {
+    return namedMember(
+        lowerer.context.checker,
+        lowerer.context.unwrap(call.expression),
+    );
+}
+
 /**
  * Array and binary-view predicates share the same finite data discrimination.
  * Parsed JSON is dynamic only for Array.isArray.
@@ -101,14 +121,13 @@ export function compileArrayPredicateOverData(
     lowerer: DataLowerer,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = lowerer.context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || call.arguments.length !== 1) {
+    const callee = calledMember(lowerer, call);
+    if (!callee || call.arguments.length !== 1) {
         return undefined;
     }
     const global = lowerer.context.libraryGlobal(callee.expression);
-    const binaryView =
-        global === "ArrayBuffer" && callee.name.text === "isView";
-    if (!binaryView && !(global === "Array" && callee.name.text === "isArray"))
+    const binaryView = global === "ArrayBuffer" && callee.name === "isView";
+    if (!binaryView && !(global === "Array" && callee.name === "isArray"))
         return undefined;
     const value = lowerer.context.compileValue(argumentAt(call, 0));
     const decided = (answer: boolean): Value => {
@@ -226,10 +245,8 @@ function callbackMayWriteReceiver(
     call: ts.CallExpression,
     callback: ts.Expression,
 ): boolean {
-    const callee = lowerer.context.unwrap(call.expression);
-    const root = ts.isPropertyAccessExpression(callee)
-        ? rootIdentifier(callee.expression)
-        : undefined;
+    const callee = calledMember(lowerer, call);
+    const root = callee && rootIdentifier(callee.expression);
     return lowerer.context.evaluationOrder.callbackMayWrite(
         callback,
         root && resolvedSymbol(lowerer.context.checker, root),
@@ -360,7 +377,7 @@ const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
  */
 export function mayCompileDataMethodCall(
     checker: ts.TypeChecker,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): boolean {
     const owner = checker.getNonNullableType(
         checker.getTypeAtLocation(callee.expression),
@@ -444,19 +461,23 @@ function arrayUsesOnlyRead(
             context.symbols.valueSymbol(node) === symbol
         ) {
             const parent = node.parent;
+            const member =
+                isMemberAccess(parent) && parent.expression === node
+                    ? arrayMemberName(context.checker, parent)
+                    : undefined;
             const read =
-                (ts.isPropertyAccessExpression(parent) &&
-                    parent.expression === node &&
-                    (parent.name.text === "length" ||
-                        (readOnlyDataMethods.has(parent.name.text) &&
+                (member !== undefined &&
+                    (member === "length" ||
+                        (readOnlyDataMethods.has(member) &&
                             !callbackTakesReceiver(
                                 context.checker,
-                                parent.name.text,
+                                member,
                                 ts.isCallExpression(parent.parent)
                                     ? parent.parent.arguments[0]
                                     : undefined,
                             )))) ||
-                (ts.isElementAccessExpression(parent) &&
+                (member === undefined &&
+                    ts.isElementAccessExpression(parent) &&
                     parent.expression === node &&
                     !(
                         ts.isBinaryExpression(parent.parent) &&
@@ -478,14 +499,17 @@ export function compileDataMethodCall(
     call: ts.CallExpression,
     expectedResult?: DataType<"vector">,
 ): Value | undefined {
-    const callee = lowerer.context.unwrap(call.expression);
-    if (!ts.isPropertyAccessExpression(callee)) {
+    const callee = calledMember(lowerer, call);
+    if (!callee) {
         return undefined;
     }
-    const method = callee.name.text;
+    const method = callee.name;
+    // An index key (`fns[0]`, `fns["0"]`) reads an element: no method.
+    if (arrayMemberName(lowerer.context.checker, callee.access) === undefined)
+        return undefined;
     if (
-        (ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "classList") ||
+        namedMember(lowerer.context.checker, callee.expression)?.name ===
+            "classList" ||
         staticMemberReceiver(lowerer.context.checker, callee.expression)
     ) {
         return undefined;
@@ -615,7 +639,7 @@ export function compileDataMethodCall(
                   : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
                     ? plainRecordReceiver(lowerer)
                     : undefined;
-    if (dynamicOwner && !ts.isOptionalChain(callee)) {
+    if (dynamicOwner && !ts.isOptionalChain(callee.access)) {
         dynamicOwner = lowerer.narrowOptional(
             dynamicOwner,
             callee.expression,
@@ -1133,6 +1157,16 @@ export function compileDataMethodCall(
         // The set lowerer captures the selected array before its arguments.
         constructedOwner = dynamicOwner;
     }
+    // A library method writes its receiver as the analyses classify it, by
+    // the receiver's type; a function the program declares does not.
+    const declared = calledDeclaration(lowerer.context.checker, call);
+    const writesReceiver =
+        (declared === undefined || declarationInDefaultLibrary(declared)) &&
+        libraryMethodWritesReceiver(
+            lowerer.context.checker,
+            callee.expression,
+            method,
+        );
     // An array literal receiver, or the array a built-in just created
     // (`entries.map(f).sort()`), is a fresh array only this call sees: a
     // method that changes it runs on a native copy of its elements, as it
@@ -1140,13 +1174,13 @@ export function compileDataMethodCall(
     const freshElement =
         callsFreshArrayBuiltin(lowerer.context.checker, ownerExpression) &&
         dynamicOwner?.kind === "tuple" &&
-        receiverWritingMethods.has(method)
+        writesReceiver
             ? lowerer.knownTupleElement(callee.expression, dynamicOwner)
             : undefined;
     if (
         (ts.isArrayLiteralExpression(ownerExpression) || freshElement) &&
         dynamicOwner?.kind === "tuple" &&
-        receiverWritingMethods.has(method)
+        writesReceiver
     ) {
         const element =
             freshElement ??
@@ -1188,7 +1222,7 @@ export function compileDataMethodCall(
             ? undefined
             : lowerer.compileDataPath(
                   callee.expression,
-                  receiverWritingMethods.has(method) ? "write" : "read",
+                  writesReceiver ? "write" : "read",
                   true,
               )) ??
         (dynamicOwner?.kind === "data" || dynamicOwner?.kind === "string"
@@ -1217,9 +1251,9 @@ export function compileDataMethodCall(
     // An element read carries its presence beside a default
     // (`list[0]?.trim()`): the `?.` tests it, as JavaScript tests undefined.
     if (
-        ts.isPropertyAccessChain(callee) &&
+        ts.isOptionalChain(callee.access) &&
         (owner.dataType?.kind === "optional" ||
-            (callee.questionDotToken &&
+            (callee.access.questionDotToken &&
                 ts.isElementAccessExpression(
                     lowerer.context.unwrap(callee.expression),
                 ) &&
@@ -1258,7 +1292,7 @@ export function compileDataMethodCall(
 function compileMissingPrimitiveMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     receiver: Value,
 ): Value | undefined {
     const { checker, evaluationOrder } = lowerer.context;
@@ -1274,12 +1308,12 @@ function compileMissingPrimitiveMethod(
               : stored?.kind === "boolean"
                 ? checker.getBooleanType()
                 : undefined;
-    const name = callee.name.text;
+    const name = callee.name;
     if (
         receiver.kind !== "data" ||
         !primitive ||
-        ts.isOptionalChain(callee) ||
-        !ts.isIdentifier(callee.name) ||
+        ts.isOptionalChain(callee.access) ||
+        ts.isPrivateIdentifier(callee.key) ||
         checker.getPropertyOfType(checker.getApparentType(primitive), name) ||
         !call.arguments.every(
             (argument) =>
@@ -1294,7 +1328,7 @@ function compileMissingPrimitiveMethod(
     lowerer.context.reachJsData();
     const thrown = (message: string): string =>
         `bbl::js::absent_receiver_read<${lowerer.context.dataTypes.cppType(result)}>(${lowerer.context.cppString(message)})`;
-    const notCallable = thrown(`${callee.getText()} is not a function`);
+    const notCallable = thrown(`${callee.access.getText()} is not a function`);
     const present = presenceCpp(receiver);
     const absent =
         receiver.dataType?.kind === "optional" &&
@@ -1312,19 +1346,19 @@ function compileMissingPrimitiveMethod(
 function compileKnownDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     owner: Value,
     dynamicOwner: Value | undefined,
     expectedResult?: DataType<"vector">,
 ): Value | undefined {
     const missing = compileMissingPrimitiveMethod(lowerer, call, callee, owner);
     if (missing) return missing;
-    const method = callee.name.text;
+    const method = callee.name;
     let narrowedOwner = lowerer.stringReceiver(
         lowerer.narrowOptional(
             owner,
             callee.expression,
-            !ts.isOptionalChain(callee),
+            !ts.isOptionalChain(callee.access),
         ),
         callee.expression,
     );
@@ -1405,7 +1439,7 @@ function compileKnownDataMethod(
         const field = lowerer.context.dataTypes.findStructField(
             recordType.name,
             method,
-            callee.name,
+            callee.key,
         );
         const functionType = field?.type;
         if (
@@ -1423,7 +1457,7 @@ function compileKnownDataMethod(
                     `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
                     functionType,
                 ),
-                callee,
+                callee.access,
             );
             if (member) {
                 lowerer.context.emit({
@@ -1808,7 +1842,7 @@ function compileKnownDataMethod(
             method,
         ) ??
         lowerer.context.fail(
-            callee.name,
+            callee.key,
             `Array method '${method}' is not supported.`,
         )
     );
@@ -2324,7 +2358,7 @@ function compileArraySort(
                         ],
                     },
                 ];
-                const owner = storedCallback?.callbackRecordOwner;
+
                 const compare = (): Value =>
                     callback
                         ? lowerer.context.compileCallbackWithValues(
@@ -2337,8 +2371,11 @@ function compileArraySort(
                               operands,
                               call,
                           );
-                const compared = owner
-                    ? lowerer.context.withRecordScopes(owner, compare)
+                const compared = storedCallback
+                    ? lowerer.context.withCallbackScopes(
+                          storedCallback,
+                          compare,
+                      )
                     : compare();
                 if (compared.kind !== "number") {
                     lowerer.context.fail(
@@ -2925,9 +2962,7 @@ function compileArrayMap(
     const identity =
         method === "map" &&
         callback &&
-        isObjectIdentityFunction(callback, (expression) =>
-            lowerer.context.libraryGlobal(expression),
-        );
+        isObjectIdentityFunction(lowerer.context.checker, callback);
     const requested: DataType<"vector"> | undefined = state.typedResult
         ? { kind: "vector", element: { kind: "number" } }
         : (state.expectedResult ??
@@ -3254,11 +3289,10 @@ function compileArrayPush(state: ArrayMethodState): Value {
             isTypedArrayType(type);
         return ownsReference ? `bbl::js::snapshot_value(${cpp})` : cpp;
     };
-    const callee = lowerer.context.unwrap(call.expression);
+    const callee = calledMember(lowerer, call);
     const receiver =
         captureArguments ||
-        (ts.isPropertyAccessExpression(callee) &&
-            expressionMayRunCode(callee.expression))
+        (callee !== undefined && expressionMayRunCode(callee.expression))
             ? captureArrayReceiver(lowerer, narrowed)
             : narrowed.cpp;
     if (call.arguments.length === 0)
@@ -3555,8 +3589,8 @@ function compileArrayRemoval(
     const removal = `bbl::js::array_${method}_or_absent(${narrowed.cpp})`;
     // An element that may itself be `null` is `undefined` only when the
     // array was empty: take that fact with the removal (`Value.slotFoundCpp`).
-    const callee = lowerer.context.unwrap(call.expression);
-    const elementType = ts.isPropertyAccessExpression(callee)
+    const callee = calledMember(lowerer, call);
+    const elementType = callee
         ? arrayElementType(
               lowerer.context.checker,
               lowerer.context.checker.getTypeAtLocation(callee.expression),
@@ -3672,7 +3706,7 @@ function compileArrayWith(state: ArrayMethodState): Value {
 function compileMapDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     method: string,
     narrowed: Value,
     dataType: DataType & { kind: "map" },
@@ -3939,7 +3973,7 @@ function compileMapDataMethod(
         );
     }
     lowerer.context.fail(
-        callee.name,
+        callee.key,
         `Map method '${method}' is not supported.`,
     );
 }
@@ -3947,7 +3981,7 @@ function compileMapDataMethod(
 function compileSetDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
     method: string,
     narrowed: Value,
     dataType: DataType & { kind: "set" },
@@ -4051,7 +4085,7 @@ function compileSetDataMethod(
         };
     }
     lowerer.context.fail(
-        callee.name,
+        callee.key,
         `Set method '${method}' is not supported.`,
     );
 }
@@ -4119,9 +4153,9 @@ function compileStringPositionSearch(
             call,
             `String.${method} expects a search string and an optional position.`,
         );
-    const callee = context.unwrap(call.expression);
     const operands = [
-        ts.isPropertyAccessExpression(callee) ? callee.expression : callee,
+        calledMember(lowerer, call)?.expression ??
+            context.unwrap(call.expression),
         ...call.arguments,
     ];
     const pins = context.evaluationOrder.operandsToPin(operands);

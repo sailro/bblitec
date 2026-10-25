@@ -38,6 +38,7 @@ import {
     foldNumericUnary,
 } from "../lowering/pinned-operators.js";
 import { presentMembers, undefinedOnly } from "./type-facts.js";
+import { namedMember } from "./symbols.js";
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
@@ -447,7 +448,11 @@ export function discardOption(
 /** What the static folds read, as a lowering context carries it. */
 export interface PositiveIntegerContext extends Pick<
     LoweringServices,
-    "resolveStaticExpression" | "libraryGlobal" | "fail" | "bindings"
+    | "resolveStaticExpression"
+    | "libraryGlobal"
+    | "fail"
+    | "bindings"
+    | "checker"
 > {}
 
 /**
@@ -471,6 +476,7 @@ export function foldingNoRecordFields(
     context: PositiveIntegerContext,
 ): StaticFoldContext {
     return {
+        checker: context.checker,
         libraryGlobal: (expression) => context.libraryGlobal(expression),
         resolveStaticExpression: (expression, resolving) =>
             context.resolveStaticExpression(expression, resolving),
@@ -786,13 +792,14 @@ export function staticNumberValue(
     }
     const libraryGlobal = (expression: ts.Expression): string | undefined =>
         context.libraryGlobal(expression);
-    const constant = mathMemberAccess(node, libraryGlobal);
+    const member = (read: ts.Node) => namedMember(context.checker, read);
+    const constant = mathMemberAccess(node, libraryGlobal, member);
     if (constant) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
         // one of these as text; a Math CALL is folded by the arm below.
-        return MATH_CONSTANTS.get(constant.name.text)?.value;
+        return MATH_CONSTANTS.get(constant.name)?.value;
     }
-    const mathCall = mathMemberCall(node, libraryGlobal);
+    const mathCall = mathMemberCall(node, libraryGlobal, member);
     if (mathCall) {
         const values = mathCall.call.arguments.map((argument) =>
             staticNumberValue(context, argument),

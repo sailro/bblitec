@@ -17,10 +17,17 @@ import { compressedTextureUrls } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import {
     addressModeByPin,
+    addressModeCppByPin,
     loadTexture2DDefaults,
     loadTexture2DOptionFields,
     loadTexture2DSamplerCpp,
+    textureFilterByPin,
 } from "../../pinned-address-modes.js";
+import {
+    compileTableOption,
+    staticTableOption,
+    type TableOption,
+} from "../table-options.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { localAssetPath } from "../../asset-source.js";
@@ -40,6 +47,22 @@ import {
     type ObjectValidationContext,
 } from "../option-helpers.js";
 import { valueKindOf } from "../type-facts.js";
+
+/** loadTexture2D's filters: the sampler rule reads them at generation. */
+const textureFilter: TableOption = {
+    table: textureFilterByPin,
+    refusal: "Reached texture filters support nearest and linear.",
+    name: "texture filter",
+    label: "texture_filter",
+};
+
+const textureAddressMode: TableOption = {
+    table: addressModeCppByPin,
+    refusal:
+        "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
+    name: "texture address mode",
+    label: "address_mode",
+};
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -717,51 +740,43 @@ function compileLoadTexture2D(
                 );
             }
         }
-        const filterName = (expression: ts.Expression): string => {
-            const filter = context.compileStringLiteral(expression);
-            if (filter !== "nearest" && filter !== "linear") {
-                context.fail(
-                    expression,
-                    "Reached texture filters support nearest and linear.",
-                );
-            }
-            return filter;
-        };
         const minExpression = context.objectProperty(options, "minFilter");
         if (minExpression) {
-            minFilter = filterName(minExpression);
+            minFilter = staticTableOption(
+                context,
+                textureFilter,
+                minExpression,
+            );
         }
         const magExpression = context.objectProperty(options, "magFilter");
         if (magExpression) {
-            magFilter = filterName(magExpression);
+            magFilter = staticTableOption(
+                context,
+                textureFilter,
+                magExpression,
+            );
         }
-        const addressMode = (expression: ts.Expression): string => {
-            const unwrapped = context.unwrap(expression);
-            if (ts.isConditionalExpression(unwrapped))
-                return context.dataLowerer.selectArms(unwrapped, addressMode);
-            const mode = context.compileStringLiteral(expression);
-            const mapped = addressModeByPin[mode];
-            if (!mapped) {
-                context.fail(
-                    expression,
-                    "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
-                );
-            }
-            return `bbl::${mapped}`;
-        };
         const addressUExpression = context.objectProperty(
             options,
             "addressModeU",
         );
         if (addressUExpression) {
-            addressModeU = addressMode(addressUExpression);
+            addressModeU = compileTableOption(
+                context,
+                textureAddressMode,
+                addressUExpression,
+            );
         }
         const addressVExpression = context.objectProperty(
             options,
             "addressModeV",
         );
         if (addressVExpression) {
-            addressModeV = addressMode(addressVExpression);
+            addressModeV = compileTableOption(
+                context,
+                textureAddressMode,
+                addressVExpression,
+            );
         }
         const mipExpression = context.objectProperty(options, "mipMaps");
         if (mipExpression) {

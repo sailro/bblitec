@@ -3,6 +3,7 @@
 
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/workers.hpp>
 
 #include <bblite/runtime.hpp>
@@ -22,6 +23,10 @@
 #include "pal_runtime_trace.hpp"
 #if BBLITE_HAS_BROWSER_FILE
 #include "pal_file_dialog.hpp"
+#endif
+#if BBLITE_HAS_GAMEPAD
+#include <bblite/pal_dom_gamepads.hpp>
+#include "pal_gamepads.hpp"
 #endif
 #include "pal_window.hpp"
 #include "pal_sdl_application.hpp"
@@ -52,7 +57,9 @@ inline bool is_platform_input_event(const SDL_Event& event) {
            event.type == SDL_EVENT_TEXT_EDITING || event.type == SDL_EVENT_TEXT_INPUT ||
            event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
            event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL ||
-           is_touch_event(event);
+           event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+           event.type == SDL_EVENT_GAMEPAD_BUTTON_UP ||
+           event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION || is_touch_event(event);
 }
 
 inline std::string keyboard_event_key(std::string_view code) {
@@ -1160,6 +1167,12 @@ inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchCo
  * same dispatch contract without pulling in RmlUi. */
 inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                                                                  const SDL_Event& event) {
+#if BBLITE_HAS_GAMEPAD
+    // Every gamepad event reaches the Window's gamepads, listened to or not.
+    if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED ||
+        event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION)
+        return dom_gamepad_input(engine, apply_gamepad_event(event));
+#endif
     if (is_touch_event(event))
         static_cast<void>(dom_input(engine));
     if (!engine.dom_input)

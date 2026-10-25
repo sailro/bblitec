@@ -15,7 +15,10 @@ import {
     lowerPinnedFunction,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource } from "../compiler/syntax.js";
 
@@ -982,7 +985,7 @@ ${spec.tail}}
                 ],
                 memberBindings: new Map<string, PinnedBinding>([
                     ...worldAabbLaneBindings(this.context, "acc", "acc"),
-                    ["scene.meshes", { cpp: "scene.meshes", type: "opaque" }],
+                    ["scene.meshes", collectionBinding("scene.meshes")],
                 ]),
                 calls: new Map([
                     [
@@ -992,15 +995,6 @@ ${spec.tail}}
                     ],
                     ["isFinite", ([value]) => `std::isfinite(${value})`],
                 ]),
-                forOf: (iterated, element) =>
-                    sameSource(iterated, "scene.meshes")
-                        ? {
-                              range: "scene.meshes",
-                              bindings: new Map([
-                                  [element, { cpp: element, type: "opaque" }],
-                              ]),
-                          }
-                        : undefined,
                 statement: (statement, lowerer, indent) => {
                     if (
                         !ts.isVariableStatement(statement) ||

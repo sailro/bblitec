@@ -3,7 +3,11 @@ import type { DataLowerer } from "./data-lowering.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import { renderClosure } from "./closure-captures.js";
 import { pinOperand } from "./evaluation-order.js";
-import { declarationInDefaultLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declarationInDefaultLibrary,
+    namedMember,
+    accessedPropertySymbol,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 
 /** A library collection method binds the supplied receiver, independently of its lookup owner. */
@@ -13,11 +17,11 @@ export function compileBoundCollectionMethod(
     access: ts.Expression,
 ): Value | undefined {
     const context = lowerer.context;
-    const method = context.unwrap(access);
-    if (!ts.isPropertyAccessExpression(method)) return undefined;
-    const declaration = resolvedSymbol(
+    const method = namedMember(context.checker, context.unwrap(access));
+    if (!method) return undefined;
+    const declaration = accessedPropertySymbol(
         context.checker,
-        method,
+        method.access,
     )?.valueDeclaration;
     if (!declaration || !declarationInDefaultLibrary(declaration))
         return undefined;
@@ -27,7 +31,7 @@ export function compileBoundCollectionMethod(
         (ownerType.kind === "map" && (ownerType.weak || ownerType.dictionary))
     )
         return undefined;
-    const name = method.name.text;
+    const name = method.name;
     const key = ownerType.kind === "map" ? ownerType.key : ownerType.element;
     let parameters: DataType[];
     let result: DataType | undefined;

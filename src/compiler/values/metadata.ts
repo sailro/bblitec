@@ -39,6 +39,7 @@ const resourceMetadataFields = {
         "nativeCallbackStaticArguments",
         "nativeCallbackReturnType",
         "callbackRecordOwner",
+        "callbackThis",
         "runtimeCallbackIdentityCpp",
         "platformCallbackIdentity",
     ],

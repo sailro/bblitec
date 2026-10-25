@@ -50,9 +50,11 @@ export type StorageRequest =
           declaration: NumericSlotDeclaration;
           numeric: NumericSlotKind;
       }
+    | { kind: "parameter-object"; declaration: ts.ParameterDeclaration }
     | { kind: "enum-array"; unions: readonly string[] }
     | { kind: "enum-record"; schema: string }
-    | { kind: "thrown-value"; valueKind: "string" };
+    | { kind: "thrown-value"; valueKind: "string" }
+    | { kind: "shared-class"; declaration: ts.ClassLikeDeclaration };
 
 /**
  * The storage demands a compile replays with, keyed by the source each
@@ -80,6 +82,8 @@ export class ReplayStorage {
     readonly assertedHandleFields = new Map<ts.Declaration, DataType>();
     /** @unjournaled Completion contracts are monotonic across replay attempts. */
     readonly completions = new Map<string, CompletionProof>();
+    /** @unjournaled Demands outlive the attempts that met them. Record parameters holding their argument as one object. */
+    readonly parameterObjects = new Set<ts.ParameterDeclaration>();
     /** @unjournaled Demands outlive the attempts that met them. Record properties storing their numeric tuples as growable arrays. */
     readonly tupleArraySlots = new Set<ts.Declaration>();
     /** @unjournaled Demands outlive the attempts that met them. `ArrayLike<number>` slots retyped for the numeric arrays they store. */
@@ -93,6 +97,8 @@ export class ReplayStorage {
     readonly orderedRecordSchemas = new Set<string>();
     /** @unjournaled Reached primitive throws require dynamic catch storage across call boundaries. */
     readonly thrownValueKinds = new Set<"string">();
+    /** @unjournaled Classes shared from their first construction. */
+    readonly sharedClasses = new Set<ts.ClassLikeDeclaration>();
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -158,6 +164,8 @@ export class ReplayStorage {
             }
             case "tuple-array":
                 return addNew(this.tupleArraySlots, request.declaration);
+            case "parameter-object":
+                return addNew(this.parameterObjects, request.declaration);
             case "numeric-slot": {
                 const kinds = this.numericSlots.get(request.declaration);
                 if (kinds) return addNew(kinds, request.numeric);
@@ -177,6 +185,8 @@ export class ReplayStorage {
                 return addNew(this.orderedRecordSchemas, request.schema);
             case "thrown-value":
                 return addNew(this.thrownValueKinds, request.valueKind);
+            case "shared-class":
+                return addNew(this.sharedClasses, request.declaration);
         }
     }
 

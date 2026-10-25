@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { sameSource } from "../compiler/syntax.js";
+import { opaqueElement, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 /** Invoke retained scene callbacks in the pin's prepared plugin order. */
 export function lowerMaterialPluginUniformBody(
@@ -16,19 +16,19 @@ export function lowerMaterialPluginUniformBody(
         `// ${context.provenance(path, "writePluginUbo")}\n` +
         lowerPinnedBody(file, declaration.body!.statements, {
             calls: new Map(),
-            bindings: new Map([
+            bindings: new Map<string, PinnedBinding>([
                 ["data", { cpp: "data", type: "opaque" }],
                 ["offsets", { cpp: "offsets", type: "opaque" }],
+                // The prepared plugin list, held behind a pointer.
+                [
+                    "plugins",
+                    {
+                        cpp: "plugins",
+                        type: "opaque",
+                        elements: { range: "*plugins", element: opaqueElement },
+                    },
+                ],
             ]),
-            forOf(iterated, element) {
-                if (!sameSource(iterated, "plugins")) return undefined;
-                return {
-                    range: "*plugins",
-                    bindings: new Map([
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
             statement(node, lowerer, indent) {
                 if (!ts.isExpressionStatement(node)) return undefined;
                 const call = unwrapExpression(node.expression);

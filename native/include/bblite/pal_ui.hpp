@@ -13,6 +13,7 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -427,6 +428,12 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept;
 /** Returns true when the event should continue to the canvas/scene. */
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event);
 void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint32_t height);
+/**
+ * The time CSS animations and transitions evaluate at: a Window display
+ * runs its application realm's published capture time; without one they
+ * follow `performance_milliseconds()`.
+ */
+void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds);
 /** Record RmlUi output; the active GPU renderer consumes the returned frame. */
 const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t width,
                                          std::uint32_t height);

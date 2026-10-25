@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import type ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
 import type { DataType } from "./data-types/model.js";
@@ -167,8 +169,12 @@ export function mergeNativeRecordStorage(
 }
 
 /** Re-emit earlier storage and aliases after a dynamic boundary demands ownership. */
-export class NativeRecordStorageRequired extends Error {
+export class NativeRecordStorageRequired extends StorageDemand {
     constructor(readonly demand: NativeRecordStorageDemand) {
         super("A native record requires shared object storage.");
+    }
+
+    get request(): StorageRequest {
+        return { kind: "record", demand: this.demand };
     }
 }

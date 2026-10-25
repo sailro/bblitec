@@ -5,7 +5,9 @@ import {
     compilerPackageTypings,
     declarationInDefaultLibrary,
     declaredSymbol,
+    namedMember,
     resolvedSymbol,
+    type NamedMember,
 } from "./compiler/symbols.js";
 import { sourceLocation } from "./source-location.js";
 import {
@@ -643,6 +645,11 @@ export function pinnedLibraryGlobal(
         ? declarationInDefaultLibrary(declaration)
         : !declaredSymbol(moduleSymbols(file), expression);
     return global ? expression.text : undefined;
+}
+
+/** The member a pinned access names ({@link namedMember}), read by the pin's checker. */
+export function pinnedMember(node: ts.Node): NamedMember | undefined {
+    return namedMember(pinnedCheckerOf(node.getSourceFile()), node);
 }
 
 /** Types from the same checked program as the pin's name resolution. */

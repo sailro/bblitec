@@ -3,10 +3,10 @@ import ts from "typescript";
 import { absenceOf, absenceOfNull, jsonAbsenceCpp } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
-import { hasNonNullAssertion, unwrapExpression } from "../syntax.js";
+import { hasNonNullAssertion } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 import { yieldsFreshObject } from "../fresh-records.js";
-import { objectIdentityCallArgument } from "../static-evaluator.js";
+import { unwrapObjectIdentity } from "../static-evaluator.js";
 
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -106,15 +106,9 @@ function ownedDocument(
     node: ts.Node,
 ): string | undefined {
     if (!isPlainJsonRecord(record)) return undefined;
-    let expression = lowerer.convertedExpression(node);
-    while (expression) {
-        const argument = objectIdentityCallArgument(
-            unwrapExpression(expression),
-            (value) => lowerer.context.libraryGlobal(value),
-        );
-        if (!argument) break;
-        expression = argument;
-    }
+    const converted = lowerer.convertedExpression(node);
+    const expression =
+        converted && unwrapObjectIdentity(lowerer.context.checker, converted);
     if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);

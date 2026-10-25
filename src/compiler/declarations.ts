@@ -8,7 +8,7 @@ import {
     rebaseSpelling,
     undefinedValue,
 } from "./values/model.js";
-import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
+import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,
@@ -27,7 +27,6 @@ import {
 import { storesAsTexture2D } from "./data-sinks/resources.js";
 import { isNeverResized } from "./data-lowering.js";
 import { isStoringDataCall } from "./receiver-methods.js";
-import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     dataTypesEqual,
     isOpaqueReference,
@@ -79,7 +78,6 @@ import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
     declaredSymbol,
-    libraryGlobal,
     calledDeclaration,
     calledFunction,
     memberAccessors,
@@ -88,6 +86,7 @@ import {
     isAssignmentExpression,
     isOperandSelection,
     propertyKey,
+    referenceBases,
     valueOperands,
     writeSites,
     rootIdentifier,
@@ -132,10 +131,12 @@ import {
     recursiveStorageEscapes,
     retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
+    writesThroughTrackedRoot,
     type AliasedMutationScan,
 } from "./user-functions.js";
 import {
     engineCallMutatesArgument,
+    functionWritesThis,
     libraryCallMayWriteArgument,
     parameterHeldObjectWritten,
     parameterIsMutated,
@@ -144,6 +145,7 @@ import {
 } from "./parameter-effects.js";
 import {
     callResultHoldsArguments,
+    heldReferenceBases,
     keptArguments,
     literalHeldValues,
 } from "./kept-values.js";
@@ -191,7 +193,10 @@ interface DeclarationContext
             | "requireDefaultEngine"
             | "symbols"
             | "takeNativeTemporary"
+            | "varBindings"
+            | "asyncActivations"
             | "withRecordScopes"
+            | "withCallbackScopes"
         > {
     /** The engine the entry created, once it has. */
     readonly defaultEngineCpp: string | undefined;
@@ -557,6 +562,7 @@ export class DeclarationLowerer {
         declaration: ts.VariableDeclaration,
         cppName: string,
         sharedClosureStorage: boolean,
+        source = declaration.initializer,
     ): boolean {
         if (!ts.isIdentifier(declaration.name)) return false;
         const type = this.context.dataTypes.taggedDeclarationStorage(
@@ -569,11 +575,8 @@ export class DeclarationLowerer {
         if (!type) return false;
         this.context.reachJsData();
         const cppType = this.context.dataTypes.cppType(type);
-        const initializer = declaration.initializer
-            ? this.context.dataLowerer.compileForSink(
-                  declaration.initializer,
-                  type,
-              )
+        const initializer = source
+            ? this.context.dataLowerer.compileForSink(source, type)
             : undefined;
         const cell = sharedClosureStorage
             ? emitSharedCell(this.context, cppName, {
@@ -608,11 +611,135 @@ export class DeclarationLowerer {
         return true;
     }
 
+    /**
+     * The binding `let name;` makes: storage of its declared type, default
+     * (undefined where the type admits it) until an assignment, or a binding
+     * the first assignment decides. `declaration` is the one whose annotation
+     * and storage demands apply; a pattern leaf has none.
+     */
+    public declareUnassigned(
+        name: ts.Identifier,
+        declaration: ts.VariableDeclaration | undefined,
+        cppName: string,
+        sharedClosureStorage: boolean,
+    ): void {
+        if (
+            declaration &&
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+                undefined,
+            )
+        )
+            return;
+        const resource = this.context.nullableResourceKind(name, true);
+        if (resource) {
+            this.bindOptionalResource(
+                name,
+                cppName,
+                resource,
+                sharedClosureStorage,
+            );
+            return;
+        }
+        const declaredType = this.context.checker.getTypeAtLocation(name);
+        const demanded =
+            declaration && this.context.dynamicBindings.get(declaration);
+        let dataType =
+            declaration && demanded
+                ? demandedStorageType(
+                      this.context,
+                      declaration,
+                      demanded,
+                      undefined,
+                  )
+                : this.context.dataTypes.fromTsType(declaredType, name);
+        // Only an assignment gives this binding a value.
+        if (dataType)
+            dataType = this.reboundBindingStorage(dataType, declaredType);
+        if (declaration) {
+            dataType ??= inferUninitializedStorage(
+                declaration,
+                this.context.checker,
+                this.context.dataTypes,
+            );
+            dataType ??= inferPromiseRejectStorage(
+                declaration,
+                this.context.checker,
+            );
+        }
+        dataType ??= this.context.dataTypes.undefinedOnlyStorage(declaredType);
+        if (
+            !dataType &&
+            declaration?.type?.kind === ts.SyntaxKind.UnknownKeyword
+        ) {
+            // A JSON.parse result is deliberately dynamic until the
+            // source's own guards inspect it. `let json: unknown;` is the
+            // corresponding uninitialized slot in that model; every later
+            // assignment still has to be a JsonValue, so this does not
+            // turn arbitrary unknown values into a permissive catch-all.
+            dataType = { kind: "json" };
+            this.context.reachJson();
+        }
+        if (!dataType) {
+            // `let set;` -- no initializer and no native type: the
+            // value is whatever the first assignment binds, and for a
+            // compile-time record (a node-particle binding built inside
+            // a `try`) nothing native exists to declare here. The
+            // assignment decides; see `bindPendingLet`.
+            this.context.bindings.defineVariable(name, {
+                kind: "pending-let",
+                cpp: "",
+            });
+            return;
+        }
+        if (dataType.kind === "borrowed-platform-event") {
+            this.context.fail(
+                name,
+                `Variable '${name.text}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
+            );
+        }
+        if (
+            dataType.kind !== "number" &&
+            dataType.kind !== "boolean" &&
+            dataType.kind !== "string"
+        ) {
+            this.context.reachJsData();
+        }
+        const cppType = this.context.dataTypes.cppType(dataType);
+        const cell = sharedClosureStorage
+            ? emitSharedCell(this.context, cppName, { type: cppType })
+            : undefined;
+        if (!cell)
+            this.context.emit({
+                kind: "declaration",
+                type: cppType,
+                name: cppName,
+                initializer: "",
+                initialization: "default",
+                attributes: "[[maybe_unused]] ",
+            });
+        const boundCpp = cell?.cpp ?? cppName;
+        if (dataType.kind !== "number" && dataType.kind !== "boolean") {
+            this.context.dataLowerer.registerLocal(boundCpp, "owned");
+        }
+        this.context.bindings.defineVariable(name, {
+            ...this.context.dataLowerer.leafValue(boundCpp, dataType),
+            ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
+        });
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Ambient) !==
             0
+        )
+            return;
+        if (
+            this.context.varBindings.hoists(declaration) &&
+            this.context.varBindings.emitDeclaration(declaration)
         )
             return;
         if (
@@ -724,36 +851,6 @@ export class DeclarationLowerer {
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
-        // A `var` has one binding per function: storage made where the
-        // declaration sits in a loop body would be one per iteration -- a
-        // cell a stored closure keeps, or a value `var x;` would reset.
-        if (
-            (sharedClosureStorage || !declaration.initializer) &&
-            declaration.parent &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            variableKind(declaration.parent) === "var" &&
-            ts.findAncestor(declaration, (node) =>
-                ts.isFunctionLike(node)
-                    ? "quit"
-                    : ts.isIterationStatement(node, false) &&
-                      declaration.pos >= node.statement.pos &&
-                      declaration.end <= node.statement.end,
-            )
-        )
-            this.context.fail(
-                declaration,
-                sharedClosureStorage
-                    ? "A `var` declared in a loop body and captured by a stored closure is one binding for the whole function; declare it before the loop."
-                    : "A `var` declared without an initializer in a loop body keeps its value across iterations as one binding for the whole function; declare it before the loop.",
-            );
-        if (
-            this.emitAbsenceTaggedDeclaration(
-                declaration,
-                cppName,
-                sharedClosureStorage,
-            )
-        )
-            return;
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -765,108 +862,22 @@ export class DeclarationLowerer {
                     `Constant '${sourceName}' requires an initializer.`,
                 );
             }
-            const resource = this.context.nullableResourceKind(
+            this.declareUnassigned(
                 declaration.name,
-                true,
-            );
-            if (resource) {
-                this.bindOptionalResource(
-                    declaration.name,
-                    cppName,
-                    resource,
-                    sharedClosureStorage,
-                );
-                return;
-            }
-            const declaredType = this.context.checker.getTypeAtLocation(
-                declaration.name,
-            );
-            const demanded = this.context.dynamicBindings.get(declaration);
-            let dataType = demanded
-                ? demandedStorageType(
-                      this.context,
-                      declaration,
-                      demanded,
-                      undefined,
-                  )
-                : this.context.dataTypes.fromTsType(
-                      declaredType,
-                      declaration.name,
-                  );
-            // Only an assignment gives this binding a value.
-            if (dataType)
-                dataType = this.reboundBindingStorage(dataType, declaredType);
-            dataType ??= inferUninitializedStorage(
                 declaration,
-                this.context.checker,
-                this.context.dataTypes,
+                cppName,
+                sharedClosureStorage,
             );
-            dataType ??= inferPromiseRejectStorage(
-                declaration,
-                this.context.checker,
-            );
-            dataType ??=
-                this.context.dataTypes.undefinedOnlyStorage(declaredType);
-            if (
-                !dataType &&
-                declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
-            ) {
-                // A JSON.parse result is deliberately dynamic until the
-                // source's own guards inspect it. `let json: unknown;` is the
-                // corresponding uninitialized slot in that model; every later
-                // assignment still has to be a JsonValue, so this does not
-                // turn arbitrary unknown values into a permissive catch-all.
-                dataType = { kind: "json" };
-                this.context.reachJson();
-            }
-            if (!dataType) {
-                // `let set;` -- no initializer and no native type: the
-                // value is whatever the first assignment binds, and for a
-                // compile-time record (a node-particle binding built inside
-                // a `try`) nothing native exists to declare here. The
-                // assignment decides; see `bindPendingLet`.
-                this.context.bindings.defineVariable(declaration.name, {
-                    kind: "pending-let",
-                    cpp: "",
-                });
-                return;
-            }
-            if (dataType.kind === "borrowed-platform-event") {
-                this.context.fail(
-                    declaration,
-                    `Variable '${sourceName}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
-                );
-            }
-            if (
-                dataType.kind !== "number" &&
-                dataType.kind !== "boolean" &&
-                dataType.kind !== "string"
-            ) {
-                this.context.reachJsData();
-            }
-            const cppType = this.context.dataTypes.cppType(dataType);
-            const cell = sharedClosureStorage
-                ? emitSharedCell(this.context, cppName, { type: cppType })
-                : undefined;
-            if (!cell)
-                this.context.emit({
-                    kind: "declaration",
-                    type: cppType,
-                    name: cppName,
-                    initializer: "",
-                    initialization: "default",
-                    attributes: "[[maybe_unused]] ",
-                });
-            const boundCpp = cell?.cpp ?? cppName;
-            if (dataType.kind !== "number" && dataType.kind !== "boolean") {
-                this.context.dataLowerer.registerLocal(boundCpp, "owned");
-            }
-            this.context.bindings.defineVariable(declaration.name, {
-                ...this.context.dataLowerer.leafValue(boundCpp, dataType),
-                ...(cell ? { sharedStorageCpp: cell.sharedStorageCpp } : {}),
-            });
             return;
         }
+        if (
+            this.emitAbsenceTaggedDeclaration(
+                declaration,
+                cppName,
+                sharedClosureStorage,
+            )
+        )
+            return;
 
         if (
             declaration.parent !== undefined &&
@@ -1016,6 +1027,9 @@ export class DeclarationLowerer {
                     declaration.name,
                 )
             )) {
+                this.context.asyncActivations.emitErasedSuspensions(
+                    declaration.initializer,
+                );
                 this.context.bindings.defineVariable(declaration.name, {
                     kind: "browser",
                     cpp: "",
@@ -1179,8 +1193,16 @@ export class DeclarationLowerer {
                     value,
                     declaration.initializer,
                 ) ?? value;
+        // A const name holding a present element (a canvas's 2D context
+        // included) names that element, whatever its nullable annotation.
+        const presentElement =
+            value.kind === "ui-element" &&
+            !value.optionalFoundCpp &&
+            !value.optionalStorageCpp &&
+            variableKind(declaration) === "const";
         if (
             nullableResource &&
+            !presentElement &&
             (value.kind === nullableResource.kind ||
                 (nullableResource.dataType &&
                     value.dataType?.kind === "optional" &&
@@ -1323,13 +1345,13 @@ export class DeclarationLowerer {
             const accessorWrites = accessors.length
                 ? this.context.evaluationOrder.bodyAccess(accessors).writes
                 : undefined;
-            if (
+            const written =
                 value.kind === "record" &&
                 !aliasesRecord &&
-                (accessorWrites?.heap ||
+                ((accessorWrites?.objects.size ?? 0) > 0 ||
                     accessorWrites?.any ||
-                    this.inferredObjectIsMutated(declaration.name))
-            ) {
+                    this.inferredObjectIsMutated(declaration.name));
+            if (written) {
                 // Accessor bodies can mutate their receiver even when a caller
                 // only consumes a scalar result through a structural view.
                 value = this.context.bindings.materializeRecordScalars(
@@ -1338,6 +1360,32 @@ export class DeclarationLowerer {
                     true,
                 );
             }
+            // A record written, one whose containers a method writes
+            // (`cfg.list.push(v)`), or one its own methods write
+            // (`this.items.push(v)`) owns its declared arrays, as an
+            // annotated one does.
+            if (
+                value.kind === "record" &&
+                !aliasesRecord &&
+                !declaration.type &&
+                declaration.initializer &&
+                (written ||
+                    this.recordContainersWritten(declaration.name) ||
+                    Object.values(value.recordMethods ?? {}).some(
+                        (method) =>
+                            ts.isFunctionLike(method) &&
+                            functionWritesThis(this.context.checker, method),
+                    ))
+            )
+                value =
+                    this.materializeRecordArrays(
+                        value,
+                        this.context.checker.getTypeAtLocation(
+                            declaration.name,
+                        ),
+                        declaration.initializer,
+                        `${sourceName}_array`,
+                    ) ?? value;
             this.context.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
@@ -1675,10 +1723,7 @@ export class DeclarationLowerer {
                         ...(narrowed.borrowedData
                             ? { borrowedData: true as const }
                             : {}),
-                        ...(narrowed.packagedBodySource &&
-                        !this.context.sharedClosures.identifierIsRebound(
-                            declaration.name,
-                        )
+                        ...(narrowed.packagedBodySource
                             ? {
                                   packagedBodySource:
                                       narrowed.packagedBodySource,
@@ -2480,12 +2525,7 @@ export class DeclarationLowerer {
                     declaration.initializer!,
                     true,
                 );
-            const result = value.callbackRecordOwner
-                ? this.context.withRecordScopes(
-                      value.callbackRecordOwner,
-                      compile,
-                  )
-                : compile();
+            const result = this.context.withCallbackScopes(value, compile);
             this.context.emitDiscardedValue(result);
         });
         const parameters = forward.parameterTypes.map(
@@ -3271,8 +3311,9 @@ export class DeclarationLowerer {
             declaration.initializer,
         );
         const initializer = this.context.unwrap(
-            objectIdentityCallArgument(unwrappedInitializer, (expression) =>
-                libraryGlobal(this.context.checker, expression),
+            objectIdentityCallArgument(
+                this.context.checker,
+                unwrappedInitializer,
             ) ?? unwrappedInitializer,
         );
         if (
@@ -4358,31 +4399,33 @@ export class DeclarationLowerer {
                             return true;
                         }
                     }
-                    if (ts.isCallExpression(node)) {
-                        if (
-                            ts.isPropertyAccessExpression(node.expression) &&
-                            scan.namesAlias(
-                                this.context.unwrap(node.expression.expression),
-                            ) &&
-                            mutatingArrayMethods.has(node.expression.name.text)
-                        ) {
-                            return true;
-                        }
-                        if (node.arguments.some(scan.containsAlias)) {
-                            return true;
-                        }
-                    }
+                    // A method writing the array or anything inside it.
+                    if (
+                        writesThroughTrackedRoot(
+                            node,
+                            (target, via) =>
+                                via === "receiver" &&
+                                referenceBases(target).some(scan.namesAlias),
+                            {
+                                checker: this.context.checker,
+                                typed: true,
+                                sourceFiles: this.context.sourceFiles(),
+                            },
+                        )
+                    )
+                        return true;
+                    if (
+                        ts.isCallExpression(node) &&
+                        node.arguments.some(scan.containsAlias)
+                    )
+                        return true;
                     return writeSites(node).some(
                         ({ target, from }) =>
                             // Rebinding an alias, or writing, stepping or
                             // deleting anything under one (`arr[0]++`,
-                            // `arr[1].v = 7`, `element.v = 7`).
-                            scan.namesAlias(target) ||
-                            ((ts.isElementAccessExpression(target) ||
-                                ts.isPropertyAccessExpression(target)) &&
-                                scan.namesAlias(
-                                    rootIdentifier(target) ?? target,
-                                )) ||
+                            // `arr[1].v = 7`, `element.v = 7`,
+                            // `(c ? a : b)[0] = 1`).
+                            referenceBases(target).some(scan.namesAlias) ||
                             // Storing an alias into another object.
                             ((ts.isPropertyAccessExpression(target) ||
                                 ts.isElementAccessExpression(target)) &&
@@ -4560,11 +4603,12 @@ export class DeclarationLowerer {
         ): boolean => {
             const node = unwrap(expression);
             if (ts.isIdentifier(node)) return scan.namesAlias(node);
-            if (
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
-            )
-                return isAlias(scan, node.expression, active, unwrap);
+            // Inside an alias's chain, or the operand a selection yields.
+            const bases = referenceBases(node, unwrap);
+            if (bases.length !== 1 || bases[0] !== node)
+                return bases.some((base) =>
+                    isAlias(scan, base, active, unwrap),
+                );
             if (!ts.isCallExpression(node)) return false;
             if (callResultHoldsArguments(this.context.checker, node))
                 return node.arguments.some((argument) =>
@@ -4766,6 +4810,88 @@ export class DeclarationLowerer {
                 },
             },
         );
+    }
+
+    /**
+     * Whether a method writes a container the record holds: a receiver
+     * write on anything reachable from it, through any alias.
+     */
+    private recordContainersWritten(name: ts.Identifier): boolean {
+        const { checker } = this.context;
+        const holds = (
+            source: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => heldReferenceBases(checker, source).some(scan.namesAlias);
+        return aliasedMutationScan(
+            name,
+            (identifier) => this.context.symbols.valueSymbol(identifier),
+            {
+                aliasingInitializer: holds,
+                aliasingMember: (source, _leaf, scan) => holds(source, scan),
+                aliasingIteration: (source, _leaf, scan) => holds(source, scan),
+                mutates: (node, scan) =>
+                    writesThroughTrackedRoot(
+                        node,
+                        (target, via) =>
+                            via === "receiver" &&
+                            referenceBases(target).some(scan.namesAlias),
+                        {
+                            checker,
+                            typed: true,
+                            sourceFiles: this.context.sourceFiles(),
+                        },
+                    ),
+            },
+        );
+    }
+
+    /**
+     * A record's compile-time array members, nested records' included, with
+     * the storage their declared type names; undefined when it holds none.
+     */
+    private materializeRecordArrays(
+        record: Extract<Value, { kind: "record" }>,
+        type: ts.Type,
+        initializer: ts.Expression,
+        label: string,
+        visited = new Set<Value>(),
+    ): Extract<Value, { kind: "record" }> | undefined {
+        // A cyclic record (`world.light.world`) is visited once.
+        if (visited.has(record)) return undefined;
+        visited.add(record);
+        let properties: Record<string, Value> | undefined;
+        for (const [key, member] of Object.entries(
+            record.recordProperties ?? {},
+        )) {
+            const field = type.getProperty(key);
+            if (!field) continue;
+            const declared = this.context.checker.getTypeOfSymbolAtLocation(
+                field,
+                initializer,
+            );
+            const materialized =
+                member.kind === "tuple"
+                    ? this.context.bindings.materializeDeclaredRecordContainers(
+                          member,
+                          declared,
+                          initializer,
+                          `${label}_${key}`,
+                          field,
+                      )
+                    : member.kind === "record"
+                      ? this.materializeRecordArrays(
+                            member,
+                            declared,
+                            initializer,
+                            `${label}_${key}`,
+                            visited,
+                        )
+                      : undefined;
+            if (materialized)
+                (properties ??= { ...record.recordProperties })[key] =
+                    materialized;
+        }
+        return properties && { ...record, recordProperties: properties };
     }
 
     /**

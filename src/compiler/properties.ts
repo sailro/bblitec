@@ -2034,22 +2034,32 @@ export function readProperty(
 }
 
 /** A bare MeshHandle can carry only the entry's statically known engine.
- * Its lexical aliases may have different emitted names.
- * Data-transported picking results instead own a checked engine association;
- * dropping that carrier would lose both provenance and lifetime checks. */
-export function pickedMeshHandleCpp(
-    context: Pick<PropertyContext, "fail">,
+ * Its lexical aliases may have different emitted names. A data-transported
+ * picking result's checked owner must prove to be that engine. */
+export function pickedMeshHandle(
+    context: Pick<
+        LoweringServices,
+        "fail" | "defaultEngine" | "requireDefaultEngine"
+    >,
     value: Value,
     site: ts.Node,
-): string {
-    if (!value.engineCpp || !value.pickingEngineKnown) {
+): { cpp: string; engineCpp: string } {
+    if (value.engineCpp && value.pickingEngineKnown)
+        return {
+            cpp: `bbl::picked_mesh(${value.cpp})`,
+            engineCpp: value.engineCpp,
+        };
+    if (context.defaultEngine() === undefined)
         context.fail(
             site,
-            "A data-transported PickingInfo cannot become a bare Mesh handle; " +
+            "A data-transported PickingInfo becomes a bare Mesh handle only of the entry's engine; " +
                 "read pickedMesh.name or getPickedNormal from the result so its checked engine owner travels with it.",
         );
-    }
-    return `bbl::picked_mesh(${value.cpp})`;
+    const engine = context.requireDefaultEngine(site);
+    return {
+        cpp: `bbl::picked_mesh(${value.cpp}, ${engine})`,
+        engineCpp: engine,
+    };
 }
 
 /**
@@ -2068,6 +2078,7 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
+            | "browserErasure"
             | "moduleNamespaces"
             | "classLowerer"
             | "defaultEngine"
@@ -2257,6 +2268,9 @@ export class PropertyAccessLowerer {
             owner.dataType?.kind === "event-target" &&
             isAbsentWindowMember(property)
         ) {
+            // The global object, known at generation, reads it as undefined.
+            if (this.context.browserErasure.isAbsentGlobalMember(expression))
+                return undefinedValue();
             this.context.emit({
                 kind: "expression",
                 code: `static_cast<void>(bbl::dom_window_owner(${owner.cpp}));`,
@@ -3179,6 +3193,13 @@ export class PropertyAccessLowerer {
                     impure: true,
                 };
             }
+            if (eventInterface === "GamepadEvent" && property === "gamepad") {
+                this.context.reachFeature("input:gamepad", expression);
+                return this.context.dataLowerer.leafValue(
+                    `${owner.cpp}.as<bbl::PlatformGamepadEvent>().gamepad`,
+                    { kind: "handle", handle: "gamepad" },
+                );
+            }
             if (eventInterface === "DragEvent") {
                 if (property === "dataTransfer")
                     return valueForKind("platform-mouse-event", {
@@ -3255,7 +3276,7 @@ export class PropertyAccessLowerer {
             if (property === "defaultPrevented")
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.${owner.platformEventBase || owner.kind === "custom-event" || owner.kind === "platform-mouse-event" ? "is_default_prevented()" : "default_prevented"}`,
+                    cpp: `${owner.cpp}.is_default_prevented()`,
                 };
             const declared = readProperty(
                 this.context,

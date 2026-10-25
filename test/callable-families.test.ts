@@ -37,16 +37,20 @@ function nativeCheck(
     });
 }
 
-test("bind and apply refuse dynamic receivers and arguments bound into a rest parameter", () => {
-    for (const method of ["bind", "apply"])
-        assert.throws(
-            () =>
-                compileSource(`
-                function read(this:{value:number}):number{return this.value;}
-                read.${method}({value:7});
-            `),
-            /dynamic this parameter/,
-        );
+// A function declaring `this` runs on the receiver bind/apply hand it
+// (language-constructs: functions-run-on-a-receiver-they-are-handed).
+test("call refuses another receiver for a method and bind refuses arguments bound into a rest parameter", () => {
+    // A callback consumer reads only the bound function's body: refused
+    // rather than run without its receiver.
+    assert.throws(
+        () =>
+            compileSource(`
+            function read(this:{value:number}):number{return this.value;}
+            const values=[0].map(read.bind({value:7}));
+            if(values[0]!==7)throw new Error("bound callback");
+        `),
+        /called directly or through a const it initializes/,
+    );
     assert.throws(
         () =>
             compileSource(`

@@ -16,6 +16,7 @@ import {
     declaredInDomLibrary,
     resolvedDomApi,
     resolvedSymbol,
+    type NamedMember,
 } from "./symbols.js";
 import type { Value } from "./types.js";
 import { MEDIA_STREAM_TRACK_LISTS } from "./web-audio-members.js";
@@ -217,12 +218,12 @@ function trackMethod(
 export function compileMediaStreamMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
-    callee: ts.PropertyAccessExpression,
+    callee: NamedMember,
 ): Value | undefined {
     const context = lowerer.context;
     const kind = mediaReceiverKind(context, callee.expression);
     if (!kind) return undefined;
-    const method = callee.name.text;
+    const method = callee.name;
     const lower = kind === "media-stream" ? streamMethod : trackMethod;
     reachMediaStreams(context, call);
     const owner = context.compileValue(callee.expression);
@@ -230,11 +231,11 @@ export function compileMediaStreamMethodCall(
         const receiver = pinCpp(context, present.cpp, "media_receiver");
         return lower(lowerer, call, receiver, method);
     };
-    const result = lowerer.chainReceiverCall(owner, callee, call, run);
+    const result = lowerer.chainReceiverCall(owner, callee.access, call, run);
     return (
         result ??
         context.fail(
-            callee.name,
+            callee.key,
             `${kind === "media-stream" ? "MediaStream" : "MediaStreamTrack"}.${method} is not lowered natively.`,
         )
     );

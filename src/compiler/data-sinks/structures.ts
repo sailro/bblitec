@@ -385,6 +385,9 @@ function valueStruct(
         lowerer.context.dataTypes.isClassStruct(dataType.name) &&
         value.kind === "record"
     ) {
+        // A probe declines on the refusal; a committed store replays shared.
+        if (!lowerer.context.speculating)
+            lowerer.context.dataTypes.requireSharedClass(dataType.name);
         lowerer.context.fail(
             node,
             `An instance of '${dataType.name}' constructed before ` +

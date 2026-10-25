@@ -4,7 +4,10 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import {
     bufferAlignmentCpp,
     assertMappedBufferAdapter,
@@ -367,23 +370,19 @@ export function lowerUniformBuffer(context: LoweringContext): LoweredSource {
         dispose.file,
         dispose.declaration.body!.statements,
         {
-            bindings: new Map(),
+            // Disposal walks the registry snapshot the native caller takes.
+            bindings: new Map([
+                [
+                    "[...(_buffers?.get(engine) ?? [])]",
+                    collectionBinding("snapshot"),
+                ],
+            ]),
             calls: new Map([
                 [
                     "disposeUniformBuffer",
                     (args) => `dispose_uniform_buffer(${args.join(", ")})`,
                 ],
             ]),
-            forOf(iterated, element) {
-                if (!sameSource(iterated, "[...(_buffers?.get(engine) ?? [])]"))
-                    return undefined;
-                return {
-                    range: "snapshot",
-                    bindings: new Map([
-                        [element, { cpp: element, type: "opaque" }],
-                    ]),
-                };
-            },
         },
     );
     return {

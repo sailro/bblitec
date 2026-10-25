@@ -35,11 +35,7 @@ import {
     numberConstant,
     numberPredicateCpp,
 } from "../compiler/number-intrinsics.js";
-import {
-    MATH_CONSTANTS,
-    MATH_MEMBERS,
-    mathExtremeCpp,
-} from "../compiler/math-intrinsics.js";
+import { MATH_CONSTANTS, MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { callsArgumentInPlace } from "../compiler/receiver-methods.js";
 import { regexpHasLineAnchor } from "../compiler/regexp-grammar.js";
 import {
@@ -7953,8 +7949,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     const numbers = this.spreadArguments(node);
                     const range = MATH_MEMBERS.get(name)?.rangeCpp;
                     if (range) return range(numbers);
-                    if (name === "max" || name === "min")
-                        return mathExtremeCpp(name, numbers);
                     return this.refuse(
                         node,
                         `Pinned spread into Math.${name}.`,

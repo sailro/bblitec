@@ -1,9 +1,10 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
-    PinnedNumericLowerer,
+import {
+    collectionBinding,
+    type PinnedBinding,
+    type PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { sameSource, propertyPath } from "../../compiler/syntax.js";
@@ -149,6 +150,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
         ],
         ["scene", { cpp: "scene", type: "opaque" }],
         ["rt", { cpp: "rt", type: "opaque" }],
+        ["loaded", collectionBinding("loaded")],
     ]);
     const runBody = lowerPinnedBody(
         run.file,
@@ -165,16 +167,6 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                     (args) => `detach_flow_graph(${args.join(", ")})`,
                 ],
             ]),
-            forOf(iterated, element) {
-                return sameSource(iterated, "loaded") && element === "lg"
-                    ? {
-                          range: "loaded",
-                          bindings: new Map([
-                              [element, { cpp: element, type: "opaque" }],
-                          ]),
-                      }
-                    : undefined;
-            },
             returnValue: (value, lowerer) =>
                 value ? lowerer.expression(value) : "",
             expression(node, lowerer) {

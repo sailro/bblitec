@@ -46,3 +46,17 @@ export function unlessRefused<T>(attempt: () => T): T | undefined {
         throw error;
     }
 }
+
+/** `attempt`'s result, or nothing where it needs a value known only at run time. */
+export function unlessRuntimeValue<T>(attempt: () => T): T | undefined {
+    try {
+        return attempt();
+    } catch (error) {
+        if (
+            error instanceof CompileError &&
+            error.reason === "static-value-required"
+        )
+            return undefined;
+        throw error;
+    }
+}

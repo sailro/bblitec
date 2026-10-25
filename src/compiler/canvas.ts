@@ -1,8 +1,13 @@
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-import { declaredInDefaultLibrary, libraryName } from "./symbols.js";
+import {
+    declaredInDefaultLibrary,
+    libraryName,
+    namedMember,
+    type NamedMember,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 import { documentEngine, requireWindowHost } from "./window-events.js";
@@ -42,13 +47,13 @@ function hasDomInterface(
 /** Pick/Omit views retain the original DOM method declarations. */
 function hasDomMethod(
     context: CanvasContext,
-    expression: ts.PropertyAccessExpression,
+    expression: NamedMember,
     interfaceName: string,
 ): boolean {
     const type = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(expression.expression),
     );
-    const method = type.getProperty(expression.name.text);
+    const method = type.getProperty(expression.name);
     return (
         declaredInDefaultLibrary(method) &&
         (method?.declarations ?? []).some(
@@ -141,10 +146,10 @@ export function compileCanvasValue(
             "return bbl::pal::create_media_query(argument_0);",
         );
     }
-    const ratio = devicePixelRatioValue(context, node);
-    if (ratio) {
+    const accessor = hostAccessorValue(context, node);
+    if (accessor) {
         requireWindowHost(context, node);
-        return ratio;
+        return accessor;
     }
     if (
         ts.isPropertyAccessExpression(node) &&
@@ -185,10 +190,12 @@ export function compileCanvasValue(
         };
     }
     if (ts.isTypeOfExpression(node)) {
-        const member = context.unwrap(node.expression);
+        const member = namedMember(
+            context.checker,
+            context.unwrap(node.expression),
+        );
         if (
-            ts.isPropertyAccessExpression(member) &&
-            member.name.text === "transferControlToOffscreen" &&
+            member?.name === "transferControlToOffscreen" &&
             context.isCanvasElement(member.expression)
         ) {
             return {
@@ -285,6 +292,7 @@ export function compileCanvasValue(
     }
     if (ts.isCallExpression(node)) {
         const callee = context.unwrap(node.expression);
+        const member = namedMember(context.checker, callee);
         if (
             !context.options.workers.namespace &&
             context.libraryGlobal(callee) === "matchMedia"
@@ -303,13 +311,11 @@ export function compileCanvasValue(
             };
         }
         if (
-            ts.isPropertyAccessExpression(callee) &&
-            ["addEventListener", "removeEventListener"].includes(
-                callee.name.text,
-            ) &&
-            hasDomInterface(context, callee.expression, "MediaQueryList")
+            member !== undefined &&
+            ["addEventListener", "removeEventListener"].includes(member.name) &&
+            hasDomInterface(context, member.expression, "MediaQueryList")
         ) {
-            const owner = context.compileValue(callee.expression);
+            const owner = context.compileValue(member.expression);
             const event = node.arguments[0];
             if (
                 owner.kind !== "worker-media-query" ||
@@ -324,7 +330,7 @@ export function compileCanvasValue(
                 );
             }
             const callback = argumentAt(node, 1);
-            if (callee.name.text === "removeEventListener")
+            if (member.name === "removeEventListener")
                 return {
                     kind: "void",
                     cpp: `${owner.cpp}->remove_change_listener(${context.callbacks.platformEventCallbackIdentity(context.compileValue(callback), callback)})`,
@@ -340,14 +346,14 @@ export function compileCanvasValue(
             };
         }
         if (
-            ts.isPropertyAccessExpression(callee) &&
-            hasDomMethod(context, callee, "MutationObserver")
+            member !== undefined &&
+            hasDomMethod(context, member, "MutationObserver")
         ) {
-            const owner = context.compileValue(callee.expression);
+            const owner = context.compileValue(member.expression);
             if (owner.kind !== "worker-mutation-observer") return undefined;
-            if (callee.name.text === "disconnect" && !node.arguments.length)
+            if (member.name === "disconnect" && !node.arguments.length)
                 return { kind: "void", cpp: `${owner.cpp}->disconnect()` };
-            if (callee.name.text !== "observe" || node.arguments.length !== 2)
+            if (member.name !== "observe" || node.arguments.length !== 2)
                 return context.fail(
                     node,
                     "MutationObserver supports observe(element, attributes options) and disconnect().",
@@ -407,16 +413,16 @@ export function compileCanvasValue(
             };
         }
         if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "transferControlToOffscreen" &&
-            context.isCanvasElement(callee.expression)
+            member !== undefined &&
+            member.name === "transferControlToOffscreen" &&
+            context.isCanvasElement(member.expression)
         ) {
             if (node.arguments.length)
                 return context.fail(
                     node,
                     "transferControlToOffscreen accepts no arguments.",
                 );
-            const owner = context.compileValue(callee.expression);
+            const owner = context.compileValue(member.expression);
             if (owner.kind !== "ui-element")
                 return context.fail(
                     node,
@@ -430,14 +436,14 @@ export function compileCanvasValue(
             };
         }
         if (
-            ts.isPropertyAccessExpression(callee) &&
-            ["observe", "unobserve", "disconnect"].includes(callee.name.text) &&
-            hasDomMethod(context, callee, "ResizeObserver")
+            member !== undefined &&
+            ["observe", "unobserve", "disconnect"].includes(member.name) &&
+            hasDomMethod(context, member, "ResizeObserver")
         ) {
-            const owner = context.compileValue(callee.expression);
+            const owner = context.compileValue(member.expression);
             if (owner.kind === "worker-resize-observer") {
                 const argument = node.arguments[0];
-                if (callee.name.text === "disconnect" && !argument)
+                if (member.name === "disconnect" && !argument)
                     return { kind: "void", cpp: `${owner.cpp}->disconnect()` };
                 if (!argument || node.arguments.length !== 1)
                     return context.fail(
@@ -452,7 +458,7 @@ export function compileCanvasValue(
                     );
                 return {
                     kind: "void",
-                    cpp: `${owner.cpp}->${callee.name.text}(${element.cpp})`,
+                    cpp: `${owner.cpp}->${member.name}(${element.cpp})`,
                 };
             }
         }

@@ -35,6 +35,7 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import {
+    collectionBinding,
     recordLiteralCpp,
     type PinnedBinding,
     type PinnedNumericLowerer,
@@ -153,6 +154,14 @@ function regionMembers(pinned: string, cpp: string): [string, PinnedBinding][] {
     ];
 }
 
+/** A region list, walked one region record at a time. */
+function regionList(cpp: string): PinnedBinding {
+    return collectionBinding(
+        cpp,
+        (element) => new Map(regionMembers(element, element)),
+    );
+}
+
 /** A body record's members, on the lvalue `cpp`. */
 function bodyMembers(pinned: string, cpp: string): [string, PinnedBinding][] {
     return [
@@ -184,10 +193,7 @@ function worldMembers(): [string, PinnedBinding][] {
             `${pinned}.gravity`,
             { cpp: `${FLOATING_ORIGIN}.gravity`, type: "f64-buffer" },
         ],
-        [
-            `${pinned}.regions`,
-            { cpp: `${FLOATING_ORIGIN}.regions`, type: "opaque" },
-        ],
+        [`${pinned}.regions`, regionList(`${FLOATING_ORIGIN}.regions`)],
         [
             `${pinned}.regions.length`,
             scalar(`static_cast<double>(${FLOATING_ORIGIN}.regions.size())`),
@@ -213,7 +219,7 @@ function contextMembers(): [string, PinnedBinding][] {
     return [
         ["fo.radius", scalar("fo.radius")],
         ["fo.gravity", { cpp: "fo.gravity", type: "f64-buffer" }],
-        ["fo.regions", { cpp: "fo.regions", type: "opaque" }],
+        ["fo.regions", regionList("fo.regions")],
     ];
 }
 
@@ -340,7 +346,6 @@ function floatingOriginScope(
     methods: NonNullable<PinnedNumericScope["methods"]>;
     statement: NonNullable<PinnedNumericScope["statement"]>;
     expression: NonNullable<PinnedNumericScope["expression"]>;
-    forOf: NonNullable<PinnedNumericScope["forOf"]>;
     vec3Literal: NonNullable<PinnedNumericScope["vec3Literal"]>;
     recordLiteral: NonNullable<PinnedNumericScope["recordLiteral"]>;
 } {
@@ -457,14 +462,6 @@ function floatingOriginScope(
         ]),
         statement,
         expression,
-        forOf: (_iterated, element, owner) => {
-            return owner && RECORD_LISTS.get(owner.cpp) === "region"
-                ? {
-                      range: owner.cpp,
-                      bindings: new Map(regionMembers(element, element)),
-                  }
-                : undefined;
-        },
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
         recordLiteral: recordLiteralCpp,
     };

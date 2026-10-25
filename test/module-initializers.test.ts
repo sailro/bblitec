@@ -5,7 +5,7 @@ import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import {
     planEntryModuleState,
-    planImportedModuleInitializers,
+    planImportedModuleState,
 } from "../src/compiler/module-initializers.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
@@ -57,12 +57,9 @@ test("pinned composition inputs stay static while pinned writers retain module o
     );
     const symbols = new CompilerSymbols(checker);
     assert.deepEqual(
-        planImportedModuleInitializers(
-            program,
-            sourceFile,
-            checker,
-            symbols,
-        ).map((file) => basename(file.fileName)),
+        planImportedModuleState(program, sourceFile, checker, symbols).map(
+            (file) => basename(file.fileName),
+        ),
         ["writer.ts"],
     );
     assert.deepEqual(
@@ -96,12 +93,9 @@ test("unresolved pinned calls and destructured writers retain conservative modul
     );
     const symbols = new CompilerSymbols(checker);
     assert.deepEqual(
-        planImportedModuleInitializers(
-            program,
-            sourceFile,
-            checker,
-            symbols,
-        ).map((file) => basename(file.fileName)),
+        planImportedModuleState(program, sourceFile, checker, symbols).map(
+            (file) => basename(file.fileName),
+        ),
         ["dependency.ts"],
     );
     assert.deepEqual(
@@ -148,12 +142,9 @@ test("argument ownership excludes scalar projections but retains reference and n
     );
     const symbols = new CompilerSymbols(checker);
     assert.deepEqual(
-        planImportedModuleInitializers(
-            program,
-            sourceFile,
-            checker,
-            symbols,
-        ).map((file) => basename(file.fileName)),
+        planImportedModuleState(program, sourceFile, checker, symbols).map(
+            (file) => basename(file.fileName),
+        ),
         ["output.ts", "effect.ts"],
     );
     assert.deepEqual(
@@ -231,7 +222,7 @@ test("read-only call arguments leave immutable imported records on the static pa
         join(directory, "entry.ts"),
     );
     assert.deepEqual(
-        planImportedModuleInitializers(
+        planImportedModuleState(
             program,
             sourceFile,
             checker,
@@ -262,7 +253,7 @@ test("initializer planning preserves throwing container and accessor operations"
             join(directory, "entry.ts"),
         );
         assert.deepEqual(
-            planImportedModuleInitializers(
+            planImportedModuleState(
                 program,
                 sourceFile,
                 checker,
@@ -500,7 +491,7 @@ test("initializer planning retains alias origins without executing dormant helpe
             source,
             fileName,
         );
-        const planned = planImportedModuleInitializers(
+        const planned = planImportedModuleState(
             program,
             sourceFile,
             checker,
@@ -566,7 +557,7 @@ test("initializer planning resolves mutable contents through namespace and re-ex
     `,
         join(directory, "entry.ts"),
     );
-    const planned = planImportedModuleInitializers(
+    const planned = planImportedModuleState(
         program,
         sourceFile,
         checker,

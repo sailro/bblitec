@@ -2,7 +2,7 @@ import { requireWindowHost } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
@@ -45,6 +45,7 @@ import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
     isHandleKind,
+    isTypedArrayType,
     isUndefinedDataType,
     primitiveTraits,
     propertyIsReadOnly,
@@ -77,9 +78,17 @@ import {
     isLibraryNumberFormatter,
     calledDeclaration,
     memberAccessors,
+    namedMember,
+    type NamedMember,
+    libraryStaticMember,
     staticAccessKey,
+    borrowedPrototypeMethod,
+    forwardedCallShape,
 } from "./symbols.js";
-import { NAVIGATOR_GET_GAMEPADS } from "./dom-lowerings.js";
+import {
+    CRYPTO_GET_RANDOM_VALUES,
+    NAVIGATOR_GET_GAMEPADS,
+} from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
     foldNumberFormat,
@@ -121,8 +130,7 @@ import {
     containsSuspension,
     restParameterIndex,
     variableKind,
-    memberKeyNode,
-    type MemberAccess,
+    isMemberAccess,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -158,7 +166,7 @@ import {
     compileMediaStreamMethodCall,
     mediaStreamTypeof,
 } from "./media-streams.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRuntimeValue } from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
 import { finalReturn, firstReturn } from "./loop-control.js";
 import {
@@ -209,7 +217,7 @@ import {
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
-import { pickedMeshHandleCpp } from "./properties.js";
+import { pickedMeshHandle } from "./properties.js";
 import {
     absenceKind,
     isNullable,
@@ -238,7 +246,7 @@ import {
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
@@ -260,6 +268,7 @@ export interface ExpressionContext
             LoweringServices,
             | "noteImpureRead"
             | "dynamicBindings"
+            | "parameterObjects"
             | "conditionOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
@@ -305,6 +314,7 @@ export interface ExpressionContext
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
+            | "withCallbackScopes"
             | "captureRecordScopes"
             | "captureNativeDependencies"
             | "captureNativeExpression"
@@ -359,6 +369,7 @@ export interface ExpressionContext
             | "leaveRuntimeControlFlow"
             | "isInRuntimeIteration"
             | "isInNativeFunctionBody"
+            | "isFunctionEvaluationRepeated"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
         > {
@@ -401,7 +412,7 @@ function hoistsPreparedArm(value: Value): boolean {
  * for a runtime number, the two spellings of a boolean, an enum's name,
  * and `null`.
  */
-function staticStringCoercion(value: Value): string | undefined {
+export function staticStringCoercion(value: Value): string | undefined {
     if (value.parameterBinding) return undefined;
     if (value.staticString !== undefined) return value.staticString;
     if (value.staticNumber !== undefined) return String(value.staticNumber);
@@ -556,6 +567,14 @@ const PRIMITIVE_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set([
     "__lookupSetter__",
 ]);
 
+/** The member names a forwarded call, a random-values fill or a borrowed prototype method is called by. */
+const FORWARDING_MEMBER_NAMES: ReadonlySet<string> = new Set([
+    "apply",
+    "bind",
+    "call",
+    "getRandomValues",
+]);
+
 export class ExpressionLowerer {
     public constructor(private readonly context: ExpressionContext) {}
 
@@ -599,14 +618,7 @@ export class ExpressionLowerer {
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
-                    cpp: pickedMeshHandleCpp(
-                        this.context,
-                        asserted,
-                        expression,
-                    ),
-                    ...(asserted.engineCpp
-                        ? { engineCpp: asserted.engineCpp }
-                        : {}),
+                    ...pickedMeshHandle(this.context, asserted, expression),
                     optionalFoundCpp:
                         `(${asserted.cpp}.picked_kind == ` +
                         `bbl::PickedNodeKind::mesh)`,
@@ -657,11 +669,11 @@ export class ExpressionLowerer {
         if (storage) return storage;
         const idleFunction = idleFunctionValue(this.context, unwrapped);
         if (idleFunction) return idleFunction;
-        const ratio = devicePixelRatioValue(this.context, unwrapped);
-        if (ratio) {
-            if (ratio.staticNumber === undefined)
+        const accessor = hostAccessorValue(this.context, unwrapped);
+        if (accessor) {
+            if (accessor.staticNumber === undefined)
                 requireWindowHost(this.context, unwrapped);
-            return ratio;
+            return accessor;
         }
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
@@ -731,8 +743,7 @@ export class ExpressionLowerer {
                         cpp: "",
                     }),
                     ...this.context.captureRecordScopes(),
-                    ...(this.context.isInRuntimeIteration() ||
-                    this.context.isInNativeFunctionBody()
+                    ...(this.context.isFunctionEvaluationRepeated(lexicalThis)
                         ? { repeatedCallbackEvaluation: true }
                         : {}),
                     ...(evaluationIdentity
@@ -1056,8 +1067,10 @@ export class ExpressionLowerer {
                 );
             }
             if (
-                mathConstantAccess(unwrapped, (expression) =>
-                    this.context.libraryGlobal(expression),
+                mathConstantAccess(
+                    unwrapped,
+                    (expression) => this.context.libraryGlobal(expression),
+                    (node) => namedMember(this.context.checker, node),
                 )
             ) {
                 const staticNumber = staticNumberValue(this.context, unwrapped);
@@ -1280,31 +1293,24 @@ export class ExpressionLowerer {
             if (value) return value;
         }
         if (ts.isCallExpression(unwrapped)) {
-            const joined = ts.isPropertyAccessExpression(unwrapped.expression)
-                ? this.context.unwrap(unwrapped.expression.expression)
-                : undefined;
+            const join = namedMember(
+                this.context.checker,
+                unwrapped.expression,
+            );
+            const joined = join && this.context.unwrap(join.expression);
             // A literal of generation-known elements joins at generation; one
             // with spreads or run-time elements joins the array it builds at
             // run time.
             if (
-                ts.isPropertyAccessExpression(unwrapped.expression) &&
-                unwrapped.expression.name.text === "join" &&
+                join?.name === "join" &&
                 unwrapped.arguments.length <= 1 &&
                 joined &&
                 ts.isArrayLiteralExpression(joined) &&
                 !joined.elements.some(ts.isSpreadElement)
             ) {
-                let value: string | undefined;
-                try {
-                    value =
-                        this.context.evaluator.compileStringLiteral(unwrapped);
-                } catch (error) {
-                    if (
-                        !(error instanceof CompileError) ||
-                        error.reason !== "static-value-required"
-                    )
-                        throw error;
-                }
+                const value = unlessRuntimeValue(() =>
+                    this.context.evaluator.compileStringLiteral(unwrapped),
+                );
                 if (value !== undefined)
                     return {
                         kind: "string",
@@ -2044,8 +2050,10 @@ export class ExpressionLowerer {
             const resolved = this.generationTimeNumber(node);
             if (resolved !== undefined) return resolved;
         }
-        const mathCall = mathMemberCall(node, (expression) =>
-            this.context.libraryGlobal(expression),
+        const mathCall = mathMemberCall(
+            node,
+            (expression) => this.context.libraryGlobal(expression),
+            (read) => namedMember(this.context.checker, read),
         );
         if (!mathCall) return undefined;
         const values = mathCall.call.arguments.map((argument) =>
@@ -2298,8 +2306,7 @@ export class ExpressionLowerer {
             // state; an unclassified one would drop its effect silently.
             const callee = this.context.unwrap(unwrapped.expression);
             if (
-                (ts.isPropertyAccessExpression(callee) ||
-                    ts.isElementAccessExpression(callee)) &&
+                isMemberAccess(callee) &&
                 !this.context.browserErasure.isBrowserOwner(callee.expression)
             )
                 this.context.fail(
@@ -3559,8 +3566,7 @@ export class ExpressionLowerer {
             if (
                 ts.isCallExpression(link) &&
                 link.questionDotToken &&
-                (ts.isPropertyAccessExpression(link.expression) ||
-                    ts.isElementAccessExpression(link.expression))
+                isMemberAccess(link.expression)
             ) {
                 link = link.expression;
                 continue;
@@ -3595,19 +3601,14 @@ export class ExpressionLowerer {
         call: ts.CallExpression,
         target: ts.Expression,
     ): Value | undefined {
-        if (
-            !ts.isPropertyAccessExpression(target) ||
-            target.name.text !== "bind" ||
-            call.arguments.length !== 1
-        )
+        const bind = namedMember(this.context.checker, target);
+        if (bind?.name !== "bind" || call.arguments.length !== 1)
             return undefined;
-        const method = this.context.unwrap(target.expression);
-        if (
-            !ts.isPropertyAccessExpression(method) ||
-            !isEffectTaskMethodName(method.name.text)
-        )
+        const method = this.context.unwrap(bind.expression);
+        const methodName = namedMember(this.context.checker, method);
+        if (!methodName || !isEffectTaskMethodName(methodName.name))
             return undefined;
-        const owner = this.context.unwrap(method.expression);
+        const owner = this.context.unwrap(methodName.expression);
         const receiver = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(owner) ||
@@ -3624,6 +3625,19 @@ export class ExpressionLowerer {
     private compileCall(call: ts.CallExpression): Value {
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
+        // Forwarded calls, random values and borrowed prototype methods are
+        // all calls of a member with one of these names.
+        const named = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        if (named && FORWARDING_MEMBER_NAMES.has(named.name)) {
+            const forwarded = this.compileForwardedCall(call);
+            if (forwarded) return forwarded;
+            const random = this.compileRandomValues(call);
+            if (random) return random;
+            this.refuseBorrowedPrototypeMethod(call);
+        }
         if (call.expression.kind === ts.SyntaxKind.ImportKeyword)
             return this.context.moduleNamespaces.compileImport(call);
         const deferred = this.context.deferredCapabilities.compile(call);
@@ -3636,13 +3650,11 @@ export class ExpressionLowerer {
                     "class constructor.",
             );
         }
-        if (
-            ts.isPropertyAccessExpression(target) &&
-            target.expression.kind === ts.SyntaxKind.SuperKeyword
-        ) {
+        const targetMember = namedMember(this.context.checker, target);
+        if (targetMember?.expression.kind === ts.SyntaxKind.SuperKeyword) {
             return this.context.classLowerer.compileSuperMethodCall(
                 call,
-                target,
+                targetMember,
             );
         }
         const boundTaskMethod = this.boundEffectTaskMethod(call, target);
@@ -3706,10 +3718,11 @@ export class ExpressionLowerer {
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
-            const callee = this.context.unwrap(call.expression);
             if (
-                !ts.isPropertyAccessExpression(callee) ||
-                this.context.libraryGlobal(callee.expression) !== "navigator"
+                libraryStaticMember(
+                    this.context.checker,
+                    this.context.unwrap(call.expression),
+                )?.owner !== "navigator"
             )
                 return this.context.fail(
                     call,
@@ -3831,116 +3844,20 @@ export class ExpressionLowerer {
             const animationFrame = this.context.compileAnimationFrameCall(call);
             if (animationFrame) return animationFrame;
         }
-        // `o.m(...)` and `o["m"](...)` are one named call; a keyed call
-        // in an optional chain keeps the chain lowering below.
-        if (
-            ts.isPropertyAccessExpression(callee) ||
-            (ts.isElementAccessExpression(callee) &&
-                !ts.isOptionalChain(call) &&
-                staticAccessKey(this.context.checker, callee) !== undefined)
-        ) {
-            const value = this.compilePropertyCall(callee, call);
+        // `o.m(...)` and `o["m"](...)` are one named call.
+        const member = namedMember(this.context.checker, callee);
+        if (member) {
+            const value = this.compilePropertyCall(member, call);
             if (value) return value;
-        }
-        if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
-            return this.context.userFunctions.compileCallbackCall(
-                this.context,
-                call,
-                callee,
-            );
-        }
-        if (
-            ts.isCallExpression(callee) ||
-            ts.isBinaryExpression(callee) ||
-            ts.isConditionalExpression(callee)
-        ) {
-            const called = this.compileCallableValueCall(
-                call,
-                callee,
-                this.compileValue(callee),
-            );
-            if (called) return called;
-        }
-        if (
+        } else if (
             ts.isElementAccessExpression(callee) &&
-            ts.isOptionalChain(callee)
-        ) {
-            // `owner?.[key](...)`: the chain's absence skips the call.
-            const called = this.context.probeEmission(() =>
-                this.context.dataLowerer.optionalElementCall(
-                    this.compileValue(callee.expression),
-                    call,
-                    callee,
-                ),
-            );
-            if (called) return called;
-        }
-        if (ts.isElementAccessExpression(callee)) {
-            let callable = this.compileValue(call.expression);
-            if (callable.kind === "callback" && callable.callbackDeclaration) {
-                const native =
-                    this.context.userFunctions.compileNativeCallbackCall(
-                        this.context,
-                        call,
-                        callable,
-                    );
-                if (native) return native;
-                const declaration = callable.callbackDeclaration;
-                const owner = callable.callbackRecordOwner;
-                const inBodyScope = <T>(work: () => T): T =>
-                    owner
-                        ? this.context.withRecordScopes(
-                              owner,
-                              work,
-                              declaration,
-                          )
-                        : work();
-                return ts.isIdentifier(declaration)
-                    ? this.context.userFunctions.compile(
-                          this.context,
-                          call,
-                          declaration,
-                          inBodyScope,
-                      )!
-                    : this.context.userFunctions.compileCallbackCall(
-                          this.context,
-                          call,
-                          declaration,
-                          inBodyScope,
-                      );
-            }
-            if (
-                hasNonNullAssertion(call.expression) &&
-                callable.kind === "data"
-            ) {
-                callable = this.context.dataLowerer.narrowOptional(
-                    callable,
-                    call.expression,
-                    true,
-                );
-            }
-            if (
-                callable.kind === "data" &&
-                callable.dataType?.kind === "function"
-            ) {
-                return this.context.dataLowerer.compileStoredCall(
-                    call,
-                    callable.cpp,
-                    callable.dataType,
-                );
-            }
-            const recordCall =
-                this.context.dataLowerer.compileCallableRecordCall(
-                    call,
-                    callable,
-                );
-            if (recordCall) return recordCall;
+            staticAccessKey(this.context.checker, callee) !== undefined
+        )
+            // The checker names the member, but its key runs code first.
             this.context.fail(
-                callee,
-                `Indexed call target resolved to ${callable.kind}` +
-                    `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
+                callee.argumentExpression,
+                "A method key that runs code (a call or a getter) is not lowered; read it into a const first.",
             );
-        }
         const uriFunction = URI_FUNCTIONS.get(
             this.context.libraryGlobal(callee) ?? "",
         );
@@ -4034,25 +3951,118 @@ export class ExpressionLowerer {
             };
         }
 
-        if (!ts.isIdentifier(callee)) {
-            const predicate = compileArrayPredicateOverData(
-                this.context.dataLowerer,
+        // A library static read through the owner, dotted or keyed, ahead
+        // of the run-time element call below.
+        const predicate = compileArrayPredicateOverData(
+            this.context.dataLowerer,
+            call,
+        );
+        if (predicate) return predicate;
+        if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+            return this.context.userFunctions.compileCallbackCall(
+                this.context,
                 call,
+                callee,
             );
-            if (predicate) {
-                return predicate;
+        }
+        if (
+            ts.isCallExpression(callee) ||
+            ts.isBinaryExpression(callee) ||
+            ts.isConditionalExpression(callee)
+        ) {
+            const called = this.compileCallableValueCall(
+                call,
+                callee,
+                this.compileValue(callee),
+            );
+            if (called) return called;
+        }
+        if (
+            ts.isElementAccessExpression(callee) &&
+            ts.isOptionalChain(callee)
+        ) {
+            // `owner?.[key](...)`: the chain's absence skips the call.
+            const called = this.context.probeEmission(() =>
+                this.context.dataLowerer.optionalElementCall(
+                    this.compileValue(callee.expression),
+                    call,
+                    callee,
+                ),
+            );
+            if (called) return called;
+        }
+        if (ts.isElementAccessExpression(callee)) {
+            let callable = this.compileValue(call.expression);
+            if (callable.kind === "callback" && callable.callbackDeclaration) {
+                const native =
+                    this.context.userFunctions.compileNativeCallbackCall(
+                        this.context,
+                        call,
+                        callable,
+                    );
+                if (native) return native;
+                const declaration = callable.callbackDeclaration;
+                const inBodyScope = <T>(work: () => T): T =>
+                    this.context.withCallbackScopes(
+                        callable,
+                        work,
+                        declaration,
+                    );
+                return ts.isIdentifier(declaration)
+                    ? this.context.userFunctions.compile(
+                          this.context,
+                          call,
+                          declaration,
+                          inBodyScope,
+                      )!
+                    : this.context.userFunctions.compileCallbackCall(
+                          this.context,
+                          call,
+                          declaration,
+                          inBodyScope,
+                      );
             }
+            if (
+                hasNonNullAssertion(call.expression) &&
+                callable.kind === "data"
+            ) {
+                callable = this.context.dataLowerer.narrowOptional(
+                    callable,
+                    call.expression,
+                    true,
+                );
+            }
+            if (
+                callable.kind === "data" &&
+                callable.dataType?.kind === "function"
+            ) {
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callable.cpp,
+                    callable.dataType,
+                );
+            }
+            const recordCall =
+                this.context.dataLowerer.compileCallableRecordCall(
+                    call,
+                    callable,
+                );
+            if (recordCall) return recordCall;
+            this.context.fail(
+                callee,
+                `Indexed call target resolved to ${callable.kind}` +
+                    `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
+            );
+        }
+        if (!ts.isIdentifier(callee)) {
+            const member = namedMember(this.context.checker, callee);
+            const field =
+                member && namedMember(this.context.checker, member.expression);
             const receiver =
-                ts.isPropertyAccessExpression(callee) &&
-                ts.isIdentifier(callee.expression)
-                    ? this.context.bindings.lookupOptional(callee.expression)
-                    : ts.isPropertyAccessExpression(callee) &&
-                        ts.isPropertyAccessExpression(callee.expression) &&
-                        callee.expression.expression.kind ===
-                            ts.SyntaxKind.ThisKeyword
-                      ? this.context.resolveThisField(
-                            callee.expression.name.text,
-                        )
+                member && ts.isIdentifier(member.expression)
+                    ? this.context.bindings.lookupOptional(member.expression)
+                    : field?.expression.kind === ts.SyntaxKind.ThisKeyword
+                      ? this.context.resolveThisField(field.name)
                       : undefined;
             this.context.fail(
                 callee,
@@ -4200,12 +4210,7 @@ export class ExpressionLowerer {
                 );
             }
             const inRecordScope = <T>(work: () => T): T =>
-                bound.callbackRecordOwner
-                    ? this.context.withRecordScopes(
-                          bound.callbackRecordOwner,
-                          work,
-                      )
-                    : work();
+                this.context.withCallbackScopes(bound, work);
             const result = ts.isIdentifier(bound.callbackDeclaration)
                 ? this.context.userFunctions.compile(
                       this.context,
@@ -4436,12 +4441,7 @@ export class ExpressionLowerer {
                     call,
                 );
             };
-            return callable.callbackRecordOwner
-                ? this.context.withRecordScopes(
-                      callable.callbackRecordOwner,
-                      invoke,
-                  )
-                : invoke();
+            return this.context.withCallbackScopes(callable, invoke);
         }
         if (callable.kind === "data" && callable.dataType?.kind === "function")
             return this.context.dataLowerer.compileStoredCall(
@@ -4701,9 +4701,12 @@ export class ExpressionLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            callee &&
             this.context.dataLowerer.prefersRuntimeTupleIteration(
                 callee.expression,
                 callback,
@@ -6590,8 +6593,8 @@ export class ExpressionLowerer {
                 ? {
                       recordPropertyOrder: [...ownKeys],
                       ...this.context.captureRecordScopes(),
-                      ...(this.context.isInRuntimeIteration() ||
-                      this.context.isInNativeFunctionBody()
+                      // Its methods take the record itself as `this`.
+                      ...(this.context.isFunctionEvaluationRepeated(undefined)
                           ? {
                                 repeatedCallbackEvaluation: true as const,
                             }
@@ -6708,17 +6711,13 @@ export class ExpressionLowerer {
         };
     }
 
-    /**
-     * `f.call(thisArg, ...args)` on a named function that declares or reads
-     * its `this`: the function runs with `this` bound to thisArg, which is
-     * read before the arguments, as each argument is read before the next.
-     */
-    private compileReceiverCall(
-        call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
-    ): Value | undefined {
-        const target = this.context.unwrap(callee.expression);
+    /** A named function that declares or reads its `this`, which a receiver binds. */
+    private dynamicThisFunction(
+        expression: ts.Expression | undefined,
+    ): ts.Identifier | undefined {
+        const target = expression && this.context.unwrap(expression);
         if (
+            !target ||
             !ts.isIdentifier(target) ||
             this.context.bindings.lookupOptional(target) !== undefined
         )
@@ -6727,36 +6726,201 @@ export class ExpressionLowerer {
             this.context.checker,
             target,
         );
-        if (
-            !declaration ||
-            !(
-                ts.isFunctionDeclaration(declaration) ||
-                ts.isFunctionExpression(declaration)
-            ) ||
-            !(
-                functionUsesDynamicThis(declaration) ||
+        return declaration &&
+            (ts.isFunctionDeclaration(declaration) ||
+                ts.isFunctionExpression(declaration)) &&
+            (functionUsesDynamicThis(declaration) ||
                 this.context.checker.getSignatureFromDeclaration(declaration)
-                    ?.thisParameter
-            ) ||
-            call.arguments.length === 0 ||
-            call.arguments.some(ts.isSpreadElement)
+                    ?.thisParameter)
+            ? target
+            : undefined;
+    }
+
+    /**
+     * A dynamic-`this` function run on a receiver it is handed:
+     * `f.call(thisArg, ...args)`, `f.apply(thisArg, [...args])` and
+     * `Reflect.apply(f, thisArg, [...args])` run `f` with `this` bound to
+     * thisArg, read before the arguments, as each argument before the next.
+     */
+    private compileForwardedCall(call: ts.CallExpression): Value | undefined {
+        const shape = forwardedCallShape(this.context.checker, call);
+        const target =
+            shape?.method !== "bind" &&
+            shape &&
+            this.dynamicThisFunction(shape.target);
+        if (!shape || !target) return undefined;
+        const receiver = call.arguments[shape.receiver];
+        const list = shape.spread
+            ? call.arguments[shape.receiver + 1] &&
+              this.context.unwrap(call.arguments[shape.receiver + 1]!)
+            : undefined;
+        if (
+            !receiver ||
+            call.arguments.some(ts.isSpreadElement) ||
+            (shape.spread &&
+                list !== undefined &&
+                (!ts.isArrayLiteralExpression(list) ||
+                    list.elements.some(ts.isSpreadElement)))
         )
-            return undefined;
-        const pins = this.context.evaluationOrder.operandsToPin(call.arguments);
-        const values = call.arguments.map((argument, index) => {
-            const value = this.compileValue(argument);
+            return this.context.fail(
+                call,
+                "A dynamic-this function runs on a receiver it is handed with its arguments listed: separately, or as an array literal.",
+            );
+        const operands = [
+            receiver,
+            ...(shape.spread
+                ? list && ts.isArrayLiteralExpression(list)
+                    ? list.elements
+                    : []
+                : call.arguments.slice(1)),
+        ];
+        const pins = this.context.evaluationOrder.operandsToPin(operands);
+        const values = operands.map((operand, index) => {
+            const value = this.compileValue(operand);
             return pins[index]
-                ? pinOperand(this.context, value, argument, "call_argument")
+                ? pinOperand(this.context, value, operand, "call_argument")
                 : value;
         });
-        return this.context.withThis(values[0], () => {
-            return this.context.userFunctions.compileCallbackWithValues(
+        return this.context.withThis(values[0], () =>
+            this.context.userFunctions.compileCallbackWithValues(
                 this.context,
                 target,
                 values.slice(1),
                 call,
+            ),
+        );
+    }
+
+    /**
+     * A library prototype's method run on another receiver
+     * (`Array.prototype.push.call(list, x)`) is not lowered; the method
+     * called on the receiver itself is. `Object.prototype.hasOwnProperty`
+     * has its own lowering.
+     */
+    private refuseBorrowedPrototypeMethod(call: ts.CallExpression): void {
+        const borrowed = borrowedPrototypeMethod(this.context.checker, call);
+        if (
+            !borrowed ||
+            (borrowed.owner === "Object" &&
+                borrowed.method === "hasOwnProperty" &&
+                borrowed.invoke === "call")
+        )
+            return;
+        this.context.fail(
+            call,
+            `${borrowed.owner}.prototype.${borrowed.method}.${borrowed.invoke} borrows a library method for another receiver; call the method on that receiver.`,
+        );
+    }
+
+    /**
+     * `crypto.getRandomValues(array)`: fills an integer typed array with
+     * random bits from the host's entropy source and returns that array.
+     */
+    private compileRandomValues(call: ts.CallExpression): Value | undefined {
+        if (
+            resolvedDomApi(this.context.checker, call) !==
+            CRYPTO_GET_RANDOM_VALUES
+        )
+            return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const argument = argumentAt(call, 0);
+        const array = this.compileValue(argument);
+        const type = array.dataType;
+        if (
+            array.kind !== "data" ||
+            !type ||
+            !isTypedArrayType(type) ||
+            type.kind === "f32array" ||
+            type.kind === "f64array"
+        )
+            return this.context.fail(
+                argument,
+                "crypto.getRandomValues fills an integer typed array.",
             );
+        const filled = this.context.bindings.pinValueToTemporary(
+            array,
+            "random_values",
+            argument,
+        );
+        this.context.reachFeature("data:crypto", call);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::js::fill_random_values(${filled.cpp});`,
         });
+        return filled;
+    }
+
+    /**
+     * `f.bind(thisArg)` on a dynamic-`this` function: the function with
+     * `this` bound to thisArg, read once here. Bound arguments are not
+     * represented.
+     */
+    private compileReceiverBind(
+        call: ts.CallExpression,
+        callee: NamedMember,
+    ): Value | undefined {
+        const target = this.dynamicThisFunction(callee.expression);
+        if (!target) return undefined;
+        if (
+            call.arguments.length !== 1 ||
+            ts.isSpreadElement(call.arguments[0]!)
+        )
+            return this.context.fail(
+                call,
+                "Binding a dynamic-this function takes its receiver alone; bound arguments are not represented.",
+            );
+        if (!this.boundFunctionOnlyCalled(call))
+            return this.context.fail(
+                call,
+                "A function bound to a receiver is called directly or through a const it initializes; one passed or stored is not represented.",
+            );
+        const receiver = this.context.bindings.pinValueToTemporary(
+            this.compileValue(call.arguments[0]!),
+            "bound_receiver",
+            call.arguments[0],
+        );
+        return {
+            kind: "callback",
+            cpp: "",
+            callbackDeclaration: target,
+            callbackThis: receiver,
+        };
+    }
+
+    /**
+     * Whether the function `bind` returns is only called: directly, or
+     * through a `const` it initializes that every use calls. Those calls
+     * run it on its receiver; a callback consumer reads only its body.
+     */
+    private boundFunctionOnlyCalled(bind: ts.CallExpression): boolean {
+        const calls = (use: ts.Expression): boolean => {
+            const position = outermostWrapper(use);
+            return (
+                ts.isCallExpression(position.parent) &&
+                position.parent.expression === position
+            );
+        };
+        if (calls(bind)) return true;
+        const declaration = outermostWrapper(bind).parent;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            variableKind(declaration.parent) !== "const"
+        )
+            return false;
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        let onlyCalled = true;
+        forEachAnalysisNode(declaration.getSourceFile(), (node) => {
+            if (
+                ts.isIdentifier(node) &&
+                node !== declaration.name &&
+                this.context.symbols.valueSymbol(node) === symbol &&
+                !calls(node)
+            )
+                onlyCalled = false;
+        });
+        return onlyCalled;
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */
@@ -6876,17 +7040,15 @@ export class ExpressionLowerer {
     }
 
     private compilePropertyCall(
-        callee: MemberAccess,
+        member: NamedMember,
         call: ts.CallExpression,
     ): Value | undefined {
-        const memberName =
-            staticAccessKey(this.context.checker, callee) ??
-            this.context.fail(callee, "A member call needs a static key.");
-        // The library and engine intrinsics below dispatch on a dotted
-        // name; `o["m"](...)` reaches the program's own methods and records.
-        const dotted = ts.isPropertyAccessExpression(callee)
-            ? callee
-            : undefined;
+        const callee = member.access;
+        const memberName = member.name;
+        if (memberName === "bind") {
+            const bound = this.compileReceiverBind(call, member);
+            if (bound) return bound;
+        }
         if (
             memberName === "bind" &&
             callSignatures(
@@ -6973,17 +7135,15 @@ export class ExpressionLowerer {
         // layers. It is a renderer-owned list rather than the scene's,
         // so the push is recognized here rather than through an
         // intrinsic name.
-        if (
-            memberName === "push" &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "_beforeUpdate"
-        ) {
-            const renderer = this.context.compileValue(
-                callee.expression.expression,
-            );
+        const hooks =
+            memberName === "push"
+                ? namedMember(this.context.checker, callee.expression)
+                : undefined;
+        if (hooks?.name === "_beforeUpdate") {
+            const renderer = this.context.compileValue(hooks.expression);
             if (renderer.kind !== "sprite-renderer") {
                 this.context.fail(
-                    callee.expression.expression,
+                    hooks.expression,
                     "'_beforeUpdate' is the SpriteRenderer's own " +
                         `per-frame hook list; received ${renderer.kind}.`,
                 );
@@ -6998,11 +7158,6 @@ export class ExpressionLowerer {
                     `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
-        }
-        if (memberName === "call") {
-            const receiverCall =
-                dotted && this.compileReceiverCall(call, dotted);
-            if (receiverCall) return receiverCall;
         }
         if (memberName === "call" || memberName === "apply") {
             const functionCall = this.context.probeEmission(() => {
@@ -7127,7 +7282,7 @@ export class ExpressionLowerer {
                 return {
                     kind: "data",
                     cpp: radix
-                        ? `bbl::js::number_to_string_radix(${owner.cpp}, static_cast<int>(${this.context.compileNumber(radix, "double")}))`
+                        ? `bbl::js::number_to_string_radix(${owner.cpp}, ${this.context.compileNumber(radix, "double")})`
                         : `bbl::js::number_to_string(${owner.cpp})`,
                     dataType: { kind: "string" },
                 };
@@ -7299,7 +7454,7 @@ export class ExpressionLowerer {
         if (regexpOwner?.dataType?.kind === "regexp") {
             if (memberName !== "exec" && memberName !== "test") {
                 this.context.fail(
-                    memberKeyNode(callee),
+                    member.key,
                     `RegExp method '${memberName}' is not supported.`,
                 );
             }
@@ -7357,10 +7512,9 @@ export class ExpressionLowerer {
         // three dispatch positions stay exactly where the arms sat so
         // the resolution order a call site observes is unchanged.
         const pushed =
-            dotted &&
             this.context.handleCollections.compileParticleSystemsPush(
                 call,
-                dotted,
+                member,
             );
         if (pushed) return pushed;
         const math = this.context.dataLowerer.compileMathCall(call);
@@ -7377,24 +7531,20 @@ export class ExpressionLowerer {
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
         const found =
-            dotted &&
-            (this.context.handleCollections.compileFind(call, dotted) ??
-                this.context.handleCollections.compileFilter(call, dotted));
+            this.context.handleCollections.compileFind(call, member) ??
+            this.context.handleCollections.compileFilter(call, member);
         if (found) {
             return found;
         }
-        const physics =
-            dotted &&
-            this.context.probeEmission(() =>
-                compilePhysicsMethodCall(this.context, call, dotted),
-            );
+        const physics = this.context.probeEmission(() =>
+            compilePhysicsMethodCall(this.context, call, member),
+        );
         if (physics) return physics;
-        const method =
-            dotted && mayCompileDataMethodCall(this.context.checker, dotted)
-                ? this.context.probeEmission(() =>
-                      this.context.dataLowerer.compileDataMethodCall(call),
-                  )
-                : undefined;
+        const method = mayCompileDataMethodCall(this.context.checker, member)
+            ? this.context.probeEmission(() =>
+                  this.context.dataLowerer.compileDataMethodCall(call),
+              )
+            : undefined;
         if (method) {
             return method;
         }
@@ -7402,28 +7552,26 @@ export class ExpressionLowerer {
         // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
         // Lite is function-shaped and the browser API is not, so the
         // audio family is the one place a handle carries methods.
-        const media =
-            dotted &&
-            compileMediaStreamMethodCall(
-                this.context.dataLowerer,
-                call,
-                dotted,
-            );
+        const media = compileMediaStreamMethodCall(
+            this.context.dataLowerer,
+            call,
+            member,
+        );
         if (media) return media;
-        const audio =
-            dotted && compileAudioMethodCall(this.context, call, dotted);
+        const audio = compileAudioMethodCall(this.context, call, member);
         if (audio) {
             return audio;
         }
         // The second such surface: a VatHandle is a closure bundle
         // upstream, so its playback methods ride the handle too.
-        const vat = dotted && compileVatMethodCall(this.context, call, dotted);
+        const vat = compileVatMethodCall(this.context, call, member);
         if (vat) {
             return vat;
         }
-        const lightPush =
-            dotted &&
-            this.context.handleCollections.compileSceneLightPush(call, dotted);
+        const lightPush = this.context.handleCollections.compileSceneLightPush(
+            call,
+            member,
+        );
         if (lightPush) {
             return lightPush;
         }
@@ -7431,21 +7579,20 @@ export class ExpressionLowerer {
         // grows through its own `push_back`; this one owns the case that
         // arm declines, a compile-time tuple of engine handles.
         const handlePush =
-            dotted &&
-            this.context.handleCollections.compileHandleTuplePush(call, dotted);
+            this.context.handleCollections.compileHandleTuplePush(call, member);
         if (handlePush) {
             return handlePush;
         }
         const staticMethod =
-            dotted && this.context.classLowerer.resolveStaticMethod(dotted);
-        if (staticMethod && dotted) {
+            this.context.classLowerer.resolveStaticMethod(member);
+        if (staticMethod) {
             const factory =
                 this.context.classLowerer.compileNullableResourceFactory(
                     call,
                     staticMethod,
                 );
             if (factory) return factory;
-            return this.context.classLowerer.withStaticReceiver(dotted, () =>
+            return this.context.classLowerer.withStaticReceiver(member, () =>
                 this.context.userFunctions.compileCallbackCall(
                     this.context,
                     call,
@@ -7477,15 +7624,20 @@ export class ExpressionLowerer {
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
-            // A known-absent receiver can occur in a runtime branch even
-            // when its declared type names a class. Read the method with
-            // JavaScript's failure semantics before evaluating arguments;
-            // the declared call result only types that throwing branch.
-            if (instance?.kind === "json-null") {
+            // A known-absent receiver -- a void call's undefined included --
+            // can occur in a runtime branch even when its declared type
+            // names a class. Read the method with JavaScript's failure
+            // semantics before evaluating arguments; the declared call
+            // result only types that throwing branch.
+            if (instance?.kind === "json-null" || instance?.kind === "void") {
                 this.context.emitDiscardedValue(instance);
                 if (callee.questionDotToken) return undefinedValue();
+                const absence =
+                    instance.kind === "void"
+                        ? "undefined"
+                        : absenceOfNull(instance);
                 const message = this.context.cppString(
-                    `Cannot read properties of ${absenceOfNull(instance)} (reading '${memberName}')`,
+                    `Cannot read properties of ${absence} (reading '${memberName}')`,
                 );
                 const type = this.context.dataLowerer.dataTypeAt(call);
                 this.context.reachJsData();

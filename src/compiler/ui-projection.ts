@@ -121,6 +121,10 @@ import {
     declaredInDomLibrary,
     declaredSymbol,
     calledDeclaration,
+    namedMember,
+    type NamedMember,
+    isLibraryStatic,
+    libraryName,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
@@ -141,6 +145,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
+import { stringDomain } from "./string-domain.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
     dataTypeMayHoldUiElement,
@@ -182,12 +187,31 @@ type UiMarkupPart =
     | string
     | { kind: "text"; expression: ts.Expression }
     | { kind: "stored"; expression: ts.Expression; shape: UiMarkupShape }
+    | UiMarkupBranching;
+
+/** A condition's two continuations, or a runtime text equal to one of closed authored texts. */
+type UiMarkupBranching =
     | {
           kind: "choice";
           condition: ts.Expression;
           yes: UiMarkupPart[];
           no: UiMarkupPart[];
+      }
+    | {
+          kind: "selected";
+          expression: ts.Expression;
+          alternatives: readonly string[];
       };
+
+/** The closed markups each part of one innerHTML value holds, read once per lowering. */
+type UiMarkupDomains = Map<ts.Node, readonly string[] | undefined>;
+
+/** The parts each branch of `part` continues with. */
+function uiMarkupBranches(part: UiMarkupBranching): UiMarkupPart[][] {
+    return part.kind === "choice"
+        ? [part.yes, part.no]
+        : part.alternatives.map((alternative) => [alternative]);
+}
 
 /** The placeholder a runtime value takes in a markup source, by its order. */
 function uiMarkupHole(index: number): string {
@@ -221,21 +245,17 @@ function uiMarkupSources(
                       part.shape.slice(hole + 1).join("");
         } else {
             const rest = parts.slice(index + 1);
-            const yes = uiMarkupSources(
-                [...part.yes, ...rest],
-                limit,
-                source,
-                next,
-            );
-            return [
-                ...yes,
-                ...uiMarkupSources(
-                    [...part.no, ...rest],
-                    limit - yes.length,
-                    source,
-                    next,
-                ),
-            ].slice(0, Math.max(limit, 0));
+            const sources: string[] = [];
+            for (const branch of uiMarkupBranches(part))
+                sources.push(
+                    ...uiMarkupSources(
+                        [...branch, ...rest],
+                        limit - sources.length,
+                        source,
+                        next,
+                    ),
+                );
+            return sources.slice(0, Math.max(limit, 0));
         }
     }
     return limit > 0 ? [source] : [];
@@ -705,14 +725,15 @@ export class UiProjection {
                         ? tracked.staticId
                         : undefined;
                 const lookupId = element.uiHostId ?? element.uiLookupId;
-                const canvas =
-                    lookupId !== undefined && !element.uiCanvas
-                        ? this.hostCanvas(
-                              lookupId,
-                              element.uiTag ?? uiTag,
-                              expression,
-                          )
-                        : {};
+                const canvas = element.uiCanvas
+                    ? {}
+                    : lookupId !== undefined
+                      ? this.hostCanvas(
+                            lookupId,
+                            element.uiTag ?? uiTag,
+                            expression,
+                        )
+                      : this.storedCanvasRole(element, expression);
                 return uiTag === undefined &&
                     uiStaticId === undefined &&
                     !canvas.uiCanvas
@@ -830,20 +851,17 @@ export class UiProjection {
             );
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getContext"
-            ) {
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            if (callee?.name === "getContext") {
                 const canvas = this.uiElementValue(callee.expression);
                 if (canvas?.uiCanvas) {
                     return { ...canvas, uiCanvasContext: true };
                 }
             }
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                this.isUiElementLookup(owner, callee)
-            ) {
+            if (callee && this.isUiElementLookup(owner, callee)) {
                 const value = this.context.compilePlatformCall(owner);
                 return asElement(
                     value?.kind === "data" &&
@@ -1042,10 +1060,10 @@ export class UiProjection {
             if (writeSites(node).some(({ target }) => writesKey(target)))
                 return true;
             if (ts.isCallExpression(node)) {
-                const callee = this.context.unwrap(node.expression);
-                const name = ts.isPropertyAccessExpression(callee)
-                    ? callee.name.text
-                    : undefined;
+                const name = namedMember(
+                    this.context.checker,
+                    this.context.unwrap(node.expression),
+                )?.name;
                 const first = node.arguments[0]
                     ? this.context.unwrap(node.arguments[0])
                     : undefined;
@@ -1176,9 +1194,12 @@ export class UiProjection {
                 : undefined;
         }
         if (ts.isCallExpression(owner)) {
-            const callee = this.context.unwrap(owner.expression);
-            return ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "getContext" ||
+            const callee = namedMember(
+                this.context.checker,
+                this.context.unwrap(owner.expression),
+            );
+            return callee &&
+                (callee.name === "getContext" ||
                     this.isUiElementLookup(owner, callee))
                 ? "lower"
                 : undefined;
@@ -1189,14 +1210,11 @@ export class UiProjection {
     /** A call `uiElementValue` lowers through the platform call: a query, a closest ancestor, a host lookup. */
     private isUiElementLookup(
         call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
+        callee: NamedMember,
     ): boolean {
         if (isDocumentReceiver(this.context, callee.expression))
             return this.isNativeHostUiLookup(call);
-        return (
-            callee.name.text === "querySelector" ||
-            callee.name.text === "closest"
-        );
+        return callee.name === "querySelector" || callee.name === "closest";
     }
 
     /** `uiElementMetadata` by lowering the expression in a declined probe. */
@@ -1211,6 +1229,29 @@ export class UiProjection {
             return undefined;
         });
         return metadata;
+    }
+
+    /**
+     * Storage keeps an element handle, not its canvas role: a 2D context is
+     * its canvas's handle, and a stored canvas is a retained one, as the
+     * declared interface says.
+     */
+    private storedCanvasRole(
+        element: Value<"ui-element">,
+        expression: ts.Expression,
+    ): Pick<Value, "uiCanvas" | "uiCanvasContext"> {
+        const type = element.dataType;
+        if (type?.kind !== "handle" || type.handle !== "ui-element") return {};
+        const declared = libraryName(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression),
+            ),
+        );
+        if (declared === "CanvasRenderingContext2D")
+            return { uiCanvas: true, uiCanvasContext: true };
+        return declared === "HTMLCanvasElement" && type.ownedEngine
+            ? { uiCanvas: true }
+            : {};
     }
 
     /** A browser value naming the primary canvas, which a presentation host lowers to its element. */
@@ -1272,8 +1313,8 @@ export class UiProjection {
     ): ts.CallExpression | undefined {
         const initializer = this.context.unwrap(expression);
         return ts.isCallExpression(initializer) &&
-            ts.isPropertyAccessExpression(initializer.expression) &&
-            initializer.expression.name.text === "createElement" &&
+            namedMember(this.context.checker, initializer.expression)?.name ===
+                "createElement" &&
             initializer.arguments.length === 1
             ? initializer
             : undefined;
@@ -1313,12 +1354,15 @@ export class UiProjection {
         if (this.uiElementMetadata(value) !== undefined) {
             return true;
         }
-        const callee = this.context.unwrap(value.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(value.expression),
+        );
         const createsElement =
-            ts.isPropertyAccessExpression(callee) &&
-            (callee.name.text === "createElement" ||
-                callee.name.text === "createElementNS" ||
-                callee.name.text === "createTextNode") &&
+            callee !== undefined &&
+            (callee.name === "createElement" ||
+                callee.name === "createElementNS" ||
+                callee.name === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
             ts.isStringLiteralLike(value.arguments[0]);
@@ -4326,11 +4370,12 @@ export class UiProjection {
                 node.left.name.text === "innerHTML"
             ) {
                 try {
-                    const form = this.uiMarkupForm(node.right);
+                    const domains: UiMarkupDomains = new Map();
+                    const form = this.uiMarkupForm(node.right, domains);
                     candidates.push(
                         ...(form.kind === "structured"
                             ? uiMarkupSources(
-                                  this.uiMarkupParts(node.right),
+                                  this.uiMarkupParts(node.right, domains),
                                   UiProjection.UI_MARKUP_ALTERNATIVES + 1,
                               )
                             : [form.source]),
@@ -4846,6 +4891,7 @@ export class UiProjection {
      */
     private uiMarkupForm(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
     ):
         | { kind: "static"; source: string }
         | { kind: "flat"; source: string; substitutions: ts.Expression[] }
@@ -4863,7 +4909,8 @@ export class UiProjection {
                 (part) =>
                     typeof part !== "string" &&
                     (ts.isConditionalExpression(this.context.unwrap(part)) ||
-                        this.uiStoredMarkupShape(part)),
+                        this.uiStoredMarkupShape(part) ||
+                        this.uiMarkupAlternatives(part, domains)),
             )
         )
             return { kind: "structured" };
@@ -4884,13 +4931,14 @@ export class UiProjection {
         expression: ts.Expression,
         ownerId?: number,
     ): string {
-        const form = this.uiMarkupForm(expression);
+        const domains: UiMarkupDomains = new Map();
+        const form = this.uiMarkupForm(expression, domains);
         if (form.kind === "static")
             return this.context.cppString(
                 this.lowerUiMarkupLiteral(form.source, expression, ownerId),
             );
         if (form.kind === "structured")
-            return this.compileUiStructuredMarkup(expression, ownerId);
+            return this.compileUiStructuredMarkup(expression, domains, ownerId);
         const { source, substitutions } = form;
         const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         this.context.reachJsData();
@@ -5028,8 +5076,28 @@ export class UiProjection {
             : undefined;
     }
 
-    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup and choices. */
-    private uiMarkupParts(source: ts.Expression): UiMarkupPart[] {
+    /** The closed authored markups a runtime text holds one of (its closed string domain). */
+    private uiMarkupAlternatives(
+        expression: ts.Expression,
+        domains: UiMarkupDomains,
+    ): readonly string[] | undefined {
+        const node = this.context.unwrap(expression);
+        if (domains.has(node)) return domains.get(node);
+        const texts = stringDomain(this.context, node, {
+            label: "Native UI innerHTML markup",
+        });
+        const alternatives = texts?.some((text) => /[<>]/.test(text))
+            ? texts
+            : undefined;
+        domains.set(node, alternatives);
+        return alternatives;
+    }
+
+    /** The closed markup parts of an innerHTML source: text, runtime text, stored markup, choices and selections. */
+    private uiMarkupParts(
+        source: ts.Expression,
+        domains: UiMarkupDomains,
+    ): UiMarkupPart[] {
         const exact = this.tryUiStaticString(source);
         if (exact !== undefined) return [exact];
         const node = this.context.unwrap(source);
@@ -5037,7 +5105,7 @@ export class UiProjection {
             return [
                 node.head.text,
                 ...node.templateSpans.flatMap((span) => [
-                    ...this.uiMarkupParts(span.expression),
+                    ...this.uiMarkupParts(span.expression, domains),
                     span.literal.text,
                 ]),
             ];
@@ -5048,16 +5116,16 @@ export class UiProjection {
                 "string"
         )
             return [
-                ...this.uiMarkupParts(node.left),
-                ...this.uiMarkupParts(node.right),
+                ...this.uiMarkupParts(node.left, domains),
+                ...this.uiMarkupParts(node.right, domains),
             ];
         if (ts.isConditionalExpression(node))
             return [
                 {
                     kind: "choice",
                     condition: node.condition,
-                    yes: this.uiMarkupParts(node.whenTrue),
-                    no: this.uiMarkupParts(node.whenFalse),
+                    yes: this.uiMarkupParts(node.whenTrue, domains),
+                    no: this.uiMarkupParts(node.whenFalse, domains),
                 },
             ];
         const shape = this.uiStoredMarkupShape(node);
@@ -5069,15 +5137,19 @@ export class UiProjection {
                 );
             return [{ kind: "stored", expression: source, shape }];
         }
+        const alternatives = this.uiMarkupAlternatives(node, domains);
+        if (alternatives)
+            return [{ kind: "selected", expression: source, alternatives }];
         return [{ kind: "text", expression: source }];
     }
 
     /** Closed structure is parsed after branches are selected; runtime text remains escaped. */
     private compileUiStructuredMarkup(
         expression: ts.Expression,
+        domains: UiMarkupDomains,
         ownerId?: number,
     ): string {
-        const sourceParts = this.uiMarkupParts(expression);
+        const sourceParts = this.uiMarkupParts(expression, domains);
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&
@@ -5090,7 +5162,11 @@ export class UiProjection {
         let remaining = UiProjection.UI_MARKUP_ALTERNATIVES;
         const hasChoices = (parts: readonly UiMarkupPart[]): boolean =>
             parts.some(
-                (part) => typeof part !== "string" && part.kind === "choice",
+                (part) =>
+                    typeof part !== "string" &&
+                    (part.kind === "choice" ||
+                        (part.kind === "selected" &&
+                            part.alternatives.length > 1)),
             );
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
@@ -5135,36 +5211,71 @@ export class UiProjection {
                         source += after;
                     }
                 } else {
-                    const condition = this.context.conditions.compileCondition(
-                        part.condition,
-                    );
-                    if (knownCondition(condition) !== undefined)
-                        return emit(
-                            [
-                                ...(knownCondition(condition) === true
-                                    ? part.yes
-                                    : part.no),
-                                ...pending.slice(index + 1),
-                            ],
-                            source,
-                            values,
-                        );
-                    const branch = (parts: UiMarkupPart[]): string => {
+                    const continued = (
+                        parts: readonly UiMarkupPart[],
+                    ): UiMarkupPart[] => [
+                        ...parts,
+                        ...pending.slice(index + 1),
+                    ];
+                    const branch = (parts: readonly UiMarkupPart[]): string => {
                         let result = "";
                         const lines = this.context.captureEmittedLines(() => {
                             this.context.enterRuntimeControlFlow();
                             try {
-                                result = emit(
-                                    [...parts, ...pending.slice(index + 1)],
-                                    source,
-                                    values,
-                                );
+                                result = emit(continued(parts), source, values);
                             } finally {
                                 this.context.leaveRuntimeControlFlow();
                             }
                         });
                         return `${lines.join("\n")}\nreturn ${result};`;
                     };
+                    if (part.kind === "selected") {
+                        const value = this.context.bindings.pinValueToTemporary(
+                            this.context.compileValue(part.expression),
+                            "markup_text",
+                            part.expression,
+                        );
+                        const { alternatives } = part;
+                        if (value.staticString !== undefined)
+                            return emit(
+                                continued([value.staticString]),
+                                source,
+                                values,
+                            );
+                        if (alternatives.length === 1)
+                            return emit(
+                                continued(alternatives),
+                                source,
+                                values,
+                            );
+                        const text = this.uiTemplateValueCpp(
+                            value,
+                            part.expression,
+                            "Native UI innerHTML",
+                        );
+                        // The text is one of the alternatives: the last needs no test.
+                        const tests = alternatives
+                            .slice(0, -1)
+                            .map(
+                                (alternative) =>
+                                    `if (${text} == ${this.context.cppString(alternative)}) {\n${branch([alternative])}\n}\n`,
+                            )
+                            .join("");
+                        return `([&]() -> std::string { ${tests}{\n${branch([alternatives.at(-1)!])}\n} }())`;
+                    }
+                    const condition = this.context.conditions.compileCondition(
+                        part.condition,
+                    );
+                    if (knownCondition(condition) !== undefined)
+                        return emit(
+                            continued(
+                                knownCondition(condition) === true
+                                    ? part.yes
+                                    : part.no,
+                            ),
+                            source,
+                            values,
+                        );
                     return `([&]() -> std::string { if (${condition}) {\n${branch(part.yes)}\n} else {\n${branch(part.no)}\n} }())`;
                 }
             }
@@ -6419,13 +6530,16 @@ export class UiProjection {
 
     /** Checked Document queries reach their retained owner, activating a Window realm when needed. */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         if (
-            !ts.isPropertyAccessExpression(callee) ||
+            !callee ||
             !(
-                callee.name.text === "getElementById" ||
-                callee.name.text === "querySelector" ||
-                callee.name.text === "querySelectorAll"
+                callee.name === "getElementById" ||
+                callee.name === "querySelector" ||
+                callee.name === "querySelectorAll"
             ) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
@@ -6458,15 +6572,18 @@ export class UiProjection {
      * string.
      */
     public lookupElementId(call: ts.CallExpression): string | undefined {
-        const callee = this.context.unwrap(call.expression);
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
         const argument = this.context.unwrap(argumentAt(call, 0));
         const text = ts.isStringLiteralLike(argument)
             ? argument.text
             : ts.isIdentifier(argument)
               ? this.context.bindings.lookupOptional(argument)?.staticString
               : undefined;
-        return ts.isPropertyAccessExpression(callee) && text !== undefined
-            ? documentLookupId(callee.name.text, text)
+        return callee && text !== undefined
+            ? documentLookupId(callee.name, text)
             : undefined;
     }
 
@@ -6496,11 +6613,13 @@ export class UiProjection {
                     reached = true;
                     return;
                 }
-                const callee = this.context.unwrap(node.expression);
                 if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.name.text === "createElement" &&
-                    this.context.libraryGlobal(callee.expression) === "document"
+                    isLibraryStatic(
+                        this.context.checker,
+                        this.context.unwrap(node.expression),
+                        "document",
+                        "createElement",
+                    )
                 ) {
                     const tag = node.arguments[0];
                     if (

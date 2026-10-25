@@ -184,7 +184,7 @@ struct EngineOptions {
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */
-struct PlatformKeyboardEvent {
+struct PlatformKeyboardEvent : PlatformEventFlags {
     std::string code{};
     std::string key{};
     bool repeat = false;
@@ -192,54 +192,24 @@ struct PlatformKeyboardEvent {
     bool ctrl_key = false;
     bool alt_key = false;
     bool meta_key = false;
-    mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom{};
-
-    void prevent_default() const noexcept {
-        if (dom && !dom->can_prevent_default())
-            return;
-        default_prevented = true;
-    }
-    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
-    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
-struct PlatformStorageEvent {
+struct PlatformStorageEvent : PlatformEventFlags {
     std::optional<std::string> key{}, old_value{}, new_value{};
     std::string url{};
     bool has_storage_area = true;
-    mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom{};
-
-    void prevent_default() const noexcept {
-        if (dom && !dom->can_prevent_default())
-            return;
-        default_prevented = true;
-    }
-    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
-    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /** The end of a CSS transition on a retained element. */
-struct PlatformTransitionEvent {
+struct PlatformTransitionEvent : PlatformEventFlags {
     std::string property_name{};
-    mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom{};
-
-    void prevent_default() const noexcept {
-        if (dom && !dom->can_prevent_default())
-            return;
-        default_prevented = true;
-    }
-    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
-    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
 enum class DomInputEventKind { Event, Mouse, Pointer, Input };
 
-struct PlatformMouseEvent {
+struct PlatformMouseEvent : PlatformEventFlags {
     double button = 0.0;
     double buttons = 0.0;
     double client_x = 0.0;
@@ -247,8 +217,6 @@ struct PlatformMouseEvent {
     double movement_x = 0.0;
     double movement_y = 0.0;
     double delta_y = 0.0;
-    mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom{};
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;
@@ -283,19 +251,6 @@ struct PlatformMouseEvent {
             throw std::runtime_error("The event does not have an input payload.");
         return *this;
     }
-
-    void prevent_default() const noexcept {
-        if (dom && !dom->can_prevent_default())
-            return;
-        default_prevented = true;
-        if (dom)
-            dom->default_prevented = true;
-    }
-    [[nodiscard]] bool is_default_prevented() const noexcept {
-        return default_prevented || (dom && dom->default_prevented);
-    }
-    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
-    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /**
@@ -347,7 +302,7 @@ struct DroppedFiles {
 };
 
 /** A file drag over the window: dragenter, dragover, dragleave or drop. */
-struct PlatformDragEvent {
+struct PlatformDragEvent : PlatformEventFlags {
     double client_x = 0.0;
     double client_y = 0.0;
     /** The drop's files; empty while dragging, as a browser withholds them before the drop. */
@@ -356,16 +311,6 @@ struct PlatformDragEvent {
     mutable BrowserFileHandle first_file{};
     /** Dragover cancellation crosses the Window realm mailbox back to the display. */
     std::shared_ptr<std::atomic<bool>> acceptance{};
-    mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom{};
-
-    void prevent_default() const noexcept {
-        if (dom && !dom->can_prevent_default())
-            return;
-        default_prevented = true;
-    }
-    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
-    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /**
@@ -486,6 +431,12 @@ struct GamepadButtonHandle {
     std::uint32_t index = invalid_handle;
 
     [[nodiscard]] bool operator==(const GamepadButtonHandle&) const = default;
+};
+
+/** A gamepad the Window announces as connected or disconnected. */
+struct GamepadConnection {
+    GamepadHandle gamepad{};
+    bool connected = false;
 };
 
 struct PlatformGamepadState;
@@ -7713,6 +7664,12 @@ GpuPickerHandle create_gpu_picker(Scene& scene);
 [[nodiscard]] std::string picked_node_name(const PickingInfo& info);
 /** A picked scene node asserted to the pinned `Mesh` type. */
 [[nodiscard]] MeshHandle picked_mesh(const PickingInfo& info);
+/** The same mesh as a handle of `engine`, which must be the pick's own engine. */
+[[nodiscard]] inline MeshHandle picked_mesh(const PickingInfo& info, const Engine& engine) {
+    if (&picking_engine(info) != &engine)
+        throw std::runtime_error("A picked mesh belongs to another engine than its handle names.");
+    return picked_mesh(info);
+}
 /** The basic pick's nullable world point in the plain-data model. */
 [[nodiscard]] js::Nullable<js::Tuple<3>> picked_point(const PickingInfo& info);
 /** Populate basic picking's world-space `pickedPoint` from its depth lane. */

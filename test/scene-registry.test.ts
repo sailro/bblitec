@@ -479,6 +479,12 @@ test("registers unique generated scene targets", () => {
         getScene("quake").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "211",
     );
+    // A Window realm captures the engine frame the golden freezes.
+    assert.equal(
+        getScene("quake").parity?.nativeEnvironment
+            ?.BBLITE_CAPTURE_ENGINE_FRAMES,
+        "1",
+    );
     assert.equal(getScene("quake").parity?.maxFullMad, 0.1);
     assert.equal(getScene("quake").parity?.maxForegroundMad, 0.1);
     assert.equal(
@@ -543,8 +549,13 @@ test("fixed browser poses use engine frames independently of Window repaint cade
             parity.referenceFrame + (parity.nativeFrameOffset ?? 0),
         );
         assert.equal(
-            parity.nativeEnvironment?.BBLITE_CAPTURE_ENGINE_FRAME,
+            parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
             expected,
+            scene.id,
+        );
+        assert.equal(
+            parity.nativeEnvironment?.BBLITE_CAPTURE_ENGINE_FRAMES,
+            "1",
             scene.id,
         );
     }
@@ -603,7 +614,7 @@ test("derives defaults for an unregistered scene source", () => {
         assert.deepEqual(scene.parity?.nativeEnvironment, {
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
             BBLITE_SCREENSHOT_FRAME: "181",
-            BBLITE_CAPTURE_ENGINE_FRAME: "181",
+            BBLITE_CAPTURE_ENGINE_FRAMES: "1",
         });
     } finally {
         rmSync(source, { force: true });

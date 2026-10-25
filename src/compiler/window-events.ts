@@ -5,6 +5,7 @@ import type { Value } from "./types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { RuntimeSearchParamsRequired } from "./search-params.js";
 import { deploymentUrl } from "./deployment.js";
+import { libraryStaticMember, isLibraryStatic } from "./symbols.js";
 
 type WindowContext = Pick<
     LoweringServices,
@@ -93,12 +94,11 @@ export function compileWindowServiceCall(
     hostFunction?: Value["hostFunction"],
 ): Value | undefined {
     const context = lowerer.context;
-    const callee = context.unwrap(call.expression);
-    if (
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "assign" &&
-        context.libraryGlobal(callee.expression) === "location"
-    ) {
+    const callee = libraryStaticMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (callee?.owner === "location" && callee.name === "assign") {
         if (!context.options.workers)
             context.fail(
                 call,
@@ -116,11 +116,7 @@ export function compileWindowServiceCall(
             cpp: `bbl::pal::window_location_assign(${target}, ${runtimeLocationHrefCpp(context)})`,
         };
     }
-    if (
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "reload" &&
-        context.libraryGlobal(callee.expression) === "location"
-    ) {
+    if (callee?.owner === "location" && callee.name === "reload") {
         if (!context.options.workers)
             context.fail(
                 call,
@@ -387,7 +383,7 @@ export function documentHiddenCpp(
 
 /** The element a `getComputedStyle(element)` or `window.getComputedStyle(element)` call reads. */
 export function computedStyleElement(
-    context: Pick<LoweringServices, "unwrap" | "libraryGlobal">,
+    context: Pick<LoweringServices, "unwrap" | "libraryGlobal" | "checker">,
     expression: ts.Expression,
 ): ts.Expression | undefined {
     const call = context.unwrap(expression);
@@ -396,8 +392,6 @@ export function computedStyleElement(
     const callee = context.unwrap(call.expression);
     const global =
         context.libraryGlobal(callee) === "getComputedStyle" ||
-        (ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "getComputedStyle" &&
-            context.libraryGlobal(callee.expression) === "window");
+        isLibraryStatic(context.checker, callee, "window", "getComputedStyle");
     return global ? call.arguments[0] : undefined;
 }

@@ -1,9 +1,12 @@
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { soleBindingName, sameSource } from "../compiler/syntax.js";
+import { soleBindingName } from "../compiler/syntax.js";
 
 const modulePath = "src/mesh/hierarchy-instance-pool.ts";
 
@@ -16,11 +19,33 @@ export function lowerHierarchyInstanceOperations(
         type: PinnedBinding["type"] = "opaque",
     ): PinnedBinding => ({ cpp, type });
     const mesh = recordAt("engine.meshes", "binding.mesh");
-    const members = new Map<string, PinnedBinding>([
+    const members: ReadonlyMap<string, PinnedBinding> = new Map<
+        string,
+        PinnedBinding
+    >([
         ["pool", binding("pool")],
         ["pool.count", binding("pool.count", "scalar")],
         ["pool.capacity", binding("pool.capacity", "scalar")],
-        ["pool._bindings", binding("pool.bindings")],
+        // Each pooled binding reads through the `binding` rows below.
+        [
+            "pool._bindings",
+            collectionBinding(
+                "pool.bindings",
+                (element): Map<string, PinnedBinding> =>
+                    new Map(
+                        [...members]
+                            .filter(
+                                ([name]) =>
+                                    name === "binding" ||
+                                    name.startsWith("binding."),
+                            )
+                            .map(([name, value]) => [
+                                name.replace(/^binding/, element),
+                                value,
+                            ]),
+                    ),
+            ),
+        ],
         ["pool._scratch", binding("pool.scratch", "f32")],
         ["binding", binding("binding")],
         ["binding.matrices", binding("binding.matrices", "f32")],
@@ -123,24 +148,6 @@ export function lowerHierarchyInstanceOperations(
                 calls,
                 returnValue: (node, lowerer) =>
                     node ? lowerer.expression(node) : "",
-                forOf: (iterated, element) =>
-                    sameSource(iterated, "pool._bindings")
-                        ? {
-                              range: "pool.bindings",
-                              bindings: new Map(
-                                  [...members]
-                                      .filter(
-                                          ([name]) =>
-                                              name === "binding" ||
-                                              name.startsWith("binding."),
-                                      )
-                                      .map(([name, value]) => [
-                                          name.replace(/^binding/, element),
-                                          value,
-                                      ]),
-                              ),
-                          }
-                        : undefined,
             },
         );
     };

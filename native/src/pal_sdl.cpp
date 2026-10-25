@@ -30,8 +30,12 @@
 #include <string>
 #include <array>
 #include <cmath>
+#include <mutex>
+#include <optional>
+#include <vector>
 
 #include <SDL3/SDL.h>
+#include "pal_gamepads.hpp"
 #include "pal_window.hpp"
 #include "pal_gpu_dispatch.hpp"
 #include "pal_sdl_application.hpp"
@@ -58,6 +62,22 @@ struct PlatformGamepadState {
 };
 
 namespace {
+
+/**
+ * The Window's gamepads (W3C Gamepad `navigator.[[gamepads]]`): each slot's
+ * SDL instance, kept from SDL's device events and hidden until a gamepad user
+ * gesture. The thread that polls SDL writes them; a realm reads them.
+ */
+struct WindowGamepads {
+    std::mutex mutex;
+    std::vector<std::optional<std::uint32_t>> slots;
+    bool exposed = false;
+};
+
+WindowGamepads& window_gamepads() {
+    static WindowGamepads gamepads;
+    return gamepads;
+}
 
 PlatformGamepadState& gamepad_state(Engine& engine) {
     if (!engine.platform_gamepad_state) {
@@ -123,53 +143,98 @@ SDL_GamepadButton standard_gamepad_button(std::uint32_t index) {
     }
 }
 
+/** The standard mapping's buttons; the triggers are its buttons 6 and 7. */
+bool is_standard_gamepad_button(SDL_GamepadButton button) {
+    for (std::uint32_t index = 0; index <= 16; ++index)
+        if (button != SDL_GAMEPAD_BUTTON_INVALID && standard_gamepad_button(index) == button)
+            return true;
+    return false;
+}
+
+/** A gamepad user gesture: a standard button or trigger pressed, or a stick past half its travel. */
+bool is_gamepad_gesture(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        return is_standard_gamepad_button(static_cast<SDL_GamepadButton>(event.gbutton.button));
+    if (event.type != SDL_EVENT_GAMEPAD_AXIS_MOTION)
+        return false;
+    const auto axis = static_cast<SDL_GamepadAxis>(event.gaxis.axis);
+    if (axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+        return event.gaxis.value > 0;
+    return std::abs(static_cast<double>(event.gaxis.value) / 32767.0) > 0.5;
+}
+
+std::uint32_t gamepad_event_instance(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
+        return static_cast<std::uint32_t>(event.gbutton.which);
+    if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION)
+        return static_cast<std::uint32_t>(event.gaxis.which);
+    return static_cast<std::uint32_t>(event.gdevice.which);
+}
+
 } // namespace
 
+std::vector<GamepadConnection> apply_gamepad_event(const SDL_Event& event) {
+    auto& gamepads = window_gamepads();
+    const std::lock_guard lock(gamepads.mutex);
+    auto& slots = gamepads.slots;
+    const std::uint32_t instance = gamepad_event_instance(event);
+    const auto found = std::ranges::find(slots, std::optional{instance});
+    const auto announce = [&](std::size_t index, bool connected) {
+        return GamepadConnection{GamepadHandle{*slots[index], static_cast<std::uint32_t>(index)},
+                                 connected};
+    };
+    std::vector<GamepadConnection> connections;
+    if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+        if (found != slots.end() || !opened_gamepad({instance, invalid_handle}))
+            return connections;
+        auto free = std::ranges::find(slots, std::optional<std::uint32_t>{});
+        if (free == slots.end())
+            free = slots.emplace(slots.end());
+        *free = instance;
+        if (gamepads.exposed)
+            connections.push_back(
+                announce(static_cast<std::size_t>(std::distance(slots.begin(), free)), true));
+    } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+        if (found == slots.end())
+            return connections;
+        if (gamepads.exposed)
+            connections.push_back(
+                announce(static_cast<std::size_t>(std::distance(slots.begin(), found)), false));
+        found->reset();
+        while (!slots.empty() && !slots.back())
+            slots.pop_back();
+    } else if (!gamepads.exposed && found != slots.end() && is_gamepad_gesture(event)) {
+        // The first gesture exposes every connected pad, in slot order.
+        gamepads.exposed = true;
+        for (std::size_t index = 0; index < slots.size(); ++index)
+            if (slots[index])
+                connections.push_back(announce(index, true));
+    }
+    return connections;
+}
+
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine) {
-    int count = 0;
-    SDL_JoystickID* ids = SDL_GetGamepads(&count);
-    std::vector<std::uint32_t> connected;
-    connected.reserve(static_cast<std::size_t>(std::max(0, count)));
-    for (int index = 0; index < count; ++index) {
-        const std::uint32_t instance_id = static_cast<std::uint32_t>(ids[index]);
-        if (opened_gamepad({instance_id, invalid_handle})) {
-            connected.push_back(instance_id);
-        }
+    std::vector<std::optional<std::uint32_t>> slots;
+    {
+        auto& gamepads = window_gamepads();
+        const std::lock_guard lock(gamepads.mutex);
+        slots = gamepads.slots;
+        // Hidden pads read as empty slots.
+        if (!gamepads.exposed)
+            std::ranges::fill(slots, std::nullopt);
     }
-    SDL_free(ids);
-
     PlatformGamepadState& state = gamepad_state(engine);
-    for (auto& entry : state.slots) {
-        if (entry && std::find(connected.begin(), connected.end(), entry->handle.instance_id) ==
-                         connected.end()) {
-            entry.reset();
-        }
-    }
-    for (const std::uint32_t instance_id : connected) {
-        const auto existing =
-            std::find_if(state.slots.begin(), state.slots.end(), [instance_id](const auto& entry) {
-                return entry && entry->handle.instance_id == instance_id;
-            });
-        if (existing != state.slots.end())
+    state.slots.resize(slots.size());
+    js::Array<js::Nullable<GamepadHandle>> result(slots.size());
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        auto& cached = state.slots[index];
+        if (!slots[index]) {
+            cached.reset();
             continue;
-        auto available = std::find_if(state.slots.begin(), state.slots.end(),
-                                      [](const auto& entry) { return !entry; });
-        if (available == state.slots.end()) {
-            state.slots.emplace_back();
-            available = std::prev(state.slots.end());
         }
-        const std::uint32_t stable_index =
-            static_cast<std::uint32_t>(std::distance(state.slots.begin(), available));
-        available->emplace(GamepadHandle{instance_id, stable_index});
-    }
-    while (!state.slots.empty() && !state.slots.back()) {
-        state.slots.pop_back();
-    }
-
-    js::Array<js::Nullable<GamepadHandle>> result(state.slots.size());
-    for (std::size_t index = 0; index < state.slots.size(); ++index) {
-        if (const auto& slot = state.slots[index])
-            result[index] = slot->handle;
+        if (!cached || cached->handle.instance_id != *slots[index])
+            cached.emplace(GamepadHandle{*slots[index], static_cast<std::uint32_t>(index)});
+        result[index] = cached->handle;
     }
     return result;
 }
@@ -286,7 +351,7 @@ void settle_renderer_failure(Engine& engine, const std::exception& error) {
 }
 #endif
 
-#if !BBLITE_WORKERS
+/** The backend's driver for `kind`, presenting to its window or an application realm's endpoint. */
 pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
     pal::SceneRun (*context)(Engine&) = nullptr;
     switch (kind) {
@@ -309,7 +374,8 @@ pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBack
         refuse_uncompiled_renderer(kind, backend);
     return context(engine);
 }
-#else
+
+#if BBLITE_WORKERS
 /** Rejects the first-frame promise, or reports a later failure as the realm's uncaught error. */
 void deliver_realm_frame_failure(js::Promise<js::PromiseVoid>& ready, std::exception_ptr failure) {
     if (ready.pending())
@@ -323,14 +389,15 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
     try {
         for (;;) {
             const auto kind = renderer_kind(*engine);
-            if (kind != RendererKind::scene)
-                throw std::runtime_error(std::string(renderer_name(kind)) +
-                                         " does not yet support realm animation tasks.");
+            // The engine holds a registered FrameGraphContext by address, and
+            // the realm entry that declares it returns at the first frame.
+            if (kind == RendererKind::frame_graph)
+                throw std::runtime_error(
+                    "A frame graph does not yet support realm animation tasks: the engine holds "
+                    "its registered FrameGraphContext by address, past the realm entry's return.");
             engine->renderer_restart_requested = false;
             const pal::GpuBackend& backend = pal::selected_gpu_backend();
-            if (!backend.run_scene)
-                refuse_uncompiled_renderer(kind, backend);
-            auto driver = backend.run_scene(*engine);
+            auto driver = run_renderer(*engine, kind, backend);
             driver.ready().observe(
                 [ready](const js::PromiseVoid&) { ready.resolve(js::PromiseVoid{}); },
                 [](std::exception_ptr) {}); // The finished result owns the error path below.
@@ -378,16 +445,11 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
 #endif
     for (;;) {
         const RendererKind kind = renderer_kind(engine);
-        if (pal::OffscreenRun::current()) {
-            if (kind != RendererKind::scene) {
-                throw std::runtime_error(
-                    "Offscreen presentation currently supports scene renderers only.");
-            }
 #if BBLITE_HAS_UI
+        if (pal::OffscreenRun::current())
             throw std::runtime_error(
                 "Offscreen presentation does not yet support a retained UI runtime.");
 #endif
-        }
         engine.renderer_restart_requested = false;
         try {
             auto renderer = run_renderer(engine, kind, pal::selected_gpu_backend());
@@ -462,8 +524,10 @@ js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> eng
     if (engine->device_disposed)
         throw std::runtime_error("Cannot start an engine with a disposed GPU device.");
     const auto options = read_frame_options();
+    // The capture clock holds until the engine's first rendered frame.
     if (options.frame_delta_ms > 0)
-        pal::EventLoop::current().use_fixed_animation_time(options.frame_delta_ms);
+        pal::EventLoop::current().use_fixed_animation_time(options.frame_delta_ms,
+                                                           /*held=*/true);
     engine->stopped = false;
     js::Promise<js::PromiseVoid> ready;
     run_realm_frames(std::move(engine), ready);

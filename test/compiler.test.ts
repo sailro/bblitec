@@ -5394,7 +5394,10 @@ test("narrows guarded optional strings before trim", () => {
             if (!value) return "";
             return value.trim();
         }
-        const cleaned = clean(" value ");
+        // A pure helper handed a known value folds at its call.
+        let input: string | undefined = " value ";
+        if (Date.now() < 0) input = undefined;
+        const cleaned = clean(input);
         const words = cleaned.split(/\\s+/);
         const numbers = "1 2".split(/\\s+/).map(Number);
     `);
@@ -5416,11 +5419,14 @@ test("calls a string method on a parenthesized runtime conditional", () => {
             const semi = line.indexOf(";");
             return (semi >= 0 ? line.slice(0, semi) : line).trim();
         }
-        const value = clean("key=value ; comment");
+        // A pure helper handed a known value folds at its call.
+        let line = "key=value ; comment";
+        if (Date.now() < 0) line = "";
+        const value = clean(line);
     `);
 
     assert.match(result.cpp, /return bbl::js::string_trim\(/);
-    assert.match(result.cpp, /auto& v_value = \w+;/);
+    assert.match(result.cpp, /v_value = bblscene::clean\(v_line\);/);
     assert.match(result.cpp, /\? bbl::js::string_slice\(/);
     assert.match(result.cpp, /"key=value ; comment"/);
 });
@@ -9725,23 +9731,39 @@ test("shares one cell between the closures that capture and write a by-value bin
         );
 });
 
-test("refuses a captured var declared in a loop body", () => {
-    // JavaScript has one binding per function; a cell made where the
-    // declaration sits would be one per iteration.
+test("refuses a hoisted var read while it can be undefined its type cannot hold", () => {
+    // The scope's own read some path reaches unassigned, `!` or not.
+    for (const read of ["y", "y!"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `function f(c: boolean): number { if (c) { var y = 3; } return ${read}; } console.log(f(true));`,
+                ),
+            /The `var` 'y' can be read here before it is assigned/,
+        );
+    // A read inside a class the definite-assignment walk does not follow.
     assert.throws(
         () =>
             compileSource(
-                "const vs: Array<() => number> = []; for (const k of [1, 2]) { var v = k; vs.push(() => v); }",
+                "function f(c: boolean): number { if (c) { var y = 3; } class K { static v = y; } return K.v; } console.log(f(true));",
             ),
-        /A `var` declared in a loop body and captured by a stored closure/,
+        /The `var` 'y' is read where its assignment runs through a ClassDeclaration, which the definite-assignment analysis does not follow/,
     );
-    // `var x;` re-run each iteration keeps the earlier iteration's value.
+    // A function lowered before the walk reached an assignment.
     assert.throws(
         () =>
             compileSource(
-                "const seen: string[] = []; for (let i = 0; i < 2; i++) { var x: number | undefined; if (i === 0) x = 5; seen.push(String(x)); } console.log(seen.join());",
+                "function f(): number { const get = (): number => w; const before = get(); var w = 7; return before; } console.log(f());",
             ),
-        /A `var` declared without an initializer in a loop body keeps its value/,
+        /A function reads the `var` 'w' where it can still be undefined/,
+    );
+    // One binding with a parameter is not a storage of its own.
+    assert.throws(
+        () =>
+            compileSource(
+                "function f(a: number): number { var a = 2; return a; } console.log(f(1));",
+            ),
+        /The `var` 'a' shares its binding with a parameter/,
     );
 });
 
@@ -12562,6 +12584,54 @@ test("refuses retained UI under the standalone effect and frame-graph drivers", 
     );
 });
 
+test("presents a realm's retained UI over an effect renderer and refuses a realm frame graph", () => {
+    // The idle callback takes the application realm, whose Window host
+    // composites the UI over every renderer's canvas frames.
+    const program = (registration: string) => `
+        import {
+            createEffectRenderer,
+            createEffectWrapper,
+            createEngine,
+            createFrameGraphContext,
+            registerEffectRenderer,
+            registerFrameGraphContext,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            requestIdleCallback(() => {});
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            ${registration}
+            const hint = document.createElement("div");
+            hint.textContent = "hint";
+            document.body.appendChild(hint);
+            await startEngine(engine);
+        }
+
+        void main();
+    `;
+    const effect = compileSource(
+        program(`const effect = createEffectWrapper(engine, {
+            name: "fx",
+            fragmentWGSL: "@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+        });
+        registerEffectRenderer(createEffectRenderer(engine, effect, { name: "fx-renderer" }));`),
+    );
+    for (const feature of ["platform:workers", "ui:rml", "renderer:effect"])
+        assert.ok(effect.manifest.features.includes(feature), feature);
+    // The engine holds a registered FrameGraphContext by address.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    "registerFrameGraphContext(createFrameGraphContext(engine));",
+                ),
+            ),
+        /A standalone frame graph .*does not yet run in an application realm/,
+    );
+});
+
 test("keeps the packaged success arm of a nullable retained-canvas factory", () => {
     const result = compileSource(
         `
@@ -12617,33 +12687,38 @@ test("keeps the packaged success arm of a nullable retained-canvas factory", () 
 });
 
 test("does not erase an application condition from a retained-canvas factory", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                class OptionalHud {
-                    private readonly canvas: HTMLCanvasElement;
+    const result = compileSource(`
+        class OptionalHud {
+            private readonly canvas: HTMLCanvasElement;
 
-                    private constructor() {
-                        this.canvas = document.createElement("canvas");
-                    }
+            private constructor() {
+                this.canvas = document.createElement("canvas");
+            }
 
-                    static async create(enabled: boolean): Promise<OptionalHud | null> {
-                        try {
-                            if (!enabled) return null;
-                            return new OptionalHud();
-                        } catch {
-                            return null;
-                        }
-                    }
-
-                    static async run(): Promise<void> {
-                        await OptionalHud.create(true);
-                    }
+            static async create(enabled: boolean): Promise<OptionalHud | null> {
+                try {
+                    if (!enabled) return null;
+                    return new OptionalHud();
+                } catch {
+                    return null;
                 }
+            }
 
-                void OptionalHud.run();
-            `),
-        /outside the native data model/,
+            static async run(): Promise<void> {
+                const hud = await OptionalHud.create(Math.random() > 0.5);
+                if (hud) globalThis.close();
+            }
+        }
+
+        void OptionalHud.run();
+    `);
+    assert.match(
+        result.cpp,
+        /if \(!\(v_fn\d+_enabled\)\) \{\s*co_return bblscene::OptionalHud\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /->canvas = std::pair<bbl::StoredEngine, bbl::UiElementHandle>\{/,
     );
 });
 
@@ -13927,10 +14002,10 @@ test("refuses to erase a browser call handed the program's own binary data", () 
         () =>
             compileSource(`
                 const bytes = new Uint8Array(16);
-                crypto.getRandomValues(bytes);
+                void crypto.subtle.digest("SHA-256", bytes);
                 console.log(bytes[0]);
             `),
-        /'crypto\.getRandomValues' would erase a call handed the program's own binary data/,
+        /'crypto\.subtle\.digest' would erase a call handed the program's own binary data/,
     );
 });
 
@@ -14782,6 +14857,90 @@ test("packages runtime-selected module textures as a closed image directory", ()
     );
     assert.match(result.cpp, /Unknown packaged asset/);
     assert.match(result.cpp, /bbl::load_file_texture/);
+});
+
+test("a realm's module texture URLs take a union suffix and its address modes at run time", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { demoAssetUrl } from "./demo-asset-url.js";
+
+            const sources = [
+                { file: "road-straight.png", addressModeU: "clamp-to-edge" },
+                { file: "boost-arrow.png", addressModeU: "repeat" },
+            ] as const;
+            async function main(): Promise<void> {
+                const engine = await createEngine(document.querySelector("canvas")!);
+                const urls = sources.map((source) => demoAssetUrl(\`./antigravity-racer/track/\${source.file}\`, import.meta.url));
+                await Promise.all(
+                    sources.map((source, i) =>
+                        loadTexture2D(engine, urls[i]!, { addressModeU: source.addressModeU }),
+                    ),
+                );
+            }
+            queueMicrotask(() => {});
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/realm-track-texture-test.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /bbl::js::concat\("\/antigravity-racer\/track\/", bblscene::\w+_to_string\(/,
+    );
+    assert.match(
+        result.cpp,
+        /== bblscene::\w+::clamp_to_edge \? bbl::TextureAddressMode::clamp : bbl::TextureAddressMode::repeat\)/,
+    );
+});
+
+test("an enum-like intrinsic option reads its string through one pin table", () => {
+    const result = compileSource(`
+        import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(smooth: boolean): Promise<void> {
+            const engine = await createEngine({});
+            const sampling: "linear" | "nearest" = smooth ? "linear" : "nearest";
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1], sampling });
+            createSprite2DLayer(atlas, { capacity: 1, depth: "test-write" });
+            await loadTexture2D(engine, "a.png", { addressModeU: smooth ? "repeat" : "mirror-repeat" });
+        }
+        void main(Math.random() > 0.5);
+    `);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_sampling == bblscene::\w+::linear \? bbl::TextureFilter::linear : bbl::TextureFilter::nearest\)/,
+    );
+    assert.match(result.cpp, /bbl::Sprite2DDepthMode::test_write/);
+    assert.match(
+        result.cpp,
+        /\(v_fn\d+_smooth \? bbl::TextureAddressMode::repeat : bbl::TextureAddressMode::mirror\)/,
+    );
+    // An option a generation-time decision reads takes a known string.
+    const engine = `import { createEngine, loadSpriteAtlas, createSprite2DLayer, loadTexture2D } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});`;
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const mode: "nearest" | "linear" = Math.random() > 0.5 ? "nearest" : "linear";
+            await loadTexture2D(engine, "a.png", { minFilter: mode });
+        }
+        void main();`),
+        /A texture filter must be a generation-known string/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`${engine}
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", { gridSize: [1, 1] });
+            const mode: "none" | "test" = Math.random() > 0.5 ? "none" : "test";
+            createSprite2DLayer(atlas, { capacity: 1, depth: mode });
+        }
+        void main();`),
+        /A sprite layer depth mode must be a generation-known string/,
+    );
 });
 
 test("preserves numeric tuple identity except through array spread", () => {

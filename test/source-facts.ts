@@ -25,6 +25,13 @@ interface SourceFacts {
     resolvedDeclarationReads: number;
     /** `t.isUnion() ? ... : ...`: a union's members taken by hand. */
     unionMemberRules: number;
+    /**
+     * `ts.isPropertyAccessExpression(callee)` or of `call.expression`: a
+     * call's member read off its dotted spelling alone.
+     */
+    dottedCalleeTests: number;
+    /** A `callee` parameter typed `ts.PropertyAccessExpression`. */
+    dottedCalleeParameters: number;
     lockSetter: boolean;
     barrel: boolean;
 }
@@ -57,6 +64,30 @@ function symbolNameRead(side: ts.Expression, file: ts.SourceFile): boolean {
         .replaceAll("?", "")
         .replaceAll("!", "");
     return /symbol(\(\))?$/i.test(owner);
+}
+
+/**
+ * Whether a tested expression is a call's callee: a `callee`, or the
+ * `.expression` of a `call` or of a node its function tests as a call.
+ */
+function dottedCallee(
+    tested: ts.Expression,
+    test: ts.Node,
+    file: ts.SourceFile,
+): boolean {
+    if (ts.isIdentifier(tested)) return tested.text === "callee";
+    if (
+        !ts.isPropertyAccessExpression(tested) ||
+        tested.name.text !== "expression" ||
+        !ts.isIdentifier(tested.expression)
+    )
+        return false;
+    const base = tested.expression.text;
+    const scope = ts.findAncestor(test.parent, ts.isFunctionLike) ?? file;
+    return (
+        base === "call" ||
+        scope.getText(file).includes(`isCallExpression(${base})`)
+    );
 }
 
 /** The `||` operands of a chain, through parentheses. */
@@ -144,6 +175,8 @@ export function sourceFacts(path: string): SourceFacts {
         symbolNameTests: 0,
         resolvedDeclarationReads: 0,
         unionMemberRules: 0,
+        dottedCalleeTests: 0,
+        dottedCalleeParameters: 0,
         lockSetter: false,
         barrel:
             file.statements.length > 0 &&
@@ -170,6 +203,21 @@ export function sourceFacts(path: string): SourceFacts {
             })(node.initializer)
         )
             signatures.add(scoped(node.name.text, node));
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "isPropertyAccessExpression" &&
+            node.arguments.length === 1 &&
+            dottedCallee(node.arguments[0]!, node, file)
+        )
+            facts.dottedCalleeTests++;
+        if (
+            ts.isParameter(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "callee" &&
+            node.type?.getText(file) === "ts.PropertyAccessExpression"
+        )
+            facts.dottedCalleeParameters++;
         if (
             ts.isConditionalExpression(node) &&
             ts.isCallExpression(node.condition) &&

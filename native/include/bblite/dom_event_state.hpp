@@ -82,6 +82,29 @@ template <typename Event> DomEventState& dom_event_state(const Event& event) {
     return *event.dom;
 }
 
+/**
+ * What every platform event payload carries: its DOM dispatch state while it
+ * travels a DOM path, and its canceled flag, which a payload without one keeps
+ * alone and one with one shares with every view of that event.
+ */
+struct PlatformEventFlags {
+    mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+
+    void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default())
+            return;
+        default_prevented = true;
+        if (dom)
+            dom->default_prevented = true;
+    }
+    [[nodiscard]] bool is_default_prevented() const noexcept {
+        return default_prevented || (dom && dom->default_prevented);
+    }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+};
+
 template <typename Event> Engine& dom_event_owner(const Event& event) {
     const auto* owner = dom_event_state(event).dispatch_engine;
     if (!owner)

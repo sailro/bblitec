@@ -70,7 +70,8 @@ std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine,
                                                      const FileDialogOptions& options);
 double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
-// monotonic clock; fixed-delta captures advance it deterministically.
+// monotonic clock; fixed-delta captures advance it deterministically, and a
+// capture realm reads its event loop's fixed clock.
 double performance_milliseconds();
 // `performance.timeOrigin`: the epoch time of `performance_milliseconds()`'s
 // zero, so the two add up to `Date.now()`; one per process.

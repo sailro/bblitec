@@ -18,7 +18,12 @@
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { LibraryGlobal } from "./symbols.js";
+import {
+    namedMember,
+    type LibraryGlobal,
+    type MemberReader,
+    type NamedMember,
+} from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
@@ -65,7 +70,7 @@ function cmath(name: string): MathMember["cpp"] {
  * which `std::max`/`std::min` does. `source` is a range of doubles, or a
  * braced argument list (`mathExtremeCall`).
  */
-export function mathExtremeCpp(method: string, source: string): string {
+function mathExtremeCpp(method: string, source: string): string {
     return `bbl::js::math_extreme<${method === "max"}>(${source})`;
 }
 
@@ -75,7 +80,7 @@ export function mathExtremeCpp(method: string, source: string): string {
  * left to right, as JavaScript's argument list does, and every operand,
  * whatever its native type, converts to JavaScript's own width first.
  */
-export function mathExtremeCall(
+function mathExtremeCall(
     method: "max" | "min",
     args: readonly string[],
 ): string {
@@ -194,6 +199,17 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             impure: true,
         },
     ],
+    ...(["max", "min"] as const).map((name): [string, MathMember] => [
+        name,
+        {
+            arity: 0,
+            variadic: true,
+            cpp: (args) => mathExtremeCall(name, args),
+            rangeCpp: (range) => mathExtremeCpp(name, range),
+            fold: (...values: number[]) => Math[name](...values),
+            reach: "js-data",
+        },
+    ]),
 ]);
 
 /** Whether two calls of the member may answer differently (`Math.random`). */
@@ -201,33 +217,30 @@ export function mathMemberIsImpure(name: string): boolean {
     return MATH_MEMBERS.get(name)?.impure === true;
 }
 
-/** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
-export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
-    return name === "min" || name === "max"
-        ? (args) => mathExtremeCall(name, args)
-        : MATH_MEMBERS.get(name)?.cpp;
-}
-
 /**
  * The generation-time value of `Math.<name>(...values)`, or undefined when
- * the call must run: the one fold every reader shares. Max, min and the
- * table's exact members fold; an approximated member folds only into
- * generation-time source text (`formatted`, see FORMATTED_MATH_FOLDS), and
- * an impure one (random) never does.
+ * the call must run: the one fold every reader shares. The table's exact
+ * members fold; an approximated member folds only into generation-time
+ * source text (`formatted`, see FORMATTED_MATH_FOLDS), and an impure one
+ * (random) never does.
  */
 export function foldMathCall(
     name: string,
     values: readonly number[],
     formatted = false,
 ): number | undefined {
-    if (name === "max" || name === "min") return Math[name](...values);
     const member = MATH_MEMBERS.get(name);
     const fold =
         member?.fold ??
         (formatted ? FORMATTED_MATH_FOLDS.get(name) : undefined);
-    return fold && member && values.length === member.arity
+    return fold && member && mathArityAccepts(member, values.length)
         ? fold(...values)
         : undefined;
+}
+
+/** Whether a member takes `count` arguments ({@link describeMathArity}). */
+export function mathArityAccepts(member: MathMember, count: number): boolean {
+    return member.variadic ? count >= member.arity : count === member.arity;
 }
 
 /** How a member's arity reads in a refusal. */
@@ -269,9 +282,10 @@ export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> =
 export function mathConstantAccess(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): MathConstant | undefined {
-    const access = mathMemberAccess(expression, libraryGlobal);
-    return access && MATH_CONSTANTS.get(access.name.text);
+    const access = mathMemberAccess(expression, libraryGlobal, member);
+    return access && MATH_CONSTANTS.get(access.name);
 }
 
 /**
@@ -295,12 +309,13 @@ const FORMATTED_MATH_FOLDS: ReadonlyMap<
  * `Math` is not this, however it is spelled.
  */
 export function mathMemberAccess(
-    expression: ts.Expression,
+    expression: ts.Node,
     libraryGlobal: LibraryGlobal,
-): ts.PropertyAccessExpression | undefined {
-    return ts.isPropertyAccessExpression(expression) &&
-        libraryGlobal(expression.expression) === "Math"
-        ? expression
+    member: MemberReader,
+): NamedMember | undefined {
+    const access = member(expression);
+    return access && libraryGlobal(access.expression) === "Math"
+        ? access
         : undefined;
 }
 
@@ -308,19 +323,25 @@ export function mathMemberAccess(
 export function mathMemberCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): { readonly name: string; readonly call: ts.CallExpression } | undefined {
     if (!ts.isCallExpression(expression)) return undefined;
-    const access = mathMemberAccess(expression.expression, libraryGlobal);
-    return access ? { name: access.name.text, call: expression } : undefined;
+    const access = mathMemberAccess(
+        expression.expression,
+        libraryGlobal,
+        member,
+    );
+    return access ? { name: access.name, call: expression } : undefined;
 }
 
-/** A call of a member the table spells (max and min included), with its name. */
+/** A call of a member the table spells, with its name. */
 export function spelledMathCall(
     expression: ts.Expression,
     libraryGlobal: LibraryGlobal,
+    member: MemberReader,
 ): ReturnType<typeof mathMemberCall> {
-    const math = mathMemberCall(expression, libraryGlobal);
-    return math && mathCallSpelling(math.name) ? math : undefined;
+    const math = mathMemberCall(expression, libraryGlobal, member);
+    return math && MATH_MEMBERS.has(math.name) ? math : undefined;
 }
 
 /** Math callbacks use the native numeric helpers and owned rest-array convention. */
@@ -338,29 +359,28 @@ export function mathFunctionValue(
     >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, (candidate) =>
-        context.libraryGlobal(candidate),
+    const access = mathMemberAccess(
+        expression,
+        (candidate) => context.libraryGlobal(candidate),
+        (node) => namedMember(context.checker, node),
     );
     if (!access) return undefined;
-    const member = MATH_MEMBERS.get(access.name.text);
-    const extreme = access.name.text === "max" || access.name.text === "min";
-    if (!member && !extreme) return undefined;
-    const variadic = extreme || member?.variadic;
+    const member = MATH_MEMBERS.get(access.name);
+    if (!member) return undefined;
     const type: DataType<"function"> = {
         kind: "function",
-        parameters: variadic
+        parameters: member.variadic
             ? [{ kind: "vector", element: { kind: "number" } }]
-            : Array.from({ length: member!.arity }, () => ({ kind: "number" })),
-        ...(variadic ? { restParameter: 0 } : {}),
+            : Array.from({ length: member.arity }, () => ({ kind: "number" })),
+        ...(member.variadic ? { restParameter: 0 } : {}),
         result: { kind: "number" },
         identity: true,
     };
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
-    if (member?.reach === "js-random") context.reachJsRandom();
-    const body = extreme
-        ? mathExtremeCpp(access.name.text, "argument_0")
-        : variadic
-          ? member!.rangeCpp!("argument_0")
-          : member!.cpp(parameters);
-    return nativeFunctionValue(context, access, type, `return ${body};`);
+    if (member.reach === "js-random") context.reachJsRandom();
+    const body =
+        member.variadic && member.rangeCpp
+            ? member.rangeCpp("argument_0")
+            : member.cpp(parameters);
+    return nativeFunctionValue(context, access.access, type, `return ${body};`);
 }

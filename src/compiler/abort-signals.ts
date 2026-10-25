@@ -9,7 +9,7 @@ import {
 import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { libraryName } from "./symbols.js";
+import { libraryName, namedMember } from "./symbols.js";
 import { callSignatures } from "./type-facts.js";
 
 /**
@@ -230,11 +230,14 @@ export function compileAbortListenerCall(
     context: WebPlatformCallContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const callee = context.unwrap(call.expression);
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
     if (
-        !ts.isPropertyAccessExpression(callee) ||
-        (callee.name.text !== "addEventListener" &&
-            callee.name.text !== "removeEventListener")
+        !callee ||
+        (callee.name !== "addEventListener" &&
+            callee.name !== "removeEventListener")
     )
         return undefined;
     const receiverType = context.checker.getTypeAtLocation(callee.expression);
@@ -270,7 +273,7 @@ export function compileAbortListenerCall(
             "AbortSignal 'abort' listeners that take the event are not lowered.",
         );
     context.callbacks.hoistForwardCallbackBindings(callback);
-    if (callee.name.text === "removeEventListener") {
+    if (callee.name === "removeEventListener") {
         const identity = context.callbacks.platformEventCallbackIdentity(
             context.compileValue(callback),
             callback,

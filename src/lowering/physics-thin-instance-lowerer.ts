@@ -5,7 +5,11 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
-import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    absentBinding,
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource } from "../compiler/syntax.js";
@@ -272,7 +276,7 @@ export function lowerPhysicsThinInstances(
                 ),
             ]),
             ["state", { ...binding("state"), absentCpp: "state == nullptr" }],
-            ["state[1]", binding("state->handles")],
+            ["state[1]", collectionBinding("state->handles")],
             [
                 "state[1].length",
                 binding("static_cast<double>(state->handles.size())", "scalar"),
@@ -410,13 +414,6 @@ export function lowerPhysicsThinInstances(
                 }
                 return undefined;
             },
-            forOf: (iterated, element) =>
-                sameSource(iterated, "state[1]")
-                    ? {
-                          range: "state->handles",
-                          bindings: new Map([[element, binding(element)]]),
-                      }
-                    : undefined,
             returnValue: (expression, lowerer) =>
                 expression ? lowerer.expression(expression) : "",
         });
@@ -676,6 +673,7 @@ export function lowerPhysicsThinInstances(
                     "state",
                     { ...binding("state"), absentCpp: "state == nullptr" },
                 ],
+                ["state[1]", collectionBinding("state->handles")],
             ]),
             calls,
             statement(statement, _lowerer, indent) {
@@ -712,13 +710,6 @@ export function lowerPhysicsThinInstances(
                 }
                 return undefined;
             },
-            forOf: (iterated, element) =>
-                sameSource(iterated, "state[1]")
-                    ? {
-                          range: "state->handles",
-                          bindings: new Map([[element, binding(element)]]),
-                      }
-                    : undefined,
             returnValue(expression) {
                 if (!expression)
                     return context.contractError(
@@ -750,15 +741,12 @@ export function lowerPhysicsThinInstances(
                 binding("static_cast<double>(state.handles.size())", "scalar"),
             ],
             ["handle[0]", binding("handle.value", "scalar")],
+            [
+                "states.values()",
+                collectionBinding("world.thin_states | std::views::values"),
+            ],
         ]),
         calls: new Map([...calls, ["Number", (args) => args[0]!]]),
-        forOf: (iterated, element) =>
-            sameSource(iterated, "states.values()")
-                ? {
-                      range: "world.thin_states | std::views::values",
-                      bindings: new Map([[element, binding(element)]]),
-                  }
-                : undefined,
         statement(statement, lowerer, indent) {
             if (ts.isVariableStatement(statement)) {
                 const local = statement.declarationList.declarations[0]!;

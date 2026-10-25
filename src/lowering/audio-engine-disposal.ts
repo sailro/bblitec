@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { sharedPinnedContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import {
+    collectionBinding,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 /**
  * `disposeAudioEngine`'s disposal of the sounds, sources and buses the engine
@@ -43,13 +47,16 @@ export function lowerEngineSoundsDisposal(name: string): Array<{
     }
     const engineBody = lowerPinnedBody(engine.file, engineStatements, {
         bindings: new Map(
-            [...sets].map(
-                ([member, cpp]) =>
-                    [
-                        `engine.${member}`,
-                        { cpp, type: "opaque" as const },
-                    ] as const,
-            ),
+            [...sets].flatMap(([member, cpp]): [string, PinnedBinding][] => [
+                [`engine.${member}`, { cpp, type: "opaque" }],
+                // The disposal loop walks a snapshot of the set.
+                [
+                    `Array.from(engine.${member})`,
+                    collectionBinding(
+                        `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${cpp})`,
+                    ),
+                ],
+            ]),
         ),
         calls: new Map<string, (args: readonly string[]) => string>([
             [
@@ -64,10 +71,6 @@ export function lowerEngineSoundsDisposal(name: string): Array<{
                     [`engine.${member}.clear`, () => `${cpp}.clear()`] as const,
             ),
         ]),
-        forOf: (iterated, element) => ({
-            range: `bbl::js::array_from_iterable<bbl::AudioEngineSoundHandle>(${sets.get(setOf(iterated)!)!})`,
-            bindings: new Map([[element, { cpp: element, type: "opaque" }]]),
-        }),
     });
     const engineDeclaration = `void ${name}(bbl::AudioEngineHandle engine)`;
     return [

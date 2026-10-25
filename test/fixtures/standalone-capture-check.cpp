@@ -1,4 +1,5 @@
 #include <bblite/pal.hpp>
+#include <bblite/pal_offscreen.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/pal_storage_buffer.hpp>
 #include "pal_sdl_gpu_commands.hpp"
@@ -299,6 +300,7 @@ struct DawnDevice {
     const std::string& last_error() const { return uncaptured_error; }
 };
 #include "dawn-acquire.hpp"
+#include "presentation.hpp"
 struct DawnSurfaceCapture {
     DawnBuffer readback;
 };
@@ -314,6 +316,8 @@ void finish_dawn_surface_capture(DawnDevice&, DawnSurfaceCapture&, std::uint32_t
 struct Context {
     Engine engine;
     FrameOptions frame_options;
+    /** A window run: no application realm presentation endpoint. */
+    OffscreenRun* offscreen = nullptr;
     CaptureGate captures{frame_options, 5, &engine};
     long frame = 0;
     std::uint32_t width = 320, height = 180, samples = 1;
@@ -338,6 +342,7 @@ struct SdlContext : Context {
     std::uint32_t color_width = 0, color_height = 0;
     bool capture_run = false, capture_frame = false;
     SdlGpuCommand command{nullptr};
+    SdlFramePresentation presentation;
     std::vector<SDL_GPUTexture*> render_textures;
     std::unique_ptr<GpuBufferUploadBatch> buffer_uploads =
         std::make_unique<GpuBufferUploadBatch>(device);
@@ -349,6 +354,7 @@ struct DawnContext : Context {
     DawnTextureView surface_view;
     WGPUTextureView msaa_view = &dawn_msaa_view;
     DawnCommandEncoder encoder;
+    DawnFramePresentation presentation;
     std::vector<WGPUTextureView> render_texture_views;
     std::vector<WGPUTexture> render_textures;
     int mips = 0;

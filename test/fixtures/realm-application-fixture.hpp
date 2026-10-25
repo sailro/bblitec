@@ -4,7 +4,8 @@
 // first, which registers the window's error listeners on an
 // ApplicationErrors over the loop (it reports what none handles).
 // FIXTURE_APPLICATION_TIMEOUT_MS closes the loop after that long, reporting
-// "application did not finish" on stderr.
+// "application did not finish" on stderr. FIXTURE_DEVICE_PIXEL_RATIO gives
+// the realm a Window's devicePixelRatio.
 #ifdef FIXTURE_APPLICATION_ERRORS
 #include <bblite/pal_application_errors.hpp>
 #endif
@@ -26,6 +27,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     const js::RealmScope scope;
     EventLoop loop;
     WorkerRealm realm(loop);
+#ifdef FIXTURE_DEVICE_PIXEL_RATIO
+    realm.provide_host_accessor(HostAccessor::device_pixel_ratio,
+                                [] { return double{FIXTURE_DEVICE_PIXEL_RATIO}; });
+#endif
 #ifdef FIXTURE_APPLICATION_ERRORS
     ApplicationErrors handlers(loop);
     fixture_application_errors = &handlers;

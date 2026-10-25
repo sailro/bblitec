@@ -5,45 +5,46 @@ anything not listed here must match it.
 
 ## Semantic contract
 
-| Boundary | Native behavior |
-| --- | --- |
-| Workers/Window | AOT factories, typed cloning; ResizeObserver polls every 16 ms |
-| Union assertions | `(x as A).f` on a union holding another member throws (JS reads `undefined`); `unknown` asserted to a class or brand throws TypeError at the assertion |
-| Records | Record types one value is stored as share one layout and key order; copies only where unobservable |
-| Strings/ICU | UTF-16 over WTF-8; host ICU/CLDR; locale casing uses the first tag; date patterns spell narrow NBSP as space |
-| Math | `Math.random` is deterministic |
-| SharedArrayBuffer | One agent: Atomics are plain accesses; cloning throws DataCloneError |
-| Error | `stack` is undefined; `cause`/`errors` reads are unadmitted |
-| Weak collections | Erased record/callback/DOM keys are weak; other keys and WeakRef targets are strong |
-| Retired meshes | Kept while a child, shadow caster array, physics body or gizmo names them; afterwards access throws "Native handle refers to a retired record" |
-| Immutability | `freeze`/`seal`/`preventExtensions` are not enforced |
-| Promises outside a realm | `await` reads the settlement in place; a pending one ends the activation without catch/finally; a later settlement throws |
-| Uncaught callback errors | Reach the entry handler and exit with status 1 (browsers continue) |
-| Files | Atomic replacement; iOS publishes through UIKit/file providers; FileReader loads inside `readAsText` |
-| HTTP | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on fetched bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started |
-| HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect, then under 1 byte/s for 5 s. Realm close and abort cancel transfers |
-| Byte streams | Packaged responses have no headers; Blob and packaged bodies stream as one chunk (Chromium: 64 KiB chunks); compression is canonical zlib level 6, so deflate data can differ from Chromium's zlib (gzip header equal, OS byte per platform) and decompresses identically |
-| Packaged URL inference | 256 candidates; uncertain mutations, dynamic queries, traversal and encoded separators refuse |
-| Environment | `onLine=true`, secure context, no client hints or deviceMemory; one `performance.timeOrigin` per process |
-| GPU adapter info | Describes the selected device; SDL leaves architecture empty; Metal reports Apple vendor only for Apple GPUs |
-| Compute limits | Dawn queries device limits; SDL_GPU uses 256-byte uniform offsets |
-| GPU task timing | Dawn times on passes; SDL_GPU at source pass boundaries; omitted passes are untimed |
-| GPU frame timing | SDL_GPU writes the frame timestamps outside passes; Dawn in empty marker passes (the pin dispatches one workgroup) |
-| Scene registration | `registerScene` settles without the pin's intermediate awaits (builders, preloads, async pipeline preparation) |
-| Shader uniform ranges | A slot is marked when its value differs from its last upload; the pin marks every element write |
-| Listener signals | Abort removes only the listener its add created (DOM); Chromium can also remove a same-key re-add until GC |
-| Pointer offsets | `offsetX/Y` equal `clientX/Y`: exact only for the full-window primary canvas |
-| Touch | One finger rotates; two-finger span feeds wheel zoom; the primary contact drives mouse hooks |
-| Media recording | No encoders, so canvas capture frames reach no consumer; stream audio reaches a source a render quantum or more late |
-| Dialogs, fullscreen | `alert`/`confirm` are SDL message boxes; fullscreen needs no user activation and keeps the document layout (a fullscreen primary canvas is exact only when it fills the window) |
-| Pointer capture | Window applications: a capture a pointermove listener sets targets from a later motion packet; pointer lock does not make `setPointerCapture` throw |
-| Skinning | Eight influences reduced to four |
-| Scripts, forms | External scripts never execute: they fail to load. No autofill, spell checking or constraint validation (`pattern`); a label's own click is not dispatched, only its control's |
-| Video textures | One frame from Chromium's WebGPU import, baked RGBA8, sampled as 2D |
-| Thin-instance culling | May use the pin's all-active fallback |
-| Splats | Synchronous render-thread sorting |
-| Canvas atlases | Pixels come from the producing browser's Canvas2D (host Chromium, or an [Android atlas bundle](development.md#android)) |
-| Draw counts | `drawCallCount` includes transport draws |
+| Boundary                 | Native behavior                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workers/Window           | AOT factories, typed cloning; ResizeObserver polls every 16 ms                                                                                                                                                                                                                                                                                                      |
+| Union assertions         | `(x as A).f` on a union holding another member throws (JS reads `undefined`); `unknown` asserted to a class or brand throws TypeError at the assertion                                                                                                                                                                                                              |
+| Records                  | Record types one value is stored as share one layout and key order; copies only where unobservable                                                                                                                                                                                                                                                                  |
+| Strings/ICU              | UTF-16 over WTF-8; host ICU/CLDR; locale casing uses the first tag; date patterns spell narrow NBSP as space                                                                                                                                                                                                                                                        |
+| Math                     | `Math.random` is deterministic; `crypto.getRandomValues` draws unseeded host entropy                                                                                                                                                                                                                                                                                |
+| SharedArrayBuffer        | One agent: Atomics are plain accesses; cloning throws DataCloneError                                                                                                                                                                                                                                                                                                |
+| Error                    | `stack` is undefined; `cause`/`errors` reads are unadmitted                                                                                                                                                                                                                                                                                                         |
+| Weak collections         | Erased record/callback/DOM keys are weak; other keys and WeakRef targets are strong                                                                                                                                                                                                                                                                                 |
+| Retired meshes           | Kept while a child, shadow caster array, physics body or gizmo names them; afterwards access throws "Native handle refers to a retired record"                                                                                                                                                                                                                      |
+| Immutability             | `freeze`/`seal`/`preventExtensions` are not enforced                                                                                                                                                                                                                                                                                                                |
+| Promises outside a realm | `await` reads the settlement in place; a pending one ends the activation without catch/finally; a later settlement throws. An activation runs to its end and a reaction at once only where the code JavaScript runs first touches other state (`continuation-order.ts`); otherwise the program takes a realm. A library operation's effects show only in its result |
+| Erased browser promises  | In a realm an `await` of one takes a turn and reads the erased value; one under an erased browser-only guard refuses                                                                                                                                                                                                                                                |
+| Uncaught callback errors | Reach the entry handler and exit with status 1 (browsers continue)                                                                                                                                                                                                                                                                                                  |
+| Files                    | Atomic replacement; iOS publishes through UIKit/file providers; FileReader loads inside `readAsText`                                                                                                                                                                                                                                                                |
+| HTTP                     | WinHTTP/libcurl, system TLS, no cookies/CORS/HTTP cache; WinHTTP pool 6 per server; 8 MiB queued per transfer; 32 MiB bound on fetched bodies and text/json/arrayBuffer (not streams); `statusText` is empty; a packaged response ignores an abort once its read started                                                                                            |
+| HTTP timeout             | Windows: 5 s without progress; libcurl: 5 s connect, then under 1 byte/s for 5 s. Realm close and abort cancel transfers                                                                                                                                                                                                                                            |
+| Byte streams             | Packaged responses have no headers; Blob and packaged bodies stream as one chunk (Chromium: 64 KiB chunks); compression is canonical zlib level 6, so deflate data can differ from Chromium's zlib (gzip header equal, OS byte per platform) and decompresses identically                                                                                           |
+| Packaged URL inference   | 256 candidates; uncertain mutations, dynamic queries, traversal and encoded separators refuse                                                                                                                                                                                                                                                                       |
+| Environment              | `onLine=true`, secure context, no client hints or deviceMemory; one `performance.timeOrigin` per process                                                                                                                                                                                                                                                            |
+| GPU adapter info         | Describes the selected device; SDL leaves architecture empty; Metal reports Apple vendor only for Apple GPUs                                                                                                                                                                                                                                                        |
+| Compute limits           | Dawn queries device limits; SDL_GPU uses 256-byte uniform offsets                                                                                                                                                                                                                                                                                                   |
+| GPU task timing          | Dawn times on passes; SDL_GPU at source pass boundaries; omitted passes are untimed                                                                                                                                                                                                                                                                                 |
+| GPU frame timing         | SDL_GPU writes the frame timestamps outside passes; Dawn in empty marker passes (the pin dispatches one workgroup)                                                                                                                                                                                                                                                  |
+| Scene registration       | `registerScene` settles without the pin's intermediate awaits (builders, preloads, async pipeline preparation)                                                                                                                                                                                                                                                      |
+| Shader uniform ranges    | A slot is marked when its value differs from its last upload; the pin marks every element write                                                                                                                                                                                                                                                                     |
+| Listener signals         | Abort removes only the listener its add created (DOM); Chromium can also remove a same-key re-add until GC                                                                                                                                                                                                                                                          |
+| Pointer offsets          | `offsetX/Y` equal `clientX/Y`: exact only for the full-window primary canvas                                                                                                                                                                                                                                                                                        |
+| Touch                    | One finger rotates; two-finger span feeds wheel zoom; the primary contact drives mouse hooks                                                                                                                                                                                                                                                                        |
+| Media recording          | No encoders, so canvas capture frames reach no consumer; stream audio reaches a source a render quantum or more late                                                                                                                                                                                                                                                |
+| Dialogs, fullscreen      | `alert`/`confirm` are SDL message boxes; fullscreen needs no user activation and keeps the document layout (a fullscreen primary canvas is exact only when it fills the window)                                                                                                                                                                                     |
+| Pointer capture          | Window applications: a capture a pointermove listener sets targets from a later motion packet; pointer lock does not make `setPointerCapture` throw                                                                                                                                                                                                                 |
+| Skinning                 | Eight influences reduced to four                                                                                                                                                                                                                                                                                                                                    |
+| Scripts, forms           | External scripts never execute: they fail to load. No autofill, spell checking or constraint validation (`pattern`); a label's own click is not dispatched, only its control's                                                                                                                                                                                      |
+| Video textures           | One frame from Chromium's WebGPU import, baked RGBA8, sampled as 2D                                                                                                                                                                                                                                                                                                 |
+| Thin-instance culling    | May use the pin's all-active fallback                                                                                                                                                                                                                                                                                                                               |
+| Splats                   | Synchronous render-thread sorting                                                                                                                                                                                                                                                                                                                                   |
+| Canvas atlases           | Pixels come from the producing browser's Canvas2D (host Chromium, or an [Android atlas bundle](development.md#android))                                                                                                                                                                                                                                             |
+| Draw counts              | `drawCallCount` includes transport draws                                                                                                                                                                                                                                                                                                                            |
 
 ## Numeric width
 
@@ -75,22 +76,22 @@ anything not listed here must match it.
 
 Bullet substitutes for Havok; physics residuals include solver differences.
 
-| Boundary | Native behavior |
-| --- | --- |
-| Debug geometry | Node Havok WASM bakes shape descriptors at generation |
-| Solver | Parallel collision detection and constraint batches; trajectories and contact order differ from Havok |
-| Constraints | Source hinge frames; Bullet six-axis rows otherwise; rows between two immovable bodies stay inactive |
-| Radial correction | `0.4 * initialSignedViolation - predictedSignedViolation`, scaled for short steps |
-| Contacts | Fitted substeps, speculative contacts, rebound, damping, rest stabilization |
-| Deep overlap | About 5% recovery per 60 Hz frame, capped at 1 m/s |
-| Prestep | TELEPORT keeps zero kinematic velocity; ACTION uses the immediate swept pose |
-| Timing | Frame delta capped at 100 ms; fixed steps once per rendered frame; callback milliseconds are float |
-| Meshes | Static BVH; dynamic GImpact with approximate inertia; heightfields are static triangle BVHs |
-| Containers | Bullet convex children; container material writes leave leaf materials unchanged |
-| Boxes/hulls | Zero-thickness axes get the ground-plane adaptation; hulls get no Bullet margin |
-| Floating origin | Separate worlds; no cross-region collisions |
-| Queries | GJK/EPA, convex sweep; cylinder margin `min(0.015, 0.1 * minHalfExtent)`, box margin 0.015 capped by the smallest half-extent |
-| Threads | One controller owns Bullet's scheduler; workers run no callbacks; clang-cl and MSVC share the SIMD solver layout |
+| Boundary          | Native behavior                                                                                                               |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Debug geometry    | Node Havok WASM bakes shape descriptors at generation                                                                         |
+| Solver            | Parallel collision detection and constraint batches; trajectories and contact order differ from Havok                         |
+| Constraints       | Source hinge frames; Bullet six-axis rows otherwise; rows between two immovable bodies stay inactive                          |
+| Radial correction | `0.4 * initialSignedViolation - predictedSignedViolation`, scaled for short steps                                             |
+| Contacts          | Fitted substeps, speculative contacts, rebound, damping, rest stabilization                                                   |
+| Deep overlap      | About 5% recovery per 60 Hz frame, capped at 1 m/s                                                                            |
+| Prestep           | TELEPORT keeps zero kinematic velocity; ACTION uses the immediate swept pose                                                  |
+| Timing            | Frame delta capped at 100 ms; fixed steps once per rendered frame; callback milliseconds are float                            |
+| Meshes            | Static BVH; dynamic GImpact with approximate inertia; heightfields are static triangle BVHs                                   |
+| Containers        | Bullet convex children; container material writes leave leaf materials unchanged                                              |
+| Boxes/hulls       | Zero-thickness axes get the ground-plane adaptation; hulls get no Bullet margin                                               |
+| Floating origin   | Separate worlds; no cross-region collisions                                                                                   |
+| Queries           | GJK/EPA, convex sweep; cylinder margin `min(0.015, 0.1 * minHalfExtent)`, box margin 0.015 capped by the smallest half-extent |
+| Threads           | One controller owns Bullet's scheduler; workers run no callbacks; clang-cl and MSVC share the SIMD solver layout              |
 
 ## Text contract
 

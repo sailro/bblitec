@@ -8,6 +8,7 @@ import {
     resolvedSymbol,
     staticAccessKey,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import {
     outermostWrapper,
@@ -16,6 +17,7 @@ import {
     referenceSite,
     equalityOperator,
     variableKind,
+    isMemberAccess,
 } from "./syntax.js";
 import { holdsOnly } from "./type-facts.js";
 
@@ -55,12 +57,11 @@ function declarationName(node: ts.Identifier): boolean {
 
 function builtinCall(checker: ts.TypeChecker, node: ts.Node): boolean {
     if (!ts.isCallExpression(node) || node.arguments.length !== 1) return false;
-    const target = unwrapExpression(node.expression);
-    if (
-        !ts.isPropertyAccessExpression(target) ||
-        (target.name.text !== "test" && target.name.text !== "exec")
-    )
-        return false;
+    const method = namedMember(
+        checker,
+        unwrapExpression(node.expression),
+    )?.name;
+    if (method !== "test" && method !== "exec") return false;
     const declaration = calledDeclaration(checker, node);
     if (
         !declaration ||
@@ -192,20 +193,20 @@ function onlyObserved(
         owner !== "eval"
     )
         return true;
+    const prototype = namedMember(checker, expression);
     if (
-        ts.isPropertyAccessExpression(expression) &&
-        expression.name.text === "prototype" &&
-        libraryGlobal(checker, expression.expression) === "Object" &&
-        ts.isPropertyAccessExpression(parent) &&
+        prototype?.name === "prototype" &&
+        libraryGlobal(checker, prototype.expression) === "Object" &&
+        isMemberAccess(parent) &&
         parent.expression === expression &&
-        parent.name.text === "hasOwnProperty"
+        namedMember(checker, parent)?.name === "hasOwnProperty"
     ) {
         const method = outermostWrapper(parent);
         const invoke = method.parent;
         if (
-            ts.isPropertyAccessExpression(invoke) &&
+            isMemberAccess(invoke) &&
             invoke.expression === method &&
-            invoke.name.text === "call"
+            namedMember(checker, invoke)?.name === "call"
         ) {
             const target = outermostWrapper(invoke);
             const call = target.parent;
@@ -262,8 +263,8 @@ export function isReadOnlyRegExpCall(
     files: readonly ts.SourceFile[],
 ): boolean {
     if (!builtinCall(checker, node) || !ts.isCallExpression(node)) return false;
-    const target = unwrapExpression(node.expression);
-    if (!ts.isPropertyAccessExpression(target)) return false;
+    const target = namedMember(checker, unwrapExpression(node.expression));
+    if (!target) return false;
     const receiver = unwrapExpression(target.expression);
     if (!ts.isIdentifier(receiver)) return false;
     const origin = (
@@ -295,8 +296,7 @@ export function isReadOnlyRegExpCall(
             checker,
             state,
             use,
-            ts.isPropertyAccessExpression(use) &&
-                use.name.text === "constructor",
+            namedMember(checker, use)?.name === "constructor",
         ),
     );
     if (!state.prototypeSafe) return false;
@@ -315,7 +315,7 @@ export function isReadOnlyRegExpCall(
                 return !!alias && safe(alias);
             }
             return (
-                ts.isPropertyAccessExpression(parent) &&
+                isMemberAccess(parent) &&
                 parent.expression === expression &&
                 ts.isCallExpression(parent.parent) &&
                 parent.parent.expression === parent &&

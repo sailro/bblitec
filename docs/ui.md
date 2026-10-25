@@ -54,7 +54,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
-| Events | transitionend, storage, file drags (first file), CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
+| Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
 | Forms | Focus/blur, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
 - Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
@@ -62,6 +62,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
   state; focus states, `:checked` and `:disabled` read the document.
 - Listener options: `capture`, `once`, `passive`, `signal` ([abort](fidelity.md#semantic-contract)).
+- Gamepads follow SDL's device events. `getGamepads()` reads none until a gamepad user gesture (a standard button, a
+  trigger, or a stick past half its travel); then gamepadconnected fires at the Window for each connected pad, and
+  later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input.
 - An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
   lower as the element's own.
 - Dynamically created scripts are retained, never rendered: an external script fails to load (a task fires `error`
@@ -95,6 +98,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Static innerHTML is parsed at generation by Chromium (the browser's tree, entities and implied end tags).
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect and packaged PNG/JPEG `<image>`,
   role/aria-*/data-*; runtime text is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
+- A runtime string with a closed string domain (`src/compiler/string-domain.ts`: constants, `for...of` elements,
+  records read by a run-time key, call-site arguments, aliases) is markup: generation lowers each text it can hold and
+  the string selects one.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
   ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
   content and dynamic markup with controls refuse; whitespace between options is not kept.
@@ -105,7 +111,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Canvas2D
 
 Backing dimensions, scale, full clear, fillRect/strokeRect, bounded paths, putImageData, destination-rect drawImage,
-bounded fillText. Offscreen pixels are premultiplied RGBA; closed producers can bake `getImageData`. Partial clear,
+bounded fillText. A canvas kept in a record, container or class field, and a 2D context kept in a class field, keep
+their roles. Offscreen pixels are premultiplied RGBA; closed producers can bake `getImageData`. Partial clear,
 source-rect blits, general transforms/clipping and non-convex tessellation refuse.
 
 ## CSS

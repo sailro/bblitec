@@ -555,7 +555,6 @@ export function lowerPinnedFunction(
         memberBindings?: ReadonlyMap<string, PinnedBinding>;
         localStorage?: readonly PinnedLocalStorage[];
         armOf?: PinnedFunctionArm;
-        forOf?: PinnedNumericScope["forOf"];
         /**
          * Parameters the EMISSION needs that the pin does not name, ahead
          * of its own: state a pinned body reaches through a closure and a
@@ -787,7 +786,6 @@ export function lowerPinnedFunctionParts(
         ...(options.recordLiteral
             ? { recordLiteral: options.recordLiteral }
             : {}),
-        ...(options.forOf ? { forOf: options.forOf } : {}),
         ...(options.statement ? { statement: options.statement } : {}),
         ...(options.expression ? { expression: options.expression } : {}),
         ...(options.vec3Literal ? { vec3Literal: options.vec3Literal } : {}),

@@ -4,6 +4,7 @@ import { isDomReceiver } from "./dom-targets.js";
 import { pinDetached } from "./dom-listeners.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { namedMember } from "./symbols.js";
 
 /**
  * A call of the Window method `names` names: the global function, a member of
@@ -25,22 +26,19 @@ export function compileWindowMemberCall(
         return global !== undefined && names.includes(global)
             ? lower(global)
             : undefined;
-    if (
-        !ts.isPropertyAccessExpression(callee) ||
-        !names.includes(callee.name.text)
-    )
-        return undefined;
-    const name = callee.name.text;
+    const member = namedMember(context.checker, callee);
+    if (!member || !names.includes(member.name)) return undefined;
+    const name = member.name;
     if (global === name) return lower(name);
-    if (!isDomReceiver(context, callee.expression, "Window")) return undefined;
-    const owner = context.compileValue(callee.expression);
+    if (!isDomReceiver(context, member.expression, "Window")) return undefined;
+    const owner = context.compileValue(member.expression);
     const run = (present: Value): Value => {
         context.emitDiscardedValue(
-            pinDetached(context, present, "window_receiver", callee.expression),
+            pinDetached(context, present, "window_receiver", member.expression),
         );
         return lower(name);
     };
-    return lowerer.chainReceiverCall(owner, callee, call, run);
+    return lowerer.chainReceiverCall(owner, member.access, call, run);
 }
 
 /**

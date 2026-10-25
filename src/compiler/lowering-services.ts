@@ -42,6 +42,7 @@ import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
+import type { VarBindings } from "./var-bindings.js";
 import type { PropertyAccessLowerer } from "./properties.js";
 import type { CallbackLowerer } from "./callbacks.js";
 import type { AsyncActivations } from "./async-activations.js";
@@ -114,9 +115,13 @@ export interface LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
+    /** Record parameters a storage demand gave their own object. */
+    readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
+    /** Hoisted `var` storage and its declaration-site assignments. */
+    readonly varBindings: VarBindings;
     readonly propertyAccess: PropertyAccessLowerer;
     readonly callbacks: CallbackLowerer;
     readonly asyncActivations: AsyncActivations;
@@ -375,6 +380,7 @@ export interface LoweringServices {
     leaveRuntimeIteration(): void;
     isInRuntimeIteration(): boolean;
     isInNativeFunctionBody(): boolean;
+    isFunctionEvaluationRepeated(lexicalThis: Value | undefined): boolean;
     isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
     enterStaticIteration(statement: ts.IterationStatement): void;
     leaveStaticIteration(): void;
@@ -407,6 +413,7 @@ export interface LoweringServices {
         evaluated?: Value,
     ): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
+    withCallbackScopes<T>(callback: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
     bindClassField(
         name: ts.MemberName,

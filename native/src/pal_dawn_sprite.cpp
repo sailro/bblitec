@@ -12,12 +12,13 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text_renderer.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/text_gpu.hpp>
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -35,6 +36,9 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
+#if BBLITE_HAS_DAWN
+#include "pal_dawn_presentation.hpp"
+#endif
 #if BBLITE_HAS_DAWN && BBLITE_HAS_TEXT_RENDERER
 #include "pal_dawn_text_renderer.hpp"
 #endif
@@ -42,7 +46,7 @@
 #if BBLITE_HAS_DAWN && BBLITE_HAS_SPRITE_RENDERER
 #include "pal_dawn_sprite.hpp"
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include "pal_dawn_sprite_ui.hpp"
 #endif
 
@@ -54,6 +58,7 @@ namespace bbl::pal {
 namespace {
 class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
     DawnDevice state;
+    DawnFramePresentation presentation;
 #if BBLITE_HAS_TEXT_RENDERER
     std::unique_ptr<DawnTextRenderer> text_renderer;
 #endif
@@ -64,7 +69,7 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
     std::vector<WGPUTexture> render_textures;
     std::vector<WGPUTextureView> render_texture_views;
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiDawnResources ui_resources;
 #endif
@@ -146,7 +151,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer.reset();
 #endif
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         release_sprite_ui_dawn_resources(ui_resources);
         destroy_ui_rml_runtime(ui_runtime);
         ui_runtime = nullptr;
@@ -179,14 +184,12 @@ public:
                 "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
         }
         const DeviceOptions device_options = frame_device_options(frame_options);
-        create_dawn_device(engine.options, device_options, state);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, state);
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer = std::make_unique<DawnTextRenderer>(
             state.device, state.queue, !frame_options.render_capture_path.empty());
 #endif
-        sync_engine_canvas_size(state.window, engine);
-        resize_dawn_surface(state, engine.options);
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime = create_ui_rml_runtime(engine, state.window,
                                            static_cast<std::uint32_t>(engine.options.width),
                                            static_cast<std::uint32_t>(engine.options.height));
@@ -208,7 +211,7 @@ public:
     SDL_Window* sdl_window() const { return state.window; }
     std::string driver() const { return "D3D12"; }
     void poll_events() {
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
@@ -221,11 +224,12 @@ public:
             width = state.surface_width;
             height = state.surface_height;
         }
-        return state.surface ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(offscreen, state) ? FramePreparation::ready
+                                                    : FramePreparation::skip;
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
@@ -249,7 +253,7 @@ public:
         return FramePreparation::ready;
     }
     bool acquire() {
-        if (!acquire_dawn_surface_texture(state, surface_texture)) {
+        if (!presentation.acquire(offscreen, state, surface_texture)) {
             discard_frame();
             return false;
         }
@@ -334,14 +338,14 @@ public:
 #endif
         );
         DawnSurfaceCapture capture{};
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
 #endif
         if (capture_frame && !capture_ui) {
             capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,
                                                  width, height);
         }
-#if BBLITE_HAS_UI
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
                                     ui_resources, ui_frame);
 #endif
@@ -362,7 +366,7 @@ public:
         }
         capture.readback.reset();
 
-        wgpuSurfacePresent(state.surface);
+        presentation.present(offscreen, state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

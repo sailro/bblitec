@@ -9,6 +9,7 @@ import {
     nullishComparison,
     libraryName,
     calledDeclaration,
+    namedMember,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -469,10 +470,10 @@ function observe(program: ts.Program): ProgramObservations {
             enumerated(node.arguments[0]);
     };
     const call = (node: ts.CallExpression): void => {
-        const callee = unwrapExpression(node.expression);
+        const callee = namedMember(checker, unwrapExpression(node.expression));
         const first = node.arguments[0];
-        if (!ts.isPropertyAccessExpression(callee)) return;
-        const method = callee.name.text;
+        if (!callee) return;
+        const method = callee.name;
         const owner = libraryGlobal(checker, callee.expression);
         if (owner !== undefined && WHOLESALE_READERS.get(owner)?.has(method))
             wholesaleReads.push(

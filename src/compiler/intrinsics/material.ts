@@ -57,6 +57,7 @@ import { recordAt } from "../record-access.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
 import { knownCondition } from "../values/model.js";
+import { namedMember } from "../symbols.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -203,12 +204,14 @@ function compileMeshNamePredicate(
             }
         }
     }
+    const startsWith = ts.isCallExpression(node)
+        ? namedMember(context.checker, node.expression)
+        : undefined;
     if (
         ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === "startsWith" &&
+        startsWith?.name === "startsWith" &&
         node.arguments.length === 1 &&
-        readsName(node.expression.expression)
+        readsName(startsWith.expression)
     ) {
         const value = literal(argumentAt(node, 0));
         if (value !== undefined) return { kind: "startsWith", value };

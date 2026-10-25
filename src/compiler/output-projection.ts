@@ -72,7 +72,7 @@ export const featureSources: Record<Feature, string[]> = {
     "compute:uniform-layout": [],
     "compute:uniform-writer": [],
     "compute:uniform-arena": [],
-    // Browser Gamepad polling maps to SDL's standard gamepad API in the
+    // Browser Gamepads map to SDL's standard gamepad API and events in the
     // platform translation unit already selected by backend:sdl.
     "input:gamepad": [],
     "input:dom": [],
@@ -375,6 +375,7 @@ export const featureSources: Record<Feature, string[]> = {
     // its lowering reaches the family.
     "data:bigint": [],
     "data:symbol": [],
+    "data:crypto": [],
     "data:tagged-template": [],
     // Web Storage's platform half. `localStorage` has no Babylon
     // declaration behind it, so like the frame conductor's timers it is a
@@ -855,6 +856,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("data:symbol")
             ? "#include <bblite/js_symbol.hpp>\n"
             : "") +
+        (features.includes("data:crypto")
+            ? "#include <bblite/js_crypto.hpp>\n"
+            : "") +
         (features.includes("data:tagged-template")
             ? "#include <bblite/js_template.hpp>\n"
             : "") +
@@ -956,6 +960,9 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
         ? "#include <bblite/pal_worker.hpp>\n#include <bblite/js_promise_all.hpp>\n#include <bblite/pal_canvas.hpp>\n" +
           (features.includes("platform:window")
               ? "#include <bblite/pal_window_realm.hpp>\n"
+              : "") +
+          (features.includes("input:gamepad") && features.includes("input:dom")
+              ? "#include <bblite/pal_dom_gamepads.hpp>\n"
               : "") +
           (projection.workers.hasEngine || features.includes("backend:sdl")
               ? "#include <bblite/pal_async_engine.hpp>\n"

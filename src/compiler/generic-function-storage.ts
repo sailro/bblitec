@@ -1,3 +1,5 @@
+import { StorageDemand } from "./storage-demand.js";
+import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import { isTypeReference, callSignatures } from "./type-facts.js";
 
@@ -321,7 +323,7 @@ export class GenericFunctionStorage {
 }
 
 /** Earlier callback storage must contain every reached concrete signature. */
-export class GenericFunctionStorageRequired extends Error {
+export class GenericFunctionStorageRequired extends StorageDemand {
     constructor(readonly demand: GenericFunctionDemand) {
         super("A stored generic function requires a concrete signature.");
     }
@@ -329,5 +331,9 @@ export class GenericFunctionStorageRequired extends Error {
     /** The source call, or the operation supplying the call's values. */
     get call(): ts.Node {
         return this.demand.site;
+    }
+
+    get request(): StorageRequest {
+        return { kind: "generic", demand: this.demand };
     }
 }

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol } from "./symbols.js";
+import { declaredSymbol, namedMember } from "./symbols.js";
 import {
     bindingNameIdentifiers,
     expressionMayRunCode,
@@ -10,97 +10,20 @@ import {
     writeSites,
 } from "./syntax.js";
 import { CompileError } from "./compile-error.js";
-import { AbsenceTagStorageRequired } from "./absence-tag-storage.js";
-import { EngineOwnerStorageRequired } from "./engine-owner-storage.js";
-import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
-import { CompletionStorageRequired } from "./completion-storage.js";
-import { TupleArraySlotRequired } from "./tuple-array-storage.js";
-import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import {
+    DynamicBindingStorageRequired,
+    ParameterObjectStorageRequired,
+} from "./dynamic-binding-storage.js";
 import { GenericFunctionStorageRequired } from "./generic-function-storage.js";
 import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
-import { NumericSlotStorageRequired } from "./numeric-slot-storage.js";
-import { EnumArrayStorageRequired } from "./enum-array-storage.js";
-import { EnumRecordStorageRequired } from "./enum-record-storage.js";
-import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
+import { SharedClassStorageRequired } from "./shared-class-storage.js";
+import { StorageDemand } from "./storage-demand.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
-
-type StorageDemand =
-    | DynamicBindingStorageRequired
-    | NativeRecordStorageRequired
-    | GenericFunctionStorageRequired
-    | AbsenceTagStorageRequired
-    | EngineOwnerStorageRequired
-    | AssertedHandleFieldStorageRequired
-    | CompletionStorageRequired
-    | TupleArraySlotRequired
-    | NumericSlotStorageRequired
-    | EnumArrayStorageRequired
-    | EnumRecordStorageRequired
-    | ThrownValueStorageRequired;
-
-export function storageRequest(error: StorageDemand): StorageRequest {
-    if (error instanceof DynamicBindingStorageRequired)
-        return {
-            kind: "dynamic",
-            declaration: error.declaration,
-            storage: error.storage,
-        };
-    if (error instanceof NativeRecordStorageRequired)
-        return { kind: "record", demand: error.demand };
-    if (error instanceof AbsenceTagStorageRequired)
-        return { kind: "absence-tag", declaration: error.declaration };
-    if (error instanceof EngineOwnerStorageRequired)
-        return { kind: "engine-owner", declaration: error.declaration };
-    if (error instanceof AssertedHandleFieldStorageRequired)
-        return {
-            kind: "asserted-handle-field",
-            declaration: error.declaration,
-            storage: error.storage,
-        };
-    if (error instanceof CompletionStorageRequired)
-        return {
-            kind: "completion",
-            signatureSite: error.signatureSite,
-            proof: error.proof,
-        };
-    if (error instanceof TupleArraySlotRequired)
-        return { kind: "tuple-array", declaration: error.declaration };
-    if (error instanceof NumericSlotStorageRequired)
-        return {
-            kind: "numeric-slot",
-            declaration: error.declaration,
-            numeric: error.kind,
-        };
-    if (error instanceof EnumArrayStorageRequired)
-        return { kind: "enum-array", unions: error.unions };
-    if (error instanceof EnumRecordStorageRequired)
-        return { kind: "enum-record", schema: error.schema };
-    if (error instanceof ThrownValueStorageRequired)
-        return { kind: "thrown-value", valueKind: error.kind };
-    return { kind: "generic", demand: error.demand };
-}
-
-export function isStorageDemand(error: unknown): error is StorageDemand {
-    return (
-        error instanceof DynamicBindingStorageRequired ||
-        error instanceof NativeRecordStorageRequired ||
-        error instanceof GenericFunctionStorageRequired ||
-        error instanceof AbsenceTagStorageRequired ||
-        error instanceof EngineOwnerStorageRequired ||
-        error instanceof AssertedHandleFieldStorageRequired ||
-        error instanceof CompletionStorageRequired ||
-        error instanceof TupleArraySlotRequired ||
-        error instanceof NumericSlotStorageRequired ||
-        error instanceof EnumArrayStorageRequired ||
-        error instanceof EnumRecordStorageRequired ||
-        error instanceof ThrownValueStorageRequired
-    );
-}
 
 type StatementContext = Pick<
     LoweringServices,
@@ -172,13 +95,10 @@ function independentGenericCall(
         unwrapExpression(expression) !== error.call
     )
         return false;
-    const callee = unwrapExpression(error.call.expression);
-    if (!ts.isIdentifier(callee)) {
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression)
-        )
-            return false;
+    const unwrapped = unwrapExpression(error.call.expression);
+    if (!ts.isIdentifier(unwrapped)) {
+        const callee = namedMember(context.checker, unwrapped);
+        if (!callee || !ts.isIdentifier(callee.expression)) return false;
         const owner = context.bindings.lookupOptional(callee.expression);
         const type =
             owner?.dataType?.kind === "optional"
@@ -187,8 +107,8 @@ function independentGenericCall(
         if (type?.kind !== "struct") return false;
         const field = context.dataTypes.findStructField(
             type.name,
-            callee.name.text,
             callee.name,
+            callee.key,
         );
         if (!field || field.accessor || field.type.kind !== "function")
             return false;
@@ -227,7 +147,9 @@ function independentDemand(
         return independentGenericCall(context, statement, error);
     return !(
         error instanceof DynamicBindingStorageRequired ||
-        error instanceof NativeRecordStorageRequired
+        error instanceof ParameterObjectStorageRequired ||
+        error instanceof NativeRecordStorageRequired ||
+        error instanceof SharedClassStorageRequired
     );
 }
 
@@ -318,8 +240,8 @@ export class StorageDemandPlanner {
         try {
             work();
         } catch (error) {
-            if (isStorageDemand(error)) {
-                if (!this.copied) this.collect(storageRequest(error));
+            if (error instanceof StorageDemand) {
+                if (!this.copied) this.collect(error.request);
             } else if (error instanceof CompileError) statistics.refused++;
             else if (error instanceof PlanningDependency)
                 statistics.dependent++;
@@ -380,9 +302,9 @@ export class StorageDemandPlanner {
                 this.lose(context.checker, statement);
                 return;
             }
-            if (!isStorageDemand(error)) throw error;
+            if (!(error instanceof StorageDemand)) throw error;
             if (this.copied) throw new PlanningWrite();
-            this.collect(storageRequest(error));
+            this.collect(error.request);
             if (!independentDemand(context, statement, error))
                 throw new PlanningWrite();
             this.lose(context.checker, statement);

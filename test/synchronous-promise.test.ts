@@ -56,14 +56,19 @@ async function sum(): Promise<number> {
     return first + second;
 }
 
+// What the abandoned activation would run reports on stderr, which the
+// native run requires empty, or counts in its finally guard; it shares no
+// state with main after it.
+let finalized = 0;
+
 async function waitsForever(): Promise<void> {
     try {
         const value = await never();
-        trace.push("resumed " + value);
+        console.error("resumed " + value);
     } catch {
-        trace.push("caught");
+        console.error("caught");
     } finally {
-        trace.push("finally");
+        finalized++;
     }
 }
 

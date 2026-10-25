@@ -25,7 +25,7 @@ import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { promiseReactionOf } from "./promises.js";
 import { keptArguments } from "./kept-values.js";
-import { memberAccessors } from "./symbols.js";
+import { memberAccessors, namedMember } from "./symbols.js";
 import { isListenerRegistration } from "./receiver-methods.js";
 
 interface SharedClosureBindings {
@@ -219,12 +219,11 @@ export class SharedClosureAnalysis {
                     return includeFrameRegistrations && index === 1;
             }
         }
-        if (isListenerRegistration(call)) return index === 1;
-        const reaction =
-            ts.isPropertyAccessExpression(callee) &&
-            promiseReactionOf(callee, this.context.checker);
+        if (isListenerRegistration(this.context.checker, call))
+            return index === 1;
+        const reaction = promiseReactionOf(callee, this.context.checker);
         if (reaction)
-            return index === 0 || (reaction === "then" && index === 1);
+            return index === 0 || (reaction.reaction === "then" && index === 1);
         const scheduler = schedulerOf(this.context.checker, call.expression);
         return (
             scheduler !== undefined &&
@@ -292,13 +291,14 @@ export class SharedClosureAnalysis {
         // (`Pick<C, "m">`, a record type the class satisfies) is whatever
         // function the viewed object holds.
         const callee = this.context.unwrap(call.expression);
+        const member = namedMember(this.context.checker, callee);
         if (
-            ts.isPropertyAccessExpression(callee) &&
+            member &&
             bodies?.some(
                 (body) =>
                     ts.isMethodDeclaration(body) && ts.isClassLike(body.parent),
             ) &&
-            !this.receivesClassInstance(callee.expression)
+            !this.receivesClassInstance(member.expression)
         )
             return "unnamed";
         return bodies !== undefined && bodies.every(isFixedBody)

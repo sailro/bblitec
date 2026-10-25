@@ -17,8 +17,8 @@ Other thrown values are unsupported.
 
 | Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var`, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                               |
-| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending)                                                                                       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops                                                                                                                                                           |
+| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var` in lazily imported modules, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                    |
+| Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending), function-scoped `var`, for-in/of into existing targets and assignment patterns       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops; a `var` read while it may be undefined and its type excludes undefined; a `var` redeclaring a parameter                                                  |
 | Functions    | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored                                  | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, extracted methods without receiver                                                   |
 | Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy                                                              |
 | Closures     | Shared mutable cells, TDZ, recursive groups                                                                                                                           | Captures without owned representation; borrowed input events escaping dispatch                                                                                                                                                         |
@@ -59,7 +59,9 @@ Rules:
   lists re-read a local `const` initializer whose names no visible write reaches.
 - A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
   merges the results into native storage.
-- Recursive groups evaluate a caller-independent default once at the root; other defaults refuse.
+- Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
+  passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
+  function there.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
@@ -81,9 +83,10 @@ Rules:
 | Encoding        | UTF-8 `TextDecoder` (`fatal`, `ignoreBOM`, `stream`), `TextEncoder.encode`                                                                     | Other encodings, `encodeInto`                                                                                      |
 | Objects         | keys/values/entries/assign/fromEntries/hasOwn/is/`create(null)`, literal-descriptor `defineProperty`, spread, rest, `delete`, `in`, `for...in` | Class accessor installation, non-literal rest keys, dynamic class membership                                       |
 | JSON            | parse (reviver), stringify                                                                                                                     | Replacers, cycles, Map/Set values                                                                                  |
-| Date            | ISO parsing, getters, `setTime`, `Date.UTC`                                                                                                    | Field setters, legacy formats                                                                                      |
+| Date            | ISO parsing, getters, `setTime`, `Date.UTC`, UTC and local field setters, `new Date(y, m, ...)`                                                | Legacy formats                                                                                                     |
+| Functions       | `call`, `apply`, `Reflect.apply` (listed or array-literal arguments), `bind` of a receiver called directly or through a `const`                | Bound arguments, a bound function passed or stored, library prototype methods on another receiver                  |
 | URL             | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException`                                                                      | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any`                                      |
-| Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64                                                             | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
+| Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64, `crypto.getRandomValues` (integer arrays)                  | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
 | Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
 - Numeric typed-array and numeric-view indexed `??` reads preserve missing-slot presence and lazy fallbacks.
@@ -123,9 +126,12 @@ Rules:
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
 - An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
-  pixel ratio, `maxDevicePixelRatio` option or write) at `createEngine`, `resizeEngine` and each frame head, on every
+  pixel ratio or a getter the program defines for it on the global object, `maxDevicePixelRatio` option or write) at
+  `createEngine`, `resizeEngine` and each frame head, on every
   platform; windows keep native density and composite it scaled. Without a realm the window is the only surface: a
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
+- A Window realm's global: `Object.defineProperty` getters redefine its host accessor `devicePixelRatio`; a `fetch`
+  replacement is erased loading instrumentation. Writing or defining another host property refuses.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
@@ -166,6 +172,8 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 
 `loadGltf` with a runtime URL, in runtime control flow or repeated out of order profiles its documents: each composes
 once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
+`loadTexture2D` address modes may be runtime members of a string-literal union. A clone of a glTF root held as a
+`SceneNode` (an async result field) checks at run time that it is an imported root for `createHierarchyInstancePool`.
 
 `KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
 the pinned extension's texture identities; material extensions run as the pin's own features. Separate-image ORM
@@ -247,7 +255,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses.
+  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses. A stored or
+  awaited result's `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.
@@ -310,6 +319,7 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 ## Frame graph and post-process
 
 - Ordered targets/tasks, MRTs, blits, MSAA resolve; `addTaskAfter` only during initial setup; `removeMeshFromTask`.
+- A scene-less `FrameGraphContext` refuses in an application realm: the engine holds it by address.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which

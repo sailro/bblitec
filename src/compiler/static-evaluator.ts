@@ -15,30 +15,48 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 
 /** The checked Object identity functions also retain their input as callbacks. */
 export function isObjectIdentityFunction(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isPropertyAccessExpression(node) &&
-        OBJECT_IDENTITY_CALLS.has(node.name.text) &&
-        libraryGlobal(node.expression) === "Object"
-    );
+    const member = libraryStaticMember(checker, unwrapExpression(expression));
+    return member?.owner === "Object" && OBJECT_IDENTITY_CALLS.has(member.name);
 }
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
+/** `isWrittenThrough` answers: a function of the checked program. */
+const writtenLiteralBags = new WeakMap<ts.VariableDeclaration, boolean>();
+
 export function objectIdentityCallArgument(
+    checker: ts.TypeChecker,
     expression: ts.Expression,
-    libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
-        !isObjectIdentityFunction(expression.expression, libraryGlobal)
+        !isObjectIdentityFunction(checker, expression.expression)
     ) {
         return undefined;
     }
     return expression.arguments[0];
+}
+
+/**
+ * The expression whose identity a reader sees: wrappers stripped (`await`
+ * too when asked), and `Object.freeze(x)` is `x`.
+ */
+export function unwrapObjectIdentity(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    options: { readonly await?: boolean } = {},
+): ts.Expression {
+    let current = unwrapExpression(expression, options);
+    for (
+        let frozen = objectIdentityCallArgument(checker, current);
+        frozen;
+        frozen = objectIdentityCallArgument(checker, current)
+    )
+        current = unwrapExpression(frozen, options);
+    return current;
 }
 import { EmissionSet, writable } from "./emission-transaction.js";
 import ts from "typescript";
@@ -56,6 +74,9 @@ import {
     libraryGlobal,
     type LibraryGlobal,
     calledDeclaration,
+    namedMember,
+    type MemberReader,
+    libraryStaticMember,
 } from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
@@ -70,7 +91,12 @@ import {
     staticNumberValue,
     type StaticFoldContext,
 } from "./option-helpers.js";
-import { resolveFunctionDeclaration } from "./user-functions.js";
+import {
+    aliasedMutationScan,
+    resolveFunctionDeclaration,
+    type AliasedMutationScan,
+} from "./user-functions.js";
+import { heldReferenceBases } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
@@ -91,11 +117,13 @@ import {
     hasNonNullAssertion,
     unwrapExpression,
     argumentAt,
+    isMemberAccess,
+    referenceBases,
     soleReturnedExpression,
     isTypeAssertion,
     wrappersUnder,
-    rootExpression,
     writeSites,
+    expressionHasEffects,
     functionKind,
     type SupportedFunction,
     variableKind,
@@ -359,6 +387,10 @@ export class StaticEvaluator {
     /** See `libraryGlobal` (symbols.ts). */
     private readonly libraryGlobal: LibraryGlobal = (expression) =>
         libraryGlobal(this.checker, expression);
+
+    /** See `namedMember` (symbols.ts). */
+    private readonly member: MemberReader = (node) =>
+        namedMember(this.checker, node);
 
     /**
      * `precision` selects the native vector the components land in. The
@@ -935,10 +967,16 @@ export class StaticEvaluator {
                     `'||' in a numeric position must select a number, received ${value.kind}.`,
                 );
             }
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
-                // Numeric `a || b`: JavaScript falls through on 0 and NaN,
-                // and evaluates the right operand only then. An element
-                // past the end is undefined, so the left reads guarded.
+            const logical = unwrapped.operatorToken.kind;
+            if (
+                logical === ts.SyntaxKind.BarBarToken ||
+                logical === ts.SyntaxKind.AmpersandAmpersandToken
+            ) {
+                // Numeric `a || b` and `a && b`: 0 and NaN are falsy, and
+                // JavaScript evaluates the right operand only when the left
+                // is falsy (`||`) or truthy (`&&`). An element past the end
+                // is undefined, so the left reads guarded.
+                const or = logical === ts.SyntaxKind.BarBarToken;
                 const leftNode = this.unwrap(unwrapped.left);
                 const tested = ts.isElementAccessExpression(leftNode)
                     ? this.testedElement(leftNode)
@@ -951,13 +989,15 @@ export class StaticEvaluator {
                     this.compileNumber(unwrapped.right, "double"),
                 );
                 const compiled =
-                    right.lines.length === 0
+                    or &&
+                    right.lines.length === 0 &&
+                    !expressionHasEffects(unwrapped.right)
                         ? `bbl::js::or_number(${left}, ${right.value})`
                         : this.arms.armExpression(
                               unwrapped.right,
                               [
                                   `const double left = ${left};`,
-                                  "if (bbl::js::number_truthy(left)) return left;",
+                                  `if (${or ? "" : "!"}bbl::js::number_truthy(left)) return left;`,
                                   ...right.lines,
                               ],
                               right.value,
@@ -1024,13 +1064,21 @@ export class StaticEvaluator {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant = mathConstantAccess(unwrapped, this.libraryGlobal);
+        const constant = mathConstantAccess(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         if (constant) {
             return precision === "float"
                 ? (constant.floatCpp ?? cppFloatLiteral(constant.value))
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -1215,7 +1263,11 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.libraryGlobal,
+            this.member,
+        );
         return (
             ts.isNumericLiteral(unwrapped) ||
             ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||
@@ -1244,7 +1296,8 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            mathConstantAccess(unwrapped, this.libraryGlobal) !== undefined ||
+            mathConstantAccess(unwrapped, this.libraryGlobal, this.member) !==
+                undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }
@@ -1409,15 +1462,15 @@ export class StaticEvaluator {
             }
             return result;
         }
+        const join = ts.isCallExpression(unwrapped)
+            ? this.member(unwrapped.expression)
+            : undefined;
         if (
             ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.expression.name.text === "join" &&
+            join?.name === "join" &&
             unwrapped.arguments.length <= 1
         ) {
-            const owner = this.resolveStaticExpression(
-                unwrapped.expression.expression,
-            );
+            const owner = this.resolveStaticExpression(join.expression);
             if (ts.isArrayLiteralExpression(owner)) {
                 const separator = unwrapped.arguments[0]
                     ? this.compileStringLiteral(unwrapped.arguments[0])
@@ -1614,7 +1667,8 @@ export class StaticEvaluator {
     }
 
     /**
-     * Whether anything in the binding's scope writes through it.
+     * Whether anything writes through the binding or a name holding its
+     * object or a member of it (`aliasedMutationScan`).
      *
      * `const` freezes the BINDING, not the object: `const p = {n: 1}`
      * followed by `p.n = 2`, `p.n++`, `delete p.n` or `reset(p)` all leave
@@ -1636,44 +1690,57 @@ export class StaticEvaluator {
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
     public isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
-        const symbol = ts.isIdentifier(declaration.name)
-            ? declaredSymbol(this.checker, declaration.name)
-            : undefined;
-        if (symbol === undefined) {
-            return true;
-        }
-        let scope: ts.Node = declaration;
-        while (scope.parent && !ts.isFunctionLike(scope)) {
-            scope = scope.parent;
-        }
-        const namesBinding = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) &&
-            declaredSymbol(this.checker, node) === symbol;
+        let written = writtenLiteralBags.get(declaration);
+        if (written === undefined)
+            writtenLiteralBags.set(
+                declaration,
+                (written = this.scanWritesThrough(declaration)),
+            );
+        return written;
+    }
+
+    private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
+        if (!ts.isIdentifier(declaration.name)) return true;
+        // A name holding the object or a member of it: the binding, an
+        // alias, a destructured or iterated leaf, a literal holding one.
+        const holds = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean =>
+            heldReferenceBases(this.checker, expression).some(scan.namesAlias);
         // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
-        const throughBinding = (expression: ts.Expression): boolean => {
+        const throughAlias = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
             const target = unwrapExpression(expression);
             return (
-                (ts.isPropertyAccessExpression(target) ||
-                    ts.isElementAccessExpression(target)) &&
-                namesBinding(rootExpression(target))
+                isMemberAccess(target) &&
+                referenceBases(target).some(scan.namesAlias)
             );
         };
-
-        const written = someAnalysisNode(scope, (node) => {
-            if (writeSites(node).some(({ target }) => throughBinding(target)))
-                return true;
-            if (!ts.isCallExpression(node)) return false;
-            if (throughBinding(node.expression)) return true;
-            return (
-                node.arguments.some(
-                    (argument) =>
-                        namesBinding(unwrapExpression(argument)) ||
-                        throughBinding(argument),
-                ) && this.callReachesABody(node)
-            );
-        });
-
-        return written;
+        return aliasedMutationScan(
+            declaration.name,
+            (identifier) => declaredSymbol(this.checker, identifier),
+            {
+                aliasingInitializer: holds,
+                aliasingMember: (source, _leaf, scan) => holds(source, scan),
+                aliasingIteration: (source, _leaf, scan) => holds(source, scan),
+                mutates: (node, scan) =>
+                    writeSites(node).some(({ target }) =>
+                        throughAlias(target, scan),
+                    ) ||
+                    (ts.isCallExpression(node) &&
+                        (throughAlias(node.expression, scan) ||
+                            (node.arguments.some(
+                                (argument) =>
+                                    scan.namesAlias(
+                                        unwrapExpression(argument),
+                                    ) || throughAlias(argument, scan),
+                            ) &&
+                                this.callReachesABody(node)))),
+            },
+        );
     }
 
     /**
@@ -2040,6 +2107,7 @@ export class StaticEvaluator {
 
     private staticFoldContext(): StaticFoldContext {
         return {
+            checker: this.checker,
             libraryGlobal: this.libraryGlobal,
             resolveStaticExpression: (value: ts.Expression) =>
                 this.resolveStaticExpression(value),
@@ -2089,20 +2157,13 @@ export class StaticEvaluator {
         }
         const numeric = this.staticNumberThroughRecords(unwrapped);
         if (numeric !== undefined) return String(numeric);
-        const format =
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression) &&
-            unwrapped.arguments.length <= 1
-                ? numberFormatOf(unwrapped.expression.name.text)
+        const formatter =
+            ts.isCallExpression(unwrapped) && unwrapped.arguments.length <= 1
+                ? this.member(unwrapped.expression)
                 : undefined;
-        if (
-            format &&
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression)
-        ) {
-            const number = this.staticNumberValue(
-                unwrapped.expression.expression,
-            );
+        const format = formatter && numberFormatOf(formatter.name);
+        if (format && formatter && ts.isCallExpression(unwrapped)) {
+            const number = this.staticNumberValue(formatter.expression);
             const digits = unwrapped.arguments[0]
                 ? this.staticNumberValue(unwrapped.arguments[0])
                 : undefined;
@@ -2266,10 +2327,7 @@ export class StaticEvaluator {
             // it adds is the checker's `Readonly<T>`, which every reader
             // already honours, so the call is the identity over its
             // argument exactly as the tag above is over its template.
-            const frozen = objectIdentityCallArgument(
-                current,
-                this.libraryGlobal,
-            );
+            const frozen = objectIdentityCallArgument(this.checker, current);
             if (frozen) {
                 current = frozen;
                 continue;

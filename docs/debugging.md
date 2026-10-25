@@ -119,7 +119,7 @@ Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu`/`dawn`.
 | `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing; pre-start timers keep wall time |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample; canvas-only |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Input tape; state trace |
-| `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace; per-engine frame counting |
+| `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAMES=1` | Worker presentation trace; `BBLITE_SCREENSHOT_FRAME` counts engine frames |
 | `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | UI boxes, body poses per step, ray queries |
 | `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames |
 | `BBLITE_PHYSICS_PAIR_PROFILE=1` | With CPU profile: narrow-phase time per shape pair |

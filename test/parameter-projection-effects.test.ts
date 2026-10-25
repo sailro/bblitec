@@ -5,7 +5,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { planImportedModuleInitializers } from "../src/compiler/module-initializers.js";
+import { planImportedModuleState } from "../src/compiler/module-initializers.js";
 import {
     callArgumentProjectionIsReadOnly,
     parameterProjectionIsReadOnly,
@@ -219,7 +219,7 @@ test("pinned line builders preserve copied geometry without exempting retained p
         join(directory, "entry.ts"),
     );
     assert.deepEqual(
-        planImportedModuleInitializers(
+        planImportedModuleState(
             program,
             sourceFile,
             checker,
