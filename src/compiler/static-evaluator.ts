@@ -1146,6 +1146,11 @@ export class StaticEvaluator {
         if (ts.isConditionalExpression(unwrapped)) {
             return this.castNumber(this.resolveValue(unwrapped), precision);
         }
+        // A function's number receiver (`f.call(2)`, `f.bind(2)`).
+        if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
+            const value = this.resolveValue(unwrapped);
+            if (isNumericValue(value)) return this.castNumber(value, precision);
+        }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
             // A nullable number the source has already guarded reads as

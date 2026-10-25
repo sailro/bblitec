@@ -37,6 +37,7 @@ import {
     holdsNoPayload,
     valueKindOf,
     unionMembers,
+    fixedTupleElements,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -942,12 +943,7 @@ function fixedTupleLength(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): number | undefined {
-    if (!checker.isTupleType(type)) return undefined;
-    const flags = ((type as ts.TypeReference).target as ts.TupleType)
-        .elementFlags;
-    return flags.every((flag) => (flag & ts.ElementFlags.Required) !== 0)
-        ? flags.length
-        : undefined;
+    return fixedTupleElements(checker, type)?.length;
 }
 
 /**
@@ -5037,7 +5033,8 @@ export class UserFunctionLowerer {
 
     /**
      * Materializes a read-only closure as a copyable native function value.
-     * `receiver` is the home object a literal's method reads as `this`.
+     * `receiver` is what its body reads as `this`: a literal method's home
+     * object, or the thisArg `bind` gave a function.
      */
     public compileStoredDataFunction(
         context: UserFunctionContext,
@@ -5197,6 +5194,16 @@ export class UserFunctionLowerer {
                 runtimeParameters.length - 1 + restLanes
                 ? restParameter
                 : undefined;
+        if (
+            !tupleRest &&
+            restParameter?.declaration.dotDotDotToken &&
+            this.checker.isTupleType(restParameter.type) &&
+            dataType.parameters.length !== runtimeParameters.length
+        )
+            context.fail(
+                declaration,
+                "A stored function's tuple rest parameter is bound from lanes only when every element is required and the signature passes each one.",
+            );
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
         const parameters = dataType.parameters.map((type, index) => ({

@@ -2714,16 +2714,6 @@ function compileArrayReduce(
         );
     }
     const callback = lowerer.context.unwrap(argumentAt(call, 0));
-    if (
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    ) {
-        lowerer.context.fail(
-            callback,
-            `Array.${method} requires a local function or function literal callback.`,
-        );
-    }
     const resultType = lowerer.dataTypeAt(call);
     if (!resultType) {
         lowerer.context.fail(
@@ -2746,6 +2736,17 @@ function compileArrayReduce(
         source,
     );
     const storedCallback = lowerer.prepareCallbackValue(callback, "reduce");
+    const local =
+        ts.isIdentifier(callback) ||
+        ts.isArrowFunction(callback) ||
+        ts.isFunctionExpression(callback)
+            ? callback
+            : undefined;
+    if (!storedCallback && !local)
+        lowerer.context.fail(
+            callback,
+            `Array.${method} requires a represented callback.`,
+        );
     lowerer.context.emit({
         kind: "declaration",
         type: "const std::size_t",
@@ -2832,7 +2833,7 @@ function compileArrayReduce(
                       call,
                   )
                 : lowerer.context.compileCallbackWithValues(
-                      callback,
+                      local!,
                       arguments_,
                       call,
                   );

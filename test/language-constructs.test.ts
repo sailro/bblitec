@@ -15011,6 +15011,122 @@ check(
 `,
 );
 
+// A bound function is a function value: every callback consumer runs it on
+// its receiver.
+check(
+    "bound-functions-reach-library-callbacks-with-their-receiver",
+    `
+    type Box = { n: number; tag: string };
+    function add(this: Box, by: number): void { this.n += by; }
+    function label(this: Box, value: number): string { return this.tag + value; }
+    function above(this: Box, value: number): boolean { return value > this.n; }
+    function order(this: Box, a: number, b: number): number { return this.n * (a - b); }
+    function weigh(this: Box, total: number, value: number): number { return total + value * this.n; }
+    function shout(this: Box, match: string): string { return match.toUpperCase() + this.n; }
+    function pair(this: Box, match: string, group: string): string { return group.toUpperCase() + this.tag; }
+    const box: Box = { n: 0, tag: "v" };
+    [1, 2, 3].forEach(add.bind(box));
+    const values = [3, 1, 2];
+    values.push(4);
+    const labels = values.map(label.bind(box)).join();
+    const kept = values.filter(above.bind({ n: 2, tag: "" })).join();
+    values.sort(order.bind({ n: -1, tag: "" }));
+    const total = values.reduce(weigh.bind({ n: 10, tag: "" }), 0);
+    const shouted = "abc".replace(/b/g, shout.bind(box));
+    const sources = ["(b)"];
+    sources.push("(c)");
+    let text = "abc";
+    for (const source of sources) text = text.replace(new RegExp(source, "g"), pair.bind(box));
+    if (box.n !== 6 || labels !== "v3,v1,v2,v4" || kept !== "3,4" || values.join() !== "4,3,2,1" || total !== 100 || shouted !== "aB6c" || text !== "aBvCv")
+        throw new Error("library callbacks " + box.n + " " + labels + " " + kept + " " + values.join() + " " + total + " " + shouted + " " + text);
+`,
+);
+
+check(
+    "bound-functions-stored-returned-and-compared-keep-their-receiver",
+    `
+    type Box = { n: number };
+    let count = 0;
+    function add(this: Box, by: number): void { this.n += by; count++; }
+    function read(this: Box): number { return this.n; }
+    const box: Box = { n: 0 };
+    const bound = add.bind(box);
+    const holder = { run: bound, get: read.bind(box) };
+    const list = [bound];
+    list.push(add.bind(box));
+    const table = new Map([["add", bound]]);
+    holder.run(1);
+    list[1]!(2);
+    table.get("add")!(3);
+    if (box.n !== 6 || holder.get() !== 6 || count !== 3) throw new Error("stored " + box.n);
+    if (list[0] !== bound || table.get("add") !== bound || holder.run !== bound) throw new Error("identity");
+    if (list[1] === bound || bound === add.bind(box) || list.indexOf(bound) !== 0) throw new Error("fresh identity");
+    function binder(target: Box) { return add.bind(target); }
+    const boxes: Box[] = [{ n: 0 }, { n: 10 }];
+    const adders = boxes.map((b) => binder(b));
+    adders[0]!(1);
+    adders[1]!(2);
+    let current = add.bind(boxes[0]!);
+    current = add.bind(boxes[1]!);
+    current(3);
+    if (boxes[0]!.n !== 1 || boxes[1]!.n !== 15) throw new Error("receivers " + boxes[0]!.n + " " + boxes[1]!.n);
+    function scoped(seed: number): () => number {
+        let local = seed;
+        function step(this: Box): number { local += this.n; return local; }
+        return step.bind({ n: 10 });
+    }
+    const stepper = scoped(1);
+    stepper();
+    class Counter {
+        n = 0;
+        record(values: number[]): void { values.forEach(note.bind(this)); }
+    }
+    function note(this: Counter, value: number): void { this.n += value; }
+    const counters = [new Counter(), new Counter()];
+    counters[1]!.record([4, 5]);
+    function twice(this: number, add: number): number { return this * 2 + add; }
+    function greet(this: string, name: string): string { return this + " " + name; }
+    const doubled = function (this: Box): number { return this.n * 2; };
+    const values = [twice.bind(3), twice.bind(5)];
+    if (stepper() !== 21 || counters[1]!.n !== 9 || counters[0]!.n !== 0 || values[0]!(1) !== 7 || values[1]!(0) !== 10)
+        throw new Error("captures and receivers");
+    if (["a"].map(greet.bind("hi")).join() !== "hi a" || [doubled.bind({ n: 4 })][0]!() !== 8)
+        throw new Error("string receiver and function expression");
+`,
+);
+
+check(
+    "bound-arguments-lead-each-call-including-into-a-rest-parameter",
+    `
+    type Box = { n: number };
+    const box: Box = { n: 3 };
+    function scale(this: Box, factor: number, offset: number): number { return this.n * factor + offset; }
+    const twice = scale.bind(box, 2);
+    const first = twice(1);
+    box.n = 4;
+    function collect(this: Box, first: string, ...rest: number[]): string { rest.push(this.n); return first + rest.join(); }
+    const gather = collect.bind(box, "x", 1, 2);
+    const head = collect.bind(box, "y");
+    let trace = "";
+    function arg(label: string, value: number): number { trace += label; return value; }
+    function receiver(): Box { trace += "R"; return box; }
+    const ordered = scale.bind(receiver(), arg("A", 1), arg("B", 2));
+    const count = (...values: number[]): number => values.length;
+    const counts = [count];
+    const counted = counts[0]!.bind(undefined, 1);
+    function lanes(this: Box, a: number, b?: string, ...rest: number[]): string { return a + (b ?? "-") + rest.join() + this.n; }
+    const inferred = [lanes.bind(box)];
+    inferred.push(lanes.bind({ n: 8 }));
+    const partial = new Map([["f", lanes.bind(box, 1)]]);
+    if (first !== 7 || twice(0) !== 8 || gather(3) !== "x1,2,3,4" || gather() !== "x1,2,4" || head(5, 6) !== "y5,6,4")
+        throw new Error("bound arguments");
+    if (trace !== "RAB" || ordered() !== 6 || counted(2) !== 2 || counted() !== 1)
+        throw new Error("bind order and plain rest " + trace);
+    if (inferred[0]!(1) !== "1-4" || inferred[1]!(2, "x", 3, 4) !== "2x3,48" || partial.get("f")!("y", 5) !== "1y54")
+        throw new Error("tuple lanes");
+`,
+);
+
 check(
     "numeric-logical-operators-and-array-membership",
     `

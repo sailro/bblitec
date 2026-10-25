@@ -10,7 +10,7 @@ import { authoredErrorBase, errorValue } from "./error-values.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { libraryName, namedMember } from "./symbols.js";
-import { callSignatures } from "./type-facts.js";
+import { callSignatures, signatureParameterTypes } from "./type-facts.js";
 
 /**
  * AbortController, AbortSignal and DOMException as realm-owned native
@@ -267,7 +267,10 @@ export function compileAbortListenerCall(
         context.checker.getTypeAtLocation(callback),
         "exact",
     )[0];
-    if (signature && signature.getParameters().length > 0)
+    if (
+        signature &&
+        signatureParameterTypes(context.checker, signature, callback).length > 0
+    )
         return context.fail(
             callback,
             "AbortSignal 'abort' listeners that take the event are not lowered.",
