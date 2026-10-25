@@ -252,6 +252,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    keyIndex,
     patternSlots,
     refuseProtoSetter,
     equalityOperator,
@@ -14774,14 +14775,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // An array's own keys are its indices and its length; `in` also
         // reaches Array.prototype's and Object.prototype's members.
-        const length = this.membershipArrayLength(narrowed);
-        if (length !== undefined) {
+        const indexed = this.membershipArrayOwner(narrowed);
+        if (indexed !== undefined) {
             if (key.staticString !== undefined) {
                 const name = key.staticString;
-                const index = Number(name);
+                const index = keyIndex(name);
                 if (name === "length") return "true";
-                if (String(index) === name && Number.isInteger(index))
-                    return `bbl::js::array_has_index(${length}, ${doubleLiteral(index)})`;
+                if (index !== undefined) {
+                    this.context.reachJsData();
+                    return `bbl::js::array_has_index(${indexed}, ${doubleLiteral(index)})`;
+                }
                 return String(
                     operator === "in" &&
                         (name in Array.prototype ||
@@ -14790,7 +14793,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             if (key.kind === "number" || key.dataType?.kind === "number") {
                 this.context.reachJsData();
-                return `bbl::js::array_has_index(${length}, ${this.context.castNumber(key, "double")})`;
+                return `bbl::js::array_has_index(${indexed}, ${this.context.castNumber(key, "double")})`;
             }
             return this.context.fail(
                 keyNode,
@@ -14805,8 +14808,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** An array-like owner's length as a double, when membership can read it. */
-    private membershipArrayLength(owner: Value): string | undefined {
+    /**
+     * What `bbl::js::array_has_index` tests an array-like owner's index
+     * against: a container, or a static tuple's length.
+     */
+    private membershipArrayOwner(owner: Value): string | undefined {
         if (owner.kind === "tuple" && owner.tupleElements) {
             this.context.emitDiscardedValue(owner);
             return doubleLiteral(owner.tupleElements.length);
@@ -14817,7 +14823,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             type?.kind === "span" ||
             (type !== undefined && isTypedArrayType(type))
         )
-            return `static_cast<double>(${owner.cpp}.size())`;
+            return owner.cpp;
         return undefined;
     }
 

@@ -15029,6 +15029,25 @@ check(
 `,
 );
 
+// A static key is an index only in its canonical form; typed arrays and
+// tuples answer as arrays do.
+check(
+    "array-membership-index-keys",
+    `
+    const xs = [1, 2, 3];
+    const bytes = new Uint8Array(2);
+    const pair: [number, string] = [1, "a"];
+    let k = 0;
+    for (let i = 0; i < 2; i++) k += i;
+    if ("-1" in xs || "01" in xs || "1.5" in xs || !("2" in xs) || "3" in xs)
+        throw new Error("vector");
+    if (!("1" in bytes) || "2" in bytes || !(k in bytes) || !Object.hasOwn(bytes, "0"))
+        throw new Error("typed");
+    if (!("1" in pair) || "2" in pair || !(k in pair))
+        throw new Error("tuple");
+`,
+);
+
 test("crypto.getRandomValues fills integer typed arrays in place", async (t) => {
     const source = `
         const bytes = new Uint8Array(16);
