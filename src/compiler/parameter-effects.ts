@@ -38,8 +38,7 @@ import {
     type ForwardedCallShape,
 } from "./symbols.js";
 import {
-    isAssignmentExpression,
-    operandYield,
+    valueConsumer,
     propertyKey,
     unwrapExpression,
     outermostWrapper,
@@ -584,7 +583,7 @@ class EffectWalker {
             return;
         }
         if (!typeCanCarryReference(this.checker.getTypeAtLocation(top))) return;
-        this.flow(top, parent, current, scope);
+        this.flow(top, current, scope);
     }
 
     private write(
@@ -718,153 +717,141 @@ class EffectWalker {
         else this.emit("escaped", spread, values, scope);
     }
 
-    /** Where a value holding `values` goes once read. */
+    /** Where a value holding `values` goes once read ({@link valueConsumer}). */
     private flow(
         top: ts.Expression,
-        parent: ts.Node,
         values: readonly Projection[],
         scope: Scope,
     ): void {
-        if (
-            (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-            parent.arguments?.includes(top)
-        ) {
-            this.argument(
-                parent,
-                parent.arguments.indexOf(top),
-                false,
-                values,
-                scope,
-            );
-            return;
-        }
-        if (ts.isVariableDeclaration(parent) && parent.initializer === top) {
-            this.bindPattern(parent.name, values, parent, scope);
-            return;
-        }
-        if (isAssignmentExpression(parent) && parent.right === top) {
-            // The assignment's own value is the assigned one.
-            this.assigned(parent.left, values, parent, scope);
-            this.consume(parent, values, scope);
-            return;
-        }
-        if (ts.isPropertyAssignment(parent) && parent.initializer === top) {
-            this.consume(
-                parent.parent,
-                nest(values, aliasKey(propertyKey(parent.name))),
-                scope,
-            );
-            return;
-        }
-        if (ts.isShorthandPropertyAssignment(parent) && parent.name === top) {
-            this.consume(parent.parent, nest(values, parent.name.text), scope);
-            return;
-        }
-        if (ts.isArrayLiteralExpression(parent)) {
-            const index = arrayLiteralSlots(parent).find(
-                (slot) => slot.element === top,
-            )?.index;
-            this.consume(
-                parent,
-                nest(
+        const parent = top.parent;
+        const consumer = valueConsumer(top);
+        switch (consumer.kind) {
+            case "argument":
+                this.argument(
+                    consumer.call,
+                    consumer.index,
+                    false,
                     values,
-                    aliasKey(index === undefined ? undefined : String(index)),
-                ),
-                scope,
-            );
-            return;
-        }
-        const yielded = operandYield(parent, top);
-        if (yielded && ts.isExpression(parent)) {
-            // `&&` only tests an object it does not yield.
-            if (!yielded.has("truthy")) return;
-            this.consume(parent, values, scope);
-            return;
-        }
-        if (
-            ts.isReturnStatement(parent) ||
-            (ts.isArrowFunction(parent) && parent.body === top)
-        ) {
-            this.returned(parent, values, scope);
-            return;
-        }
-        if (ts.isBinaryExpression(parent)) {
-            const operator = parent.operatorToken.kind;
-            if (equalityOperator(operator)) {
-                // Comparing with null or undefined observes no identity.
-                if (!nullishComparison(this.checker, parent))
-                    this.emit("identity", parent, values, scope);
-                return;
-            }
-            if (operator === ts.SyntaxKind.InKeyword) {
-                if (parent.right === top)
-                    this.emit("enumerated", parent, values, scope);
-                return;
-            }
-            if (
-                operator === ts.SyntaxKind.InstanceOfKeyword ||
-                operator === ts.SyntaxKind.CommaToken ||
-                operator === ts.SyntaxKind.PlusToken ||
-                operator === ts.SyntaxKind.LessThanToken ||
-                operator === ts.SyntaxKind.GreaterThanToken ||
-                operator === ts.SyntaxKind.LessThanEqualsToken ||
-                operator === ts.SyntaxKind.GreaterThanEqualsToken
-            )
-                return;
-            this.emit("escaped", parent, values, scope);
-            return;
-        }
-        if (ts.isSwitchStatement(parent) || ts.isCaseClause(parent)) {
-            this.emit("identity", parent, values, scope);
-            return;
-        }
-        if (ts.isForOfStatement(parent) && parent.expression === top) {
-            const list = parent.initializer;
-            if (ts.isVariableDeclarationList(list))
-                for (const declaration of list.declarations)
-                    this.bindPattern(
-                        declaration.name,
-                        projectMember(values, ANY_KEY),
-                        parent,
-                        scope,
-                    );
-            else
-                this.assigned(
-                    list,
-                    projectMember(values, ANY_KEY),
-                    parent,
                     scope,
                 );
-            return;
+                return;
+            case "initializer":
+                this.bindPattern(
+                    consumer.declaration.name,
+                    values,
+                    consumer.declaration,
+                    scope,
+                );
+                return;
+            case "assigned":
+                // The assignment's own value is the assigned one.
+                this.assigned(
+                    consumer.assignment.left,
+                    values,
+                    consumer.assignment,
+                    scope,
+                );
+                this.consume(consumer.assignment, values, scope);
+                return;
+            case "property":
+                this.consume(
+                    consumer.literal,
+                    nest(
+                        values,
+                        ts.isShorthandPropertyAssignment(parent)
+                            ? parent.name.text
+                            : aliasKey(propertyKey(consumer.name)),
+                    ),
+                    scope,
+                );
+                return;
+            case "element": {
+                const index = arrayLiteralSlots(consumer.literal).find(
+                    (slot) => slot.element === top,
+                )?.index;
+                this.consume(
+                    consumer.literal,
+                    nest(
+                        values,
+                        aliasKey(
+                            index === undefined ? undefined : String(index),
+                        ),
+                    ),
+                    scope,
+                );
+                return;
+            }
+            case "operand":
+                // `&&` only tests an object it does not yield.
+                if (consumer.yielded?.has("truthy"))
+                    this.consume(consumer.selection, values, scope);
+                return;
+            case "returned":
+                this.returned(consumer.from, values, scope);
+                return;
+            case "compared":
+                // Comparing with null or undefined observes no identity.
+                if (!nullishComparison(this.checker, consumer.comparison))
+                    this.emit("identity", consumer.comparison, values, scope);
+                return;
+            case "operator": {
+                const operator = consumer.operator.operatorToken.kind;
+                if (operator === ts.SyntaxKind.InKeyword) {
+                    if (consumer.operator.right === top)
+                        this.emit("enumerated", parent, values, scope);
+                    return;
+                }
+                if (
+                    operator === ts.SyntaxKind.InstanceOfKeyword ||
+                    operator === ts.SyntaxKind.PlusToken ||
+                    operator === ts.SyntaxKind.LessThanToken ||
+                    operator === ts.SyntaxKind.GreaterThanToken ||
+                    operator === ts.SyntaxKind.LessThanEqualsToken ||
+                    operator === ts.SyntaxKind.GreaterThanEqualsToken
+                )
+                    return;
+                this.emit("escaped", parent, values, scope);
+                return;
+            }
+            case "switched":
+                this.emit("identity", parent, values, scope);
+                return;
+            case "iterated": {
+                const list = consumer.loop.initializer;
+                if (ts.isVariableDeclarationList(list))
+                    for (const declaration of list.declarations)
+                        this.bindPattern(
+                            declaration.name,
+                            projectMember(values, ANY_KEY),
+                            consumer.loop,
+                            scope,
+                        );
+                else
+                    this.assigned(
+                        list,
+                        projectMember(values, ANY_KEY),
+                        consumer.loop,
+                        scope,
+                    );
+                return;
+            }
+            case "enumerated":
+                this.emit("enumerated", parent, values, scope);
+                return;
+            case "stringified":
+            case "keyed":
+            case "tested":
+            case "discarded":
+                return;
+            case "written":
+                // `++` and `--` read a number out of it.
+                if (ts.isPrefixUnaryExpression(parent)) return;
+                this.emit("escaped", parent, values, scope);
+                return;
+            default:
+                // A tag function is handed the substituted values.
+                this.emit("escaped", parent, values, scope);
         }
-        if (ts.isForInStatement(parent) && parent.expression === top) {
-            this.emit("enumerated", parent, values, scope);
-            return;
-        }
-        if (
-            ts.isTemplateSpan(parent) &&
-            ts.isTaggedTemplateExpression(parent.parent.parent)
-        ) {
-            // A tag function is handed the substituted values.
-            this.emit("escaped", parent, values, scope);
-            return;
-        }
-        if (
-            ts.isTypeOfExpression(parent) ||
-            ts.isVoidExpression(parent) ||
-            ts.isPrefixUnaryExpression(parent) ||
-            ts.isExpressionStatement(parent) ||
-            ts.isTemplateSpan(parent) ||
-            ts.isIfStatement(parent) ||
-            ts.isWhileStatement(parent) ||
-            ts.isDoStatement(parent) ||
-            ts.isForStatement(parent) ||
-            (ts.isConditionalExpression(parent) && parent.condition === top) ||
-            (ts.isElementAccessExpression(parent) &&
-                parent.argumentExpression === top)
-        )
-            return;
-        this.emit("escaped", parent, values, scope);
     }
 
     /**

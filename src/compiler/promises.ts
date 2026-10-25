@@ -136,8 +136,14 @@ export function compileImmediatePromise(
             throw new ApplicationRealmRequired();
         return value;
     }
-    // The other combinators settle in later microtasks: the realm's queue.
-    if (statics === "race" || statics === "allSettled" || statics === "any")
+    // A rejection and the other combinators settle in later microtasks: the
+    // realm's queue.
+    if (
+        statics === "reject" ||
+        statics === "race" ||
+        statics === "allSettled" ||
+        statics === "any"
+    )
         throw new ApplicationRealmRequired();
     if (statics === "all") {
         if (call.arguments.length !== 1) {

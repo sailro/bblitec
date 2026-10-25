@@ -58,6 +58,7 @@ import {
     callSignatures,
     classInstanceDeclaration,
     unionMembers,
+    boundedTupleElements,
 } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -1872,28 +1873,22 @@ export class ClassLowerer {
                 missing: false,
             }));
         }
-        const tuple = this.context.checker.getTypeAtLocation(expression);
-        const flags = this.context.checker.isTupleType(tuple)
-            ? ((tuple as ts.TypeReference).target as ts.TupleType).elementFlags
-            : undefined;
+        const lanes = boundedTupleElements(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
+        );
         if (
             spread.kind === "data" &&
             (type?.kind === "product" || type?.kind === "vector") &&
-            flags !== undefined &&
-            flags.every(
-                (flag) =>
-                    (flag &
-                        (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) ===
-                    0,
-            )
+            lanes
         ) {
             const pinned = this.context.bindings.pinValueToTemporary(
                 spread,
                 "spread_tuple",
                 expression,
             );
-            return flags.map((flag, index) => {
-                const missing = (flag & ts.ElementFlags.Optional) !== 0;
+            return lanes.map(({ flags }, index) => {
+                const missing = (flags & ts.ElementFlags.Optional) !== 0;
                 if (type.kind === "vector" && missing) {
                     // A lane past the array's end is undefined.
                     const lane: DataType =

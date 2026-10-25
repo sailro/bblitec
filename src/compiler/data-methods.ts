@@ -21,6 +21,7 @@ import {
 } from "./receiver-methods.js";
 import ts from "typescript";
 import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
+import { absentReceiverMessage } from "./properties.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -1068,19 +1069,13 @@ export function compileDataMethodCall(
             );
         }
         const callback = lowerer.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            lowerer.context.fail(
-                callback,
-                "Tuple Array.map requires a local function or function literal callback.",
-            );
-        }
-        const storedCallback = requiresStaticMap
-            ? undefined
-            : lowerer.prepareCallbackValue(callback, "tuple_map");
+        const operand = lowerer.callbackOperand(
+            callback,
+            requiresStaticMap
+                ? undefined
+                : lowerer.prepareCallbackValue(callback, "tuple_map"),
+            "Tuple Array.map",
+        );
         const elements =
             tupleOwnerElements ??
             nativeRecordElements ??
@@ -1105,10 +1100,10 @@ export function compileDataMethodCall(
                     dynamicOwner,
                 ];
                 mapped.push(
-                    storedCallback
+                    "stored" in operand
                         ? lowerer.context.bindings.pinValueToTemporary(
                               lowerer.compileFunctionValueCall(
-                                  storedCallback,
+                                  operand.stored,
                                   arguments_,
                                   call,
                               ),
@@ -1117,10 +1112,10 @@ export function compileDataMethodCall(
                           )
                         : lowerer.context.asyncActivations.withStaticCollectionCallback(
                               call,
-                              callback,
+                              operand.local,
                               () =>
                                   lowerer.context.compileCallbackWithValues(
-                                      callback,
+                                      operand.local,
                                       arguments_,
                                       call,
                                   ),
@@ -1338,7 +1333,7 @@ function compileMissingPrimitiveMethod(
     return lowerer.leafValue(
         present === undefined
             ? `(static_cast<void>(${receiver.cpp}), ${notCallable})`
-            : `(${present} ? ${notCallable} : ${thrown(`Cannot read properties of ${absent} (reading '${name}')`)})`,
+            : `(${present} ? ${notCallable} : ${thrown(absentReceiverMessage(absent, name))})`,
         result,
     );
 }
@@ -1496,7 +1491,7 @@ function compileKnownDataMethod(
                 lowerer.context.reachJsData();
                 lowerer.context.emit({
                     kind: "expression",
-                    code: `if (!(${receiver})) bbl::js::throw_nullish_access("Cannot call a method on a nullish receiver.");`,
+                    code: `if (!(${receiver})) bbl::js::throw_nullish_access(${lowerer.context.cppString(absentReceiverMessage("null or undefined", callee.name))});`,
                 });
             }
             return lowerer.compileCallableRecordCall(
@@ -2714,16 +2709,6 @@ function compileArrayReduce(
         );
     }
     const callback = lowerer.context.unwrap(argumentAt(call, 0));
-    if (
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    ) {
-        lowerer.context.fail(
-            callback,
-            `Array.${method} requires a local function or function literal callback.`,
-        );
-    }
     const resultType = lowerer.dataTypeAt(call);
     if (!resultType) {
         lowerer.context.fail(
@@ -2745,7 +2730,11 @@ function compileArrayReduce(
         narrowed,
         source,
     );
-    const storedCallback = lowerer.prepareCallbackValue(callback, "reduce");
+    const operand = lowerer.callbackOperand(
+        callback,
+        lowerer.prepareCallbackValue(callback, "reduce"),
+        `Array.${method}`,
+    );
     lowerer.context.emit({
         kind: "declaration",
         type: "const std::size_t",
@@ -2825,17 +2814,18 @@ function compileArrayReduce(
                     ],
                 },
             ];
-            const reduced = storedCallback
-                ? lowerer.compileFunctionValueCall(
-                      storedCallback,
-                      arguments_,
-                      call,
-                  )
-                : lowerer.context.compileCallbackWithValues(
-                      callback,
-                      arguments_,
-                      call,
-                  );
+            const reduced =
+                "stored" in operand
+                    ? lowerer.compileFunctionValueCall(
+                          operand.stored,
+                          arguments_,
+                          call,
+                      )
+                    : lowerer.context.compileCallbackWithValues(
+                          operand.local,
+                          arguments_,
+                          call,
+                      );
             lowerer.context.emit({
                 kind: "expression",
                 code: `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,

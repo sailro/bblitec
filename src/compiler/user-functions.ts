@@ -37,6 +37,7 @@ import {
     holdsNoPayload,
     valueKindOf,
     unionMembers,
+    fixedTupleElements,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -937,19 +938,6 @@ export function resolveFunctionDeclaration(
     return declaration;
 }
 
-/** The length of a tuple type whose elements are all required. */
-function fixedTupleLength(
-    checker: ts.TypeChecker,
-    type: ts.Type,
-): number | undefined {
-    if (!checker.isTupleType(type)) return undefined;
-    const flags = ((type as ts.TypeReference).target as ts.TupleType)
-        .elementFlags;
-    return flags.every((flag) => (flag & ts.ElementFlags.Required) !== 0)
-        ? flags.length
-        : undefined;
-}
-
 /**
  * Whether a function literal's final parameter is a rest parameter of a
  * fixed tuple type: its lanes are ordinary parameters of a signature that
@@ -963,7 +951,8 @@ export function hasFixedTupleRest(
     const last = declaration.parameters.at(-1);
     return (
         last?.dotDotDotToken !== undefined &&
-        fixedTupleLength(checker, checker.getTypeAtLocation(last)) !== undefined
+        fixedTupleElements(checker, checker.getTypeAtLocation(last)) !==
+            undefined
     );
 }
 
@@ -995,6 +984,20 @@ export function tryResolveFunctionDeclaration(
         if (error === unsupported) return undefined;
         throw error;
     }
+}
+
+/** The function a callback value runs: its literal, or the one its name resolves to. */
+export function callbackFunction(
+    checker: ts.TypeChecker,
+    value: Value,
+):
+    | Exclude<NonNullable<Value["callbackDeclaration"]>, ts.Identifier>
+    | SupportedFunction
+    | undefined {
+    const declaration = value.callbackDeclaration;
+    return declaration && ts.isIdentifier(declaration)
+        ? tryResolveFunctionDeclaration(checker, declaration)
+        : declaration;
 }
 
 /**
@@ -2850,15 +2853,7 @@ export class UserFunctionLowerer {
         const callbacks: SupportedFunction[] = [callee];
         const fieldCallbacks = new EmissionSet<string>();
         for (const [key, value] of Object.entries(properties)) {
-            const declaration =
-                value.kind === "callback" &&
-                value.callbackDeclaration &&
-                ts.isIdentifier(value.callbackDeclaration)
-                    ? tryResolveFunctionDeclaration(
-                          this.checker,
-                          value.callbackDeclaration,
-                      )
-                    : value.callbackDeclaration;
+            const declaration = callbackFunction(this.checker, value);
             if (value.kind === "callback" && isSupportedFunction(declaration)) {
                 callbacks.push(declaration);
                 fieldCallbacks.add(key);
@@ -4742,10 +4737,6 @@ export class UserFunctionLowerer {
             : cpp;
     }
 
-    private fixedTupleLength(type: ts.Type): number | undefined {
-        return fixedTupleLength(this.checker, type);
-    }
-
     private nativeParameterValue(
         context: UserFunctionContext,
         parameter: ts.BindingName,
@@ -5037,7 +5028,8 @@ export class UserFunctionLowerer {
 
     /**
      * Materializes a read-only closure as a copyable native function value.
-     * `receiver` is the home object a literal's method reads as `this`.
+     * `receiver` is what its body reads as `this`: a literal method's home
+     * object, or the thisArg `bind` gave a function.
      */
     public compileStoredDataFunction(
         context: UserFunctionContext,
@@ -5189,7 +5181,7 @@ export class UserFunctionLowerer {
         const restLanes =
             dataType.restParameter === undefined &&
             restParameter?.declaration.dotDotDotToken
-                ? this.fixedTupleLength(restParameter.type)
+                ? fixedTupleElements(this.checker, restParameter.type)?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -5197,6 +5189,16 @@ export class UserFunctionLowerer {
                 runtimeParameters.length - 1 + restLanes
                 ? restParameter
                 : undefined;
+        if (
+            !tupleRest &&
+            restParameter?.declaration.dotDotDotToken &&
+            this.checker.isTupleType(restParameter.type) &&
+            dataType.parameters.length !== runtimeParameters.length
+        )
+            context.fail(
+                declaration,
+                "A stored function's tuple rest parameter is bound from lanes only when every element is required and the signature passes each one.",
+            );
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
         const parameters = dataType.parameters.map((type, index) => ({

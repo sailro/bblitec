@@ -88,11 +88,37 @@ export function handedOn(): void {
     const box = { n: 0 };
     kept.push(box);
     box.n = 1;
+}
+export function selectedOut(flag: boolean): void {
+    const box = { n: 0 };
+    const pick = () => (flag ? box : kept[0]);
+    kept.push(pick());
+    box.n = 1;
+}
+export function eitherOut(): void {
+    const box = { n: 0 };
+    const pick = () => box || kept[0];
+    kept.push(pick());
+    box.n = 1;
+}
+export function readBackOut(): void {
+    const box = { n: 0 };
+    kept.push([box].concat()[0]!);
+    box.n = 1;
 }`);
     assert.ok(touchesNoState(footprint("local")));
-    const handed = footprint("handedOn");
-    assert.ok(handed.writes.objects.has("data"));
-    assert.ok(handed.writes.objects.has("objects"));
+    // What a closure returns escapes, a selected operand included, and so
+    // does what is read back out of a literal or result holding it.
+    for (const name of [
+        "handedOn",
+        "selectedOut",
+        "eitherOut",
+        "readBackOut",
+    ]) {
+        const handed = footprint(name);
+        assert.ok(handed.writes.objects.has("data"), name);
+        assert.ok(handed.writes.objects.has("objects"), name);
+    }
 });
 
 test("the clock is state no code writes; the random sequence is written by each draw", () => {

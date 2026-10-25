@@ -175,8 +175,6 @@ struct DocumentSnapshot {
     std::set<std::uint32_t> dom_pointer_elements;
     /** The realm's pointer capture state, which the display targets input by. */
     std::shared_ptr<DomPointerCaptures> pointer_captures;
-    /** The realm's fixed capture time when published: the display's CSS animations run at it. */
-    std::optional<double> time;
 };
 
 /** One element as the display's last update laid it out and styled it. */
@@ -305,6 +303,10 @@ struct WindowServices final : CanvasProvider {
     std::string capture_failure;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
+    /** The realm's fixed capture time at its latest publication or rendering update. */
+    std::optional<double> time;
+    /** When the display's time-driven work next changes the document after its latest update. */
+    std::optional<UiRmlNextUpdate> next_update;
     /** Requests the Window thread performs in submission order. */
     std::vector<std::unique_ptr<WindowRequest>> window_requests;
     /** The realm's pending message box, answered in place; guarded by `mutex`. */
@@ -1075,8 +1077,9 @@ namespace {
 /**
  * How a publication meets the display: `post` leaves changes unpublished
  * while the display has not applied the previous snapshot; `await_display`
- * waits for the display to apply them; `render` also publishes when nothing
- * changed, so the display's CSS animations reach the snapshot's time.
+ * waits for the display to apply them; `render` ends an animation frame,
+ * whose time reaches the display's next update, and also publishes when
+ * nothing changed if the display's time-driven work is due by that time.
  */
 enum class DocumentPublication { post, await_display, render };
 
@@ -1123,16 +1126,22 @@ void publish_window_document(DocumentPublication mode) {
                     doc.published_text_selection_revision != doc.engine.ui_text_selection_revision)
             ? snapshot_document(doc.engine, text_since, doc.published_canvas_revision)
             : nullptr;
-    // A rendering update with no changes publishes an empty delta at its time.
-    if (!snapshot && mode == DocumentPublication::render) {
-        snapshot = std::make_unique<DocumentSnapshot>();
-        snapshot->text_updates.emplace();
-    }
     std::unique_lock lock(host.mutex);
     if (host.stopping)
         throw WorkerTerminated{};
+    const auto time = EventLoop::current().fixed_animation_time();
+    // The display is current when its latest update ran at the latest
+    // published time and left no time-driven work due by now; otherwise an
+    // empty delta waits for its update.
+    const bool current = host.next_update && host.time == host.next_update->milliseconds &&
+                         !host.next_update->due(*time);
+    if (!snapshot && mode == DocumentPublication::render && !current) {
+        snapshot = std::make_unique<DocumentSnapshot>();
+        snapshot->text_updates.emplace();
+    }
+    if (snapshot || mode == DocumentPublication::render)
+        host.time = time;
     if (snapshot) {
-        snapshot->time = EventLoop::current().fixed_animation_time();
         snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
         host.pending = std::move(snapshot);
         doc.published_revision = doc.engine.ui_revision;
@@ -1629,6 +1638,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
             std::map<std::pair<std::uint64_t, std::uint64_t>, UiElementHandle> touch_captures;
             SDL_MouseButtonFlags pointer_buttons = 0;
             int width = 0, height = 0;
+            // The realm time of the display's latest update.
+            std::optional<double> updated_time;
             const auto update_layout = [&] {
                 if (!SDL_GetWindowSizeInPixels(window.get(), &width, &height))
                     throw std::runtime_error(SDL_GetError());
@@ -1640,17 +1651,19 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     std::lock_guard lock(services->mutex);
                     snapshot = std::move(services->pending);
                     revision = services->requested;
+                    updated_time = services->time;
                 }
                 // Under the fixed capture clock CSS animations run at the
-                // time the application realm published the snapshot.
-                if (snapshot && snapshot->time)
-                    set_ui_rml_time(*ui, snapshot->time);
+                // application realm's latest published or rendered time.
+                if (updated_time)
+                    set_ui_rml_time(*ui, updated_time);
                 if (snapshot)
                     apply_document(display, std::move(*snapshot),
                                    [services](std::unique_ptr<ExternalEvent> event) {
                                        services->post_input(std::move(event));
                                    });
                 update_ui_rml_runtime(*ui, width, height);
+                const auto next_update = ui_rml_next_update(*ui);
                 next_layout.width = width;
                 next_layout.height = height;
                 const auto density = SDL_GetWindowDisplayScale(window.get());
@@ -1708,6 +1721,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     services->layout = layout;
                     services->pointer_states = pointer_states;
                     services->completed = revision;
+                    services->next_update = next_update;
                 }
                 services->wake.notify_all();
                 return true;
@@ -1959,6 +1973,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 bool canvases_ready = false;
                 {
                     std::lock_guard lock(services->mutex);
+                    // A frame its realm ended without publishing presents
+                    // after the display's update at its time.
+                    if (batched_repaints && fixed_clock && services->time != updated_time)
+                        continue;
                     if ((frame_options.max_frames > 0 || !frame_options.screenshot_path.empty()) &&
                         !services->capture_failure.empty())
                         throw std::runtime_error("Source canvas initialization failed: " +

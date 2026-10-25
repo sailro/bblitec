@@ -5,6 +5,8 @@ import { isStringValue, type Value } from "./types.js";
 import { expressionMayRunCode, objectLiteralMembers } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 import type { DataStructField } from "./data-types.js";
+import { isJsonValue } from "./json-bridge.js";
+import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 
 export const ERROR_CLASS_FIELDS: readonly DataStructField[] = [
     { sourceName: "message", name: "message", type: { kind: "string" } },
@@ -386,6 +388,70 @@ function compileErrorCause(
         }
     }
     return cause;
+}
+
+/**
+ * What a thrown or rejected value raises: an Error keeps its identity, a
+ * string or dynamic value its payload. `pointer` marks a
+ * `std::exception_ptr`, otherwise an exception object.
+ */
+export function thrownException(
+    context: Pick<
+        LoweringServices,
+        | "thrownValueKinds"
+        | "reachJson"
+        | "fail"
+        | "cppString"
+        | "dataLowerer"
+        | "dataTypes"
+    >,
+    thrown: Value,
+    node: ts.Node,
+    refusal: { node: ts.Node; message: string },
+): { cpp: string; pointer: boolean } {
+    const error = authoredErrorValue(context, thrown) ?? thrown;
+    if (isJsonValue(error)) {
+        if (!context.thrownValueKinds.has("string"))
+            throw new ThrownValueStorageRequired("string");
+        context.reachJson();
+        return {
+            cpp: `bbl::js::thrown_exception(${error.cpp})`,
+            pointer: true,
+        };
+    }
+    if (error.dataType?.kind === "error")
+        return {
+            cpp: context.dataLowerer.compileKnownValueForSink(
+                error,
+                { kind: "error" },
+                node,
+            ),
+            pointer: true,
+        };
+    const value = thrownMessage(error);
+    if (!value) return context.fail(refusal.node, refusal.message);
+    if (value.staticString === undefined && !isStringValue(value))
+        return context.fail(node, "A thrown Error message must be a string.");
+    if (!error.nativeError && !context.thrownValueKinds.has("string"))
+        throw new ThrownValueStorageRequired("string");
+    return {
+        cpp: `${error.nativeError ? "std::runtime_error" : "bbl::js::ThrownString"}(${
+            value.staticString !== undefined
+                ? context.cppString(value.staticString)
+                : value.cpp
+        })`,
+        pointer: false,
+    };
+}
+
+/** A {@link thrownException} as a `std::exception_ptr`. */
+export function exceptionPointer(exception: {
+    cpp: string;
+    pointer: boolean;
+}): string {
+    return exception.pointer
+        ? exception.cpp
+        : `std::make_exception_ptr(${exception.cpp})`;
 }
 
 /** The message a thrown value carries, or undefined when it carries none. */

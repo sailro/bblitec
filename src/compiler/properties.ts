@@ -18,10 +18,16 @@ import {
     presentMembers,
     holdsOnly,
     arrayShape,
+    isVoid,
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
-import { knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOfNull,
+    knownCondition,
+    undefinedValue,
+} from "./values/model.js";
+import { voidReceiver } from "./undefined-values.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
@@ -34,7 +40,11 @@ import {
 import { screenSpaceFacts } from "../pinned-screen-space.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
-import { declaredInDomLibrary, libraryName } from "./symbols.js";
+import {
+    accessedPropertySymbol,
+    declaredInDomLibrary,
+    libraryName,
+} from "./symbols.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
@@ -2083,9 +2093,11 @@ interface PropertyAccessContext
             | "classLowerer"
             | "defaultEngine"
             | "deferredCapabilities"
+            | "emitDiscardedValue"
             | "handleCollections"
             | "optionalChainStop"
             | "platformDocumentHidden"
+            | "sharedClosures"
             | "useNativeValue"
         > {
     /** Bound only while lowering a platform visibility callback body. */
@@ -2099,6 +2111,19 @@ interface PropertyAccessContext
         accessor: ts.GetAccessorDeclaration,
     ): Value;
     enumMemberValue(expression: ts.PropertyAccessExpression): Value | undefined;
+}
+
+/** JavaScript's TypeError message for an access through an absent receiver. */
+export function absentReceiverMessage(
+    absence: "undefined" | "null" | "null or undefined",
+    member: string | undefined,
+    write = false,
+): string {
+    const reading =
+        member === undefined
+            ? ""
+            : ` (${write ? "setting" : "reading"} '${member}')`;
+    return `Cannot ${write ? "set" : "read"} properties of ${absence}${reading}`;
 }
 
 const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
@@ -2180,6 +2205,61 @@ function isStoredPrimitiveRead(value: Value): boolean {
 /** Property access on every owner the compiler represents. */
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
+
+    /** A class method read without calling it: method values are unsupported. */
+    private refuseMethodValue(expression: ts.PropertyAccessExpression): void {
+        const position = outermostWrapper(expression);
+        if (
+            ts.isCallExpression(position.parent) &&
+            position.parent.expression === position
+        )
+            return;
+        const declaration = accessedPropertySymbol(
+            this.context.checker,
+            expression,
+        )?.valueDeclaration;
+        if (
+            declaration &&
+            ts.isMethodDeclaration(declaration) &&
+            ts.isClassLike(declaration.parent)
+        )
+            this.context.fail(
+                expression,
+                `Method '${expression.name.text}' is read as a value; method values are unsupported (call it, or call it in an arrow).`,
+            );
+    }
+
+    /**
+     * A read through an absent receiver, after the operands JavaScript
+     * evaluates first: its TypeError, typed as the value `node` would have
+     * produced. `member` is the key, when generation knows it.
+     */
+    public absentReceiverRead(
+        node: ts.Expression,
+        absence: "undefined" | "null",
+        member?: string,
+    ): Value {
+        const message = this.context.cppString(
+            absentReceiverMessage(absence, member),
+        );
+        this.context.reachJsData();
+        const type = this.context.dataLowerer.dataTypeAt(node);
+        if (type)
+            return this.context.dataLowerer.leafValue(
+                `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
+                type,
+            );
+        const result = this.context.checker.getTypeAtLocation(node);
+        if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
+            return {
+                kind: "void",
+                cpp: `bbl::js::throw_nullish_access(${message})`,
+            };
+        return this.context.fail(
+            node,
+            "A read through an absent receiver requires a represented result type.",
+        );
+    }
 
     /**
      * An event target narrowed to an element interface, read through the
@@ -2673,6 +2753,7 @@ export class PropertyAccessLowerer {
     ): Value {
         const stopped = this.context.optionalChainStop(expression);
         if (stopped) return stopped;
+        this.refuseMethodValue(expression);
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -2911,7 +2992,11 @@ export class PropertyAccessLowerer {
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const compiledOwner = this.context.compileValue(ownerExpression);
+        const compiledOwner = voidReceiver(
+            this.context,
+            this.context.compileValue(ownerExpression),
+            ownerExpression,
+        );
         const rawOwner =
             this.context.presentationHostCpp &&
             compiledOwner.browserValue?.kind === "object" &&
@@ -2941,8 +3026,14 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (platformProperty) return platformProperty;
-        if (owner.kind === "json-null" && expression.questionDotToken)
-            return undefinedValue();
+        if (owner.kind === "json-null")
+            return expression.questionDotToken
+                ? undefinedValue()
+                : this.absentReceiverRead(
+                      expression,
+                      absenceOfNull(owner),
+                      expression.name.text,
+                  );
         const property = expression.name.text;
         if (owner.kind === "dom-event") {
             if (property === "target" || property === "currentTarget")

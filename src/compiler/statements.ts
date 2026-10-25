@@ -74,10 +74,9 @@ import {
 } from "./syntax.js";
 import {
     caughtErrorValue,
-    authoredErrorValue,
     compileErrorConstruction,
     errorConstructor,
-    thrownMessage,
+    thrownException,
 } from "./error-values.js";
 import {
     commonResourceValue,
@@ -122,7 +121,6 @@ import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
 import { counterWrite } from "./counted-loops.js";
 
-import { ThrownValueStorageRequired } from "./thrown-value-storage.js";
 import { knownCondition } from "./values/model.js";
 
 interface StatementLoweringContext extends Pick<
@@ -2519,53 +2517,13 @@ export class StatementLowerer {
                       "thrown",
                   )
                 : context.compileValue(thrown);
-        const error = authoredErrorValue(context, sourceError) ?? sourceError;
-        if (isJsonValue(error)) {
-            if (!context.thrownValueKinds.has("string"))
-                throw new ThrownValueStorageRequired("string");
-            context.reachThrow();
-            context.reachJson();
-            context.emitNativeThrow(
-                `bbl::js::thrown_exception(${error.cpp})`,
-                statement,
-                true,
-            );
-            return;
-        }
-        if (error.dataType?.kind === "error") {
-            context.reachThrow();
-            context.emitNativeThrow(
-                context.dataLowerer.compileKnownValueForSink(
-                    error,
-                    { kind: "error" },
-                    thrown,
-                ),
-                statement,
-                true,
-            );
-            return;
-        }
-        const value = thrownMessage(error);
-        if (!value) {
-            context.fail(
-                statement,
+        const exception = thrownException(context, sourceError, thrown, {
+            node: statement,
+            message:
                 "A scene throws a new Error, a held Error value or a string.",
-            );
-        }
-        if (value.staticString === undefined && !isStringValue(value)) {
-            context.fail(thrown, "A thrown Error message must be a string.");
-        }
-        if (!error.nativeError && !context.thrownValueKinds.has("string"))
-            throw new ThrownValueStorageRequired("string");
+        });
         context.reachThrow();
-        context.emitNativeThrow(
-            `${error.nativeError ? "std::runtime_error" : "bbl::js::ThrownString"}(${
-                value.staticString !== undefined
-                    ? context.cppString(value.staticString)
-                    : value.cpp
-            })`,
-            statement,
-        );
+        context.emitNativeThrow(exception.cpp, statement, exception.pointer);
     }
 
     private emitBlock(

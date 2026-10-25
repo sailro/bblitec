@@ -130,6 +130,9 @@ import {
     classInstanceDeclaration,
     inheritsFrom,
     unionMembers,
+    boundedTupleElements,
+    tupleElements,
+    fixedTupleElements,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -4409,18 +4412,13 @@ export class DataTypeRegistry {
                     const finite = this.finiteArrayType(node);
                     if (finite) return finite;
                 }
-                const mapped = this.fromStoredTsType(elementType, node);
-                if (!mapped) {
+                const storedElement = this.arrayStoredElement(
+                    elementType,
+                    node,
+                );
+                if (!storedElement) {
                     return undefined;
                 }
-                const element = this.arrayElementStorage(mapped);
-                // Replacing an element and mutating the object stored in an
-                // element are separate permissions: even ReadonlyArray keeps
-                // object identity for its values. Functions carry identity too,
-                // because indexOf/includes compare the stored function object.
-                const storedElement = markIdentityFunctions(
-                    this.markStoredObjectReferences(element),
-                );
                 // Boolean arrays use deque storage to keep real boolean
                 // references; their readonly views cannot be contiguous spans.
                 return symbolName === "Array" ||
@@ -4737,119 +4735,169 @@ export class DataTypeRegistry {
         const erasedParameters: number[] = [];
         const optionalParameters: number[] = [];
         let restParameter: number | undefined;
+        // Each mapped parameter's declaration and symbol; a tuple lane has none.
+        const declarations: (
+            readonly [ts.ParameterDeclaration, ts.Symbol] | undefined
+        )[] = [];
+        const mapParameter = (
+            index: number,
+            declaredType: ts.Type,
+            location: ts.Node,
+            source:
+                | {
+                      declaration: ts.Declaration | undefined;
+                      symbol: ts.Symbol;
+                      override: ts.Type | undefined;
+                  }
+                | { lane: ts.ElementFlags },
+        ): (DataType | undefined)[] => {
+            const lane = "lane" in source ? source.lane : undefined;
+            const declaration =
+                "declaration" in source ? source.declaration : undefined;
+            const parameter =
+                declaration && ts.isParameter(declaration)
+                    ? declaration
+                    : undefined;
+            const override = "override" in source ? source.override : undefined;
+            if (lane !== undefined && (lane & ts.ElementFlags.Variadic) !== 0)
+                return [undefined];
+            if (lane !== undefined && (lane & ts.ElementFlags.Rest) !== 0) {
+                restParameter = index - erasedParameters.length;
+                declarations.push(undefined);
+                const element = this.arrayStoredElement(declaredType, location);
+                return [element && { kind: "vector", element }];
+            }
+            const declaredCallable =
+                this.checker.getNonNullableType(declaredType);
+            const declaredSignature = callSignatures(
+                this.checker,
+                declaredCallable,
+                "exact",
+            )[0];
+            const actualSignature = override
+                ? callSignatures(this.checker, override, "present")[0]
+                : undefined;
+            const parameterType =
+                callSignatures(this.checker, declaredCallable, "exact")
+                    .length && !actualSignature
+                    ? declaredType
+                    : (override ?? declaredType);
+            if (holdsNoPayload(parameterType)) {
+                erasedParameters.push(index);
+                return [];
+            }
+            // A default initializer makes its parameter optional to callers; the
+            // function's own body supplies the default for an absent argument.
+            const defaulted =
+                parameter?.initializer !== undefined &&
+                !nullability(declaredType).undefined;
+            if (
+                (lane !== undefined &&
+                    (lane & ts.ElementFlags.Optional) !== 0) ||
+                nullability(declaredType).undefined ||
+                defaulted
+            )
+                optionalParameters.push(index - erasedParameters.length);
+            const mapped =
+                restArguments &&
+                "symbol" in source &&
+                this.isUnknownRestParameter(source.symbol)
+                    ? this.storedRestArray(restArguments, location)
+                    : actualSignature &&
+                        callSignatures(this.checker, declaredCallable, "exact")
+                            .length === 1
+                      ? this.fromFunctionType(
+                            declaredCallable,
+                            location,
+                            false,
+                            undefined,
+                            (this.checker.getReturnTypeOfSignature(
+                                actualSignature,
+                            ).flags &
+                                ts.TypeFlags.Never) !==
+                                0 &&
+                                declaredSignature &&
+                                isVoid(
+                                    this.checker.getReturnTypeOfSignature(
+                                        declaredSignature,
+                                    ),
+                                )
+                                ? undefined
+                                : actualSignature,
+                        )
+                      : ((this.dynamicJsonStorage
+                            ? this.dynamicJsonType(parameterType)
+                            : undefined) ??
+                        this.fromStoredTsType(parameterType, location) ??
+                        // An `unknown` parameter passed `undefined`, `null`
+                        // or `{}`, values without storage of their own,
+                        // holds them as the dynamic value it can be.
+                        (override &&
+                        (declaredType.flags & ts.TypeFlags.Unknown) !== 0 &&
+                        this.holdsOnlyDynamicValues(override)
+                            ? { kind: "json" as const }
+                            : undefined));
+            if (parameter?.dotDotDotToken) {
+                if (mapped?.kind !== "vector") return [undefined];
+                restParameter = index - erasedParameters.length;
+            }
+            // A function passed through another stored function remains the same
+            // JavaScript function object. Carry its identity across that native
+            // call boundary so an eventual Array/Map/Set comparison can observe it.
+            if (!mapped) return [undefined];
+            const owned = markIdentityFunctions(
+                this.ownFunctionRecord(
+                    this.ownReadonlyArray(mapped, parameterType),
+                ),
+            );
+            const retained = this.engineParameterStorage(declaration, owned);
+            declarations.push(
+                parameter && "symbol" in source
+                    ? [parameter, source.symbol]
+                    : undefined,
+            );
+            return [
+                this.absenceTaggedStorage(
+                    declaration,
+                    defaulted ? this.nullableType(retained, true) : retained,
+                ),
+            ];
+        };
         const parameters = signature
             .getParameters()
-            .flatMap((parameter, index) => {
+            .flatMap((symbol, index) => {
                 const declaration =
-                    parameter.valueDeclaration ?? parameter.declarations?.[0];
+                    symbol.valueDeclaration ?? symbol.declarations?.[0];
                 const declaredType = this.checker.getTypeOfSymbolAtLocation(
-                    parameter,
+                    symbol,
                     declaration ?? node,
                 );
                 const override = parameterOverrides?.[index];
-                const declaredCallable =
-                    this.checker.getNonNullableType(declaredType);
-                const declaredSignature = callSignatures(
-                    this.checker,
-                    declaredCallable,
-                    "exact",
-                )[0];
-                const actualSignature = override
-                    ? callSignatures(this.checker, override, "present")[0]
-                    : undefined;
-                const parameterType =
-                    callSignatures(this.checker, declaredCallable, "exact")
-                        .length && !actualSignature
-                        ? declaredType
-                        : (override ?? declaredType);
-                if (holdsNoPayload(parameterType)) {
-                    erasedParameters.push(index);
-                    return [];
-                }
-                // A default initializer makes its parameter optional to callers; the
-                // function's own body supplies the default for an absent argument.
-                const defaulted =
-                    declaration !== undefined &&
-                    ts.isParameter(declaration) &&
-                    declaration.initializer !== undefined &&
-                    !nullability(declaredType).undefined;
-                if (nullability(declaredType).undefined || defaulted)
-                    optionalParameters.push(index - erasedParameters.length);
-                const mapped =
-                    restArguments && this.isUnknownRestParameter(parameter)
-                        ? this.storedRestArray(
-                              restArguments,
-                              declaration ?? node,
-                          )
-                        : actualSignature &&
-                            callSignatures(
-                                this.checker,
-                                declaredCallable,
-                                "exact",
-                            ).length === 1
-                          ? this.fromFunctionType(
-                                declaredCallable,
-                                declaration ?? node,
-                                false,
-                                undefined,
-                                (this.checker.getReturnTypeOfSignature(
-                                    actualSignature,
-                                ).flags &
-                                    ts.TypeFlags.Never) !==
-                                    0 &&
-                                    declaredSignature &&
-                                    isVoid(
-                                        this.checker.getReturnTypeOfSignature(
-                                            declaredSignature,
-                                        ),
-                                    )
-                                    ? undefined
-                                    : actualSignature,
-                            )
-                          : ((this.dynamicJsonStorage
-                                ? this.dynamicJsonType(parameterType)
-                                : undefined) ??
-                            this.fromStoredTsType(
-                                parameterType,
-                                declaration ?? node,
-                            ) ??
-                            // An `unknown` parameter passed `undefined`, `null`
-                            // or `{}`, values without storage of their own,
-                            // holds them as the dynamic value it can be.
-                            (override &&
-                            (declaredType.flags & ts.TypeFlags.Unknown) !== 0 &&
-                            this.holdsOnlyDynamicValues(override)
-                                ? { kind: "json" as const }
-                                : undefined));
-                if (
+                // A rest parameter of a tuple type (how TypeScript spells a
+                // bound function) is its elements, each a parameter.
+                const lanes =
+                    !override &&
                     declaration &&
                     ts.isParameter(declaration) &&
                     declaration.dotDotDotToken
-                ) {
-                    if (mapped?.kind !== "vector") return [undefined];
-                    restParameter = index - erasedParameters.length;
-                }
-                // A function passed through another stored function remains the same
-                // JavaScript function object. Carry its identity across that native
-                // call boundary so an eventual Array/Map/Set comparison can observe it.
-                if (!mapped) return [undefined];
-                const owned = markIdentityFunctions(
-                    this.ownFunctionRecord(
-                        this.ownReadonlyArray(mapped, parameterType),
-                    ),
-                );
-                const retained = this.engineParameterStorage(
-                    declaration,
-                    owned,
-                );
-                return [
-                    this.absenceTaggedStorage(
-                        declaration,
-                        defaulted
-                            ? this.nullableType(retained, true)
-                            : retained,
-                    ),
-                ];
+                        ? tupleElements(this.checker, declaredType)
+                        : undefined;
+                return lanes
+                    ? lanes.flatMap((lane, offset) =>
+                          mapParameter(
+                              index + offset,
+                              lane.type,
+                              declaration ?? node,
+                              {
+                                  lane: lane.flags,
+                              },
+                          ),
+                      )
+                    : mapParameter(index, declaredType, declaration ?? node, {
+                          declaration,
+                          symbol,
+                          override,
+                      });
             });
         if (parameters.some((parameter) => parameter === undefined)) {
             return undefined;
@@ -4910,30 +4958,23 @@ export class DataTypeRegistry {
         };
         // Parameter declarations connect a stored signature to the body's
         // demands for nullish tags or a resource's engine owner.
-        const sites = signature
-            .getParameters()
-            .filter((_, index) => !erasedParameters.includes(index))
-            .map((parameter, index) => {
-                const declaration =
-                    parameter.valueDeclaration ?? parameter.declarations?.[0];
-                if (!declaration || !ts.isParameter(declaration)) return "";
-                const absent = nullability(
-                    this.checker.getTypeOfSymbolAtLocation(
-                        parameter,
-                        declaration,
-                    ),
-                );
-                const stored = parameters[index]!;
-                if (
-                    (!absent.null ||
-                        (!absent.undefined && !declaration.initializer)) &&
-                    dataTypesEqual(stored, this.collectionKeyStorage(stored))
-                )
-                    return "";
-                const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
-                this.parameterSites.set(site, declaration);
-                return site;
-            });
+        const sites = declarations.map((entry, index) => {
+            if (!entry) return "";
+            const [declaration, symbol] = entry;
+            const absent = nullability(
+                this.checker.getTypeOfSymbolAtLocation(symbol, declaration),
+            );
+            const stored = parameters[index]!;
+            if (
+                (!absent.null ||
+                    (!absent.undefined && !declaration.initializer)) &&
+                dataTypesEqual(stored, this.collectionKeyStorage(stored))
+            )
+                return "";
+            const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
+            this.parameterSites.set(site, declaration);
+            return site;
+        });
         return sites.some((site) => site !== "")
             ? { ...mapped, parameterSites: sites }
             : mapped;
@@ -5554,25 +5595,12 @@ export class DataTypeRegistry {
         type: ts.UnionType,
         node: ts.Node,
     ): DataType | undefined {
-        if (!type.types.every((member) => this.checker.isTupleType(member)))
-            return undefined;
-        const tuples = type.types.map((member) => member as ts.TypeReference);
-        if (
-            tuples.some((tuple) =>
-                (tuple.target as ts.TupleType).elementFlags.some(
-                    (flag) =>
-                        (flag &
-                            (ts.ElementFlags.Optional |
-                                ts.ElementFlags.Rest |
-                                ts.ElementFlags.Variadic)) !==
-                        0,
-                ),
-            )
-        )
-            return undefined;
-        const lanes = tuples.map((tuple) =>
-            this.checker.getTypeArguments(tuple),
-        );
+        const lanes: (readonly ts.Type[])[] = [];
+        for (const member of type.types) {
+            const lane = fixedTupleElements(this.checker, member);
+            if (!lane) return undefined;
+            lanes.push(lane);
+        }
         if (
             !lanes[0]?.length ||
             lanes.some((lane) => lane.length !== lanes[0]!.length)
@@ -6275,16 +6303,9 @@ export class DataTypeRegistry {
         reference: ts.TypeReference,
         node: ts.Node,
     ): DataType | undefined {
-        if (
-            (reference.target as ts.TupleType).elementFlags.some(
-                (flag) =>
-                    (flag &
-                        (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
-                    0,
-            )
-        )
-            return undefined;
-        const elements = this.checker.getTypeArguments(reference);
+        const lanes = boundedTupleElements(this.checker, reference);
+        if (!lanes) return undefined;
+        const elements = lanes.map((lane) => lane.type);
         if (elements.length === 0) {
             return undefined;
         }
@@ -8130,6 +8151,28 @@ export class DataTypeRegistry {
         return inner.kind === "span"
             ? this.markStoredObjectReferences(type)
             : type;
+    }
+
+    /**
+     * The element an Array of `elementType` stores. Replacing an element and
+     * mutating the object stored in an element are separate permissions:
+     * even ReadonlyArray keeps object identity for its values. Functions
+     * carry identity too, because indexOf/includes compare the stored
+     * function object.
+     */
+    private arrayStoredElement(
+        elementType: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        const mapped = this.fromStoredTsType(elementType, node);
+        return (
+            mapped &&
+            markIdentityFunctions(
+                this.markStoredObjectReferences(
+                    this.arrayElementStorage(mapped),
+                ),
+            )
+        );
     }
 
     /**

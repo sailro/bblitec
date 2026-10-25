@@ -1190,10 +1190,10 @@ export function emitPropertyAssignment(
             // A computed target evaluates its key first. A simple write
             // then evaluates the RHS before PutValue throws; a compound
             // write throws while reading the absent target, before its RHS.
-            if (ts.isElementAccessExpression(expression.left))
-                context.emitDiscardedValue(
-                    context.compileValue(expression.left.argumentExpression),
-                );
+            const key = ts.isElementAccessExpression(expression.left)
+                ? context.compileValue(expression.left.argumentExpression)
+                : undefined;
+            if (key) context.emitDiscardedValue(key);
             const simple =
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken;
             if (simple)
@@ -1204,7 +1204,15 @@ export function emitPropertyAssignment(
             context.emit({
                 kind: "expression",
                 code: `bbl::js::throw_nullish_access(${context.cppString(
-                    `Cannot ${simple ? "set" : "read"} properties of ${absenceOfNull(absent)}`,
+                    absentReceiverMessage(
+                        absenceOfNull(absent),
+                        key
+                            ? staticKeyOf(key)
+                            : ts.isPropertyAccessExpression(expression.left)
+                              ? expression.left.name.text
+                              : undefined,
+                        simple,
+                    ),
                 )});`,
             });
             return;
@@ -2499,7 +2507,7 @@ import {
     type DeterministicRandomContext,
 } from "./deterministic-random.js";
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
-import { cameraRecordField } from "./properties.js";
+import { absentReceiverMessage, cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import {
@@ -2518,6 +2526,7 @@ import {
 import type { Feature, LightKind, Value } from "./types.js";
 import {
     absenceOfNull,
+    staticKeyOf,
     knownCondition,
     optionalPresentCpp,
     optionalValueCpp,

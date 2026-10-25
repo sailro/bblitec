@@ -374,9 +374,281 @@ function climbsOperand(
     );
 }
 
+/** A callback the lowering inlines per call: a local function's name or a function literal. */
+export type LocalCallback =
+    ts.Identifier | ts.ArrowFunction | ts.FunctionExpression;
+
+/** The callback `expression` is when the lowering can inline it per call. */
+export function localCallback(
+    expression: ts.Expression,
+): LocalCallback | undefined {
+    return ts.isIdentifier(expression) ||
+        ts.isArrowFunction(expression) ||
+        ts.isFunctionExpression(expression)
+        ? expression
+        : undefined;
+}
+
 /** The node that consumes an expression, past the wrappers around it. */
 export function wrappedParent(expression: ts.Expression): ts.Node {
     return outermostWrapper(expression).parent;
+}
+
+/**
+ * What consumes the value of the expression at `at` (past its wrappers),
+ * one step: no consumer climbs into a literal or a selection.
+ */
+export type ValueConsumer =
+    | { readonly kind: "member"; readonly access: MemberAccess }
+    | { readonly kind: "called" }
+    | {
+          readonly kind: "argument";
+          readonly call: ts.CallExpression | ts.NewExpression;
+          readonly index: number;
+      }
+    | {
+          readonly kind: "spread";
+          readonly spread: ts.SpreadElement | ts.SpreadAssignment;
+      }
+    | {
+          readonly kind: "initializer";
+          readonly declaration: ts.VariableDeclaration;
+      }
+    | {
+          readonly kind: "assigned";
+          readonly assignment: ts.AssignmentExpression<ts.AssignmentOperatorToken>;
+      }
+    /** A parameter's or property's default. */
+    | { readonly kind: "default" }
+    | {
+          readonly kind: "property";
+          readonly literal: ts.ObjectLiteralExpression;
+          readonly name: ts.PropertyName;
+      }
+    | { readonly kind: "element"; readonly literal: ts.ArrayLiteralExpression }
+    /** An operand of `?:`, `??`, `||`, `&&` or `,`, with what it yields. */
+    | {
+          readonly kind: "operand";
+          readonly selection: ts.Expression;
+          readonly yielded: ReadonlySet<ValueClass> | undefined;
+      }
+    | {
+          readonly kind: "returned";
+          readonly from: ts.ReturnStatement | ts.ArrowFunction;
+      }
+    | { readonly kind: "awaited"; readonly await: ts.AwaitExpression }
+    /** Thrown or exported. */
+    | { readonly kind: "thrown" }
+    | { readonly kind: "compared"; readonly comparison: ts.BinaryExpression }
+    /** Any other binary operator's operand. */
+    | { readonly kind: "operator"; readonly operator: ts.BinaryExpression }
+    | { readonly kind: "switched" }
+    | { readonly kind: "iterated"; readonly loop: ts.ForOfStatement }
+    | { readonly kind: "enumerated" }
+    /** A tagged template's substitution. */
+    | { readonly kind: "tagged" }
+    /** An untagged template's substitution. */
+    | { readonly kind: "stringified" }
+    /** An element access's key. */
+    | { readonly kind: "keyed" }
+    /** `typeof`, `!`/`-`/`+`/`~`, or an `if`/`while`/`do`/`for` condition. */
+    | { readonly kind: "tested" }
+    /** An expression statement's value, `void`'s operand or a `for` clause. */
+    | { readonly kind: "discarded" }
+    /** An update, `delete` or assignment target. */
+    | { readonly kind: "written" }
+    | { readonly kind: "other" };
+
+/** {@link ValueConsumer} of `at`, an expression past its wrappers. */
+export function valueConsumer(at: ts.Expression): ValueConsumer {
+    const parent = at.parent;
+    if (
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.includes(at)
+    )
+        return {
+            kind: "argument",
+            call: parent,
+            index: parent.arguments.indexOf(at),
+        };
+    if (ts.isCallExpression(parent) && parent.expression === at)
+        return { kind: "called" };
+    if (isMemberAccess(parent) && parent.expression === at)
+        return { kind: "member", access: parent };
+    if (ts.isElementAccessExpression(parent)) return { kind: "keyed" };
+    if (ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent))
+        return { kind: "spread", spread: parent };
+    if (ts.isVariableDeclaration(parent) && parent.initializer === at)
+        return { kind: "initializer", declaration: parent };
+    if (isAssignmentExpression(parent))
+        return parent.right === at
+            ? { kind: "assigned", assignment: parent }
+            : { kind: "written" };
+    if (
+        ts.isPropertyAssignment(parent) &&
+        parent.initializer === at &&
+        ts.isObjectLiteralExpression(parent.parent)
+    )
+        return { kind: "property", literal: parent.parent, name: parent.name };
+    if (
+        ts.isShorthandPropertyAssignment(parent) &&
+        ts.isObjectLiteralExpression(parent.parent)
+    )
+        return { kind: "property", literal: parent.parent, name: parent.name };
+    if (ts.isArrayLiteralExpression(parent))
+        return { kind: "element", literal: parent };
+    if (isOperandSelection(parent) && ts.isExpression(parent))
+        return {
+            kind: "operand",
+            selection: parent,
+            yielded: operandYield(parent, at),
+        };
+    if (
+        ts.isReturnStatement(parent) ||
+        (ts.isArrowFunction(parent) && parent.body === at)
+    )
+        return { kind: "returned", from: parent };
+    if (ts.isAwaitExpression(parent)) return { kind: "awaited", await: parent };
+    if (ts.isThrowStatement(parent) || ts.isExportAssignment(parent))
+        return { kind: "thrown" };
+    if (
+        (ts.isParameter(parent) || ts.isPropertyDeclaration(parent)) &&
+        parent.initializer === at
+    )
+        return { kind: "default" };
+    if (ts.isBinaryExpression(parent))
+        return equalityOperator(parent.operatorToken.kind) !== undefined
+            ? { kind: "compared", comparison: parent }
+            : { kind: "operator", operator: parent };
+    if (ts.isSwitchStatement(parent) || ts.isCaseClause(parent))
+        return { kind: "switched" };
+    if (ts.isForOfStatement(parent) && parent.expression === at)
+        return { kind: "iterated", loop: parent };
+    if (ts.isForInStatement(parent) && parent.expression === at)
+        return { kind: "enumerated" };
+    if (ts.isTemplateSpan(parent))
+        return ts.isTaggedTemplateExpression(parent.parent.parent)
+            ? { kind: "tagged" }
+            : { kind: "stringified" };
+    if (ts.isPrefixUnaryExpression(parent))
+        return parent.operator === ts.SyntaxKind.PlusPlusToken ||
+            parent.operator === ts.SyntaxKind.MinusMinusToken
+            ? { kind: "written" }
+            : { kind: "tested" };
+    if (ts.isPostfixUnaryExpression(parent) || ts.isDeleteExpression(parent))
+        return { kind: "written" };
+    if (
+        ts.isTypeOfExpression(parent) ||
+        ts.isIfStatement(parent) ||
+        ts.isWhileStatement(parent) ||
+        ts.isDoStatement(parent) ||
+        (ts.isForStatement(parent) && parent.condition === at)
+    )
+        return { kind: "tested" };
+    if (
+        ts.isExpressionStatement(parent) ||
+        ts.isVoidExpression(parent) ||
+        ts.isForStatement(parent)
+    )
+        return { kind: "discarded" };
+    return { kind: "other" };
+}
+
+/**
+ * Where a value goes ({@link valueUse}). `held`: it now sits in a literal,
+ * so a read out of that literal may yield it.
+ */
+export type ValueUse = { readonly held: boolean } & (
+    | { readonly kind: "member"; readonly access: MemberAccess }
+    /** Called, tested or compared. */
+    | { readonly kind: "read" }
+    /** An expression statement's value or `void`'s operand. */
+    | { readonly kind: "discarded" }
+    | {
+          readonly kind: "returned";
+          readonly from: ts.ReturnStatement | ts.ArrowFunction;
+      }
+    | { readonly kind: "bound"; readonly name: ts.Identifier }
+    | {
+          readonly kind: "assigned";
+          readonly assignment: ts.AssignmentExpression<ts.AssignmentOperatorToken>;
+      }
+    /** A parameter's or property's default, thrown or exported: kept elsewhere. */
+    | { readonly kind: "stored" }
+    | {
+          readonly kind: "argument";
+          readonly call: ts.CallExpression | ts.NewExpression;
+          readonly index: number;
+      }
+    | { readonly kind: "awaited"; readonly await: ts.AwaitExpression }
+    /** Written, spread, yielded, iterated or another operator's operand. */
+    | { readonly kind: "handed" }
+);
+
+/**
+ * Where a value goes: its {@link valueConsumer}, past the selections that
+ * yield it and the object or array literals it is a member or element of.
+ */
+export function valueUse(value: ts.Expression): ValueUse {
+    let held = false;
+    for (let at = outermostWrapper(value); ;) {
+        const consumer = valueConsumer(at);
+        switch (consumer.kind) {
+            case "property":
+            case "element":
+                held = true;
+                at = outermostWrapper(consumer.literal);
+                continue;
+            case "operand":
+                // A selection's test or `,`'s left operand is read, not yielded.
+                if (!consumer.yielded) return { held, kind: "read" };
+                at = outermostWrapper(consumer.selection);
+                continue;
+            case "member":
+                return { held, kind: "member", access: consumer.access };
+            case "called":
+            case "compared":
+            case "tested":
+                return { held, kind: "read" };
+            case "operator":
+                return {
+                    held,
+                    kind:
+                        consumer.operator.operatorToken.kind ===
+                        ts.SyntaxKind.InstanceOfKeyword
+                            ? "read"
+                            : "handed",
+                };
+            case "discarded":
+                return { held, kind: "discarded" };
+            case "returned":
+                return { held, kind: "returned", from: consumer.from };
+            case "initializer":
+                return ts.isIdentifier(consumer.declaration.name)
+                    ? { held, kind: "bound", name: consumer.declaration.name }
+                    : { held, kind: "handed" };
+            case "assigned":
+                return {
+                    held,
+                    kind: "assigned",
+                    assignment: consumer.assignment,
+                };
+            case "default":
+            case "thrown":
+                return { held, kind: "stored" };
+            case "argument":
+                return {
+                    held,
+                    kind: "argument",
+                    call: consumer.call,
+                    index: consumer.index,
+                };
+            case "awaited":
+                return { held, kind: "awaited", await: consumer.await };
+            default:
+                return { held, kind: "handed" };
+        }
+    }
 }
 
 /**

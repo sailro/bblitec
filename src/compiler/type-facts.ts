@@ -323,6 +323,86 @@ export function arrayElementType(
     );
 }
 
+/** A tuple type's elements: each one's type and its required/optional/rest/variadic flags. */
+export function tupleElements(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly { type: ts.Type; flags: ts.ElementFlags }[] | undefined {
+    if (!checker.isTupleType(type)) return undefined;
+    const flags = ((type as ts.TypeReference).target as ts.TupleType)
+        .elementFlags;
+    const types = checker.getTypeArguments(type as ts.TypeReference);
+    return flags.map((flag, index) => ({ type: types[index]!, flags: flag }));
+}
+
+/** The elements of a tuple type with no rest or variadic element. */
+export function boundedTupleElements(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly { type: ts.Type; flags: ts.ElementFlags }[] | undefined {
+    const elements = tupleElements(checker, type);
+    return elements?.every(
+        ({ flags }) =>
+            (flags & (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) === 0,
+    )
+        ? elements
+        : undefined;
+}
+
+/** The element types of a tuple type whose elements are all required. */
+export function fixedTupleElements(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Type[] | undefined {
+    const elements = tupleElements(checker, type);
+    return elements?.every(
+        (element) => (element.flags & ts.ElementFlags.Required) !== 0,
+    )
+        ? elements.map((element) => element.type)
+        : undefined;
+}
+
+/**
+ * The types of a signature's parameters at `location`, a final rest
+ * parameter of a tuple type without a rest element (how TypeScript spells
+ * a bound function) as its elements.
+ */
+export function signatureParameterTypes(
+    checker: ts.TypeChecker,
+    signature: ts.Signature,
+    location: ts.Node,
+): readonly ts.Type[] {
+    const types = signature.parameters.map((parameter) =>
+        checker.getTypeOfSymbolAtLocation(parameter, location),
+    );
+    const last = signature.parameters.at(-1)?.valueDeclaration;
+    const lanes =
+        last && ts.isParameter(last) && last.dotDotDotToken
+            ? boundedTupleElements(checker, types.at(-1)!)
+            : undefined;
+    return lanes
+        ? [...types.slice(0, -1), ...lanes.map((lane) => lane.type)]
+        : types;
+}
+
+/** The most parameters a callable expression's signatures declare, tuple rest lanes counted. */
+export function callableParameterCount(
+    checker: ts.TypeChecker,
+    callable: ts.Expression,
+): number {
+    return Math.max(
+        0,
+        ...callSignatures(
+            checker,
+            checker.getTypeAtLocation(callable),
+            "exact",
+        ).map(
+            (signature) =>
+                signatureParameterTypes(checker, signature, callable).length,
+        ),
+    );
+}
+
 /** An array or tuple type: its element type, whether writes through it are allowed, and whether it is a tuple. */
 export interface ArrayShape {
     readonly element: ts.Type;

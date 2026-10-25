@@ -9,7 +9,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { libraryGlobal, resolvedSymbol, calledDeclaration } from "./symbols.js";
 import {
-    isMemberAccess,
+    valueUse,
     outermostWrapper,
     referenceSite,
     unwrapExpression,
@@ -27,31 +27,23 @@ type PromiseUse = "awaited" | "returned" | "discarded" | "stored";
  * synchronous lowering, so a pending promise ends the chain with it.
  */
 function promiseUse(node: ts.Expression, checker: ts.TypeChecker): PromiseUse {
-    let current: ts.Node = node;
-    for (;;) {
-        current = outermostWrapper(current);
-        const parent = current.parent;
-        if (
-            isMemberAccess(parent) &&
-            parent.expression === current &&
-            promiseReactionOf(parent, checker) !== undefined &&
-            ts.isCallExpression(parent.parent) &&
-            parent.parent.expression === parent
-        ) {
-            current = parent.parent;
+    for (let use = valueUse(node); ;) {
+        const chained =
+            use.kind === "member" &&
+            promiseReactionOf(use.access, checker) !== undefined &&
+            ts.isCallExpression(use.access.parent) &&
+            use.access.parent.expression === use.access
+                ? use.access.parent
+                : undefined;
+        if (chained) {
+            use = valueUse(chained);
             continue;
         }
-        if (ts.isVoidExpression(parent)) {
-            const statement = outermostWrapper(parent).parent;
-            return ts.isExpressionStatement(statement) ? "discarded" : "stored";
-        }
-        if (ts.isAwaitExpression(parent)) return "awaited";
-        if (
-            ts.isReturnStatement(parent) ||
-            (ts.isArrowFunction(parent) && parent.body === current)
-        )
-            return "returned";
-        return ts.isExpressionStatement(parent) ? "discarded" : "stored";
+        return use.kind === "awaited" ||
+            use.kind === "returned" ||
+            use.kind === "discarded"
+            ? use.kind
+            : "stored";
     }
 }
 

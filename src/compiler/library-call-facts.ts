@@ -30,7 +30,7 @@ const writesFirst: LibraryCallFacts = {
  * table for the argument effects (parameter-effects.ts), what a result holds
  * (kept-values.ts) and which answers only convert their arguments
  * (evaluation-order.ts). A call it does not name may write its arguments and
- * hold them.
+ * hold them. Methods' result facts are {@link ARGUMENT_HOLDING_METHODS}.
  */
 export const LIBRARY_CALL_FACTS: ReadonlyMap<string, LibraryCallFacts> =
     new Map<string, LibraryCallFacts>([
@@ -104,3 +104,17 @@ export const LIBRARY_CALL_FACTS: ReadonlyMap<string, LibraryCallFacts> =
         ["resolve", reads("holds")],
         ["structuredClone", reads("computed")],
     ]);
+
+/**
+ * Library methods whose result holds an argument: a new array or
+ * collection holding it, or the receiver it was stored into. Any other
+ * library object's method computes its result.
+ */
+export const ARGUMENT_HOLDING_METHODS: ReadonlySet<string> = new Set([
+    "add",
+    "concat",
+    "fill",
+    "set",
+    "toSpliced",
+    "with",
+]);

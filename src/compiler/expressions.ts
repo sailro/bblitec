@@ -61,7 +61,11 @@ import {
     requireOneObject,
 } from "./dynamic-binding-storage.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
-import { readsErasedVoid } from "./undefined-values.js";
+import {
+    provenVoidAsUndefined,
+    readsErasedVoid,
+    voidReceiver,
+} from "./undefined-values.js";
 import { mentionsTypeParameter } from "./type-arguments.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -131,6 +135,7 @@ import {
     restParameterIndex,
     variableKind,
     isMemberAccess,
+    localCallback,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -222,7 +227,6 @@ import {
     absenceKind,
     isNullable,
     nullability,
-    isVoid,
     valueKindOf,
     callSignatures,
     stringPlusOperands,
@@ -230,6 +234,7 @@ import {
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import {
+    callbackFunction,
     tryResolveFunctionDeclaration,
     functionUsesDynamicThis,
 } from "./user-functions.js";
@@ -246,7 +251,7 @@ import {
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
@@ -4713,12 +4718,7 @@ export class ExpressionLowerer {
             )
         )
             return undefined;
-        const local =
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback) ||
-            ts.isIdentifier(callback)
-                ? callback
-                : undefined;
+        const local = localCallback(callback);
         // Static iterations specialize local callbacks with their exact inputs.
         // Resource results can carry loader metadata without an erased stored
         // function signature; already stored callbacks retain that signature.
@@ -4733,12 +4733,11 @@ export class ExpressionLowerer {
                       "tuple",
                   )
                 : undefined;
-        if (!local && !stored) {
+        if (!local && !stored)
             this.context.fail(
                 callback,
-                `Compile-time Array.${method} requires a local function or function literal callback.`,
+                `Compile-time Array.${method} requires a represented callback.`,
             );
-        }
         const elements = owner.tupleElements ?? [];
         const invoke = (element: Value, index: number): Value => {
             const values: Value[] = [
@@ -4981,33 +4980,19 @@ export class ExpressionLowerer {
     /**
      * An index of an absent (null or undefined) receiver: an optional chain
      * short-circuits to undefined without evaluating the key; any other read
-     * evaluates the key, then throws JavaScript's TypeError, typed as the
-     * element it would have read.
+     * evaluates the key, then throws JavaScript's TypeError.
      */
     private compileAbsentElementAccess(
         unwrapped: ts.ElementAccessExpression,
+        owner: Value,
     ): Value {
         if (unwrapped.questionDotToken) return undefinedValue();
-        const type = this.context.dataLowerer.dataTypeAt(unwrapped);
-        if (!type)
-            return this.context.fail(
-                unwrapped.expression,
-                "Element access is not supported for json-null.",
-            );
-        this.context.emitDiscardedValue(
-            this.compileValue(unwrapped.argumentExpression),
-        );
-        const absent = nullability(
-            this.context.checker.getTypeAtLocation(
-                this.context.unwrap(unwrapped.expression),
-            ),
-        );
-        this.context.reachJsData();
-        return this.context.dataLowerer.leafValue(
-            `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${this.context.cppString(
-                `Cannot read properties of ${absent.null && !absent.undefined ? "null" : "undefined"}`,
-            )})`,
-            type,
+        const key = this.compileValue(unwrapped.argumentExpression);
+        this.context.emitDiscardedValue(key);
+        return this.context.propertyAccess.absentReceiverRead(
+            unwrapped,
+            absenceOfNull(owner),
+            staticKeyOf(key),
         );
     }
 
@@ -5127,9 +5112,13 @@ export class ExpressionLowerer {
         if (collectionElement) {
             return collectionElement;
         }
-        const owner = this.compileValue(unwrapped.expression);
+        const owner = voidReceiver(
+            this.context,
+            this.compileValue(unwrapped.expression),
+            unwrapped.expression,
+        );
         if (owner.kind === "json-null")
-            return this.compileAbsentElementAccess(unwrapped);
+            return this.compileAbsentElementAccess(unwrapped, owner);
         const dataElement = this.context.dataLowerer.compileElementFromValue(
             owner,
             unwrapped.argumentExpression,
@@ -5608,16 +5597,7 @@ export class ExpressionLowerer {
      */
     private compileSelectedOperand(expression: ts.Expression): Value {
         const value = this.context.compileValue(expression);
-        if (
-            value.kind === "void" &&
-            !value.abruptCompletion &&
-            !value.coroutineResult &&
-            !readsErasedVoid(this.context, value, expression)
-        ) {
-            this.context.emitDiscardedValue(value);
-            return undefinedValue();
-        }
-        return value;
+        return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
     private compileConditionalValue(
@@ -6621,17 +6601,16 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `f.bind(thisArg, a, b)`: a fresh function of the parameters after the
-     * bound ones. The bound arguments are read once, in order after the
-     * target and thisArg, when `bind` runs; each call passes them before its
-     * own arguments. Bound arguments past the parameters are read and
-     * ignored, as the target ignores them.
+     * `f.bind(thisArg, ...bound)`: a fresh function of the parameters after
+     * the bound arguments, which are read once when `bind` runs and lead each
+     * call's own; past the parameters they are read and ignored, and into a
+     * rest parameter they lead its array. The target never reads `receiver`.
      */
     private compilePartialBind(
         call: ts.CallExpression,
         target: string,
         type: DataType<"function">,
-        receiverCpp: string,
+        receiver: string,
     ): Value {
         const bound = call.arguments.slice(1);
         if (type.erasedParameters?.length || type.generic)
@@ -6639,37 +6618,33 @@ export class ExpressionLowerer {
                 call,
                 "Function.bind with arguments requires represented parameter lanes.",
             );
-        if (
-            type.restParameter !== undefined &&
-            bound.length > type.restParameter
-        )
-            this.context.fail(
-                call,
-                "Function.bind cannot bind arguments into a rest parameter.",
-            );
         const spread = bound.find(ts.isSpreadElement);
         if (spread)
             this.context.fail(
                 spread,
                 "Function.bind takes its bound arguments separately.",
             );
-        if (bound.length > type.parameters.length)
+        const restIndex = type.restParameter ?? Number.POSITIVE_INFINITY;
+        const rest =
+            bound.length > restIndex ? type.parameters[restIndex] : undefined;
+        if (rest && rest.kind !== "vector")
+            return this.context.fail(
+                call,
+                "Function.bind into a rest parameter requires an array rest parameter.",
+            );
+        if (!rest && bound.length > type.parameters.length)
             this.context.dataLowerer.noteArgumentsPastSignature(
                 type,
                 "passes",
                 call,
             );
-        const receiver =
-            this.context.allocateTemporaryCppName("bound_receiver");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: receiver,
-            initializer: receiverCpp,
-        });
-        const boundCpp: string[] = [];
+        const fixed: string[] = [];
+        const elements: string[] = [];
         bound.forEach((argument, index) => {
-            const parameter = type.parameters[index];
+            const parameter =
+                rest && index >= restIndex
+                    ? rest.element
+                    : type.parameters[index];
             if (!parameter) {
                 this.context.emitDiscardedValue(this.compileValue(argument));
                 return;
@@ -6685,54 +6660,76 @@ export class ExpressionLowerer {
                     parameter,
                 ),
             });
-            boundCpp.push(name);
+            (rest && index >= restIndex ? elements : fixed).push(name);
         });
-        const count = Math.min(bound.length, type.parameters.length);
+        const count = fixed.length;
         const optionalParameters = (type.optionalParameters ?? [])
             .filter((index) => index >= count)
             .map((index) => index - count);
-        const { optionalParameters: _optional, restParameter, ...rest } = type;
+        const {
+            optionalParameters: _optional,
+            restParameter,
+            ...signature
+        } = type;
         void _optional;
-        const result: DataType<"function"> = {
-            ...rest,
-            parameters: type.parameters.slice(count),
-            identity: true,
-            ...(restParameter === undefined
-                ? {}
-                : { restParameter: restParameter - count }),
-            ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
-        };
+        const result: DataType<"function"> = rest
+            ? {
+                  ...signature,
+                  parameters: [rest],
+                  restParameter: 0,
+                  identity: true,
+              }
+            : {
+                  ...signature,
+                  parameters: type.parameters.slice(count),
+                  identity: true,
+                  ...(restParameter === undefined
+                      ? {}
+                      : { restParameter: restParameter - count }),
+                  ...(optionalParameters.length > 0
+                      ? { optionalParameters }
+                      : {}),
+              };
         this.context.reachJsData();
+        const resultCpp = this.context.dataTypes.cppType(result);
         return {
             kind: "data",
             dataType: result,
             freshData: true,
-            cpp: `bbl::js::bind_callback_arguments<${this.context.dataTypes.cppType(result)}>(${[target, receiver, ...boundCpp].join(", ")})`,
+            cpp: rest
+                ? `bbl::js::bind_callback_rest<${resultCpp}>(${[target, receiver, `${this.context.dataTypes.cppType(rest)}{${elements.join(", ")}}`, ...fixed].join(", ")})`
+                : `bbl::js::bind_callback_arguments<${resultCpp}>(${[target, receiver, ...fixed].join(", ")})`,
         };
     }
 
-    /** A named function that declares or reads its `this`, which a receiver binds. */
+    /**
+     * A named function that declares or reads its `this`, which a receiver
+     * binds, with the value its name holds in scope.
+     */
     private dynamicThisFunction(
         expression: ts.Expression | undefined,
-    ): ts.Identifier | undefined {
+    ): { name: ts.Identifier; binding: Value | undefined } | undefined {
         const target = expression && this.context.unwrap(expression);
-        if (
-            !target ||
-            !ts.isIdentifier(target) ||
-            this.context.bindings.lookupOptional(target) !== undefined
-        )
-            return undefined;
+        if (!target || !ts.isIdentifier(target)) return undefined;
+        // A name may hold that function itself, not another function value.
+        const bound = this.context.bindings.lookupOptional(target);
+        if (bound && bound.kind !== "callback") return undefined;
         const declaration = tryResolveFunctionDeclaration(
             this.context.checker,
             target,
         );
+        if (
+            bound &&
+            callbackFunction(this.context.checker, bound) !== declaration
+        )
+            return undefined;
         return declaration &&
             (ts.isFunctionDeclaration(declaration) ||
                 ts.isFunctionExpression(declaration)) &&
             (functionUsesDynamicThis(declaration) ||
                 this.context.checker.getSignatureFromDeclaration(declaration)
                     ?.thisParameter)
-            ? target
+            ? { name: target, binding: bound }
             : undefined;
     }
 
@@ -6741,22 +6738,32 @@ export class ExpressionLowerer {
      * `f.call(thisArg, ...args)`, `f.apply(thisArg, [...args])` and
      * `Reflect.apply(f, thisArg, [...args])` run `f` with `this` bound to
      * thisArg, read before the arguments, as each argument before the next.
+     * `f.bind(thisArg, ...bound)(...args)` runs `f` once the same way.
      */
     private compileForwardedCall(call: ts.CallExpression): Value | undefined {
-        const shape = forwardedCallShape(this.context.checker, call);
+        const callee = this.context.unwrap(call.expression);
+        const bound =
+            ts.isCallExpression(callee) &&
+            forwardedCallShape(this.context.checker, callee)?.method === "bind"
+                ? callee
+                : undefined;
+        const shape = forwardedCallShape(this.context.checker, bound ?? call);
         const target =
-            shape?.method !== "bind" &&
-            shape &&
-            this.dynamicThisFunction(shape.target);
+            shape && (bound || shape.method !== "bind")
+                ? this.dynamicThisFunction(shape.target)?.name
+                : undefined;
         if (!shape || !target) return undefined;
-        const receiver = call.arguments[shape.receiver];
+        const listed = bound
+            ? [...bound.arguments, ...call.arguments]
+            : call.arguments;
+        const receiver = listed[shape.receiver];
         const list = shape.spread
-            ? call.arguments[shape.receiver + 1] &&
-              this.context.unwrap(call.arguments[shape.receiver + 1]!)
+            ? listed[shape.receiver + 1] &&
+              this.context.unwrap(listed[shape.receiver + 1]!)
             : undefined;
         if (
             !receiver ||
-            call.arguments.some(ts.isSpreadElement) ||
+            listed.some(ts.isSpreadElement) ||
             (shape.spread &&
                 list !== undefined &&
                 (!ts.isArrayLiteralExpression(list) ||
@@ -6772,7 +6779,7 @@ export class ExpressionLowerer {
                 ? list && ts.isArrayLiteralExpression(list)
                     ? list.elements
                     : []
-                : call.arguments.slice(1)),
+                : listed.slice(1)),
         ];
         const pins = this.context.evaluationOrder.operandsToPin(operands);
         const values = operands.map((operand, index) => {
@@ -6851,76 +6858,57 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `f.bind(thisArg)` on a dynamic-`this` function: the function with
-     * `this` bound to thisArg, read once here. Bound arguments are not
-     * represented.
+     * `f.bind(thisArg, ...args)` on a dynamic-`this` function: a new
+     * function value whose body runs on thisArg, read once here, with the
+     * bound arguments ahead of each call's own.
      */
     private compileReceiverBind(
         call: ts.CallExpression,
         callee: NamedMember,
     ): Value | undefined {
-        const target = this.dynamicThisFunction(callee.expression);
-        if (!target) return undefined;
-        if (
-            call.arguments.length !== 1 ||
-            ts.isSpreadElement(call.arguments[0]!)
-        )
+        const bindable = this.dynamicThisFunction(callee.expression);
+        if (!bindable) return undefined;
+        const target = bindable.name;
+        const argument = call.arguments[0];
+        if (!argument || ts.isSpreadElement(argument))
             return this.context.fail(
                 call,
-                "Binding a dynamic-this function takes its receiver alone; bound arguments are not represented.",
+                "Binding a dynamic-this function takes its receiver as a separate first argument.",
             );
-        if (!this.boundFunctionOnlyCalled(call))
+        const type = this.context.dataLowerer.dataTypeAt(target);
+        if (type?.kind !== "function")
             return this.context.fail(
                 call,
-                "A function bound to a receiver is called directly or through a const it initializes; one passed or stored is not represented.",
+                "A function bound to a receiver is a function value of its declared signature, whose parameters and result need native types (not unknown or generic).",
             );
         const receiver = this.context.bindings.pinValueToTemporary(
-            this.compileValue(call.arguments[0]!),
+            this.compileValue(argument),
             "bound_receiver",
-            call.arguments[0],
+            argument,
         );
-        return {
-            kind: "callback",
-            cpp: "",
-            callbackDeclaration: target,
-            callbackThis: receiver,
-        };
-    }
-
-    /**
-     * Whether the function `bind` returns is only called: directly, or
-     * through a `const` it initializes that every use calls. Those calls
-     * run it on its receiver; a callback consumer reads only its body.
-     */
-    private boundFunctionOnlyCalled(bind: ts.CallExpression): boolean {
-        const calls = (use: ts.Expression): boolean => {
-            const position = outermostWrapper(use);
-            return (
-                ts.isCallExpression(position.parent) &&
-                position.parent.expression === position
+        // Every bind makes a new function object, not the declaration's.
+        const { identity: _identity, ...fresh } = type;
+        void _identity;
+        const bound = this.context.compileStoredDataFunction(
+            target,
+            fresh,
+            bindable.binding?.callbackRecordOwner,
+            false,
+            receiver,
+        );
+        if (call.arguments.length > 1)
+            return this.compilePartialBind(
+                call,
+                bound,
+                fresh,
+                "std::monostate{}",
             );
+        return {
+            kind: "data",
+            dataType: { ...type, identity: true },
+            freshData: true,
+            cpp: bound,
         };
-        if (calls(bind)) return true;
-        const declaration = outermostWrapper(bind).parent;
-        if (
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isIdentifier(declaration.name) ||
-            !ts.isVariableDeclarationList(declaration.parent) ||
-            variableKind(declaration.parent) !== "const"
-        )
-            return false;
-        const symbol = this.context.symbols.valueSymbol(declaration.name);
-        let onlyCalled = true;
-        forEachAnalysisNode(declaration.getSourceFile(), (node) => {
-            if (
-                ts.isIdentifier(node) &&
-                node !== declaration.name &&
-                this.context.symbols.valueSymbol(node) === symbol &&
-                !calls(node)
-            )
-                onlyCalled = false;
-        });
-        return onlyCalled;
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */
@@ -6937,11 +6925,7 @@ export class ExpressionLowerer {
                 result.dataType?.kind !== "struct")
         )
             return result;
-        const source = callback.callbackDeclaration;
-        const declaration =
-            source && ts.isIdentifier(source)
-                ? tryResolveFunctionDeclaration(this.context.checker, source)
-                : source;
+        const declaration = callbackFunction(this.context.checker, callback);
         const signature = declaration?.body
             ? this.context.checker.getSignatureFromDeclaration(declaration)
             : undefined;
@@ -7111,13 +7095,22 @@ export class ExpressionLowerer {
                           receiverType!,
                           argumentAt(call, 0),
                       );
-            if (call.arguments.length > 1)
+            if (call.arguments.length > 1) {
+                const held =
+                    this.context.allocateTemporaryCppName("bound_receiver");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: held,
+                    initializer: receiverCpp,
+                });
                 return this.compilePartialBind(
                     call,
                     target,
                     callable.dataType,
-                    receiverCpp,
+                    held,
                 );
+            }
             const type: DataType<"function"> = {
                 ...callable.dataType,
                 identity: true,
@@ -7619,42 +7612,26 @@ export class ExpressionLowerer {
                   this.compileModuleNamespace(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
-                  : this.compileValue(receiver);
+                  : voidReceiver(
+                        this.context,
+                        this.compileValue(receiver),
+                        receiver,
+                    );
             const instance = receiverValue
                 ? (this.context.classLowerer.hydrate(receiverValue, receiver) ??
                   receiverValue)
                 : undefined;
-            // A known-absent receiver -- a void call's undefined included --
-            // can occur in a runtime branch even when its declared type
-            // names a class. Read the method with JavaScript's failure
-            // semantics before evaluating arguments; the declared call
-            // result only types that throwing branch.
-            if (instance?.kind === "json-null" || instance?.kind === "void") {
+            // A known-absent receiver can occur in a runtime branch even
+            // when its declared type names a class. Read the method with
+            // JavaScript's failure semantics before evaluating arguments;
+            // the declared call result only types that throwing branch.
+            if (instance?.kind === "json-null") {
                 this.context.emitDiscardedValue(instance);
                 if (callee.questionDotToken) return undefinedValue();
-                const absence =
-                    instance.kind === "void"
-                        ? "undefined"
-                        : absenceOfNull(instance);
-                const message = this.context.cppString(
-                    `Cannot read properties of ${absence} (reading '${memberName}')`,
-                );
-                const type = this.context.dataLowerer.dataTypeAt(call);
-                this.context.reachJsData();
-                if (type)
-                    return this.context.dataLowerer.leafValue(
-                        `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
-                        type,
-                    );
-                const result = this.context.checker.getTypeAtLocation(call);
-                if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
-                    return {
-                        kind: "void",
-                        cpp: `bbl::js::throw_nullish_access(${message})`,
-                    };
-                return this.context.fail(
+                return this.context.propertyAccess.absentReceiverRead(
                     call,
-                    "A method call on an absent receiver requires a represented result type.",
+                    absenceOfNull(instance),
+                    memberName,
                 );
             }
             const callableProperty = instance

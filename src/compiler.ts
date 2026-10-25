@@ -6168,22 +6168,15 @@ class Compiler implements LoweringServices {
         };
     }
 
-    /**
-     * Runs `work` in a callback value's scopes: its record's
-     * ({@link withRecordScopes}) and the receiver `bind` gave it.
-     */
+    /** Runs `work` in a callback value's record scopes ({@link withRecordScopes}). */
     public withCallbackScopes<T>(
         callback: Value,
         work: () => T,
         method?: ts.Node,
     ): T {
-        const bound = (): T =>
-            callback.callbackThis
-                ? this.withThis(callback.callbackThis, work)
-                : work();
         return callback.callbackRecordOwner
-            ? this.withRecordScopes(callback.callbackRecordOwner, bound, method)
-            : bound();
+            ? this.withRecordScopes(callback.callbackRecordOwner, work, method)
+            : work();
     }
 
     /**
@@ -9199,7 +9192,8 @@ class Compiler implements LoweringServices {
             return cpp;
         };
         if (!effectiveOwner) {
-            return compile();
+            // A named function bound to a receiver (`f.bind(thisArg)`).
+            return receiver ? this.withThis(receiver, compile) : compile();
         }
         return this.withRecordScopes(effectiveOwner, () => {
             if (!effectiveOwner.recordProperties && !receiver) {

@@ -6,6 +6,7 @@ import {
     callResultCanHoldReceiver,
     callResultHoldsArguments,
     keptArguments,
+    valueDestination,
 } from "./kept-values.js";
 import { callArgumentIsReadOnly } from "./parameter-effects.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
@@ -19,7 +20,6 @@ import {
     type CompilerSymbols,
 } from "./symbols.js";
 import {
-    isAssignmentExpression,
     isMemberAccess,
     plainDataMembers,
     rootExpression,
@@ -395,28 +395,41 @@ function writesThroughBinding(
     // a scalar-record certificate does not survive its identity escaping,
     // and cannot follow the result of a function other than a named helper.
     const scalarRecordEscapes = (
-        node: ts.Node,
+        reference: ts.Expression,
         scan: AliasedMutationScan,
-    ): boolean =>
-        (ts.isReturnStatement(node) &&
-            node.expression !== undefined &&
-            !returningFunctionName(node) &&
-            mentions(node.expression, scan)) ||
-        (isAssignmentExpression(node) &&
-            mentions(node.right, scan) &&
-            !(
-                names(scan, identityUnwrap(checker, node.right)) &&
-                unobservedNativeValueAssignment(checker, program, node)
-            )) ||
-        ((ts.isThrowStatement(node) || ts.isExportAssignment(node)) &&
-            node.expression !== undefined &&
-            mentions(node.expression, scan)) ||
-        (ts.isArrowFunction(node) &&
-            !ts.isBlock(node.body) &&
-            mentions(node.body, scan)) ||
-        ((ts.isParameter(node) || ts.isPropertyDeclaration(node)) &&
-            node.initializer !== undefined &&
-            mentions(node.initializer, scan));
+    ): boolean => {
+        if (!typeCanCarryReference(checker.getTypeAtLocation(reference)))
+            return false;
+        const use = valueDestination(checker, reference, {
+            // A construction may keep its arguments.
+            argument: (call, index) =>
+                !ts.isCallExpression(call) || writesArgument(scan, call, index),
+            await: true,
+        });
+        switch (use.kind) {
+            case "returned":
+                return (
+                    !ts.isReturnStatement(use.from) ||
+                    !returningFunctionName(use.from)
+                );
+            case "assigned":
+                return !(
+                    names(
+                        scan,
+                        identityUnwrap(checker, use.assignment.right),
+                    ) &&
+                    unobservedNativeValueAssignment(
+                        checker,
+                        program,
+                        use.assignment,
+                    )
+                );
+            case "stored":
+                return true;
+            default:
+                return false;
+        }
+    };
     return aliasedMutationScan(
         name,
         (identifier) => symbols.valueSymbol(identifier),
@@ -438,7 +451,10 @@ function writesThroughBinding(
             // its callers, importing files included, are followed.
             aliasingReturn: mentions,
             mutates: (node, scan) =>
-                (scalarRecord && scalarRecordEscapes(node, scan)) ||
+                (scalarRecord &&
+                    ts.isExpression(node) &&
+                    names(scan, node) &&
+                    scalarRecordEscapes(node, scan)) ||
                 // The alias walk can stop at a getter's scalar result,
                 // but evaluating that getter may still mutate its owner.
                 ((ts.isPropertyAccessExpression(node) ||

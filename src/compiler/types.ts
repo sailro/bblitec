@@ -2415,8 +2415,6 @@ export interface ValueFields {
     };
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
-    /** The receiver `bind` fixed for a dynamic-`this` function. */
-    callbackThis?: Value;
     /** The function/object expression is re-evaluated by emitted native code. */
     repeatedCallbackEvaluation?: true;
     /** Distinguishes one statically emitted evaluation of a function expression. */

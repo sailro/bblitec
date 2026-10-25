@@ -292,7 +292,6 @@ test("operand selection is read through syntax.ts", () => {
         "src/compiler/intrinsics/sprite.ts",
         "src/compiler/material-plugin.ts",
         "src/compiler/option-helpers.ts",
-        "src/compiler/parameter-effects.ts",
         "src/compiler/properties.ts",
         "src/compiler/resource-loops.ts",
         "src/compiler/runtime-case-split.ts",
@@ -453,7 +452,6 @@ test("name roles are read through syntax.ts", () => {
         [
             "src/compiler/absence-tag-storage.ts",
             "src/compiler/numeric-slot-storage.ts",
-            "src/compiler/parameter-effects.ts",
             "src/compiler/symbols.ts",
             "src/compiler/syntax.ts",
         ],
@@ -595,6 +593,36 @@ test("function kinds and suspension points are read through syntax.ts", () => {
     );
 });
 
+test("where a value goes is one forward classifier in syntax.ts", () => {
+    // valueConsumer names a value's consumer one step; valueUse climbs the
+    // selections and literals that yield it, valueDestination the results
+    // that can hold it. parameter-effects.ts and array-length-growth.ts read
+    // the consumer itself.
+    for (const name of ["valueConsumer", "valueUse"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    assert.deepEqual(declarationOwners("valueDestination"), [
+        "src/compiler/kept-values.ts",
+    ]);
+});
+
+test("a thrown or rejected value raises through one rule", () => {
+    // thrownException (error-values.ts): `throw` and Promise.reject carry
+    // an Error, a string or a dynamic value alike.
+    assert.deepEqual(declarationOwners("thrownException"), [
+        "src/compiler/error-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /ThrownString|thrown_exception\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/error-values.ts"],
+    );
+});
+
 test("a void result reads as undefined through one rule", () => {
     // readsErasedVoid / undefinedFromVoid (undefined-values.ts): a void
     // annotation alone does not make a result undefined. async.ts proves a
@@ -619,6 +647,33 @@ test("a void result reads as undefined through one rule", () => {
             "src/compiler/async.ts",
             "src/compiler/undefined-values.ts",
         ],
+    );
+    // A call, property or element read takes its receiver through
+    // voidReceiver; an absent receiver's TypeError is absentReceiverRead's
+    // (data-methods.ts adds a primitive's missing method), and its message
+    // absentReceiverMessage's.
+    assert.deepEqual(declarationOwners("voidReceiver"), [
+        "src/compiler/undefined-values.ts",
+    ]);
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /public absentReceiverRead\(/.test(sourceText(path)),
+        ),
+        ["src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceText(path).includes("absent_receiver_read"))
+            .sort(),
+        ["src/compiler/data-methods.ts", "src/compiler/properties.ts"],
+    );
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            /properties of \$\{|method on a nullish receiver/.test(
+                sourceText(path),
+            ),
+        ),
+        ["src/compiler/properties.ts"],
     );
 });
 
@@ -1503,6 +1558,18 @@ test("a lowering binds `this` for a scope through withThis", () => {
     assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
 });
 
+test("a tuple's element flags have one reader", () => {
+    // tupleElements spells each element's type with its required, optional,
+    // rest or variadic flag; a rest parameter's lanes, spreads and tuple
+    // storage read them there.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes(".elementFlags"),
+        ),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
 test("the compiler never decides by comparing source text", () => {
     // A spelling names no binding: two equal spellings can read different
     // bindings, and one binding has many spellings. sameReference,
@@ -1945,20 +2012,19 @@ test("a Math member is one row of MATH_MEMBERS", () => {
     );
 });
 
-test("what a library call's result holds is one table in kept-values.ts", () => {
+test("what a library call's result holds is answered in kept-values.ts from the facts table", () => {
     // libraryResultMayHold answers for an argument, callResultHoldsArguments
-    // for any of them; the holding methods are listed once, the computing
-    // statics are LIBRARY_CALL_FACTS rows, and an unlisted static may hold.
-    for (const name of [
-        "libraryResultMayHold",
-        "callResultHoldsArguments",
-        "ARGUMENT_HOLDING_METHODS",
-    ])
+    // for any of them; the holding methods and the computing statics are
+    // library-call-facts.ts rows, and an unlisted static may hold.
+    for (const name of ["libraryResultMayHold", "callResultHoldsArguments"])
         assert.deepEqual(
             declarationOwners(name),
             ["src/compiler/kept-values.ts"],
             name,
         );
+    assert.deepEqual(declarationOwners("ARGUMENT_HOLDING_METHODS"), [
+        "src/compiler/library-call-facts.ts",
+    ]);
     assert.deepEqual(declarationOwners("libraryCallName"), [
         "src/compiler/symbols.ts",
     ]);

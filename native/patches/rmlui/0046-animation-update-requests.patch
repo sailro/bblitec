@@ -1,0 +1,18 @@
+Request the next update for every running animation, hidden or not, and none for a completed
+forwards fill: an animation steps by clamped deltas, so a hidden one an on-demand host stops
+updating falls behind its timeline, while a completed forwards fill only holds its final frame.
+
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 2f11975..d473d98 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -149,7 +149,8 @@ void Element::Update(float dp_ratio, Vector2f vp_dimensions)
+ 	for (size_t i = 0; i < children.size(); i++)
+ 		children[i]->Update(dp_ratio, vp_dimensions);
+ 
+-	if (!animations.empty() && IsVisible(true))
++	// A running animation steps by clamped deltas, visible or not.
++	if (std::any_of(animations.begin(), animations.end(), [](const ElementAnimation& animation) { return !animation.IsComplete(); }))
+ 	{
+ 		if (Context* ctx = GetContext())
+ 			ctx->RequestNextUpdate(0);

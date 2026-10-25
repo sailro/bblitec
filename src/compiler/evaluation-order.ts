@@ -13,6 +13,7 @@ import {
     type EngineBodies,
 } from "./engine-bodies.js";
 import { libraryMethodWritesReceiver } from "./receiver-methods.js";
+import { valueDestination } from "./kept-values.js";
 import { propertyIsReadOnly } from "./data-types.js";
 import {
     BIGINT_ARRAY_KINDS,
@@ -53,12 +54,9 @@ import {
     rootExpression,
     writeSites,
     isSuspensionPoint,
-    equalityOperator,
     isMemberAccess,
-    isOperandSelection,
     isValueReference,
     objectLiteralMembers,
-    operandYield,
     outermostWrapper,
 } from "./syntax.js";
 import {
@@ -726,7 +724,7 @@ function privateObjects(
                 if (!ts.isIdentifier(node) || !isValueReference(node)) return;
                 const symbol = resolvedSymbol(checker, node);
                 if (!symbol || !candidates.has(symbol)) return;
-                const holder = useHolder(owner, node);
+                const holder = useHolder(checker, owner, node);
                 if (holder === "escapes") candidates.delete(symbol);
                 else if (holder !== "kept") {
                     const held = declaredSymbol(checker, holder);
@@ -757,7 +755,7 @@ function privateObjects(
                         (read) =>
                             typeCanCarryReference(
                                 checker.getTypeAtLocation(read),
-                            ) && useHolder(owner, read) !== "kept",
+                            ) && useHolder(checker, owner, read) !== "kept",
                     )
             )
                 candidates.delete(holder);
@@ -786,92 +784,45 @@ function privateObjects(
  * itself kept; what a closure returns escapes.
  */
 function useHolder(
+    checker: ts.TypeChecker,
     owner: ts.Node,
     value: ts.Expression,
 ): "kept" | "escapes" | ts.Identifier {
     const closure = ts.findAncestor(value.parent, runsAsOwner);
-    if (closure === owner) return heldAt(value, true);
+    if (closure === owner) return heldAt(checker, value, true);
     if (
         !closure ||
         (!ts.isArrowFunction(closure) && !ts.isFunctionExpression(closure)) ||
         ts.findAncestor(closure.parent, runsAsOwner) !== owner ||
-        heldAt(value, false) !== "kept"
+        heldAt(checker, value, false) !== "kept"
     )
         return "escapes";
-    return useHolder(owner, closure);
-}
-
-/** The literal a value is a member or element of: it goes where that goes. */
-function enclosingLiteral(position: ts.Expression): ts.Expression | undefined {
-    const parent = position.parent;
-    if (
-        (ts.isShorthandPropertyAssignment(parent) ||
-            (ts.isPropertyAssignment(parent) &&
-                parent.initializer === position)) &&
-        ts.isObjectLiteralExpression(parent.parent)
-    )
-        return parent.parent;
-    return ts.isArrayLiteralExpression(parent) ? parent : undefined;
-}
-
-/** {@link useHolder} for a value its own run evaluates. */
-function heldAt(
-    value: ts.Expression,
-    returnsKeep: boolean,
-): "kept" | "escapes" | ts.Identifier {
-    const position = outermostWrapper(value);
-    const parent = position.parent;
-    const literal = enclosingLiteral(position);
-    if (literal) return heldAt(literal, returnsKeep);
-    if (
-        ts.isReturnStatement(parent) ||
-        (ts.isArrowFunction(parent) && parent.body === position)
-    )
-        return returnsKeep ? "kept" : "escapes";
-    if (
-        ts.isVariableDeclaration(parent) &&
-        parent.initializer === position &&
-        ts.isIdentifier(parent.name)
-    )
-        return returnsKeep ? parent.name : "escapes";
-    if (ts.isCallExpression(parent) && parent.expression === position)
-        return "kept";
-    return handsOn(value) ? "escapes" : "kept";
+    return useHolder(checker, owner, closure);
 }
 
 /**
- * Whether a use of a reference can keep it somewhere else: an argument, a
- * stored or bound value, an awaited, yielded or thrown value, a
- * reassignment, an element of a literal handed on itself. Reading through
- * it, testing it and returning it cannot.
+ * {@link useHolder} for a value its own run evaluates: reading through it,
+ * calling, testing or discarding it keep it; any use that can keep it
+ * elsewhere hands it on ({@link valueDestination}).
  */
-function handsOn(value: ts.Expression): boolean {
-    const position = outermostWrapper(value);
-    const parent = position.parent;
-    const literal = enclosingLiteral(position);
-    if (literal) return handsOn(literal);
-    if (isMemberAccess(parent) && parent.expression === position) return false;
-    if (writeSites(parent).length > 0) return true;
-    if (
-        ts.isReturnStatement(parent) ||
-        (ts.isArrowFunction(parent) && parent.body === position) ||
-        ts.isIfStatement(parent) ||
-        ts.isPrefixUnaryExpression(parent) ||
-        ts.isTypeOfExpression(parent)
-    )
-        return false;
-    // A selected operand is the selection's value; a tested one is not.
-    if (isOperandSelection(parent))
-        return (
-            operandYield(parent, position) !== undefined &&
-            ts.isExpression(parent) &&
-            handsOn(parent)
-        );
-    return !(
-        ts.isBinaryExpression(parent) &&
-        (equalityOperator(parent.operatorToken.kind) !== undefined ||
-            parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
-    );
+function heldAt(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+    returnsKeep: boolean,
+): "kept" | "escapes" | ts.Identifier {
+    const use = valueDestination(checker, value);
+    switch (use.kind) {
+        case "returned":
+            return returnsKeep ? "kept" : "escapes";
+        case "bound":
+            return returnsKeep ? use.name : "escapes";
+        case "member":
+        case "read":
+        case "discarded":
+            return "kept";
+        default:
+            return "escapes";
+    }
 }
 
 /** Types the checker leaves open: a value of one may be anything. */

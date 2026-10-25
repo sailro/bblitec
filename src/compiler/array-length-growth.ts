@@ -20,7 +20,7 @@ import {
     jumpBinding,
     jumpsTo,
     variableKind,
-    isMemberAccess,
+    valueConsumer,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -200,24 +200,23 @@ function enclosedReference(
     site: ts.Expression,
 ): boolean {
     const reference = outermostWrapper(site);
-    const parent = reference.parent;
-    const member =
-        isMemberAccess(parent) && parent.expression === reference
-            ? arrayMemberName(checker, parent)
-            : undefined;
-    if (member !== undefined)
-        return (
-            member === "length" ||
-            (enclosedArrayMethods.has(member) &&
-                ts.isCallExpression(parent.parent) &&
-                parent.parent.expression === parent)
-        );
+    const consumer = valueConsumer(reference);
+    if (consumer.kind === "member") {
+        const { access } = consumer;
+        const member = arrayMemberName(checker, access);
+        if (member !== undefined)
+            return (
+                member === "length" ||
+                (enclosedArrayMethods.has(member) &&
+                    ts.isCallExpression(access.parent) &&
+                    access.parent.expression === access)
+            );
+        if (ts.isElementAccessExpression(access)) return true;
+    }
     const write = writeSiteOf(reference);
     return (
-        (ts.isElementAccessExpression(parent) &&
-            parent.expression === reference) ||
-        (ts.isForOfStatement(parent) && parent.expression === reference) ||
-        ts.isSpreadElement(parent) ||
+        consumer.kind === "iterated" ||
+        (consumer.kind === "spread" && ts.isSpreadElement(consumer.spread)) ||
         (write?.kind === "assign" && freshArray(write.stored))
     );
 }

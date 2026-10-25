@@ -54,7 +54,11 @@ import {
     type DataType,
     type DataStructField,
 } from "./data-types.js";
-import { caughtErrorValue } from "./error-values.js";
+import {
+    exceptionPointer,
+    caughtErrorValue,
+    thrownException,
+} from "./error-values.js";
 import {
     isPromiseResultUsed,
     promiseReactionOf,
@@ -350,12 +354,14 @@ export class AsyncLowerer {
                     node,
                     "Promise.reject requires a represented rejection reason.",
                 );
-            const reason = context.compileValue(argumentAt(node, 0));
-            if (reason.dataType?.kind !== "error")
-                return context.fail(
-                    node,
-                    "Promise.reject requires an owned Error reason.",
-                );
+            const argument = argumentAt(node, 0);
+            const reason = context.compileValue(argument);
+            // A rejection carries what a throw would.
+            const exception = thrownException(context, reason, argument, {
+                node,
+                message:
+                    "Promise.reject takes a new Error, a held Error value or a string.",
+            });
             const type = context.dataLowerer.dataTypeAt(node);
             if (type?.kind !== "promise")
                 return context.fail(
@@ -364,7 +370,7 @@ export class AsyncLowerer {
                 );
             return {
                 ...context.dataLowerer.leafValue(
-                    `${context.dataTypes.cppType(type)}::rejected(${reason.cpp})`,
+                    `${context.dataTypes.cppType(type)}::rejected(${exceptionPointer(exception)})`,
                     type,
                 ),
                 ...(reason.nativeCaptures
@@ -428,7 +434,7 @@ export class AsyncLowerer {
                 context.compileValue(reaction.expression),
                 node,
             );
-            const promise = this.orderedReceiver(receiver, [
+            let promise = this.orderedReceiver(receiver, [
                 reaction.expression,
                 ...node.arguments,
             ]);
@@ -489,6 +495,24 @@ export class AsyncLowerer {
                     settlement,
                     node,
                 );
+            // A promise that only rejects settles the reaction's type.
+            if (
+                rejection &&
+                first.cppType !== promise.promiseType &&
+                settlesNever(
+                    context.checker,
+                    context.checker.getTypeAtLocation(reaction.expression),
+                )
+            )
+                promise = {
+                    kind: "promise",
+                    cpp: rejectionOnlyPromiseCpp(promise.cpp, first.cppType),
+                    promiseResult: first.output,
+                    promiseType: first.cppType,
+                    ...(promise.nativeCaptures
+                        ? { nativeCaptures: promise.nativeCaptures }
+                        : {}),
+                };
             if (rejection && first.cppType !== promise.promiseType) {
                 if (settlement) {
                     const forwarded = this.forwardReaction(
