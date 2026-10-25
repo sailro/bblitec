@@ -28,6 +28,7 @@ import type {
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
 import { functionOfDeclaration, isBlockScopedVariable } from "./syntax.js";
+import { callSignatures } from "./type-facts.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -263,6 +264,36 @@ export class CallbackLowerer {
                 signature,
                 retainCaptures,
             );
+        }
+        if (
+            !ts.isArrowFunction(unwrapped) &&
+            !ts.isFunctionExpression(unwrapped) &&
+            callSignatures(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(unwrapped),
+                "exact",
+            ).length > 0
+        ) {
+            // A function value an expression computes (`f.bind(o)`, `fs[0]`)
+            // is read once, here; each run calls it with the frame's number.
+            const noArguments =
+                signature === "void" || signature === "interval";
+            const parameter = noArguments
+                ? undefined
+                : {
+                      cppType: frameCallbackParameterType(signature),
+                      name: this.context.allocateTemporaryCppName(
+                          "frame_delta",
+                      ),
+                  };
+            return this.compilePlatformCallback(
+                unwrapped,
+                parameter,
+                parameter ? [{ kind: "number", cpp: parameter.name }] : [],
+                undefined,
+                true,
+                false,
+            ).cpp;
         }
         if (
             !ts.isArrowFunction(unwrapped) &&

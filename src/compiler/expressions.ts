@@ -246,7 +246,7 @@ import {
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
@@ -6625,13 +6625,15 @@ export class ExpressionLowerer {
      * bound ones. The bound arguments are read once, in order after the
      * target and thisArg, when `bind` runs; each call passes them before its
      * own arguments. Bound arguments past the parameters are read and
-     * ignored, as the target ignores them.
+     * ignored, as the target ignores them; those reaching a rest parameter
+     * lead the fresh rest array of each call. `receiver` is the thisArg
+     * already read; the target never reads it.
      */
     private compilePartialBind(
         call: ts.CallExpression,
         target: string,
         type: DataType<"function">,
-        receiverCpp: string,
+        receiver: string,
     ): Value {
         const bound = call.arguments.slice(1);
         if (type.erasedParameters?.length || type.generic)
@@ -6639,19 +6641,20 @@ export class ExpressionLowerer {
                 call,
                 "Function.bind with arguments requires represented parameter lanes.",
             );
-        if (
-            type.restParameter !== undefined &&
-            bound.length > type.restParameter
-        )
-            this.context.fail(
-                call,
-                "Function.bind cannot bind arguments into a rest parameter.",
-            );
         const spread = bound.find(ts.isSpreadElement);
         if (spread)
             this.context.fail(
                 spread,
                 "Function.bind takes its bound arguments separately.",
+            );
+        const restIndex = type.restParameter;
+        if (restIndex !== undefined && bound.length > restIndex)
+            return this.compileRestBind(
+                call,
+                target,
+                type,
+                receiver,
+                restIndex,
             );
         if (bound.length > type.parameters.length)
             this.context.dataLowerer.noteArgumentsPastSignature(
@@ -6659,14 +6662,6 @@ export class ExpressionLowerer {
                 "passes",
                 call,
             );
-        const receiver =
-            this.context.allocateTemporaryCppName("bound_receiver");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: receiver,
-            initializer: receiverCpp,
-        });
         const boundCpp: string[] = [];
         bound.forEach((argument, index) => {
             const parameter = type.parameters[index];
@@ -6711,21 +6706,86 @@ export class ExpressionLowerer {
         };
     }
 
+    /**
+     * A partial bind whose arguments reach the rest parameter at `restIndex`:
+     * the leading ones fill the fixed parameters, the others lead the rest
+     * array; the result takes only rest arguments.
+     */
+    private compileRestBind(
+        call: ts.CallExpression,
+        target: string,
+        type: DataType<"function">,
+        receiver: string,
+        restIndex: number,
+    ): Value {
+        const rest = type.parameters[restIndex];
+        if (rest?.kind !== "vector")
+            return this.context.fail(
+                call,
+                "Function.bind into a rest parameter requires an array rest parameter.",
+            );
+        const fixed: string[] = [];
+        const elements: string[] = [];
+        call.arguments.slice(1).forEach((argument, index) => {
+            const name =
+                this.context.allocateTemporaryCppName("bound_argument");
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name,
+                initializer: this.context.dataLowerer.compileForSink(
+                    argument,
+                    index < restIndex ? type.parameters[index]! : rest.element,
+                ),
+            });
+            (index < restIndex ? fixed : elements).push(name);
+        });
+        const {
+            optionalParameters: _optional,
+            restParameter: _rest,
+            ...signature
+        } = type;
+        void _optional;
+        void _rest;
+        const result: DataType<"function"> = {
+            ...signature,
+            parameters: [rest],
+            restParameter: 0,
+            identity: true,
+        };
+        this.context.reachJsData();
+        const leading = `${this.context.dataTypes.cppType(rest)}{${elements.join(", ")}}`;
+        return {
+            kind: "data",
+            dataType: result,
+            freshData: true,
+            cpp: `bbl::js::bind_callback_rest<${this.context.dataTypes.cppType(result)}>(${[target, receiver, leading, ...fixed].join(", ")})`,
+        };
+    }
+
     /** A named function that declares or reads its `this`, which a receiver binds. */
     private dynamicThisFunction(
         expression: ts.Expression | undefined,
     ): ts.Identifier | undefined {
         const target = expression && this.context.unwrap(expression);
-        if (
-            !target ||
-            !ts.isIdentifier(target) ||
-            this.context.bindings.lookupOptional(target) !== undefined
-        )
-            return undefined;
+        if (!target || !ts.isIdentifier(target)) return undefined;
         const declaration = tryResolveFunctionDeclaration(
             this.context.checker,
             target,
         );
+        // A name may hold that function itself, not another function value.
+        const bound = this.context.bindings.lookupOptional(target);
+        const held =
+            bound?.kind === "callback" &&
+            bound.callbackDeclaration &&
+            ts.isIdentifier(bound.callbackDeclaration)
+                ? tryResolveFunctionDeclaration(
+                      this.context.checker,
+                      bound.callbackDeclaration,
+                  )
+                : bound?.callbackDeclaration;
+        if (bound && (bound.kind !== "callback" || held !== declaration))
+            return undefined;
         return declaration &&
             (ts.isFunctionDeclaration(declaration) ||
                 ts.isFunctionExpression(declaration)) &&
@@ -6851,9 +6911,9 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `f.bind(thisArg)` on a dynamic-`this` function: the function with
-     * `this` bound to thisArg, read once here. Bound arguments are not
-     * represented.
+     * `f.bind(thisArg, ...args)` on a dynamic-`this` function: a new
+     * function value whose body runs on thisArg, read once here, with the
+     * bound arguments ahead of each call's own.
      */
     private compileReceiverBind(
         call: ts.CallExpression,
@@ -6861,66 +6921,46 @@ export class ExpressionLowerer {
     ): Value | undefined {
         const target = this.dynamicThisFunction(callee.expression);
         if (!target) return undefined;
-        if (
-            call.arguments.length !== 1 ||
-            ts.isSpreadElement(call.arguments[0]!)
-        )
+        const argument = call.arguments[0];
+        if (!argument || ts.isSpreadElement(argument))
             return this.context.fail(
                 call,
-                "Binding a dynamic-this function takes its receiver alone; bound arguments are not represented.",
+                "Binding a dynamic-this function takes its receiver as a separate first argument.",
             );
-        if (!this.boundFunctionOnlyCalled(call))
+        const type = this.context.dataLowerer.dataTypeAt(target);
+        if (type?.kind !== "function")
             return this.context.fail(
                 call,
-                "A function bound to a receiver is called directly or through a const it initializes; one passed or stored is not represented.",
+                "A function bound to a receiver is a function value of its declared signature, whose parameters and result need native types (not unknown or generic).",
             );
         const receiver = this.context.bindings.pinValueToTemporary(
-            this.compileValue(call.arguments[0]!),
+            this.compileValue(argument),
             "bound_receiver",
-            call.arguments[0],
+            argument,
         );
-        return {
-            kind: "callback",
-            cpp: "",
-            callbackDeclaration: target,
-            callbackThis: receiver,
-        };
-    }
-
-    /**
-     * Whether the function `bind` returns is only called: directly, or
-     * through a `const` it initializes that every use calls. Those calls
-     * run it on its receiver; a callback consumer reads only its body.
-     */
-    private boundFunctionOnlyCalled(bind: ts.CallExpression): boolean {
-        const calls = (use: ts.Expression): boolean => {
-            const position = outermostWrapper(use);
-            return (
-                ts.isCallExpression(position.parent) &&
-                position.parent.expression === position
+        // Every bind makes a new function object, not the declaration's.
+        const { identity: _identity, ...fresh } = type;
+        void _identity;
+        const bound = this.context.compileStoredDataFunction(
+            target,
+            fresh,
+            this.context.bindings.lookupOptional(target)?.callbackRecordOwner,
+            false,
+            receiver,
+        );
+        if (call.arguments.length > 1)
+            return this.compilePartialBind(
+                call,
+                bound,
+                fresh,
+                "std::monostate{}",
             );
+        return {
+            kind: "data",
+            dataType: { ...type, identity: true },
+            freshData: true,
+            cpp: bound,
         };
-        if (calls(bind)) return true;
-        const declaration = outermostWrapper(bind).parent;
-        if (
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isIdentifier(declaration.name) ||
-            !ts.isVariableDeclarationList(declaration.parent) ||
-            variableKind(declaration.parent) !== "const"
-        )
-            return false;
-        const symbol = this.context.symbols.valueSymbol(declaration.name);
-        let onlyCalled = true;
-        forEachAnalysisNode(declaration.getSourceFile(), (node) => {
-            if (
-                ts.isIdentifier(node) &&
-                node !== declaration.name &&
-                this.context.symbols.valueSymbol(node) === symbol &&
-                !calls(node)
-            )
-                onlyCalled = false;
-        });
-        return onlyCalled;
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */
@@ -7111,13 +7151,22 @@ export class ExpressionLowerer {
                           receiverType!,
                           argumentAt(call, 0),
                       );
-            if (call.arguments.length > 1)
+            if (call.arguments.length > 1) {
+                const held =
+                    this.context.allocateTemporaryCppName("bound_receiver");
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: held,
+                    initializer: receiverCpp,
+                });
                 return this.compilePartialBind(
                     call,
                     target,
                     callable.dataType,
-                    receiverCpp,
+                    held,
                 );
+            }
             const type: DataType<"function"> = {
                 ...callable.dataType,
                 identity: true,

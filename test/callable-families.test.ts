@@ -6,6 +6,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
+    windowApplicationHost,
 } from "./native-fixture.js";
 
 function nativeCheck(
@@ -38,18 +39,27 @@ function nativeCheck(
 }
 
 // A function declaring `this` runs on the receiver bind/apply hand it
-// (language-constructs: functions-run-on-a-receiver-they-are-handed).
-test("call refuses another receiver for a method and bind refuses arguments bound into a rest parameter", () => {
-    // A callback consumer reads only the bound function's body: refused
-    // rather than run without its receiver.
+// (language-constructs: functions-run-on-a-receiver-they-are-handed and
+// the bound-function checks after it).
+test("bind refuses a target without native signature types or a spread receiver, and call refuses another receiver for a method", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            function read(this:{value:number},error:unknown):number{return error instanceof Error?this.value:0;}
+            const reads=[read.bind({value:7})];
+            if(reads[0]!(new Error("x"))!==7)throw new Error("unknown parameter");
+        `),
+        /whose parameters and result need native types/,
+    );
     assert.throws(
         () =>
             compileSource(`
             function read(this:{value:number}):number{return this.value;}
-            const values=[0].map(read.bind({value:7}));
-            if(values[0]!==7)throw new Error("bound callback");
+            const receivers:[{value:number}]=[{value:7}];
+            const bound=read.bind(...receivers);
+            if(bound()!==7)throw new Error("spread receiver");
         `),
-        /called directly or through a const it initializes/,
+        /takes its receiver as a separate first argument/,
     );
     assert.throws(
         () =>
@@ -59,15 +69,136 @@ test("call refuses another receiver for a method and bind refuses arguments boun
         `),
         /without dynamic this/,
     );
+    // An optional tuple element is absent from `args.length`; no lane says so.
     assert.throws(
         () =>
             compileSource(`
-            const count=(...values:number[]):number=>values.length;
-            const counts=[count];
-            const bound=counts[0]!.bind(undefined,1);
-            if(bound(2)!==2)throw new Error("rest");
+            function count(...args:[number,string?]):number{return args.length;}
+            const counts:((a:number,b?:string)=>number)[]=[];
+            counts.push(count);
+            if(counts[0]!(1)!==1)throw new Error("tuple rest");
         `),
-        /cannot bind arguments into a rest parameter/,
+        /tuple rest parameter is bound from lanes only when every element is required/,
+    );
+});
+
+/** A Window realm on the native event loop, without a display. */
+const windowRealmHost = `
+namespace bbl::pal {
+Engine& window_document_engine() { static Engine engine; return engine; }
+}
+${windowApplicationHost()}
+`;
+
+test("bound functions run as timers, promise reactions and Window, Document and AbortSignal listeners", (t) => {
+    const result = compileSource(`
+    type Box = { n: number; log: string };
+    function tick(this: Box): void { this.n++; this.log += "t"; }
+    function settle(this: Box, value: number): number { this.n += value; this.log += "s"; return this.n; }
+    function fail(this: Box, error: Error): number { this.log += error.message; return -1; }
+    function seen(this: Box, event: Event): void { this.log += event.type === "focus" ? "f" : "n"; }
+    function abort(this: Box): void { this.log += "a"; }
+    async function load(this: Box, by: number): Promise<number> { await Promise.resolve(); this.n += by; return this.n; }
+    const loaders = [load.bind({ n: 1, log: "" })];
+    const box: Box = { n: 0, log: "" };
+    setTimeout(tick.bind(box), 1);
+    const timers = [tick.bind(box)];
+    setTimeout(timers[0]!, 1);
+    const repeat = tick.bind(box);
+    let repeats = 0;
+    const interval = setInterval(() => { repeat(); if (++repeats === 2) clearInterval(interval); }, 1);
+    queueMicrotask(tick.bind(box));
+    const onFocus = seen.bind(box);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("notify", seen.bind(box));
+    const removed = seen.bind(box);
+    window.addEventListener("focus", removed);
+    window.removeEventListener("focus", removed);
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new CustomEvent("notify"));
+    window.removeEventListener("focus", onFocus);
+    window.dispatchEvent(new Event("focus"));
+    const controller = new AbortController();
+    controller.signal.addEventListener("abort", abort.bind(box));
+    controller.abort();
+    if (box.log !== "fna") throw new Error("listeners " + box.log);
+    void (async () => {
+        const value = await Promise.resolve(5).then(settle.bind(box));
+        const rejected: Promise<number> = Promise.reject(new Error("e"));
+        const recovered = await rejected.catch(fail.bind(box));
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        if (await loaders[0]!(2) !== 3) throw new Error("async bound function");
+        if (value !== 6 || recovered !== -1 || box.n !== 10 || box.log.length !== 10 || !box.log.startsWith("fnats"))
+            throw new Error("deferred " + value + " " + box.n + " " + box.log);
+        globalThis.close();
+    })();
+`);
+    const tools = optionalNativeFixtureTools(
+        result.manifest.features.includes("data:json"),
+    );
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "callable-families/bound-realm",
+        result.cpp + windowRealmHost,
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            timeoutMs: 20000,
+            expectedOutput: "",
+        },
+    );
+});
+
+test("bound and computed functions run as engine animation frame callbacks", (t) => {
+    const result = compileSource(`
+    import { createEngine, startEngine } from "@babylonjs/lite";
+    type Box = { n: number };
+    function frame(this: Box, time: number): void { this.n += time; }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const box: Box = { n: 0 };
+        requestAnimationFrame(frame.bind(box));
+        const again = frame.bind(box);
+        requestAnimationFrame(again);
+        const frames = [frame.bind(box)];
+        requestAnimationFrame(() => {
+            if (box.n !== 32) throw new Error("first frame " + box.n);
+            requestAnimationFrame(frames[0]!);
+            requestAnimationFrame(() => { if (box.n !== 48) throw new Error("second frame " + box.n); });
+        });
+        startEngine(engine);
+    }
+    void main();
+`);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "callable-families/bound-frames",
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <cstdlib>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+void start_engine(Engine& engine) {
+    for (int frame = 0; frame < 2; ++frame) {
+        const auto callbacks = std::move(engine.animation_frame_once_callbacks);
+        engine.animation_frame_once_callbacks.clear();
+        for (const auto& callback : callbacks) callback(16.0);
+    }
+    if (!engine.animation_frame_once_callbacks.empty()) std::abort();
+}
+} // namespace bbl
+int main() { return generated_main(); }
+`,
+        { expectedOutput: "", timeoutMs: 20000 },
     );
 });
 

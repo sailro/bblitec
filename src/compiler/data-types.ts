@@ -130,6 +130,8 @@ import {
     classInstanceDeclaration,
     inheritsFrom,
     unionMembers,
+    tupleElements,
+    fixedTupleElements,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -4409,18 +4411,13 @@ export class DataTypeRegistry {
                     const finite = this.finiteArrayType(node);
                     if (finite) return finite;
                 }
-                const mapped = this.fromStoredTsType(elementType, node);
-                if (!mapped) {
+                const storedElement = this.arrayStoredElement(
+                    elementType,
+                    node,
+                );
+                if (!storedElement) {
                     return undefined;
                 }
-                const element = this.arrayElementStorage(mapped);
-                // Replacing an element and mutating the object stored in an
-                // element are separate permissions: even ReadonlyArray keeps
-                // object identity for its values. Functions carry identity too,
-                // because indexOf/includes compare the stored function object.
-                const storedElement = markIdentityFunctions(
-                    this.markStoredObjectReferences(element),
-                );
                 // Boolean arrays use deque storage to keep real boolean
                 // references; their readonly views cannot be contiguous spans.
                 return symbolName === "Array" ||
@@ -4737,6 +4734,7 @@ export class DataTypeRegistry {
         const erasedParameters: number[] = [];
         const optionalParameters: number[] = [];
         let restParameter: number | undefined;
+        let tupleRest = false;
         const parameters = signature
             .getParameters()
             .flatMap((parameter, index) => {
@@ -4747,6 +4745,51 @@ export class DataTypeRegistry {
                     declaration ?? node,
                 );
                 const override = parameterOverrides?.[index];
+                // A rest parameter of a tuple type (how TypeScript spells a
+                // bound function) is its elements: required and optional
+                // lanes, then a rest array.
+                const lanes =
+                    !override &&
+                    declaration &&
+                    ts.isParameter(declaration) &&
+                    declaration.dotDotDotToken
+                        ? tupleElements(this.checker, declaredType)
+                        : undefined;
+                if (lanes) {
+                    tupleRest = true;
+                    const first = index - erasedParameters.length;
+                    return lanes.map(({ type: lane, flags }, offset) => {
+                        if (
+                            flags & ts.ElementFlags.Variadic ||
+                            holdsNoPayload(lane)
+                        )
+                            return undefined;
+                        if (flags & ts.ElementFlags.Rest) {
+                            restParameter = first + offset;
+                            const element = this.arrayStoredElement(
+                                lane,
+                                declaration ?? node,
+                            );
+                            return (
+                                element && { kind: "vector" as const, element }
+                            );
+                        }
+                        if (flags & ts.ElementFlags.Optional)
+                            optionalParameters.push(first + offset);
+                        const mapped = this.fromStoredTsType(
+                            lane,
+                            declaration ?? node,
+                        );
+                        return (
+                            mapped &&
+                            markIdentityFunctions(
+                                this.ownFunctionRecord(
+                                    this.ownReadonlyArray(mapped, lane),
+                                ),
+                            )
+                        );
+                    });
+                }
                 const declaredCallable =
                     this.checker.getNonNullableType(declaredType);
                 const declaredSignature = callSignatures(
@@ -4916,7 +4959,13 @@ export class DataTypeRegistry {
             .map((parameter, index) => {
                 const declaration =
                     parameter.valueDeclaration ?? parameter.declarations?.[0];
-                if (!declaration || !ts.isParameter(declaration)) return "";
+                // Tuple lanes have no declaration of their own.
+                if (
+                    !declaration ||
+                    !ts.isParameter(declaration) ||
+                    (declaration.dotDotDotToken && tupleRest)
+                )
+                    return "";
                 const absent = nullability(
                     this.checker.getTypeOfSymbolAtLocation(
                         parameter,
@@ -5557,18 +5606,7 @@ export class DataTypeRegistry {
         if (!type.types.every((member) => this.checker.isTupleType(member)))
             return undefined;
         const tuples = type.types.map((member) => member as ts.TypeReference);
-        if (
-            tuples.some((tuple) =>
-                (tuple.target as ts.TupleType).elementFlags.some(
-                    (flag) =>
-                        (flag &
-                            (ts.ElementFlags.Optional |
-                                ts.ElementFlags.Rest |
-                                ts.ElementFlags.Variadic)) !==
-                        0,
-                ),
-            )
-        )
+        if (tuples.some((tuple) => !fixedTupleElements(this.checker, tuple)))
             return undefined;
         const lanes = tuples.map((tuple) =>
             this.checker.getTypeArguments(tuple),
@@ -6275,16 +6313,18 @@ export class DataTypeRegistry {
         reference: ts.TypeReference,
         node: ts.Node,
     ): DataType | undefined {
+        const lanes = tupleElements(this.checker, reference);
         if (
-            (reference.target as ts.TupleType).elementFlags.some(
-                (flag) =>
-                    (flag &
+            !lanes ||
+            lanes.some(
+                ({ flags }) =>
+                    (flags &
                         (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
                     0,
             )
         )
             return undefined;
-        const elements = this.checker.getTypeArguments(reference);
+        const elements = lanes.map((lane) => lane.type);
         if (elements.length === 0) {
             return undefined;
         }
@@ -8130,6 +8170,28 @@ export class DataTypeRegistry {
         return inner.kind === "span"
             ? this.markStoredObjectReferences(type)
             : type;
+    }
+
+    /**
+     * The element an Array of `elementType` stores. Replacing an element and
+     * mutating the object stored in an element are separate permissions:
+     * even ReadonlyArray keeps object identity for its values. Functions
+     * carry identity too, because indexOf/includes compare the stored
+     * function object.
+     */
+    private arrayStoredElement(
+        elementType: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        const mapped = this.fromStoredTsType(elementType, node);
+        return (
+            mapped &&
+            markIdentityFunctions(
+                this.markStoredObjectReferences(
+                    this.arrayElementStorage(mapped),
+                ),
+            )
+        );
     }
 
     /**

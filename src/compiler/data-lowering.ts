@@ -92,6 +92,7 @@ import {
     valueKindOf,
     callSignatures,
     unionMembers,
+    tupleElements,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -1716,18 +1717,19 @@ export class DataLowerer {
 
     /** How many lanes the array `expression` can hold: a fixed tuple's own. */
     private maximumTupleLength(expression: ts.Expression): number {
-        const type = this.context.checker.getTypeAtLocation(expression);
-        if (!this.context.checker.isTupleType(type))
-            return Number.POSITIVE_INFINITY;
-        const flags = ((type as ts.TypeReference).target as ts.TupleType)
-            .elementFlags;
-        return flags.some(
-            (flag) =>
-                (flag & (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
-                0,
-        )
+        const elements = tupleElements(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
+        );
+        return !elements ||
+            elements.some(
+                ({ flags }) =>
+                    (flags &
+                        (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !==
+                    0,
+            )
             ? Number.POSITIVE_INFINITY
-            : flags.length;
+            : elements.length;
     }
 
     /** Arguments for a stored std::function, including omitted TS optionals. */

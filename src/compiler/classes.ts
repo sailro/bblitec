@@ -58,6 +58,7 @@ import {
     callSignatures,
     classInstanceDeclaration,
     unionMembers,
+    tupleElements,
 } from "./type-facts.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
@@ -1872,10 +1873,10 @@ export class ClassLowerer {
                 missing: false,
             }));
         }
-        const tuple = this.context.checker.getTypeAtLocation(expression);
-        const flags = this.context.checker.isTupleType(tuple)
-            ? ((tuple as ts.TypeReference).target as ts.TupleType).elementFlags
-            : undefined;
+        const flags = tupleElements(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(expression),
+        )?.map((element) => element.flags);
         if (
             spread.kind === "data" &&
             (type?.kind === "product" || type?.kind === "vector") &&

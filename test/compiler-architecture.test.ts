@@ -1503,6 +1503,18 @@ test("a lowering binds `this` for a scope through withThis", () => {
     assert.deepEqual(writers, ["src/compiler/native-functions.ts"]);
 });
 
+test("a tuple's element flags have one reader", () => {
+    // tupleElements spells each element's type with its required, optional,
+    // rest or variadic flag; a rest parameter's lanes, spreads and tuple
+    // storage read them there.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceText(path).includes(".elementFlags"),
+        ),
+        ["src/compiler/type-facts.ts"],
+    );
+});
+
 test("the compiler never decides by comparing source text", () => {
     // A spelling names no binding: two equal spellings can read different
     // bindings, and one binding has many spellings. sameReference,
