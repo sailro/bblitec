@@ -1517,6 +1517,13 @@ export class EvaluationOrder {
         return { units, opaque };
     }
 
+    /** The calls that may run a class's method ({@link ClassHierarchy.methodCallers}). */
+    public methodCallers(
+        method: ts.MethodDeclaration,
+    ): readonly ts.CallExpression[] | undefined {
+        return this.hierarchy.methodCallers(method);
+    }
+
     /**
      * Whether a value built from `built` must be read before a call to
      * `callee` runs, rather than where the callee reads it: building it has

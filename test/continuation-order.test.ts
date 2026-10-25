@@ -117,3 +117,21 @@ test("a reaction runs at once only when the code after it cannot tell", () => {
         ),
     );
 });
+
+test("a method's callers are the calls its dispatch reaches", () => {
+    const game = (use: string): string => `${logging}
+class Game {
+    start(): void { void a(); }
+}
+class Arcade extends Game {}
+const game: Game = new Arcade();
+${use}`;
+    // Only a call of the method runs the code after it returns.
+    assert.ok(!inRealm(game("game.start();")));
+    assert.ok(inRealm(game(`game.start();\nlog.push("after");`)));
+    // A structurally typed receiver reaches it too.
+    const run =
+        "const run = (g: { start(): void }): void => g.start();\nrun(game);";
+    assert.ok(!inRealm(game(run)));
+    assert.ok(inRealm(game(`${run}\nlog.push("after");`)));
+});

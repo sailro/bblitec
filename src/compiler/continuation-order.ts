@@ -642,14 +642,18 @@ function invokerOf(
 
 /**
  * Where a function's value is used: each reference to the binding naming
- * it, or the function literal itself where it sits. Undefined for a method
- * or accessor, which a base class or an interface may call under another
- * symbol.
+ * it, the function literal itself where it sits, or the callee of each
+ * call that may run a class's method (reverse dispatch). Undefined for an
+ * accessor, a constructor, or a method a use no call names may run.
  */
 function functionUses(
     context: OrderContext,
     fn: ts.SignatureDeclaration,
 ): readonly ts.Expression[] | undefined {
+    if (ts.isMethodDeclaration(fn))
+        return context.evaluationOrder
+            .methodCallers(fn)
+            ?.map((call) => call.expression);
     const index = programIndex(context);
     if (ts.isFunctionDeclaration(fn) && fn.name) {
         const symbol = declaredSymbol(context.checker, fn.name);

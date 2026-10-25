@@ -132,3 +132,50 @@ const pair = [target.a, Object.assign(target, { a: 2 }).a];`);
     assert.ok(ts.isArrayLiteralExpression(pair));
     assert.deepEqual(order.operandsToPin(pair.elements), [true, false]);
 });
+
+test("a method's callers are every call its dispatch may reach, unless a use no call names may run it", () => {
+    const callers = (use: string, method = "start") => {
+        const frontend = createCompilerProgram(
+            `class Game {
+    start(): void {}
+    toString(): string { return "game"; }
+}
+class Arcade extends Game {}
+const game: Game = new Arcade();
+${use}`,
+            resolve("evaluation-order.ts"),
+        );
+        const order = new EvaluationOrder(
+            frontend.checker,
+            new ClassHierarchy(frontend.checker, frontend.program),
+        );
+        let declaration: ts.MethodDeclaration | undefined;
+        ts.forEachChild(frontend.sourceFile, function find(node): void {
+            if (
+                ts.isMethodDeclaration(node) &&
+                ts.isClassLike(node.parent) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === method
+            )
+                declaration = node;
+            ts.forEachChild(node, find);
+        });
+        assert.ok(declaration);
+        return order.methodCallers(declaration)?.map((call) => call.getText());
+    };
+    assert.deepEqual(callers("game.start();"), ["game.start()"]);
+    // A receiver typed by structure may hold the class; one that cannot is no caller.
+    assert.deepEqual(
+        callers(
+            "const starter: { start(): void } = game;\nstarter.start();\nconst timer = { start(n: number): number { return n; } };\ntimer.start(1);",
+        ),
+        ["starter.start()"],
+    );
+    assert.equal(callers("const start = game.start;"), undefined);
+    assert.equal(callers("const { start } = game;"), undefined);
+    assert.equal(callers("game.start.call(game);"), undefined);
+    // Library code may call what the type it is handed as declares.
+    assert.equal(callers("void new ReadableStream(game);"), undefined);
+    // The language calls its protocols on any object.
+    assert.equal(callers("void `${game}`;", "toString"), undefined);
+});

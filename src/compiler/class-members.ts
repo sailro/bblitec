@@ -1,19 +1,29 @@
 import ts from "typescript";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import {
+    forEachAnalysisNode,
+    someAnalysisNode,
+    sourceFileNodes,
+} from "./analysis-walk.js";
 import {
     accessedPropertySymbol,
+    calledDeclaration,
     declaredInDefaultLibrary,
+    declaredSymbol,
+    namedMember,
     resolvedSymbol,
     staticPropertyKey,
     type NamedMember,
 } from "./symbols.js";
 import { ERROR_CONSTRUCTORS } from "./error-values.js";
+import { unionMembers } from "./type-facts.js";
 import {
     unwrapExpression,
     wrappedParent,
     expressionHasEffects,
     variableKind,
     classBaseExpression,
+    bindingElementKey,
+    outermostWrapper,
 } from "./syntax.js";
 
 /**
@@ -538,6 +548,233 @@ export function staticClassMember(
     };
 }
 
+/** Methods the language calls on any object it is handed, by name. */
+const LANGUAGE_PROTOCOL_METHODS: ReadonlySet<string> = new Set([
+    "handleEvent",
+    "next",
+    "return",
+    "then",
+    "throw",
+    "toJSON",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+]);
+
+/** A key only the run time knows, read by an assignment pattern. */
+const RUN_TIME_KEY = "\0run-time key";
+
+/** Every member use of a program, by the name it reads. */
+interface MemberUses {
+    /** Member calls, with their receiver. */
+    readonly calls: Map<
+        string,
+        { readonly call: ts.CallExpression; readonly receiver: ts.Node }[]
+    >;
+    /** Members read as values, by receiver (a pattern's source). */
+    readonly values: Map<string, ts.Node[]>;
+    /** Receivers of a member read by a key only the run time knows. */
+    readonly dynamic: ts.Node[];
+    /** Keys an assignment pattern reads, whatever it reads them from. */
+    readonly patternKeys: Set<string>;
+    /**
+     * Values handed to library code: an argument of a declaration file's
+     * function (a literal's members included) or a value stored into a
+     * property it declares.
+     */
+    readonly sinks: ts.Expression[];
+}
+
+/** @unjournaled Derived from the program alone, on first use. */
+const memberUsesByProgram = new WeakMap<ts.Program, MemberUses>();
+
+function memberUses(checker: ts.TypeChecker, program: ts.Program): MemberUses {
+    const known = memberUsesByProgram.get(program);
+    if (known) return known;
+    const uses: MemberUses = {
+        calls: new Map(),
+        values: new Map(),
+        dynamic: [],
+        patternKeys: new Set(),
+        sinks: [],
+    };
+    const sink = (value: ts.Expression): void => {
+        const expression = unwrapExpression(value);
+        if (ts.isObjectLiteralExpression(expression))
+            for (const member of expression.properties) {
+                if (ts.isPropertyAssignment(member)) sink(member.initializer);
+                else if (ts.isShorthandPropertyAssignment(member))
+                    uses.sinks.push(member.name);
+                else if (ts.isSpreadAssignment(member)) sink(member.expression);
+            }
+        else if (ts.isArrayLiteralExpression(expression))
+            for (const element of expression.elements)
+                sink(
+                    ts.isSpreadElement(element) ? element.expression : element,
+                );
+        else uses.sinks.push(expression);
+    };
+    const inDeclarationFile = (declaration: ts.Node | undefined): boolean =>
+        declaration?.getSourceFile().isDeclarationFile === true;
+    const add = <T>(map: Map<string, T[]>, name: string, use: T): void => {
+        const list = map.get(name);
+        if (list) list.push(use);
+        else map.set(name, [use]);
+    };
+    for (const file of program.getSourceFiles()) {
+        if (
+            file.isDeclarationFile ||
+            program.isSourceFileFromExternalLibrary(file)
+        )
+            continue;
+        for (const node of sourceFileNodes(file)) {
+            if (
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)
+            ) {
+                const member = namedMember(checker, node);
+                if (!member) {
+                    uses.dynamic.push(node.expression);
+                    continue;
+                }
+                const position = outermostWrapper(node);
+                const call = position.parent;
+                if (ts.isCallExpression(call) && call.expression === position)
+                    add(uses.calls, member.name, {
+                        call,
+                        receiver: member.expression,
+                    });
+                else add(uses.values, member.name, member.expression);
+            } else if (
+                (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+                inDeclarationFile(calledDeclaration(checker, node))
+            ) {
+                for (const argument of node.arguments ?? [])
+                    sink(
+                        ts.isSpreadElement(argument)
+                            ? argument.expression
+                            : argument,
+                    );
+            }
+            if (
+                ts.isBindingElement(node) &&
+                ts.isObjectBindingPattern(node.parent)
+            ) {
+                const key = bindingElementKey(node);
+                if (key === undefined) uses.dynamic.push(node.parent);
+                else add(uses.values, key, node.parent);
+            } else if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ) {
+                patternKeys(checker, node.left, uses.patternKeys);
+                const target = namedMember(
+                    checker,
+                    unwrapExpression(node.left),
+                );
+                const declarations =
+                    target &&
+                    accessedPropertySymbol(checker, target.access)
+                        ?.declarations;
+                if (
+                    declarations?.length &&
+                    declarations.every(inDeclarationFile)
+                )
+                    sink(node.right);
+            } else if (
+                (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+                !ts.isVariableDeclarationList(node.initializer)
+            )
+                patternKeys(checker, node.initializer, uses.patternKeys);
+        }
+    }
+    memberUsesByProgram.set(program, uses);
+    return uses;
+}
+
+/** The keys an assignment pattern reads (`({ m } = o)`), nested ones included. */
+function patternKeys(
+    checker: ts.TypeChecker,
+    pattern: ts.Expression,
+    keys: Set<string>,
+): void {
+    const target = unwrapExpression(pattern);
+    if (ts.isArrayLiteralExpression(target))
+        for (const element of target.elements)
+            patternKeys(
+                checker,
+                ts.isSpreadElement(element) ? element.expression : element,
+                keys,
+            );
+    else if (ts.isObjectLiteralExpression(target))
+        for (const property of target.properties) {
+            if (ts.isShorthandPropertyAssignment(property))
+                keys.add(property.name.text);
+            else if (ts.isPropertyAssignment(property)) {
+                keys.add(
+                    staticPropertyKey(checker, property.name) ?? RUN_TIME_KEY,
+                );
+                patternKeys(checker, property.initializer, keys);
+            } else if (ts.isSpreadAssignment(property))
+                patternKeys(checker, property.expression, keys);
+        }
+    else if (
+        ts.isBinaryExpression(target) &&
+        target.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    )
+        patternKeys(checker, target.left, keys);
+}
+
+/**
+ * Whether a value of type `receiver` may be `holder`'s: a type `holder` is
+ * assignable to, or one the checker leaves open.
+ */
+function mayHold(
+    checker: ts.TypeChecker,
+    receiver: ts.Type,
+    holder: ts.Type,
+): boolean {
+    return unionMembers(checker.getNonNullableType(receiver)).some((member) => {
+        if (
+            member.flags &
+            (ts.TypeFlags.Any |
+                ts.TypeFlags.Unknown |
+                ts.TypeFlags.NonPrimitive)
+        )
+            return true;
+        if (member.flags & ts.TypeFlags.TypeParameter) {
+            const constraint = checker.getBaseConstraintOfType(member);
+            return (
+                !constraint ||
+                constraint === member ||
+                mayHold(checker, constraint, holder)
+            );
+        }
+        return checker.isTypeAssignableTo(holder, member);
+    });
+}
+
+/**
+ * Whether the library code a value is handed to may call its member
+ * `name`: the type it is handed as declares one. Through `any` a library
+ * calls only the language's protocols.
+ */
+function libraryTypeDeclares(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+    name: string,
+): boolean {
+    const expected = checker.getContextualType(value);
+    return (
+        expected !== undefined &&
+        unionMembers(expected).some(
+            (member) =>
+                (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
+                    0 && member.getProperty(name) !== undefined,
+        )
+    );
+}
+
 /**
  * The program's local class hierarchies: which classes extend which.
  *
@@ -560,6 +797,59 @@ export class ClassHierarchy {
 
     public table(declaration: ts.ClassLikeDeclaration): ClassMemberTable {
         return classMemberTable(this.checker, declaration);
+    }
+
+    /**
+     * The calls that may run `method`, a local class's method: dispatch
+     * inverted over the whole program. A member call named like it may run
+     * it when its receiver may hold an instance of the class (the class
+     * itself for a static method), whatever type the receiver is read
+     * through: a base class, an interface, a structurally compatible type,
+     * `this`, `super` or `any`. Undefined when a use no call names may run
+     * it: the member read as a value (passed, bound, destructured), read by
+     * a run-time key, a protocol the language calls itself (`then`,
+     * `toString`), or a library type an instance may be handed to as.
+     */
+    public methodCallers(
+        method: ts.MethodDeclaration,
+    ): readonly ts.CallExpression[] | undefined {
+        const owner = method.parent;
+        if (!ts.isClassLike(owner) || owner.getSourceFile().isDeclarationFile)
+            return undefined;
+        const name = staticPropertyKey(this.checker, method.name);
+        if (name === undefined || LANGUAGE_PROTOCOL_METHODS.has(name))
+            return undefined;
+        const symbol = owner.name
+            ? declaredSymbol(this.checker, owner.name)
+            : undefined;
+        if (!symbol) return undefined;
+        const holder = isStaticMember(method)
+            ? this.checker.getTypeOfSymbol(symbol)
+            : this.checker.getDeclaredTypeOfSymbol(symbol);
+        const uses = memberUses(this.checker, this.program);
+        const known = new Map<ts.Type, boolean>();
+        const reaches = (receiver: ts.Node): boolean => {
+            const type = this.checker.getTypeAtLocation(receiver);
+            let answer = known.get(type);
+            if (answer === undefined)
+                known.set(type, (answer = mayHold(this.checker, type, holder)));
+            return answer;
+        };
+        if (
+            uses.patternKeys.has(name) ||
+            uses.patternKeys.has(RUN_TIME_KEY) ||
+            uses.dynamic.some(reaches) ||
+            (uses.values.get(name) ?? []).some(reaches) ||
+            uses.sinks.some(
+                (value) =>
+                    reaches(value) &&
+                    libraryTypeDeclares(this.checker, value, name),
+            )
+        )
+            return undefined;
+        return (uses.calls.get(name) ?? []).flatMap(({ call, receiver }) =>
+            reaches(receiver) ? [call] : [],
+        );
     }
 
     /** The classes that name `declaration` in their `extends` clause, in source order. */
