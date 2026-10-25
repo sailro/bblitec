@@ -67,20 +67,12 @@ export function compileDateNew(
             "Date construction takes a year and up to six numeric fields as separate arguments.",
         );
     context.reachJsData();
-    // `new Date(year, month, ...)`: the fields as local time, defaults as
-    // `Date.UTC` takes them.
+    // `new Date(year, month, ...)`: the `Date.UTC` fields read as local time.
     if (args.length > 1) {
         context.reachFeature("data:locale", expression);
-        const defaults = ["0.0", "0.0", "1.0"];
-        const fields = Array.from({ length: 7 }, (_, index) => {
-            const argument = args[index];
-            return argument
-                ? lowerer.compileNumberArgument(argument, "")
-                : (defaults[index] ?? "0.0");
-        });
         return {
             kind: "data",
-            cpp: `bbl::js::make_date(bbl::pal::date_from_local_fields(${fields.join(", ")}))`,
+            cpp: `bbl::js::make_date(bbl::pal::utc_from_local(bbl::js::date_utc(${dateFieldsCpp(lowerer, args)})))`,
             dataType: { kind: "date" },
             impure: true,
         };
@@ -215,7 +207,7 @@ function compileDateFieldSetter(
     );
     return {
         kind: "number",
-        cpp: `bbl::${utc ? "js::date_set_utc" : "pal::date_set_local"}(${receiver.cpp}, bbl::js::DateField::${field}, ${fields.length}, ${fields.join(", ")})`,
+        cpp: `bbl::${utc ? "js::date_set_utc" : "pal::date_set_local"}(${receiver.cpp}, bbl::js::DateField::${field}, {${fields.join(", ")}})`,
         dataType: { kind: "number" },
         impure: true,
     };
@@ -236,18 +228,25 @@ export function compileDateUtc(
             "Date.UTC takes a year and up to six numeric fields as separate arguments.",
         );
     context.reachJsData();
+    return {
+        kind: "number",
+        cpp: `bbl::js::date_utc(${dateFieldsCpp(lowerer, call.arguments)})`,
+        dataType: { kind: "number" },
+    };
+}
+
+/** `Date.UTC`'s seven fields: each argument as a number, a missing one defaulted. */
+function dateFieldsCpp(
+    lowerer: DataLowerer,
+    args: readonly ts.Expression[],
+): string {
     const defaults = ["std::numeric_limits<double>::quiet_NaN()", "0.0", "1.0"];
-    const fields = Array.from({ length: 7 }, (_, index) => {
-        const argument = call.arguments[index];
+    return Array.from({ length: 7 }, (_, index) => {
+        const argument = args[index];
         return argument
             ? lowerer.compileNumberArgument(argument, "")
             : (defaults[index] ?? "0.0");
-    });
-    return {
-        kind: "number",
-        cpp: `bbl::js::date_utc(${fields.join(", ")})`,
-        dataType: { kind: "number" },
-    };
+    }).join(", ");
 }
 
 export function compileDateMethod(

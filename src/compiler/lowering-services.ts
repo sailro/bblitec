@@ -422,6 +422,7 @@ export interface LoweringServices {
         evaluated?: Value,
     ): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
+    withCallbackScopes<T>(callback: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
     bindClassField(
         name: ts.MemberName,

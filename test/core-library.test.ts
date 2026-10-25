@@ -82,17 +82,16 @@ check(
 `,
 );
 
-test("generic recursive records refuse an unowned alias boundary", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+// A record a generic recursive function hands back is the caller's own
+// object: the callee keeps it, so the caller's binding owns its storage.
+check(
+    "generic recursive records keep their alias through the return",
+    `
         function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
         const source={size:1};const result=retain(source,2);result.size=4;
         if(source.size!==4)throw new Error("alias");
-    `),
-        /Generic recursive record returns require owned object storage/,
-    );
-});
+    `,
+);
 
 check(
     "collection queries accept strings outside a stored literal union",

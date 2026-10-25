@@ -7,11 +7,11 @@ import {
     callResultHoldsArguments,
     keptArguments,
 } from "./kept-values.js";
-import { callLeavesArgumentIntact } from "./parameter-effects.js";
+import { callArgumentIsReadOnly } from "./parameter-effects.js";
 import { visitMutableArgumentReferences } from "./parameter-projection-effects.js";
 import { programObservations } from "./program-observations.js";
 import { propertyRules } from "./properties.js";
-import { objectIdentityCallArgument } from "./static-evaluator.js";
+import { unwrapObjectIdentity } from "./static-evaluator.js";
 import {
     accessedPropertySymbol,
     aliasTarget,
@@ -23,12 +23,15 @@ import {
     isAssignmentExpression,
     isMemberAccess,
     plainDataMembers,
-    propertyKey,
     rootExpression,
     unwrapExpression,
     wrappedParent,
 } from "./syntax.js";
-import { typeCanCarryReference, unionMembers } from "./type-facts.js";
+import {
+    callSignatures,
+    typeCanCarryReference,
+    unionMembers,
+} from "./type-facts.js";
 import {
     aliasedMutationScan,
     returningFunctionName,
@@ -55,22 +58,12 @@ const nativeValueExposure = new WeakMap<
     Map<ts.Type, Map<string, boolean>>
 >();
 
-/**
- * The expression whose identity a reader sees: wrappers and `await` are
- * stripped, and `Object.freeze(x)` is `x`.
- */
+/** The expression whose identity a reader sees, through `await`. */
 function identityUnwrap(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): ts.Expression {
-    let current = unwrapExpression(expression, { await: true });
-    for (
-        let frozen = objectIdentityCallArgument(checker, current);
-        frozen;
-        frozen = objectIdentityCallArgument(checker, current)
-    )
-        current = unwrapExpression(frozen, { await: true });
-    return current;
+    return unwrapObjectIdentity(checker, expression, { await: true });
 }
 
 /** A module namespace object (`import * as m`, `export * as m`). */
@@ -208,7 +201,7 @@ export function moduleConstantIsWritten(
     const files = exported
         ? moduleContainerReferenceFiles(program, checker, symbols, symbol)
         : [declaration.getSourceFile()];
-    const written = writesThroughBinding(context, files, name, symbol);
+    const written = writesThroughBinding(context, files, name, declaration);
     answers.set(symbol, written);
     return written;
 }
@@ -293,37 +286,26 @@ function writesThroughBinding(
     context: ModuleConstantWrites,
     initialFiles: readonly ts.SourceFile[],
     name: ts.Identifier,
-    symbol: ts.Symbol,
+    declaration: ts.VariableDeclaration,
 ): boolean {
     const { program, checker, symbols, evaluationOrder } = context;
-    const declaration = symbol.valueDeclaration;
     const initializer =
-        declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer
-            ? identityUnwrap(checker, declaration.initializer)
+        declaration.initializer &&
+        identityUnwrap(checker, declaration.initializer);
+    const members =
+        initializer && ts.isObjectLiteralExpression(initializer)
+            ? plainDataMembers(initializer)
             : undefined;
+    // A record of scalars: a write-through certificate that holds only
+    // while its identity stays inside this walk.
     const scalarRecord =
-        initializer &&
-        ts.isObjectLiteralExpression(initializer) &&
-        (plainDataMembers(initializer)?.every(
+        members?.every(
             (member) =>
                 !typeCanCarryReference(checker.getTypeAtLocation(member.value)),
-        ) ??
-            false);
+        ) ?? false;
     const selectedRecordKeys =
-        scalarRecord && initializer && ts.isObjectLiteralExpression(initializer)
-            ? new Set(
-                  initializer.properties.flatMap((property) => {
-                      if (
-                          !ts.isPropertyAssignment(property) &&
-                          !ts.isShorthandPropertyAssignment(property)
-                      )
-                          return [];
-                      const key = propertyKey(property.name);
-                      return key === undefined ? [] : [key];
-                  }),
-              )
+        scalarRecord && members
+            ? new Set(members.map((member) => member.key))
             : undefined;
     // A named helper whose `return` carries the constant is an alias: a
     // call of one is the constant.
@@ -355,55 +337,7 @@ function writesThroughBinding(
                 : undefined;
         return named !== undefined && scan.holds(named);
     };
-    // A function inside the expression reads the constant without
-    // handing it on; its own body is part of the walk.
-    const mentions = (
-        scan: AliasedMutationScan,
-        expression: ts.Expression,
-    ): boolean =>
-        someAnalysisNode(
-            expression,
-            (node) => {
-                if (
-                    ts.isExpression(node) &&
-                    !typeCanCarryReference(checker.getTypeAtLocation(node))
-                )
-                    return "skip";
-                if (ts.isCallExpression(node)) {
-                    // A function's result is not the function; a
-                    // method's can be its receiver or a member of it.
-                    let retained = ts.isIdentifier(
-                        unwrapExpression(node.expression),
-                    )
-                        ? returnsConstant(scan, node)
-                        : callResultCanHoldReceiver(checker, node) &&
-                          someAnalysisNode(
-                              node.expression,
-                              (inner) => names(scan, inner),
-                              {
-                                  functions: "skip",
-                              },
-                          );
-                    node.arguments.forEach((_, index) => {
-                        visitMutableArgumentReferences(
-                            checker,
-                            node,
-                            index,
-                            (reference) => {
-                                if (names(scan, reference)) retained = true;
-                            },
-                            scalarRecord
-                                ? (reference) => names(scan, reference)
-                                : undefined,
-                            selectedRecordKeys,
-                        );
-                    });
-                    return retained ? true : "skip";
-                }
-                return names(scan, node);
-            },
-            { functions: "skip" },
-        );
+    // Whether the callee may write or keep the constant handed to it.
     const writesArgument = (
         scan: AliasedMutationScan,
         call: ts.CallExpression,
@@ -422,13 +356,68 @@ function writesThroughBinding(
         );
         return written;
     };
-    // A binding initialized from, iterating, assigned or destructured out
-    // of an expression that carries the constant holds it (`view = M`,
-    // `view ??= M`, a pattern leaf, a loop target).
-    const carries = (
-        source: ts.Expression,
+    // Whether an expression carries the constant: a binding initialized
+    // from, iterating, assigned or destructured out of it holds it
+    // (`view = M`, `view ??= M`, a pattern leaf, a loop target). A
+    // function inside the expression reads the constant without handing it
+    // on; its own body is part of the walk.
+    const mentions = (
+        expression: ts.Expression,
         scan: AliasedMutationScan,
-    ): boolean => mentions(scan, source);
+    ): boolean =>
+        someAnalysisNode(
+            expression,
+            (node) => {
+                if (
+                    ts.isExpression(node) &&
+                    !typeCanCarryReference(checker.getTypeAtLocation(node))
+                )
+                    return "skip";
+                if (!ts.isCallExpression(node)) return names(scan, node);
+                // A function's result is not the function; a method's can
+                // be its receiver or a member of it.
+                const retained =
+                    (ts.isIdentifier(unwrapExpression(node.expression))
+                        ? returnsConstant(scan, node)
+                        : callResultCanHoldReceiver(checker, node) &&
+                          someAnalysisNode(
+                              node.expression,
+                              (inner) => names(scan, inner),
+                              { functions: "skip" },
+                          )) ||
+                    node.arguments.some((_, index) =>
+                        writesArgument(scan, node, index),
+                    );
+                return retained ? true : "skip";
+            },
+            { functions: "skip" },
+        );
+    // Stored or returned references can acquire aliases outside this walk:
+    // a scalar-record certificate does not survive its identity escaping,
+    // and cannot follow the result of a function other than a named helper.
+    const scalarRecordEscapes = (
+        node: ts.Node,
+        scan: AliasedMutationScan,
+    ): boolean =>
+        (ts.isReturnStatement(node) &&
+            node.expression !== undefined &&
+            !returningFunctionName(node) &&
+            mentions(node.expression, scan)) ||
+        (isAssignmentExpression(node) &&
+            mentions(node.right, scan) &&
+            !(
+                names(scan, identityUnwrap(checker, node.right)) &&
+                unobservedNativeValueAssignment(checker, program, node)
+            )) ||
+        ((ts.isThrowStatement(node) || ts.isExportAssignment(node)) &&
+            node.expression !== undefined &&
+            mentions(node.expression, scan)) ||
+        (ts.isArrowFunction(node) &&
+            !ts.isBlock(node.body) &&
+            mentions(node.body, scan)) ||
+        ((ts.isParameter(node) || ts.isPropertyDeclaration(node)) &&
+            node.initializer !== undefined &&
+            mentions(node.initializer, scan));
     return aliasedMutationScan(
         name,
         (identifier) => symbols.valueSymbol(identifier),
@@ -443,53 +432,20 @@ function writesThroughBinding(
                         aliased,
                     ),
             },
-            aliasingInitializer: carries,
-            aliasingMember: (source, _leaf, scan) => carries(source, scan),
-            aliasingIteration: (source, _leaf, scan) => carries(source, scan),
+            aliasingInitializer: mentions,
+            aliasingMember: (source, _leaf, scan) => mentions(source, scan),
+            aliasingIteration: (source, _leaf, scan) => mentions(source, scan),
             // A named helper can return a container holding the identity;
             // its callers, importing files included, are followed.
-            aliasingReturn: carries,
+            aliasingReturn: mentions,
             mutates: (node, scan) =>
-                // Stored or returned references can acquire aliases
-                // outside this binding walk. A closed scalar-record
-                // certificate must not use its initializer after that
-                // identity escapes; it cannot follow the result of a
-                // function other than a named helper.
-                (scalarRecord &&
-                    ((ts.isReturnStatement(node) &&
-                        node.expression !== undefined &&
-                        !returningFunctionName(node) &&
-                        mentions(scan, node.expression)) ||
-                        (isAssignmentExpression(node) &&
-                            mentions(scan, node.right) &&
-                            !(
-                                names(
-                                    scan,
-                                    identityUnwrap(checker, node.right),
-                                ) &&
-                                unobservedNativeValueAssignment(
-                                    checker,
-                                    program,
-                                    node,
-                                )
-                            )) ||
-                        ((ts.isThrowStatement(node) ||
-                            ts.isExportAssignment(node)) &&
-                            node.expression !== undefined &&
-                            mentions(scan, node.expression)) ||
-                        (ts.isArrowFunction(node) &&
-                            !ts.isBlock(node.body) &&
-                            mentions(scan, node.body)) ||
-                        ((ts.isParameter(node) ||
-                            ts.isPropertyDeclaration(node)) &&
-                            node.initializer !== undefined &&
-                            mentions(scan, node.initializer)))) ||
+                (scalarRecord && scalarRecordEscapes(node, scan)) ||
                 // The alias walk can stop at a getter's scalar result,
                 // but evaluating that getter may still mutate its owner.
                 ((ts.isPropertyAccessExpression(node) ||
                     ts.isElementAccessExpression(node)) &&
-                    mentions(scan, node.expression) &&
                     memberAccessors(checker, node, "get").length > 0 &&
+                    mentions(node.expression, scan) &&
                     evaluationOrder.writesStorage(node)) ||
                 writesThroughTrackedRoot(
                     node,
@@ -513,15 +469,26 @@ function writesThroughBinding(
                 (ts.isCallExpression(node) &&
                     node.arguments.some(
                         (argument, index) =>
-                            mentions(scan, argument) &&
-                            !callLeavesArgumentIntact(checker, node, index) &&
+                            mentions(argument, scan) &&
+                            !callArgumentIsReadOnly(
+                                checker,
+                                node,
+                                index,
+                                "refused",
+                            ) &&
                             writesArgument(scan, node, index),
                     )) ||
                 // The constant, or a member of it, kept past the call
                 // (a construction, a storing call) is written through
-                // its new owner.
-                keptArguments(checker, node).some((argument) =>
-                    mentions(scan, argument),
+                // its new owner; a kept function writes only what its own
+                // body, which the walk reads, writes.
+                keptArguments(checker, node).some(
+                    (argument) =>
+                        callSignatures(
+                            checker,
+                            checker.getTypeAtLocation(argument),
+                            "exact",
+                        ).length === 0 && mentions(argument, scan),
                 ),
         },
     );

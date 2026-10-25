@@ -139,7 +139,6 @@ import {
     engineCallMutatesArgument,
     functionWritesThis,
     libraryCallMayWriteArgument,
-    libraryCallWritesReceiver,
     parameterHeldObjectWritten,
     parameterIsMutated,
     parameterMutatedPaths,
@@ -147,6 +146,7 @@ import {
 } from "./parameter-effects.js";
 import {
     callResultHoldsArguments,
+    heldReferenceBases,
     keptArguments,
     literalHeldValues,
 } from "./kept-values.js";
@@ -197,6 +197,7 @@ interface DeclarationContext
             | "varBindings"
             | "asyncActivations"
             | "withRecordScopes"
+            | "withCallbackScopes"
         > {
     /** The engine the entry created, once it has. */
     readonly defaultEngineCpp: string | undefined;
@@ -1352,8 +1353,9 @@ export class DeclarationLowerer {
                     true,
                 );
             }
-            // A record written, or written by its own methods
-            // (`this.items.push(v)`), owns its declared arrays, as an
+            // A record written, one whose containers a method writes
+            // (`cfg.list.push(v)`), or one its own methods write
+            // (`this.items.push(v)`) owns its declared arrays, as an
             // annotated one does.
             if (
                 value.kind === "record" &&
@@ -1361,18 +1363,22 @@ export class DeclarationLowerer {
                 !declaration.type &&
                 declaration.initializer &&
                 (written ||
+                    this.recordContainersWritten(declaration.name) ||
                     Object.values(value.recordMethods ?? {}).some(
                         (method) =>
                             ts.isFunctionLike(method) &&
                             functionWritesThis(this.context.checker, method),
                     ))
             )
-                this.materializeRecordArrays(
-                    value,
-                    declaration.name,
-                    declaration.initializer,
-                    `${sourceName}_array`,
-                );
+                value =
+                    this.materializeRecordArrays(
+                        value,
+                        this.context.checker.getTypeAtLocation(
+                            declaration.name,
+                        ),
+                        declaration.initializer,
+                        `${sourceName}_array`,
+                    ) ?? value;
             this.context.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
@@ -2512,12 +2518,7 @@ export class DeclarationLowerer {
                     declaration.initializer!,
                     true,
                 );
-            const result = value.callbackRecordOwner
-                ? this.context.withRecordScopes(
-                      value.callbackRecordOwner,
-                      compile,
-                  )
-                : compile();
+            const result = this.context.withCallbackScopes(value, compile);
             this.context.emitDiscardedValue(result);
         });
         const parameters = forward.parameterTypes.map(
@@ -4712,28 +4713,6 @@ export class DeclarationLowerer {
                         )
                             return true;
                     }
-                    // A library method that writes its receiver, called on
-                    // the object or one of its members; a program method is
-                    // inlined on the record it binds.
-                    if (
-                        writesThroughTrackedRoot(
-                            node,
-                            (callee) =>
-                                namedMember(this.context.checker, callee),
-                            (target, via) =>
-                                via === "receiver" && isAlias(scan, target),
-                            (method, receiver, call) =>
-                                libraryCallWritesReceiver(
-                                    this.context.checker,
-                                    method,
-                                    receiver,
-                                    call,
-                                ),
-                            this.context.checker,
-                            this.context.sourceFiles(),
-                        )
-                    )
-                        return true;
                     if (
                         (ts.isCallExpression(node) ||
                             ts.isNewExpression(node)) &&
@@ -4826,30 +4805,85 @@ export class DeclarationLowerer {
         );
     }
 
-    /** Gives a record's compile-time array members the storage their declared type names. */
+    /**
+     * Whether a method writes a container the record holds: a receiver
+     * write on anything reachable from it, through any alias.
+     */
+    private recordContainersWritten(name: ts.Identifier): boolean {
+        const { checker } = this.context;
+        const holds = (
+            source: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => heldReferenceBases(checker, source).some(scan.namesAlias);
+        return aliasedMutationScan(
+            name,
+            (identifier) => this.context.symbols.valueSymbol(identifier),
+            {
+                aliasingInitializer: holds,
+                aliasingMember: (source, _leaf, scan) => holds(source, scan),
+                aliasingIteration: (source, _leaf, scan) => holds(source, scan),
+                mutates: (node, scan) =>
+                    writesThroughTrackedRoot(
+                        node,
+                        (callee) => namedMember(checker, callee),
+                        (target, via) =>
+                            via === "receiver" &&
+                            referenceBases(target).some(scan.namesAlias),
+                        undefined,
+                        checker,
+                        this.context.sourceFiles(),
+                    ),
+            },
+        );
+    }
+
+    /**
+     * A record's compile-time array members, nested records' included, with
+     * the storage their declared type names; undefined when it holds none.
+     */
     private materializeRecordArrays(
-        record: Value,
-        name: ts.Identifier,
+        record: Extract<Value, { kind: "record" }>,
+        type: ts.Type,
         initializer: ts.Expression,
         label: string,
-    ): void {
-        const type = this.context.checker.getTypeAtLocation(name);
-        const properties = { ...record.recordProperties };
-        let changed = false;
-        for (const [key, member] of Object.entries(properties)) {
+        visited = new Set<Value>(),
+    ): Extract<Value, { kind: "record" }> | undefined {
+        // A cyclic record (`world.light.world`) is visited once.
+        if (visited.has(record)) return undefined;
+        visited.add(record);
+        let properties: Record<string, Value> | undefined;
+        for (const [key, member] of Object.entries(
+            record.recordProperties ?? {},
+        )) {
             const field = type.getProperty(key);
-            if (member.kind !== "tuple" || !field) continue;
-            properties[key] =
-                this.context.bindings.materializeDeclaredRecordContainers(
-                    member,
-                    this.context.checker.getTypeOfSymbolAtLocation(field, name),
-                    initializer,
-                    `${label}_${key}`,
-                    field,
-                );
-            changed = true;
+            if (!field) continue;
+            const declared = this.context.checker.getTypeOfSymbolAtLocation(
+                field,
+                initializer,
+            );
+            const materialized =
+                member.kind === "tuple"
+                    ? this.context.bindings.materializeDeclaredRecordContainers(
+                          member,
+                          declared,
+                          initializer,
+                          `${label}_${key}`,
+                          field,
+                      )
+                    : member.kind === "record"
+                      ? this.materializeRecordArrays(
+                            member,
+                            declared,
+                            initializer,
+                            `${label}_${key}`,
+                            visited,
+                        )
+                      : undefined;
+            if (materialized)
+                (properties ??= { ...record.recordProperties })[key] =
+                    materialized;
         }
-        if (changed) writable(record).recordProperties = properties;
+        return properties && { ...record, recordProperties: properties };
     }
 
     /**

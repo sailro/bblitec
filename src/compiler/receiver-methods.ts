@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionSet } from "./emission-transaction.js";
 import {
     declarationInDefaultLibrary,
+    declaredInDomLibrary,
     libraryGlobal,
     libraryName,
     calledDeclaration,
@@ -122,8 +123,9 @@ const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
  * Whether calling the library method `method` on `receiver` writes it, by
  * the receiver's checked type: an array's or typed array's mutating
  * methods, a collection's writers, none on a primitive, a library class's
- * own writers, and on any other receiver every method not known to only
- * read.
+ * own writers, none a DOM interface declares (host state, which the
+ * platform effect tables own, not program data), and on any other receiver
+ * every method not known to only read.
  */
 export function libraryMethodWritesReceiver(
     checker: ts.TypeChecker,
@@ -142,7 +144,11 @@ export function libraryMethodWritesReceiver(
         if (["Map", "Set", "WeakMap", "WeakSet"].includes(name))
             return collectionWritingMethods.has(method);
         const reads = LIBRARY_READING_METHODS.get(name);
-        return reads ? !reads(method) : !readOnlyDataMethods.has(method);
+        if (reads) return !reads(method);
+        const declared = checker.getPropertyOfType(member, method);
+        return (
+            !declaredInDomLibrary(declared) && !readOnlyDataMethods.has(method)
+        );
     });
 }
 

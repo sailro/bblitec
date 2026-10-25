@@ -2346,7 +2346,7 @@ function compileArraySort(
                         ],
                     },
                 ];
-                const owner = storedCallback?.callbackRecordOwner;
+
                 const compare = (): Value =>
                     callback
                         ? lowerer.context.compileCallbackWithValues(
@@ -2359,8 +2359,11 @@ function compileArraySort(
                               operands,
                               call,
                           );
-                const compared = owner
-                    ? lowerer.context.withRecordScopes(owner, compare)
+                const compared = storedCallback
+                    ? lowerer.context.withCallbackScopes(
+                          storedCallback,
+                          compare,
+                      )
                     : compare();
                 if (compared.kind !== "number") {
                     lowerer.context.fail(

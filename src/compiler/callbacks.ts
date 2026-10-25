@@ -67,6 +67,7 @@ interface CallbackContext extends Pick<
     | "unwrap"
     | "useNativeValue"
     | "withRecordScopes"
+    | "withCallbackScopes"
 > {
     /** The emitted entry-body lines. */
     readonly body: NativeEmission[];
@@ -929,12 +930,10 @@ export class CallbackLowerer {
                             values,
                             callback,
                         );
-                    const result = bound.callbackRecordOwner
-                        ? this.context.withRecordScopes(
-                              bound.callbackRecordOwner,
-                              compile,
-                          )
-                        : compile();
+                    const result = this.context.withCallbackScopes(
+                        bound,
+                        compile,
+                    );
                     consumeResult(result);
                 },
                 captureByValue ? false : "entry",

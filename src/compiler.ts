@@ -216,8 +216,10 @@ import {
     firstReturn,
 } from "./compiler/loop-control.js";
 import {
+    createsReceiverState,
     isModuleInitializerStatement,
     planEntryModuleState,
+    recordHoldsCallables,
     planImportedModuleState,
 } from "./compiler/module-initializers.js";
 import { moduleConstantIsWritten } from "./compiler/module-container-writes.js";
@@ -1597,6 +1599,17 @@ class Compiler implements LoweringServices {
                         ) &&
                         !this.evaluationOrder.hasModuleEffects(
                             declaration.initializer,
+                        ) &&
+                        !recordHoldsCallables(
+                            this.checker,
+                            declaration.initializer,
+                        ) &&
+                        // Its one evaluation is observable (the planner's
+                        // rule): evaluated per use, members see other state.
+                        !createsReceiverState(
+                            this.checker,
+                            this.symbols,
+                            declaration,
                         ) &&
                         !this.moduleConstantIsWritten(declaration.name)
                     ) {
@@ -6226,6 +6239,24 @@ class Compiler implements LoweringServices {
             recordScopes: [...this.bindings.variableScopes],
             ...(recordTypeArguments ? { recordTypeArguments } : {}),
         };
+    }
+
+    /**
+     * Runs `work` in a callback value's scopes: its record's
+     * ({@link withRecordScopes}) and the receiver `bind` gave it.
+     */
+    public withCallbackScopes<T>(
+        callback: Value,
+        work: () => T,
+        method?: ts.Node,
+    ): T {
+        const bound = (): T =>
+            callback.callbackThis
+                ? this.withThis(callback.callbackThis, work)
+                : work();
+        return callback.callbackRecordOwner
+            ? this.withRecordScopes(callback.callbackRecordOwner, bound, method)
+            : bound();
     }
 
     /**

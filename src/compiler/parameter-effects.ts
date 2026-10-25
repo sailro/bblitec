@@ -30,11 +30,12 @@ import {
     libraryCallName,
     libraryGlobal,
     libraryName,
-    libraryStaticMember,
     resolvedSymbol,
     nullishComparison,
     calledDeclaration,
     namedMember,
+    forwardedCallShape,
+    type ForwardedCallShape,
 } from "./symbols.js";
 import {
     isAssignmentExpression,
@@ -65,6 +66,7 @@ import {
 } from "./data-types/typed-arrays.js";
 import {
     callResultHoldsArguments,
+    keptArguments,
     libraryResultMayHold,
 } from "./kept-values.js";
 import {
@@ -1125,56 +1127,32 @@ export function libraryArgumentEffect(
         : "unknown";
 }
 
-/**
- * A library call that runs a program function on a receiver and arguments
- * it is handed: `fn.call(thisArg, ...args)`, `fn.apply(thisArg, args)`,
- * `fn.bind(thisArg, ...args)` and `Reflect.apply(fn, thisArg, args)`.
- */
+/** A forwarded call ({@link forwardedCallShape}) of a program function. */
 interface ForwardedCall {
     readonly fn: EffectFunction;
-    /** The argument the function takes as `this`. */
-    readonly receiver: number;
-    /** The argument its first parameter takes, one per parameter. */
-    readonly first?: number;
-    /** The argument whose elements its parameters take. */
-    readonly spread?: number;
+    readonly shape: ForwardedCallShape;
 }
 
 function forwardedCall(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
 ): ForwardedCall | undefined {
-    if (!ts.isCallExpression(call)) return undefined;
-    const target = (expression: ts.Expression | undefined) => {
-        const value = expression && unwrapExpression(expression);
-        const declaration =
-            value && ts.isIdentifier(value)
-                ? resolvedSymbol(checker, value)?.valueDeclaration
-                : undefined;
-        return declaration && functionOfDeclaration(declaration);
-    };
-    const reflected = libraryStaticMember(
-        checker,
-        unwrapExpression(call.expression),
-    );
-    if (reflected?.owner === "Reflect" && reflected.name === "apply") {
-        const fn = target(call.arguments[0]);
-        return fn && { fn, receiver: 1, spread: 2 };
-    }
-    const callee = namedMember(checker, unwrapExpression(call.expression));
-    if (!callee || !["apply", "bind", "call"].includes(callee.name))
-        return undefined;
-    const fn = target(callee.expression);
-    if (!fn) return undefined;
-    return callee.name === "apply"
-        ? { fn, receiver: 0, spread: 1 }
-        : { fn, receiver: 0, first: 1 };
+    const shape = ts.isCallExpression(call)
+        ? forwardedCallShape(checker, call)
+        : undefined;
+    const value = shape && unwrapExpression(shape.target);
+    const declaration =
+        value && ts.isIdentifier(value)
+            ? resolvedSymbol(checker, value)?.valueDeclaration
+            : undefined;
+    const fn = declaration && functionOfDeclaration(declaration);
+    return shape && fn ? { fn, shape } : undefined;
 }
 
 /** What a forwarded call does to its argument at `index`: what the function does to it. */
 function forwardedArgumentEffect(
     checker: ts.TypeChecker,
-    { fn, receiver, first, spread }: ForwardedCall,
+    { fn, shape: { receiver, spread } }: ForwardedCall,
     index: number,
 ): LibraryArgumentEffect {
     const readOnly = (parameter: ts.ParameterDeclaration | undefined) =>
@@ -1183,11 +1161,12 @@ function forwardedArgumentEffect(
             parameterIsReadOnly(checker, fn, parameter.name));
     if (index === receiver)
         return functionWritesThis(checker, fn) ? "writes" : "reads";
-    if (first !== undefined && index >= first)
-        return readOnly(fn.parameters[index - first]) ? "reads" : "writes";
-    if (index === spread)
-        return fn.parameters.every(readOnly) ? "reads" : "writes";
-    return "reads";
+    if (index <= receiver) return "reads";
+    if (spread)
+        return index === receiver + 1 && !fn.parameters.every(readOnly)
+            ? "writes"
+            : "reads";
+    return readOnly(fn.parameters[index - receiver - 1]) ? "reads" : "writes";
 }
 
 /** A typed array, an ArrayBuffer or a DataView: what Web IDL passes by reference. */
@@ -1232,30 +1211,6 @@ export function libraryCallMayWriteArgument(
         callTarget(checker, call).kind === "library" &&
         libraryArgumentEffect(checker, call, index) !== "reads"
     );
-}
-
-/**
- * Whether a call leaves the object it is handed at `index` as it was: the
- * library table says it reads it, engine bodies write nothing through the
- * parameter (positive evidence; what the engine keeps is `keptArguments`'
- * question), or program bodies only read it (`onlyRead`: no write, and
- * nothing keeps it past the call).
- */
-export function callLeavesArgumentIntact(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-    index: number,
-): boolean {
-    const target = callTarget(checker, call);
-    return target.kind === "library"
-        ? libraryArgumentEffect(checker, call, index) === "reads"
-        : target.kind === "bodies" &&
-              everyArgumentBody(
-                  call,
-                  target,
-                  index,
-                  target.engine ? parameterIsReadOnly : onlyRead,
-              );
 }
 
 /**
@@ -1389,6 +1344,64 @@ function argumentWritesNothing(
         target.kind === "library" &&
         libraryArgumentEffect(checker, use.call, use.index) === "reads"
     );
+}
+
+const leftIntactMemo = new PredicateMemo(true);
+
+/**
+ * Whether a call leaves a parameter binding's objects as they were and keeps
+ * none of them past it: {@link parameterIsReadOnly} without the stores,
+ * returns, escapes, constructions and storing methods that keep an object a
+ * later write can reach, in a run that ends with the call.
+ */
+function parameterLeftIntact(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): boolean {
+    return leftIntactMemo.answer(checker, binding, () => {
+        const effects = parameterEffects(checker, fn, binding);
+        return (
+            effects.analyzable &&
+            !effects.deferred &&
+            effects.uses.every((use) => {
+                switch (use.kind) {
+                    case "write":
+                    case "rebind":
+                    case "stored":
+                    case "returned":
+                    case "escaped":
+                        return false;
+                    case "method":
+                        return (
+                            readOnlyDataMethods.has(use.method) &&
+                            !storingDataMethods.has(use.method)
+                        );
+                    case "argument": {
+                        if (use.spread || ts.isNewExpression(use.call))
+                            return false;
+                        const target = callTarget(checker, use.call);
+                        return target.kind === "bodies"
+                            ? everyArgumentBody(
+                                  use.call,
+                                  target,
+                                  use.index,
+                                  parameterLeftIntact,
+                              )
+                            : target.kind === "library" &&
+                                  libraryArgumentEffect(
+                                      checker,
+                                      use.call,
+                                      use.index,
+                                  ) === "reads" &&
+                                  keptArguments(checker, use.call).length === 0;
+                    }
+                    default:
+                        return true;
+                }
+            })
+        );
+    });
 }
 
 const visiblyWrittenMemo = new PredicateMemo(false);
@@ -1883,13 +1896,16 @@ function argumentUseOnlyRead(
 
 /**
  * Whether one call provably leaves the argument at `index` unchanged: an
- * argument holding no object, `Object.keys`' argument, or a program
- * function's parameter it writes nothing through.
+ * argument holding no object, `Object.keys`' argument, or a function's
+ * parameter it writes nothing through. With `kept: "refused"`, a program
+ * body must also keep none of it past the call (`parameterLeftIntact`);
+ * what engine bodies keep stays `keptArguments`' question.
  */
 export function callArgumentIsReadOnly(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    kept: "allowed" | "refused" = "allowed",
 ): boolean {
     const argument = call.arguments[index];
     // `Math.hypot(a[0] - b[0], ...)` mentions the composite and hands the
@@ -1904,7 +1920,14 @@ export function callArgumentIsReadOnly(
         return libraryArgumentEffect(checker, call, index) === "reads";
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(call, target, index, parameterIsReadOnly)
+        everyArgumentBody(
+            call,
+            target,
+            index,
+            kept === "refused" && !target.engine
+                ? parameterLeftIntact
+                : parameterIsReadOnly,
+        )
     );
 }
 
@@ -1955,50 +1978,36 @@ export function engineArgumentWritten(
     );
 }
 
-/** Whether a call runs a function the program declares. */
-function callsProgramFunction(
+/** The function a call runs when the program declares it. */
+function programFunction(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
-): boolean {
+): ts.SignatureDeclaration | undefined {
     const declaration = calledDeclaration(checker, call);
-    return (
-        declaration !== undefined &&
+    return declaration !== undefined &&
         !declaration.getSourceFile().isDeclarationFile &&
         ts.isFunctionLike(declaration)
-    );
+        ? declaration
+        : undefined;
 }
 
 /**
- * Whether a method call writes the object it is called on: a library
- * method that writes a receiver of its type
- * ({@link libraryMethodWritesReceiver}); a program method, unless its name
- * is one only data reads take.
+ * Whether a method call writes the object it is called on: a program
+ * method whose body writes through `this` or hands it on
+ * ({@link functionWritesThis}); a library method that writes a receiver of
+ * its type ({@link libraryMethodWritesReceiver}).
  */
 export function callWritesReceiver(
     checker: ts.TypeChecker,
     method: string,
     receiver: ts.Expression,
     call: ts.CallExpression,
+    active?: Set<ts.Node>,
 ): boolean {
-    return callsProgramFunction(checker, call)
-        ? !readOnlyDataMethods.has(method)
+    const fn = programFunction(checker, call);
+    return fn
+        ? functionWritesThis(checker, fn, active)
         : libraryMethodWritesReceiver(checker, receiver, method);
-}
-
-/**
- * {@link callWritesReceiver} for the library alone: a program method an
- * analysis inlines on its receiver writes through the receiver it binds.
- */
-export function libraryCallWritesReceiver(
-    checker: ts.TypeChecker,
-    method: string,
-    receiver: ts.Expression,
-    call: ts.CallExpression,
-): boolean {
-    return (
-        !callsProgramFunction(checker, call) &&
-        libraryMethodWritesReceiver(checker, receiver, method)
-    );
 }
 
 /** @unjournaled Pure functions of the checked source, kept across replays. */
@@ -2048,17 +2057,8 @@ export function functionWritesThis(
             const target = mutatingCallTarget(
                 node,
                 (callee) => namedMember(checker, callee),
-                (method, receiver, call) => {
-                    const called = calledDeclaration(checker, call);
-                    return called && callsProgramFunction(checker, call)
-                        ? ts.isFunctionLike(called) &&
-                              functionWritesThis(checker, called, active)
-                        : libraryMethodWritesReceiver(
-                              checker,
-                              receiver,
-                              method,
-                          );
-                },
+                (method, receiver, call) =>
+                    callWritesReceiver(checker, method, receiver, call, active),
                 (call) => libraryWrittenArgument(checker, call),
             );
             return (
@@ -2077,6 +2077,8 @@ export function functionWritesThis(
         },
     );
     active.delete(declaration);
-    if (active.size === 0) thisWriters.set(declaration, writes);
+    // A write found holds whatever a cycle assumed; "none" only once no
+    // query in progress was assumed to write nothing.
+    if (writes || active.size === 0) thisWriters.set(declaration, writes);
     return writes;
 }

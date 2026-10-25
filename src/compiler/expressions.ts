@@ -82,6 +82,8 @@ import {
     type NamedMember,
     libraryStaticMember,
     staticAccessKey,
+    borrowedPrototypeMethod,
+    forwardedCallShape,
 } from "./symbols.js";
 import {
     CRYPTO_GET_RANDOM_VALUES,
@@ -244,7 +246,7 @@ import {
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 
@@ -312,6 +314,7 @@ export interface ExpressionContext
             | "registerClassInstance"
             | "classOf"
             | "withRecordScopes"
+            | "withCallbackScopes"
             | "captureRecordScopes"
             | "captureNativeDependencies"
             | "captureNativeExpression"
@@ -3983,15 +3986,12 @@ export class ExpressionLowerer {
                     );
                 if (native) return native;
                 const declaration = callable.callbackDeclaration;
-                const owner = callable.callbackRecordOwner;
                 const inBodyScope = <T>(work: () => T): T =>
-                    owner
-                        ? this.context.withRecordScopes(
-                              owner,
-                              work,
-                              declaration,
-                          )
-                        : work();
+                    this.context.withCallbackScopes(
+                        callable,
+                        work,
+                        declaration,
+                    );
                 return ts.isIdentifier(declaration)
                     ? this.context.userFunctions.compile(
                           this.context,
@@ -4193,18 +4193,8 @@ export class ExpressionLowerer {
                     "Callback value is missing its declaration.",
                 );
             }
-            const inRecordScope = <T>(work: () => T): T => {
-                const run = (): T =>
-                    bound.callbackRecordOwner
-                        ? this.context.withRecordScopes(
-                              bound.callbackRecordOwner,
-                              work,
-                          )
-                        : work();
-                return bound.callbackThis
-                    ? this.context.withThis(bound.callbackThis, run)
-                    : run();
-            };
+            const inRecordScope = <T>(work: () => T): T =>
+                this.context.withCallbackScopes(bound, work);
             const result = ts.isIdentifier(bound.callbackDeclaration)
                 ? this.context.userFunctions.compile(
                       this.context,
@@ -4435,12 +4425,7 @@ export class ExpressionLowerer {
                     call,
                 );
             };
-            return callable.callbackRecordOwner
-                ? this.context.withRecordScopes(
-                      callable.callbackRecordOwner,
-                      invoke,
-                  )
-                : invoke();
+            return this.context.withCallbackScopes(callable, invoke);
         }
         if (callable.kind === "data" && callable.dataType?.kind === "function")
             return this.context.dataLowerer.compileStoredCall(
@@ -6742,22 +6727,11 @@ export class ExpressionLowerer {
      * thisArg, read before the arguments, as each argument before the next.
      */
     private compileForwardedCall(call: ts.CallExpression): Value | undefined {
-        const callee = this.context.unwrap(call.expression);
-        const reflected = libraryStaticMember(this.context.checker, callee);
-        const member = reflected
-            ? undefined
-            : namedMember(this.context.checker, callee);
-        const shape =
-            reflected?.owner === "Reflect" && reflected.name === "apply"
-                ? { target: call.arguments[0], receiver: 1, spread: true }
-                : member?.name === "call" || member?.name === "apply"
-                  ? {
-                        target: member.expression,
-                        receiver: 0,
-                        spread: member.name === "apply",
-                    }
-                  : undefined;
-        const target = shape && this.dynamicThisFunction(shape.target);
+        const shape = forwardedCallShape(this.context.checker, call);
+        const target =
+            shape?.method !== "bind" &&
+            shape &&
+            this.dynamicThisFunction(shape.target);
         if (!shape || !target) return undefined;
         const receiver = call.arguments[shape.receiver];
         const list = shape.spread
@@ -6808,24 +6782,17 @@ export class ExpressionLowerer {
      * has its own lowering.
      */
     private refuseBorrowedPrototypeMethod(call: ts.CallExpression): void {
-        const member = (node: ts.Expression) =>
-            namedMember(this.context.checker, this.context.unwrap(node));
-        const callee = member(call.expression);
-        if (callee?.name !== "call" && callee?.name !== "apply") return;
-        const method = member(callee.expression);
-        const prototype = method && member(method.expression);
-        if (prototype?.name !== "prototype") return;
-        const owner = this.context.libraryGlobal(
-            this.context.unwrap(prototype.expression),
-        );
+        const borrowed = borrowedPrototypeMethod(this.context.checker, call);
         if (
-            owner === undefined ||
-            (owner === "Object" && method?.name === "hasOwnProperty")
+            !borrowed ||
+            (borrowed.owner === "Object" &&
+                borrowed.method === "hasOwnProperty" &&
+                borrowed.invoke === "call")
         )
             return;
         this.context.fail(
             call,
-            `${owner}.prototype.${method?.name}.${callee.name} borrows a library method for another receiver; call the method on that receiver.`,
+            `${borrowed.owner}.prototype.${borrowed.method}.${borrowed.invoke} borrows a library method for another receiver; call the method on that receiver.`,
         );
     }
 
@@ -6886,6 +6853,11 @@ export class ExpressionLowerer {
                 call,
                 "Binding a dynamic-this function takes its receiver alone; bound arguments are not represented.",
             );
+        if (!this.boundFunctionOnlyCalled(call))
+            return this.context.fail(
+                call,
+                "A function bound to a receiver is called directly or through a const it initializes; one passed or stored is not represented.",
+            );
         const receiver = this.context.bindings.pinValueToTemporary(
             this.compileValue(call.arguments[0]!),
             "bound_receiver",
@@ -6897,6 +6869,42 @@ export class ExpressionLowerer {
             callbackDeclaration: target,
             callbackThis: receiver,
         };
+    }
+
+    /**
+     * Whether the function `bind` returns is only called: directly, or
+     * through a `const` it initializes that every use calls. Those calls
+     * run it on its receiver; a callback consumer reads only its body.
+     */
+    private boundFunctionOnlyCalled(bind: ts.CallExpression): boolean {
+        const calls = (use: ts.Expression): boolean => {
+            const position = outermostWrapper(use);
+            return (
+                ts.isCallExpression(position.parent) &&
+                position.parent.expression === position
+            );
+        };
+        if (calls(bind)) return true;
+        const declaration = outermostWrapper(bind).parent;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            variableKind(declaration.parent) !== "const"
+        )
+            return false;
+        const symbol = this.context.symbols.valueSymbol(declaration.name);
+        let onlyCalled = true;
+        forEachAnalysisNode(declaration.getSourceFile(), (node) => {
+            if (
+                ts.isIdentifier(node) &&
+                node !== declaration.name &&
+                this.context.symbols.valueSymbol(node) === symbol &&
+                !calls(node)
+            )
+                onlyCalled = false;
+        });
+        return onlyCalled;
     }
 
     /** A concrete callback call ran even when its source spelling is optional. */

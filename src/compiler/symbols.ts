@@ -821,6 +821,78 @@ export function libraryStaticMember(
     return owner === undefined ? undefined : { ...member, owner };
 }
 
+/** A call that runs a function on a receiver it is handed. */
+export interface ForwardedCallShape {
+    /** The function the call runs. */
+    readonly target: ts.Expression;
+    /** `call`, `apply` or `bind` on the function; `Reflect.apply` is `apply`. */
+    readonly method: "call" | "apply" | "bind";
+    /** The argument the function takes as `this`. */
+    readonly receiver: number;
+    /** The arguments come as one array (`apply`) rather than listed. */
+    readonly spread: boolean;
+}
+
+/**
+ * `f.call(t, ...args)`, `f.apply(t, args)`, `f.bind(t, ...args)` and
+ * `Reflect.apply(f, t, args)`: the one reading of a forwarded call.
+ */
+export function forwardedCallShape(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): ForwardedCallShape | undefined {
+    const callee = unwrapExpression(call.expression);
+    const reflected = libraryStaticMember(checker, callee);
+    if (reflected)
+        return reflected.owner === "Reflect" &&
+            reflected.name === "apply" &&
+            call.arguments[0] !== undefined
+            ? {
+                  target: call.arguments[0],
+                  method: "apply",
+                  receiver: 1,
+                  spread: true,
+              }
+            : undefined;
+    const member = namedMember(checker, callee);
+    return member?.name === "call" ||
+        member?.name === "apply" ||
+        member?.name === "bind"
+        ? {
+              target: member.expression,
+              method: member.name,
+              receiver: 0,
+              spread: member.name === "apply",
+          }
+        : undefined;
+}
+
+/**
+ * A library prototype's method a forwarded call runs on another receiver
+ * (`Array.prototype.push.call(xs, v)`), or undefined.
+ */
+export function borrowedPrototypeMethod(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+):
+    | {
+          readonly owner: string;
+          readonly method: string;
+          readonly invoke: string;
+      }
+    | undefined {
+    const shape = forwardedCallShape(checker, call);
+    if (!shape || shape.method === "bind") return undefined;
+    const method = namedMember(checker, unwrapExpression(shape.target));
+    const prototype =
+        method && namedMember(checker, unwrapExpression(method.expression));
+    if (!method || prototype?.name !== "prototype") return undefined;
+    const owner = libraryGlobal(checker, prototype.expression);
+    return owner === undefined
+        ? undefined
+        : { owner, method: method.name, invoke: shape.method };
+}
+
 /** Whether a callee names the library static `owner.name` ({@link libraryStaticMember}). */
 export function isLibraryStatic(
     checker: ts.TypeChecker,

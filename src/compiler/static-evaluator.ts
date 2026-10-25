@@ -39,6 +39,25 @@ export function objectIdentityCallArgument(
     }
     return expression.arguments[0];
 }
+
+/**
+ * The expression whose identity a reader sees: wrappers stripped (`await`
+ * too when asked), and `Object.freeze(x)` is `x`.
+ */
+export function unwrapObjectIdentity(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    options: { readonly await?: boolean } = {},
+): ts.Expression {
+    let current = unwrapExpression(expression, options);
+    for (
+        let frozen = objectIdentityCallArgument(checker, current);
+        frozen;
+        frozen = objectIdentityCallArgument(checker, current)
+    )
+        current = unwrapExpression(frozen, options);
+    return current;
+}
 import { EmissionSet, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { isStringValue, presenceCpp, type Value } from "./types.js";

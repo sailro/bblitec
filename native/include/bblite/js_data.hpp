@@ -259,14 +259,21 @@ private:
     bool shared_ = false;
 };
 
-/** ToIndex for numeric buffer-view arguments; validate after truncation. */
-[[nodiscard]] inline std::size_t buffer_view_index(double value) {
-    const double integer = std::isnan(value) ? 0.0 : std::trunc(value);
+/** ToIndex: NaN reads 0 and a fraction truncates; a negative or unsafe value is no index. */
+[[nodiscard]] inline std::optional<std::size_t> to_index(double value) {
+    const double integer = to_integer_or_infinity(value);
     if (integer < 0.0 || integer > 9007199254740991.0 ||
-        integer >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
-        throw std::runtime_error("TypedArray offset or length is outside ToIndex range.");
-    }
+        integer >= static_cast<double>(std::numeric_limits<std::size_t>::max()))
+        return std::nullopt;
     return static_cast<std::size_t>(integer);
+}
+
+/** ToIndex for numeric buffer-view arguments: out of range is a RangeError. */
+[[nodiscard]] inline std::size_t buffer_view_index(double value) {
+    const auto index = to_index(value);
+    if (!index)
+        throw NamedError("RangeError", "TypedArray offset or length is outside ToIndex range.");
+    return *index;
 }
 
 /** Numeric arrays share object identity when assigned, captured or returned.
@@ -2965,58 +2972,39 @@ struct ParsedDateTime {
 }
 
 /**
- * A time value with `count` fields from `first` on replaced by `given`, the
+ * A time value with the fields from `first` on replaced by `given`, the
  * others kept, all read in one zone: the `set<Field>` arithmetic. An invalid
  * time stays invalid, except that a year setter starts from +0.
  */
-[[nodiscard]] inline double date_with_fields(double time, DateField first, int count, double a,
-                                             double b, double c, double d) {
+[[nodiscard]] inline double date_with_fields(double time, DateField first,
+                                             std::initializer_list<double> given) {
+    if (first == DateField::weekday)
+        throw std::logic_error("A Date has no weekday setter.");
     if (std::isnan(time)) {
         if (first != DateField::year)
             return time;
         time = 0.0;
     }
-    double fields[] = {
-        date_time_field(time, DateField::year),        date_time_field(time, DateField::month),
-        date_time_field(time, DateField::date),        date_time_field(time, DateField::hours),
-        date_time_field(time, DateField::minutes),     date_time_field(time, DateField::seconds),
-        date_time_field(time, DateField::milliseconds)};
-    int start = 0;
-    switch (first) {
-    case DateField::year:
-        start = 0;
-        break;
-    case DateField::month:
-        start = 1;
-        break;
-    case DateField::date:
-        start = 2;
-        break;
-    case DateField::hours:
-        start = 3;
-        break;
-    case DateField::minutes:
-        start = 4;
-        break;
-    case DateField::seconds:
-        start = 5;
-        break;
-    case DateField::milliseconds:
-        start = 6;
-        break;
-    case DateField::weekday:
-        throw std::logic_error("A Date has no weekday setter.");
-    }
-    const double given[] = {a, b, c, d};
-    for (int index = 0; index < count; ++index)
-        fields[start + index] = given[index];
+    using namespace date_detail;
+    const auto [day, within_day] = day_time(time);
+    const auto civil = civil_from_days(day);
+    double fields[] = {static_cast<double>(civil.year),
+                       static_cast<double>(civil.month - 1),
+                       static_cast<double>(civil.day),
+                       static_cast<double>(within_day / 3600000),
+                       static_cast<double>(within_day / 60000 % 60),
+                       static_cast<double>(within_day / 1000 % 60),
+                       static_cast<double>(within_day % 1000)};
+    // The weekday sits between date and hours in DateField; no field stores it.
+    auto index = static_cast<std::size_t>(first) - (first > DateField::weekday ? 1 : 0);
+    for (const double value : given)
+        fields[index++] = value;
     return date_make(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
 }
 
 /** `Date.prototype.setUTC<Field>`: stores and returns the new time value. */
-inline double date_set_utc(const Date& date, DateField first, int count, double a, double b = 0.0,
-                           double c = 0.0, double d = 0.0) {
-    *date = date_with_fields(*date, first, count, a, b, c, d);
+inline double date_set_utc(const Date& date, DateField first, std::initializer_list<double> given) {
+    *date = date_with_fields(*date, first, given);
     return *date;
 }
 
@@ -5862,10 +5850,10 @@ double atomics_compare_exchange(Values values, double index, double expected, do
 
 /** ToIndex of a typed array's length: NaN reads 0, a negative or unsafe length throws a RangeError. */
 [[nodiscard]] inline std::size_t typed_array_length(double count) {
-    const double integer = to_integer_or_infinity(count);
-    if (integer < 0.0 || integer > 9007199254740991.0)
+    const auto length = to_index(count);
+    if (!length)
         throw NamedError("RangeError", "Invalid typed array length: " + number_to_string(count));
-    return static_cast<std::size_t>(integer);
+    return *length;
 }
 
 [[nodiscard]] inline U8Array u8_array_sized(double count) {

@@ -133,6 +133,7 @@ import {
     functionOfDeclaration,
     type SupportedFunction,
     variableKind,
+    jumpBinding,
 } from "./syntax.js";
 import {
     emitReachableStatements,
@@ -518,14 +519,22 @@ function writesThroughRoot(
         isReadOnlyRegExpCall(checker, node, sourceFiles)
     )
         return false;
+    const writesReceiver =
+        mutatesVia ??
+        (checker
+            ? (
+                  method: string,
+                  receiver: ts.Expression,
+                  call: ts.CallExpression,
+              ) => callWritesReceiver(checker, method, receiver, call)
+            : (method: string) => !readOnlyDataMethods.has(method));
     const target = mutatingCallTarget(
         node,
         member,
-        mutatesVia ??
-            (checker
-                ? (method, receiver, call) =>
-                      callWritesReceiver(checker, method, receiver, call)
-                : (method) => !readOnlyDataMethods.has(method)),
+        // Only a tracked receiver asks whether the method writes it.
+        (method, receiver, call) =>
+            isTarget(receiver, "receiver") &&
+            writesReceiver(method, receiver, call),
         checker && ((call) => libraryWrittenArgument(checker, call)),
     );
     // Calling a method on a primitive field cannot write through its owner.
@@ -557,7 +566,7 @@ export interface AliasedMutationScan {
 export function returningFunctionName(
     statement: ts.ReturnStatement,
 ): ts.Identifier | undefined {
-    const owner = ts.findAncestor(statement.parent, ts.isFunctionLike);
+    const owner = jumpBinding(statement);
     return owner && ts.isFunctionDeclaration(owner) ? owner.name : undefined;
 }
 
@@ -586,8 +595,17 @@ export interface AliasSite {
     readonly holds: "value" | "member" | "element" | "returned";
 }
 
+const NO_ALIAS_SITES: readonly AliasSite[] = [];
+
 /** The names `node` binds to values: every alias an identity can gain there. */
 export function aliasSites(node: ts.Node): readonly AliasSite[] {
+    if (
+        !ts.isReturnStatement(node) &&
+        !ts.isVariableDeclaration(node) &&
+        !ts.isForOfStatement(node) &&
+        writeSites(node).length === 0
+    )
+        return NO_ALIAS_SITES;
     const sites: AliasSite[] = [];
     if (ts.isReturnStatement(node) && node.expression) {
         const owner = returningFunctionName(node);
@@ -692,8 +710,11 @@ export function aliasedMutationScan(
     const initial = valueSymbol(identifier);
     if (!initial) return false;
     const aliases = new EmissionSet<ts.Symbol>([initial]);
-    const files = new Set(walk.files?.initial ?? [identifier.getSourceFile()]);
-    let changed = true;
+    const source = identifier.getSourceFile();
+    // The files the next pass reads: every one at first, then those that
+    // reference an alias the last pass added.
+    let pending = new Set(walk.files?.initial ?? [source]);
+    let next = new Set<ts.SourceFile>();
     const scan: AliasedMutationScan = {
         namesAlias: (node) =>
             ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
@@ -702,9 +723,8 @@ export function aliasedMutationScan(
         addAlias: (symbol) => {
             if (symbol && !aliases.has(symbol)) {
                 aliases.add(symbol);
-                changed = true;
-                for (const file of walk.files?.referencing(symbol) ?? [])
-                    files.add(file);
+                for (const file of walk.files?.referencing(symbol) ?? [source])
+                    next.add(file);
             }
         },
     };
@@ -723,11 +743,11 @@ export function aliasedMutationScan(
         }
         return false;
     };
-    while (changed) {
-        changed = false;
-        // A file an alias adds joins this pass.
-        for (const file of files)
+    while (pending.size > 0) {
+        for (const file of pending)
             if (sourceFileNodes(file).some(visit)) return true;
+        pending = next;
+        next = new Set();
     }
     return false;
 }

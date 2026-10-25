@@ -21,7 +21,7 @@ import { refuseErrorReflection } from "./error-values.js";
 import {
     GLOBAL_OBJECT_NAMES,
     isSymbolPropertyKey,
-    namedMember,
+    borrowedPrototypeMethod,
 } from "./symbols.js";
 import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
@@ -510,17 +510,12 @@ export function compileObjectPrototypeCall(
     context: ObjectStaticContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const member = (node: ts.Expression) =>
-        namedMember(context.checker, context.unwrap(node));
-    const callee = member(call.expression);
-    if (callee?.name !== "call") return undefined;
-    const method = member(callee.expression);
-    if (method?.name !== "hasOwnProperty") return undefined;
-    const prototype = member(method.expression);
-    if (prototype?.name !== "prototype") return undefined;
-    const owner = context.unwrap(prototype.expression);
-    if (context.libraryGlobal(owner) !== "Object") return undefined;
-    return compileObjectHasOwn(context, call);
+    const borrowed = borrowedPrototypeMethod(context.checker, call);
+    return borrowed?.owner === "Object" &&
+        borrowed.method === "hasOwnProperty" &&
+        borrowed.invoke === "call"
+        ? compileObjectHasOwn(context, call)
+        : undefined;
 }
 
 /**

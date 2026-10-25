@@ -1310,7 +1310,6 @@ test("a call's member is read through namedMember", () => {
         "src/compiler/kept-values.ts",
         "src/compiler/math-intrinsics.ts",
         "src/compiler/number-intrinsics.ts",
-        "src/compiler/object-statics.ts",
         "src/compiler/parameter-effects.ts",
         "src/compiler/platform-calls.ts",
         "src/compiler/program-observations.ts",

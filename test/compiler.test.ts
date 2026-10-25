@@ -13989,10 +13989,10 @@ test("refuses to erase a browser call handed the program's own binary data", () 
         () =>
             compileSource(`
                 const bytes = new Uint8Array(16);
-                crypto.getRandomValues(bytes);
+                void crypto.subtle.digest("SHA-256", bytes);
                 console.log(bytes[0]);
             `),
-        /'crypto\.getRandomValues' would erase a call handed the program's own binary data/,
+        /'crypto\.subtle\.digest' would erase a call handed the program's own binary data/,
     );
 });
 

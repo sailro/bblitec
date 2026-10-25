@@ -114,6 +114,32 @@ function isRecordWithMethods(initializer: ts.Expression): boolean {
     );
 }
 
+/**
+ * An object literal holding a member a program calls (a method, an
+ * accessor, a function value): the static path does not lower calls on an
+ * imported record's members, so such a record keeps runtime storage.
+ */
+export function recordHoldsCallables(
+    checker: ts.TypeChecker,
+    initializer: ts.Expression,
+): boolean {
+    const current = unwrapExpression(initializer);
+    return (
+        ts.isObjectLiteralExpression(current) &&
+        (isRecordWithMethods(current) ||
+            current.properties.some(
+                (property) =>
+                    (ts.isPropertyAssignment(property) ||
+                        ts.isShorthandPropertyAssignment(property)) &&
+                    callSignatures(
+                        checker,
+                        checker.getTypeAtLocation(property.name),
+                        "present",
+                    ).length > 0,
+            ))
+    );
+}
+
 /** Whether a function body reads `this` as its own receiver (arrow functions share it). */
 function readsOwnReceiver(body: ts.Node): boolean {
     const visit = (node: ts.Node): boolean =>
@@ -152,12 +178,12 @@ function isRecordWithReceiverMethods(initializer: ts.Expression): boolean {
 function isMutatedContainer(
     writes: ModuleConstantWrites,
     declaration: ts.VariableDeclaration,
-    name: ts.Identifier,
 ): boolean {
     return (
+        ts.isIdentifier(declaration.name) &&
         declaration.initializer !== undefined &&
         isContainerInitializer(declaration.initializer) &&
-        moduleConstantIsWritten(writes, name)
+        moduleConstantIsWritten(writes, declaration.name)
     );
 }
 
@@ -169,16 +195,6 @@ function isMutatedContainer(
  * observed by the entry or an exported callable, plus the transitive module
  * state needed to construct it.
  */
-export function planImportedModuleInitializers(
-    program: ts.Program,
-    sourceFile: ts.SourceFile,
-    checker: ts.TypeChecker,
-    symbols: CompilerSymbols,
-): ts.SourceFile[] {
-    return planImportedModuleState(program, sourceFile, checker, symbols);
-}
-
-/** Native module activation and the content writes requiring owned declarations. */
 export function planImportedModuleState(
     program: ts.Program,
     sourceFile: ts.SourceFile,
@@ -220,6 +236,114 @@ export function planEntryModuleState(
         checker,
         symbols,
     ).planEntryState(retainedDeclarations);
+}
+
+/** The function a callee expression names, as the planner resolves it. */
+function calleeFunction(
+    symbols: CompilerSymbols,
+    expression: ts.Expression,
+): ts.FunctionLikeDeclaration | undefined {
+    const current = unwrapExpression(expression);
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+        return current;
+    }
+    if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) {
+        return undefined;
+    }
+    const name = ts.isPropertyAccessExpression(current)
+        ? current.name
+        : current;
+    if (!ts.isIdentifier(name)) return undefined;
+    const declaration = symbols.valueSymbol(name)?.valueDeclaration;
+    if (declaration && ts.isFunctionLike(declaration)) {
+        return declaration as ts.FunctionLikeDeclaration;
+    }
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        ts.isFunctionLike(declaration.initializer)
+        ? declaration.initializer
+        : undefined;
+}
+
+/**
+ * A `const` whose initializer creates an object its members need, so
+ * JavaScript's one evaluation in module order is observable: a record
+ * whose methods read `this`, or a call whose function leaves closures
+ * behind that write its locals or returns locally initialized callables.
+ * Evaluated again at each use (the static
+ * path), every receiver would get another object, and a member call or
+ * a member read as a callback, through an element access or a holder
+ * would run on state no other use sees.
+ */
+export function createsReceiverState(
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+    declaration: ts.VariableDeclaration,
+): boolean {
+    const initializer = declaration.initializer;
+    if (!initializer) return false;
+    if (isRecordWithReceiverMethods(initializer)) return true;
+    const call = unwrapExpression(initializer);
+    const called = ts.isCallExpression(call)
+        ? calleeFunction(symbols, call.expression)
+        : undefined;
+    if (!called?.body) return false;
+    const owner = (node: ts.Node) =>
+        ts.findAncestor(node.parent, ts.isFunctionLike);
+    // A returned callable binding needs the factory's evaluated scope,
+    // even if all its assignments happened before the return.
+    if (
+        findAnalysisNode(called.body, (node) => {
+            if (
+                !ts.isReturnStatement(node) ||
+                !node.expression ||
+                owner(node) !== called
+            )
+                return false;
+            return (
+                findAnalysisNode(
+                    node.expression,
+                    (part) => {
+                        if (!ts.isIdentifier(part)) return false;
+                        const local =
+                            symbols.valueSymbol(part)?.valueDeclaration;
+                        return (
+                            local !== undefined &&
+                            ts.isVariableDeclaration(local) &&
+                            owner(local) === called &&
+                            callSignatures(
+                                checker,
+                                checker.getTypeAtLocation(part),
+                                "exact",
+                            ).length !== 0
+                        );
+                    },
+                    { functions: "skip" },
+                ) !== undefined
+            );
+        }) !== undefined
+    )
+        return true;
+    const writesLocal = (target: ts.Expression): boolean => {
+        const name = unwrapExpression(target);
+        const local = ts.isIdentifier(name)
+            ? symbols.valueSymbol(name)?.valueDeclaration
+            : undefined;
+        return (
+            local !== undefined &&
+            ts.isVariableDeclaration(local) &&
+            owner(local) === called
+        );
+    };
+    return (
+        findAnalysisNode(
+            called.body,
+            (node) =>
+                owner(node) !== called &&
+                writeSites(node).some(({ target }) => writesLocal(target)),
+        ) !== undefined
+    );
 }
 
 class ModuleInitializerPlanner implements ModuleConstantWrites {
@@ -369,14 +493,10 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                     // A record carrying methods binds here too, so its
                     // methods have a receiver to run against.
                     return (
-                        isMutatedContainer(
-                            this,
-                            declaration,
-                            declaration.name,
-                        ) ||
                         hasArraySnapshot(declaration) ||
                         (declaration.initializer !== undefined &&
-                            isRecordWithMethods(declaration.initializer))
+                            isRecordWithMethods(declaration.initializer)) ||
+                        isMutatedContainer(this, declaration)
                     );
                 },
             );
@@ -441,9 +561,9 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                 if (
                     subset === "mutable" &&
                     isConst &&
-                    !isMutatedContainer(this, declaration, declaration.name) &&
                     !hasArraySnapshot(declaration) &&
-                    !this.createsReceiverState(declaration)
+                    !this.createsReceiverState(declaration) &&
+                    !isMutatedContainer(this, declaration)
                 ) {
                     continue;
                 }
@@ -453,82 +573,8 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
         return result;
     }
 
-    /**
-     * A `const` whose initializer creates an object its members need, so
-     * JavaScript's one evaluation in module order is observable: a record
-     * whose methods read `this`, or a call whose function leaves closures
-     * behind that write its locals or returns locally initialized callables.
-     * Evaluated again at each use (the static
-     * path), every receiver would get another object, and a member call or
-     * a member read as a callback, through an element access or a holder
-     * would run on state no other use sees.
-     */
     private createsReceiverState(declaration: ts.VariableDeclaration): boolean {
-        const initializer = declaration.initializer;
-        if (!initializer) return false;
-        if (isRecordWithReceiverMethods(initializer)) return true;
-        const call = unwrapExpression(initializer);
-        const called = ts.isCallExpression(call)
-            ? this.calledFunction(call.expression)
-            : undefined;
-        if (!called?.body) return false;
-        const owner = (node: ts.Node) =>
-            ts.findAncestor(node.parent, ts.isFunctionLike);
-        // A returned callable binding needs the factory's evaluated scope,
-        // even if all its assignments happened before the return.
-        if (
-            findAnalysisNode(called.body, (node) => {
-                if (
-                    !ts.isReturnStatement(node) ||
-                    !node.expression ||
-                    owner(node) !== called
-                )
-                    return false;
-                return (
-                    findAnalysisNode(
-                        node.expression,
-                        (part) => {
-                            if (!ts.isIdentifier(part)) return false;
-                            const local =
-                                this.symbols.valueSymbol(
-                                    part,
-                                )?.valueDeclaration;
-                            return (
-                                local !== undefined &&
-                                ts.isVariableDeclaration(local) &&
-                                owner(local) === called &&
-                                callSignatures(
-                                    this.checker,
-                                    this.checker.getTypeAtLocation(part),
-                                    "exact",
-                                ).length !== 0
-                            );
-                        },
-                        { functions: "skip" },
-                    ) !== undefined
-                );
-            }) !== undefined
-        )
-            return true;
-        const writesLocal = (target: ts.Expression): boolean => {
-            const name = unwrapExpression(target);
-            const local = ts.isIdentifier(name)
-                ? this.symbols.valueSymbol(name)?.valueDeclaration
-                : undefined;
-            return (
-                local !== undefined &&
-                ts.isVariableDeclaration(local) &&
-                owner(local) === called
-            );
-        };
-        return (
-            findAnalysisNode(
-                called.body,
-                (node) =>
-                    owner(node) !== called &&
-                    writeSites(node).some(({ target }) => writesLocal(target)),
-            ) !== undefined
-        );
+        return createsReceiverState(this.checker, this.symbols, declaration);
     }
 
     private runtimeObservedModuleState(
@@ -738,30 +784,7 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
     private calledFunction(
         expression: ts.Expression,
     ): ts.FunctionLikeDeclaration | undefined {
-        const current = unwrapExpression(expression);
-        if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
-            return current;
-        }
-        if (
-            !ts.isIdentifier(current) &&
-            !ts.isPropertyAccessExpression(current)
-        ) {
-            return undefined;
-        }
-        const name = ts.isPropertyAccessExpression(current)
-            ? current.name
-            : current;
-        if (!ts.isIdentifier(name)) return undefined;
-        const declaration = this.symbols.valueSymbol(name)?.valueDeclaration;
-        if (declaration && ts.isFunctionLike(declaration)) {
-            return declaration as ts.FunctionLikeDeclaration;
-        }
-        return declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer &&
-            ts.isFunctionLike(declaration.initializer)
-            ? declaration.initializer
-            : undefined;
+        return calleeFunction(this.symbols, expression);
     }
 
     /** @unjournaled A cache of each file's writes, from its source alone. */

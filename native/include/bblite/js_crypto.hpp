@@ -2,6 +2,7 @@
 
 #include <bblite/js_data.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -19,11 +20,15 @@ inline void require_entropy_quota(std::size_t bytes) {
                          "available via this API (65536)");
 }
 
-/** Random bytes from the host's entropy source. */
+/** Random bytes from the host's entropy source, every bit of each draw used. */
 inline void fill_entropy(unsigned char* bytes, std::size_t count) {
     thread_local std::random_device source;
-    for (std::size_t index = 0; index < count; ++index)
-        bytes[index] = static_cast<unsigned char>(source());
+    for (std::size_t index = 0; index < count;) {
+        const std::random_device::result_type draw = source();
+        const std::size_t take = std::min(sizeof(draw), count - index);
+        std::memcpy(bytes + index, &draw, take);
+        index += take;
+    }
 }
 } // namespace crypto_detail
 
