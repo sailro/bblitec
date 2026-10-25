@@ -8,6 +8,7 @@
 #include <bblite/runtime.hpp>
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -72,9 +73,10 @@ public:
     bool lease([[maybe_unused]] OffscreenRun* offscreen, [[maybe_unused]] const Engine& engine) {
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen) {
-            leased_ =
-                images_.value().acquire(static_cast<Uint32>(engine.options.width),
-                                        static_cast<Uint32>(engine.options.height), *offscreen);
+            if (!images_)
+                throw std::logic_error("An endpoint frame leases an image before its run opened.");
+            leased_ = images_->acquire(static_cast<Uint32>(engine.options.width),
+                                       static_cast<Uint32>(engine.options.height), *offscreen);
             return leased_ != nullptr;
         }
 #endif
@@ -107,7 +109,9 @@ public:
     bool submit(SdlGpuCommand& command, [[maybe_unused]] OffscreenRun* offscreen) {
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen) {
-            images_.value().publish(command, *offscreen);
+            if (!images_)
+                throw std::logic_error("An endpoint frame publishes before its run opened.");
+            images_->publish(command, *offscreen);
             return true;
         }
 #endif
