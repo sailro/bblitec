@@ -595,6 +595,27 @@ test("function kinds and suspension points are read through syntax.ts", () => {
     );
 });
 
+test("where a value goes is one forward classifier in syntax.ts", () => {
+    // valueUse climbs wrappers, selected operands and literals, then names
+    // the consumer: the escape analysis (evaluation-order.ts) and the
+    // scalar-record walk (module-container-writes.ts) map its kinds.
+    for (const name of ["valueUse", "enclosingLiteral"])
+        assert.deepEqual(
+            declarationOwners(name),
+            ["src/compiler/syntax.ts"],
+            name,
+        );
+    assert.deepEqual(
+        sourcePaths
+            .filter((path) => sourceFacts(path).calls.has("valueUse"))
+            .sort(),
+        [
+            "src/compiler/evaluation-order.ts",
+            "src/compiler/module-container-writes.ts",
+        ],
+    );
+});
+
 test("a void result reads as undefined through one rule", () => {
     // readsErasedVoid / undefinedFromVoid (undefined-values.ts): a void
     // annotation alone does not make a result undefined. async.ts proves a

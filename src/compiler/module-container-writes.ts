@@ -19,11 +19,11 @@ import {
     type CompilerSymbols,
 } from "./symbols.js";
 import {
-    isAssignmentExpression,
     isMemberAccess,
     plainDataMembers,
     rootExpression,
     unwrapExpression,
+    valueUse,
     wrappedParent,
 } from "./syntax.js";
 import {
@@ -394,29 +394,64 @@ function writesThroughBinding(
     // Stored or returned references can acquire aliases outside this walk:
     // a scalar-record certificate does not survive its identity escaping,
     // and cannot follow the result of a function other than a named helper.
+    // A reference is followed through the results that can hold it.
     const scalarRecordEscapes = (
-        node: ts.Node,
+        reference: ts.Expression,
         scan: AliasedMutationScan,
-    ): boolean =>
-        (ts.isReturnStatement(node) &&
-            node.expression !== undefined &&
-            !returningFunctionName(node) &&
-            mentions(node.expression, scan)) ||
-        (isAssignmentExpression(node) &&
-            mentions(node.right, scan) &&
-            !(
-                names(scan, identityUnwrap(checker, node.right)) &&
-                unobservedNativeValueAssignment(checker, program, node)
-            )) ||
-        ((ts.isThrowStatement(node) || ts.isExportAssignment(node)) &&
-            node.expression !== undefined &&
-            mentions(node.expression, scan)) ||
-        (ts.isArrowFunction(node) &&
-            !ts.isBlock(node.body) &&
-            mentions(node.body, scan)) ||
-        ((ts.isParameter(node) || ts.isPropertyDeclaration(node)) &&
-            node.initializer !== undefined &&
-            mentions(node.initializer, scan));
+    ): boolean => {
+        const carried = (result: ts.Expression): boolean =>
+            typeCanCarryReference(checker.getTypeAtLocation(result));
+        for (let use = valueUse(reference); ;)
+            switch (use.kind) {
+                case "member": {
+                    const call = use.access.parent;
+                    if (
+                        !ts.isCallExpression(call) ||
+                        call.expression !== use.access ||
+                        !callResultCanHoldReceiver(checker, call) ||
+                        !carried(call)
+                    )
+                        return false;
+                    use = valueUse(call);
+                    break;
+                }
+                case "argument":
+                    if (
+                        (ts.isCallExpression(use.call) &&
+                            !writesArgument(scan, use.call, use.index)) ||
+                        !carried(use.call)
+                    )
+                        return false;
+                    use = valueUse(use.call);
+                    break;
+                case "awaited":
+                    if (!carried(use.await)) return false;
+                    use = valueUse(use.await);
+                    break;
+                case "returned":
+                    return (
+                        !ts.isReturnStatement(use.from) ||
+                        !returningFunctionName(use.from)
+                    );
+                case "assigned":
+                    return !(
+                        names(
+                            scan,
+                            identityUnwrap(checker, use.assignment.right),
+                        ) &&
+                        unobservedNativeValueAssignment(
+                            checker,
+                            program,
+                            use.assignment,
+                        )
+                    );
+                case "defaulted":
+                case "thrown":
+                    return true;
+                default:
+                    return false;
+            }
+    };
     return aliasedMutationScan(
         name,
         (identifier) => symbols.valueSymbol(identifier),
@@ -438,7 +473,11 @@ function writesThroughBinding(
             // its callers, importing files included, are followed.
             aliasingReturn: mentions,
             mutates: (node, scan) =>
-                (scalarRecord && scalarRecordEscapes(node, scan)) ||
+                (scalarRecord &&
+                    ts.isExpression(node) &&
+                    typeCanCarryReference(checker.getTypeAtLocation(node)) &&
+                    names(scan, node) &&
+                    scalarRecordEscapes(node, scan)) ||
                 // The alias walk can stop at a getter's scalar result,
                 // but evaluating that getter may still mutate its owner.
                 ((ts.isPropertyAccessExpression(node) ||

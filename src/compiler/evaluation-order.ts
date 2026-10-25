@@ -53,13 +53,11 @@ import {
     rootExpression,
     writeSites,
     isSuspensionPoint,
-    equalityOperator,
     isMemberAccess,
-    isOperandSelection,
     isValueReference,
     objectLiteralMembers,
-    operandYield,
     outermostWrapper,
+    valueUse,
 } from "./syntax.js";
 import {
     holdsOnly,
@@ -801,77 +799,28 @@ function useHolder(
     return useHolder(owner, closure);
 }
 
-/** The literal a value is a member or element of: it goes where that goes. */
-function enclosingLiteral(position: ts.Expression): ts.Expression | undefined {
-    const parent = position.parent;
-    if (
-        (ts.isShorthandPropertyAssignment(parent) ||
-            (ts.isPropertyAssignment(parent) &&
-                parent.initializer === position)) &&
-        ts.isObjectLiteralExpression(parent.parent)
-    )
-        return parent.parent;
-    return ts.isArrayLiteralExpression(parent) ? parent : undefined;
-}
-
-/** {@link useHolder} for a value its own run evaluates. */
+/**
+ * {@link useHolder} for a value its own run evaluates: reading through it,
+ * calling it and testing it keep it; any use that can keep it elsewhere
+ * hands it on ({@link valueUse}).
+ */
 function heldAt(
     value: ts.Expression,
     returnsKeep: boolean,
 ): "kept" | "escapes" | ts.Identifier {
-    const position = outermostWrapper(value);
-    const parent = position.parent;
-    const literal = enclosingLiteral(position);
-    if (literal) return heldAt(literal, returnsKeep);
-    if (
-        ts.isReturnStatement(parent) ||
-        (ts.isArrowFunction(parent) && parent.body === position)
-    )
-        return returnsKeep ? "kept" : "escapes";
-    if (
-        ts.isVariableDeclaration(parent) &&
-        parent.initializer === position &&
-        ts.isIdentifier(parent.name)
-    )
-        return returnsKeep ? parent.name : "escapes";
-    if (ts.isCallExpression(parent) && parent.expression === position)
-        return "kept";
-    return handsOn(value) ? "escapes" : "kept";
-}
-
-/**
- * Whether a use of a reference can keep it somewhere else: an argument, a
- * stored or bound value, an awaited, yielded or thrown value, a
- * reassignment, an element of a literal handed on itself. Reading through
- * it, testing it and returning it cannot.
- */
-function handsOn(value: ts.Expression): boolean {
-    const position = outermostWrapper(value);
-    const parent = position.parent;
-    const literal = enclosingLiteral(position);
-    if (literal) return handsOn(literal);
-    if (isMemberAccess(parent) && parent.expression === position) return false;
-    if (writeSites(parent).length > 0) return true;
-    if (
-        ts.isReturnStatement(parent) ||
-        (ts.isArrowFunction(parent) && parent.body === position) ||
-        ts.isIfStatement(parent) ||
-        ts.isPrefixUnaryExpression(parent) ||
-        ts.isTypeOfExpression(parent)
-    )
-        return false;
-    // A selected operand is the selection's value; a tested one is not.
-    if (isOperandSelection(parent))
-        return (
-            operandYield(parent, position) !== undefined &&
-            ts.isExpression(parent) &&
-            handsOn(parent)
-        );
-    return !(
-        ts.isBinaryExpression(parent) &&
-        (equalityOperator(parent.operatorToken.kind) !== undefined ||
-            parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
-    );
+    const use = valueUse(value);
+    switch (use.kind) {
+        case "returned":
+            return returnsKeep ? "kept" : "escapes";
+        case "bound":
+            return returnsKeep ? use.name : "escapes";
+        case "member":
+        case "called":
+        case "read":
+            return "kept";
+        default:
+            return "escapes";
+    }
 }
 
 /** Types the checker leaves open: a value of one may be anything. */

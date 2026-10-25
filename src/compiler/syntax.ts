@@ -380,6 +380,115 @@ export function wrappedParent(expression: ts.Expression): ts.Node {
 }
 
 /**
+ * Where a value goes ({@link valueUse}). `at` is the outermost expression
+ * still holding it.
+ */
+export type ValueUse = { readonly at: ts.Expression } & (
+    | { readonly kind: "member"; readonly access: MemberAccess }
+    | { readonly kind: "called" }
+    /** Tested, compared or discarded. */
+    | { readonly kind: "read" }
+    | {
+          readonly kind: "returned";
+          readonly from: ts.ReturnStatement | ts.ArrowFunction;
+      }
+    | { readonly kind: "bound"; readonly name: ts.Identifier }
+    | {
+          readonly kind: "assigned";
+          readonly assignment: ts.AssignmentExpression<ts.AssignmentOperatorToken>;
+      }
+    /** A parameter's or property's default. */
+    | { readonly kind: "defaulted" }
+    | {
+          readonly kind: "argument";
+          readonly call: ts.CallExpression | ts.NewExpression;
+          readonly index: number;
+      }
+    | { readonly kind: "awaited"; readonly await: ts.AwaitExpression }
+    /** Thrown or exported. */
+    | { readonly kind: "thrown" }
+    /** Written, spread, yielded, iterated or another operator's operand. */
+    | { readonly kind: "handed" }
+);
+
+/**
+ * What consumes a value: the parent of the outermost expression still
+ * holding it, past wrappers, selected operands ({@link operandYield}) and
+ * the object or array literal it is a member or element of.
+ */
+export function valueUse(value: ts.Expression): ValueUse {
+    let at = outermostWrapper(value, { branches: true });
+    for (
+        let literal = enclosingLiteral(at);
+        literal;
+        literal = enclosingLiteral(at)
+    )
+        at = outermostWrapper(literal, { branches: true });
+    const parent = at.parent;
+    if (isMemberAccess(parent) && parent.expression === at)
+        return { kind: "member", at, access: parent };
+    if (ts.isCallExpression(parent) && parent.expression === at)
+        return { kind: "called", at };
+    if (
+        ts.isReturnStatement(parent) ||
+        (ts.isArrowFunction(parent) && parent.body === at)
+    )
+        return { kind: "returned", at, from: parent };
+    if (
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === at &&
+        ts.isIdentifier(parent.name)
+    )
+        return { kind: "bound", at, name: parent.name };
+    if (isAssignmentExpression(parent) && parent.right === at)
+        return { kind: "assigned", at, assignment: parent };
+    if (
+        (ts.isParameter(parent) || ts.isPropertyDeclaration(parent)) &&
+        parent.initializer === at
+    )
+        return { kind: "defaulted", at };
+    if (
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.includes(at)
+    )
+        return {
+            kind: "argument",
+            at,
+            call: parent,
+            index: parent.arguments.indexOf(at),
+        };
+    if (ts.isAwaitExpression(parent))
+        return { kind: "awaited", at, await: parent };
+    if (ts.isThrowStatement(parent) || ts.isExportAssignment(parent))
+        return { kind: "thrown", at };
+    // A selection's test or `,`'s left operand is read, not yielded.
+    return writeSites(parent).length === 0 &&
+        (ts.isIfStatement(parent) ||
+            ts.isPrefixUnaryExpression(parent) ||
+            ts.isTypeOfExpression(parent) ||
+            isOperandSelection(parent) ||
+            (ts.isBinaryExpression(parent) &&
+                (equalityOperator(parent.operatorToken.kind) !== undefined ||
+                    parent.operatorToken.kind ===
+                        ts.SyntaxKind.InstanceOfKeyword)))
+        ? { kind: "read", at }
+        : { kind: "handed", at };
+}
+
+/** The literal a value is a member or element of: it goes where that goes. */
+function enclosingLiteral(position: ts.Expression): ts.Expression | undefined {
+    const parent = position.parent;
+    if (
+        (ts.isShorthandPropertyAssignment(parent) ||
+            (ts.isPropertyAssignment(parent) &&
+                parent.initializer === position)) &&
+        ts.isObjectLiteralExpression(parent.parent)
+    )
+        return parent.parent;
+    return ts.isArrayLiteralExpression(parent) ? parent : undefined;
+}
+
+/**
  * Whether the wrapper chain around an expression carries a `!`. A reader
  * that erases the wrappers still has to know the scene asserted presence,
  * because the optional value under them is then read without a guard.
