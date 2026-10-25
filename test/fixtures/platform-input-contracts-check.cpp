@@ -84,7 +84,9 @@ struct InputDriver {
     // A window run: no application realm presentation endpoint is bound.
     OffscreenRun* offscreen = nullptr;
     struct {
-        bool ready(const InputState& surface) const { return surface.surface; }
+        bool ready(OffscreenRun*, const InputState& surface) const { return surface.surface; }
+        // Without an endpoint every frame is ready to draw.
+        template <typename Target> bool lease(OffscreenRun*, Target&) const { return true; }
     } presentation;
     Scene scene;
     std::vector<std::shared_ptr<Scene>> active_registered_scenes;
@@ -102,6 +104,7 @@ struct SceneInputDriver {
     InputDriver data_;
     struct Frame {
         double start = 0;
+        bool yield_when_skipped = false;
     };
     std::optional<Frame> frame_;
     explicit SceneInputDriver(SDL_Window* target) : data_(target) {}

@@ -182,7 +182,7 @@ public:
                 "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
         }
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, gpu);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, gpu);
         swapchain_format = gpu.swapchain_format;
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer =
@@ -226,7 +226,7 @@ public:
         // The surface's pixel size (the window's, or the realm endpoint
         // canvas's) is the extent every context lays out and draws into
         // this frame; the image acquired below reports the same extent.
-        std::tie(surface_width, surface_height) = presentation.extent(window, engine);
+        std::tie(surface_width, surface_height) = presentation.extent(offscreen, window, engine);
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame -- the same slot the
@@ -247,7 +247,8 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!presentation.acquire(command, window, engine, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, offscreen, window, engine, &swapchain, &width,
+                                  &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -389,7 +390,7 @@ public:
             save_texture_png(device, command, color, swapchain_format, width, height,
                              frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!presentation.submit(command)) {
+        } else if (!presentation.submit(command, offscreen)) {
             gpu_error("SDL_SubmitGPUCommandBuffer sprite");
         }
     }

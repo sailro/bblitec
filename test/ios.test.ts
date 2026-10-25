@@ -280,7 +280,7 @@ test("desktop and Simulator measurements share frame, pose and replay precedence
         }),
     );
     assert.equal(environment.BBLITE_SCREENSHOT_FRAME, "40");
-    assert.equal(environment.BBLITE_CAPTURE_ENGINE_FRAME, "40");
+    assert.equal(environment.BBLITE_CAPTURE_ENGINE_FRAMES, "1");
     assert.equal(environment.BBLITE_MAX_FRAMES, "41");
     assert.equal(environment.BBLITE_TEST_PASS, "0");
     assert.equal(environment.BBLITE_INPUT_REPLAY, "-*30,UiClick@260:197");

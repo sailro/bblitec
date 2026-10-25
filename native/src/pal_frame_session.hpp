@@ -97,10 +97,7 @@ public:
     /** The application realm's presentation endpoint, bound for the whole run; null in a window. */
     OffscreenRun* const offscreen = OffscreenRun::current();
 
-    explicit RendererRun(Engine& target) : FrameSession(target) {
-        if (offscreen && !frame_options.screenshot_path.empty())
-            throw std::runtime_error("Capture offscreen output from its presentation host.");
-    }
+    explicit RendererRun(Engine& target) : FrameSession(target) {}
 
     /**
      * Drive one renderer from setup until its session stops. Each frame

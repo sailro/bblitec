@@ -69,7 +69,7 @@ public:
         if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, gpu);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, gpu);
         swapchain_format = gpu.swapchain_format;
 
         // The surface's own sample count: `createEffectRenderer` renders into
@@ -99,7 +99,8 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!presentation.acquire(command, window, engine, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, offscreen, window, engine, &swapchain, &width,
+                                  &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -195,7 +196,7 @@ public:
             save_texture_png(device, command, resolve, swapchain_format, width, height,
                              frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!presentation.submit(command)) {
+        } else if (!presentation.submit(command, offscreen)) {
             gpu_error("SDL_SubmitGPUCommandBuffer effect");
         }
     }

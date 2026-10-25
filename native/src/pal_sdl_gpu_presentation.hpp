@@ -1,11 +1,14 @@
-// Where a standalone SDL_GPU renderer's frames land.
+// Where an SDL_GPU renderer's frames land.
 #pragma once
+#include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/workers.hpp>
 
 #include <bblite/pal_offscreen.hpp>
 #include <bblite/runtime.hpp>
 
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "pal_platform_events.hpp"
@@ -13,34 +16,47 @@
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
+#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
+#include "pal_sdl_gpu_source_device.hpp"
+#endif
 
 namespace bbl::pal {
 
 /**
- * The colour image a standalone renderer (2D, effect, frame graph) draws each
+ * The colour image a renderer (scene, 2D, effect, frame graph) draws each
  * frame: the swapchain of the window its run opens or, while an application
- * realm's presentation endpoint is bound, a leased image on the Window host's
- * shared device that the host composites.
+ * realm's presentation endpoint (`offscreen`, which the renderer owns) is
+ * bound, a leased image on the Window host's shared device that the host
+ * composites.
  */
 class SdlFramePresentation {
 public:
-    /** Open the run's window and device, or bind the endpoint's shared device. */
+    /**
+     * Bind the endpoint's shared device, or open the run's window and device
+     * (the engine's source device when GPU resources retire across runs).
+     */
     void open([[maybe_unused]] OffscreenRun* offscreen, Engine& engine,
-              const DeviceOptions& options, SdlGpuDevice& gpu) {
+              const std::string& screenshot_path, const DeviceOptions& options, SdlGpuDevice& gpu) {
+        refuse_endpoint_capture(offscreen, screenshot_path);
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen) {
             bind_sdl_offscreen_device(*offscreen, gpu);
-            endpoint_.emplace(*offscreen, gpu.device);
+            images_.emplace(gpu.device);
         } else
 #endif
-            create_sdl_gpu_device(engine.options, options, gpu);
+#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
+            bind_sdl_source_device(engine, options, gpu);
+#else
+        create_sdl_gpu_device(engine.options, options, gpu);
+#endif
         sync_engine_canvas_size(gpu.window, engine);
     }
 
     /** The frame's pixel extent: the window's, or the endpoint canvas's backing store. */
-    std::pair<int, int> extent(SDL_Window* window, [[maybe_unused]] const Engine& engine) const {
+    std::pair<int, int> extent([[maybe_unused]] OffscreenRun* offscreen, SDL_Window* window,
+                               [[maybe_unused]] const Engine& engine) const {
 #if BBLITE_OFFSCREEN_SURFACES
-        if (endpoint_)
+        if (offscreen)
             return {static_cast<int>(engine.options.width),
                     static_cast<int>(engine.options.height)};
 #endif
@@ -50,17 +66,36 @@ public:
     }
 
     /**
-     * The frame's colour target and extent. False is an SDL failure; a null
-     * target skips the frame (a hidden window, or no endpoint image free).
+     * Lease the frame's endpoint image before the frame does any work; false
+     * when none is free, which skips the frame. A window frame is always ready.
      */
-    bool acquire(SdlGpuCommand& command, SDL_Window* window, [[maybe_unused]] const Engine& engine,
+    bool lease([[maybe_unused]] OffscreenRun* offscreen, [[maybe_unused]] const Engine& engine) {
+#if BBLITE_OFFSCREEN_SURFACES
+        if (offscreen) {
+            leased_ = images_->acquire(static_cast<Uint32>(engine.options.width),
+                                       static_cast<Uint32>(engine.options.height), *offscreen);
+            return leased_ != nullptr;
+        }
+#endif
+        return true;
+    }
+
+    /**
+     * The frame's colour target and extent: the leased endpoint image (leased
+     * now when the frame did not), or the window's swapchain. False is an SDL
+     * failure; a null target skips the frame (a hidden window, or no endpoint
+     * image free).
+     */
+    bool acquire(SdlGpuCommand& command, [[maybe_unused]] OffscreenRun* offscreen,
+                 SDL_Window* window, [[maybe_unused]] const Engine& engine,
                  SDL_GPUTexture** texture, Uint32* width, Uint32* height) {
 #if BBLITE_OFFSCREEN_SURFACES
-        if (endpoint_) {
-            const auto [pixels_wide, pixels_high] = extent(window, engine);
-            *width = static_cast<Uint32>(pixels_wide);
-            *height = static_cast<Uint32>(pixels_high);
-            *texture = endpoint_->images.acquire(*width, *height, endpoint_->run);
+        if (offscreen) {
+            if (!leased_)
+                lease(offscreen, engine);
+            *width = static_cast<Uint32>(engine.options.width);
+            *height = static_cast<Uint32>(engine.options.height);
+            *texture = std::exchange(leased_, nullptr);
             return true;
         }
 #endif
@@ -68,10 +103,10 @@ public:
     }
 
     /** Submit the frame: the window presents its swapchain, the endpoint publishes its image. */
-    bool submit(SdlGpuCommand& command) {
+    bool submit(SdlGpuCommand& command, [[maybe_unused]] OffscreenRun* offscreen) {
 #if BBLITE_OFFSCREEN_SURFACES
-        if (endpoint_) {
-            endpoint_->images.publish(command, endpoint_->run);
+        if (offscreen) {
+            images_->publish(command, *offscreen);
             return true;
         }
 #endif
@@ -80,12 +115,8 @@ public:
 
 private:
 #if BBLITE_OFFSCREEN_SURFACES
-    struct Endpoint {
-        Endpoint(OffscreenRun& offscreen, SDL_GPUDevice* device) : run(offscreen), images(device) {}
-        OffscreenRun& run;
-        SdlOffscreenTarget images;
-    };
-    std::optional<Endpoint> endpoint_;
+    std::optional<SdlOffscreenTarget> images_;
+    SDL_GPUTexture* leased_ = nullptr;
 #endif
 };
 

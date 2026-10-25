@@ -85,7 +85,7 @@ public:
         if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, state);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, state);
 
         width = state.surface_width;
         height = state.surface_height;
@@ -119,10 +119,11 @@ public:
             height = state.surface_height;
             recreate_msaa_target();
         }
-        return presentation.ready(state) ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(offscreen, state) ? FramePreparation::ready
+                                                    : FramePreparation::skip;
     }
     bool acquire() {
-        if (!presentation.acquire(state, surface_texture))
+        if (!presentation.acquire(offscreen, state, surface_texture))
             return false;
         surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
@@ -186,7 +187,7 @@ public:
         }
         capture.readback.reset();
 
-        presentation.present(state);
+        presentation.present(offscreen, state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

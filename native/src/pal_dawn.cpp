@@ -41,9 +41,7 @@
 #include <bblite/features/workers.hpp>
 
 #include "pal_dawn_scene.hpp"
-#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
-#include "pal_dawn_source_device.hpp"
-#endif
+#include "pal_dawn_presentation.hpp"
 #if BBLITE_EXTERNAL_RENDERABLES
 #include "pal_dawn_webgpu.hpp"
 #endif
@@ -586,10 +584,9 @@ class DawnSceneRun {
         // pass keeps.
         RetainedSceneBlocks pass_blocks;
         std::vector<float> shader_block_scratch;
-#if BBLITE_OFFSCREEN_SURFACES
+        /** The application realm's presentation endpoint, bound for the run; null in a window. */
         OffscreenRun* offscreen = nullptr;
-        OffscreenImagePool<DawnOffscreenImage> offscreen_images;
-#endif
+        DawnFramePresentation presentation;
 #if BBLITE_HAS_PICKING
 #if BBLITE_HAS_BILLBOARDS
         DawnBillboardPickContributor billboard_pick;
@@ -606,9 +603,6 @@ class DawnSceneRun {
         // Keep construction explicit while optional inspects this nested type.
         Frame() {}
         bool yield_when_skipped = false;
-#if BBLITE_OFFSCREEN_SURFACES
-        DawnOffscreenImage* offscreen_image = nullptr;
-#endif
         double benchmark_start = 0, delta_ms = 0, updated = 0, uploaded = 0, written = 0,
                acquired = 0;
         bool capture_ready = false, frame_graph_presented = false;
@@ -1060,9 +1054,8 @@ public:
 #if BBLITE_HAS_PICKING && BBLITE_HAS_BILLBOARDS
         [[maybe_unused]] auto& billboard_pick = data_.billboard_pick;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
+        [[maybe_unused]] auto& presentation = data_.presentation;
 
         reject_unsupported_frame_options(frame_options, "Dawn",
                                          /*supports_single_sample=*/true,
@@ -1120,13 +1113,8 @@ public:
                 device_options.max_color_attachment_bytes_per_sample = color_bytes_per_sample;
             }
         }
-#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
-        bind_dawn_source_device(engine, device_options, state);
-#else
-        create_dawn_device(engine.options, device_options, state);
-#endif
-        sync_engine_canvas_size(state.window, engine);
-        resize_dawn_surface(state, engine.options);
+        offscreen = OffscreenRun::current();
+        presentation.open(offscreen, engine, screenshot_path, device_options, state);
         cpu_startup_mark("window-device");
         if (startup_budget.exhausted()) {
             co_yield false;
@@ -1505,13 +1493,6 @@ public:
         // event the scene receives also reaches the camera -- and none does
         // in a deterministic test pass.
 
-#if BBLITE_OFFSCREEN_SURFACES
-        offscreen = OffscreenRun::current();
-
-        if (offscreen && !screenshot_path.empty()) {
-            throw std::runtime_error("Capture offscreen output from its presentation host.");
-        }
-#endif
 #if BBLITE_DEVICE_RECOVERY
         data_.draw_count_scope.emplace(engine);
 #endif
@@ -1535,15 +1516,8 @@ public:
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_image = current_frame().offscreen_image;
-#endif
+        [[maybe_unused]] auto& presentation = data_.presentation;
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
                 return;
@@ -1588,20 +1562,10 @@ public:
         }
         if (state.window && !state.surface)
             return FramePreparation::skip;
-#if BBLITE_OFFSCREEN_SURFACES
-        offscreen_image = nullptr;
-        if (offscreen) {
-            offscreen_image =
-                offscreen_images.acquire(width, height, *offscreen, [&](auto w, auto h) {
-                    return std::make_shared<DawnOffscreenImage>(state.device, state.surface_format,
-                                                                w, h);
-                });
-            if (!offscreen_image) {
-                current_frame().yield_when_skipped = true;
-                return FramePreparation::skip;
-            }
+        if (!presentation.lease(offscreen, state)) {
+            current_frame().yield_when_skipped = true;
+            return FramePreparation::skip;
         }
-#endif
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -2233,23 +2197,11 @@ public:
         [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
         [[maybe_unused]] auto& surface = current_frame().surface;
         [[maybe_unused]] auto& surface_view = current_frame().surface_view;
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_image = current_frame().offscreen_image;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        if (offscreen_image) {
-            surface_texture = WGPU_SURFACE_TEXTURE_INIT;
-            surface_texture.texture = offscreen_image->texture;
-            wgpuTextureAddRef(surface_texture.texture);
-            surface = surface_texture.texture;
-        } else {
-#endif
-            if (!acquire_dawn_surface_texture(state, surface_texture))
-                return false;
-            surface = surface_texture.texture;
-#if BBLITE_OFFSCREEN_SURFACES
-        }
-#endif
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+        [[maybe_unused]] auto& presentation = data_.presentation;
+        if (!presentation.acquire(offscreen, state, surface_texture))
+            return false;
+        surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
         acquired = cpu_profile ? monotonic_milliseconds() : 0.0;
 
@@ -4103,12 +4055,8 @@ public:
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
-#endif
+        [[maybe_unused]] auto& presentation = data_.presentation;
         [[maybe_unused]] const auto& benchmark_start = current_frame().benchmark_start;
         [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
         [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
@@ -4182,12 +4130,7 @@ public:
             captures.cluster_buffer_saved = true;
         }
 
-#if BBLITE_OFFSCREEN_SURFACES
-        if (offscreen)
-            offscreen_images.publish(*offscreen);
-        else
-#endif
-            wgpuSurfacePresent(state.surface);
+        presentation.present(offscreen, state);
         if (benchmark && frame >= benchmark_warmup) {
             benchmark_samples.push_back(monotonic_milliseconds() - benchmark_start);
         }
