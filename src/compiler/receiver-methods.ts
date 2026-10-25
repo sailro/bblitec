@@ -53,27 +53,36 @@ export const lengthPreservingArrayMethods: ReadonlySet<string> =
         ),
     );
 
-/**
- * The methods that change the container they are called on: every
- * mutating array method plus the Map/Set writers. A name outside this set
- * writes nothing through its receiver, so a container only ever read
- * through `get`, `has`, `map` or `find` stays folded.
- */
-export const receiverWritingMethods: ReadonlySet<string> = new EmissionSet([
-    ...mutatingArrayMethods,
-    "set",
+/** Map, Set, WeakMap and WeakSet methods that change the collection. */
+const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
     "add",
     "clear",
     "delete",
+    "set",
+]);
+
+/** The keyed collections whose writers `collectionWritingMethods` names. */
+const KEYED_COLLECTIONS: ReadonlySet<string> = new Set([
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
 ]);
 
 /** Typed array methods that change the array in place. */
 const typedArrayWritingMethods: ReadonlySet<string> = new EmissionSet([
-    "copyWithin",
-    "fill",
-    "reverse",
+    ...lengthPreservingArrayMethods,
     "set",
-    "sort",
+]);
+
+/** `Object.prototype` methods, which read their receiver. */
+const OBJECT_READING_METHODS: ReadonlySet<string> = new Set([
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
 ]);
 
 /**
@@ -88,18 +97,7 @@ const LIBRARY_READING_METHODS: ReadonlyMap<
     ["DataView", (method) => !method.startsWith("set")],
     ["Date", (method) => !method.startsWith("set")],
     ["Error", () => true],
-    [
-        "Object",
-        (method) =>
-            [
-                "hasOwnProperty",
-                "isPrototypeOf",
-                "propertyIsEnumerable",
-                "toLocaleString",
-                "toString",
-                "valueOf",
-            ].includes(method),
-    ],
+    ["Object", (method) => OBJECT_READING_METHODS.has(method)],
     ["Promise", () => true],
     [
         "RegExp",
@@ -110,26 +108,19 @@ const LIBRARY_READING_METHODS: ReadonlyMap<
     ["WeakRef", () => true],
 ]);
 
-/** Map, Set, WeakMap and WeakSet methods that change the collection. */
-const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
-    "add",
-    "clear",
-    "delete",
-    "set",
-]);
-
 /**
  * Whether calling the library method `method` on `receiver` writes it, by
  * the receiver's checked type: an array's or typed array's mutating
  * methods, a collection's writers, none on a primitive, a library class's
  * own writers, and on any other receiver every method not known to only
- * read.
+ * read. A name every owner only reads is answered without the checker.
  */
 export function libraryMethodWritesReceiver(
     checker: ts.TypeChecker,
     receiver: ts.Expression,
     method: string,
 ): boolean {
+    if (readOnlyDataMethods.has(method)) return false;
     return unionMembers(
         checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
     ).some((member) => {
@@ -139,7 +130,7 @@ export function libraryMethodWritesReceiver(
         const name = libraryName(member) ?? "";
         if (TYPED_ARRAY_KINDS.has(name) || BIGINT_ARRAY_KINDS.has(name))
             return typedArrayWritingMethods.has(method);
-        if (["Map", "Set", "WeakMap", "WeakSet"].includes(name))
+        if (KEYED_COLLECTIONS.has(name))
             return collectionWritingMethods.has(method);
         const reads = LIBRARY_READING_METHODS.get(name);
         return reads ? !reads(method) : !readOnlyDataMethods.has(method);
