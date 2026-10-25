@@ -15,6 +15,7 @@ import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { isNullable } from "./type-facts.js";
+import { isHostAccessor } from "./host-globals.js";
 
 export interface WorkerLoweringContext
     extends
@@ -406,11 +407,11 @@ export function isNativeWorkerExpression(
         globalMember !== undefined &&
         member !== undefined &&
         (nativeRealmFunctions.has(globalMember) ||
+            isHostAccessor(globalMember) ||
             [
                 "Worker",
                 "OffscreenCanvas",
                 "ResizeObserver",
-                "devicePixelRatio",
                 "isSecureContext",
             ].includes(globalMember))
     )

@@ -5363,20 +5363,6 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
         ...parity,
         ...derivedSeekEnvironment(scene.id, parity),
     };
-    // A Window captures the engine frame; every other run the screenshot frame.
-    const screenshotFrame = parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME;
-    const engineFrame = parity.nativeEnvironment?.BBLITE_CAPTURE_ENGINE_FRAME;
-    if (
-        screenshotFrame !== undefined &&
-        engineFrame !== undefined &&
-        screenshotFrame !== engineFrame
-    ) {
-        throw new Error(
-            `Scene '${scene.id}' spells its capture frame twice and they disagree: ` +
-                `BBLITE_SCREENSHOT_FRAME='${screenshotFrame}' but ` +
-                `BBLITE_CAPTURE_ENGINE_FRAME='${engineFrame}'.`,
-        );
-    }
     const parityWithFrame = {
         ...parityWithSeek,
         ...derivedReferenceFrameEnvironment(scene.id, parityWithSeek),
@@ -5443,9 +5429,7 @@ function derivedReferenceFrameEnvironment(
         nativeEnvironment: {
             ...parity.nativeEnvironment,
             BBLITE_SCREENSHOT_FRAME: String(nativeFrame),
-            // Window presentation may repaint the same canvas several times.
-            // The browser's fixed RAF pose counts rendered engine frames.
-            BBLITE_CAPTURE_ENGINE_FRAME: String(nativeFrame),
+            ...engineFrameCapture,
         },
     };
 }
@@ -5623,6 +5607,7 @@ import {
 } from "./host-page.js";
 import {
     adHocCaptureEnvironment,
+    engineFrameCapture,
     fixedCaptureEnvironment,
 } from "./capture-timing.js";
 import {

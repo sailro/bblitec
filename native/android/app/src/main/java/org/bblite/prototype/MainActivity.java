@@ -137,7 +137,7 @@ public final class MainActivity extends SDLActivity {
             }
             nativeSetenv("BBLITE_GPU_BACKEND", "");
             if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_GPU_BACKEND", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_LOCATION_SEARCH", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAME", "BBLITE_CAPTURE_UI", "BBLITE_CAPTURE_SETTLE", "BBLITE_GPU_DEBUG", "BBLITE_MSAA" }) {
+                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_GPU_BACKEND", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_LOCATION_SEARCH", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAMES", "BBLITE_CAPTURE_UI", "BBLITE_CAPTURE_SETTLE", "BBLITE_GPU_DEBUG", "BBLITE_MSAA" }) {
                     String value = getIntent().getStringExtra(key);
                     if (value != null) nativeSetenv(key, value);
                 }

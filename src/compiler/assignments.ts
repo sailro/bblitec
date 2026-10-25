@@ -2,6 +2,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
+import { refuseRealmHostWrite } from "./host-globals.js";
 import { shadowCasterMaterialWrite } from "./shadow-caster-material.js";
 import {
     compositeScalarAccessors,
@@ -1342,6 +1343,7 @@ export function emitPropertyAssignment(
             left,
             "Builtin constructor fields require an immutable generation-known binding.",
         );
+    refuseRealmHostWrite(context, left);
     if (
         context.browserErasure.isBrowserOnlyExpression(left) ||
         context.browserErasure.isBrowserDomValue(left)

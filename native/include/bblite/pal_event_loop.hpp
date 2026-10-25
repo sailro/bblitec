@@ -198,16 +198,14 @@ public:
         if (fixed_frame_delta_ && *fixed_frame_delta_ != delta_ms)
             throw std::logic_error("Engines in one realm must share their capture clock.");
         if (!fixed_frame_delta_)
-            fixed_frame_held_ = held;
+            fixed_clock_ = held ? FixedClock::held : FixedClock::first_frame;
         fixed_frame_delta_ = delta_ms;
     }
     /** Release a held fixed clock: the next animation frame is one step later. */
     void start_fixed_animation_time() {
         require_owner();
-        if (!fixed_frame_held_)
-            return;
-        fixed_frame_held_ = false;
-        fixed_frame_started_ = true;
+        if (fixed_clock_ == FixedClock::held)
+            fixed_clock_ = FixedClock::stepping;
     }
     /** The fixed clock's time; none while the realm runs on the wall clock. */
     std::optional<double> fixed_animation_time() const {
@@ -227,6 +225,8 @@ public:
             throw std::logic_error("No active realm event loop.");
         return *current_;
     }
+    /** The realm event loop this thread runs, if any. */
+    static EventLoop* current_if_any() { return current_; }
 
     void checkpoint() const {
         if (inbox_->terminated() && !closing_)
@@ -849,10 +849,10 @@ private:
             batch.push_back(id);
         }
         if (fixed_frame_delta_) {
-            if (fixed_frame_started_)
+            if (fixed_clock_ == FixedClock::stepping)
                 fixed_frame_time_ = static_cast<double>(++fixed_frame_index_) * *fixed_frame_delta_;
-            if (!fixed_frame_held_)
-                fixed_frame_started_ = true;
+            else if (fixed_clock_ == FixedClock::first_frame)
+                fixed_clock_ = FixedClock::stepping;
         }
         const auto milliseconds =
             fixed_frame_delta_
@@ -956,8 +956,12 @@ private:
     std::optional<double> fixed_frame_delta_;
     double fixed_frame_time_ = 0;
     std::uint64_t fixed_frame_index_ = 0;
-    bool fixed_frame_started_ = false;
-    bool fixed_frame_held_ = false;
+    /**
+     * A fixed clock is held at zero until released, keeps its first
+     * animation frame at zero, then steps once per animation frame.
+     */
+    enum class FixedClock { held, first_frame, stepping };
+    FixedClock fixed_clock_ = FixedClock::first_frame;
     Task rendering_update_;
     std::deque<Task> microtasks_;
     std::map<TimerId, Timer> timers_;

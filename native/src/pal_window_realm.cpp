@@ -175,6 +175,8 @@ struct DocumentSnapshot {
     std::set<std::uint32_t> dom_pointer_elements;
     /** The realm's pointer capture state, which the display targets input by. */
     std::shared_ptr<DomPointerCaptures> pointer_captures;
+    /** The realm's fixed capture time when published: the display's CSS animations run at it. */
+    std::optional<double> time;
 };
 
 /** One element as the display's last update laid it out and styled it. */
@@ -296,8 +298,6 @@ struct WindowServices final : CanvasProvider {
     /** When `capture_ready` last became true, and how long the active settles hold it. */
     std::atomic<double> capture_ready_since = 0;
     std::atomic<double> capture_settle_milliseconds = 0;
-    /** The application realm's fixed capture clock at its latest publication. */
-    std::atomic<double> document_time = 0;
     std::shared_ptr<AnimationFrameSource> animation_frames =
         std::make_shared<AnimationFrameSource>();
     std::shared_ptr<EventLoop::Inbox> inbox = std::make_shared<EventLoop::Inbox>();
@@ -1073,16 +1073,18 @@ void window_off_application_error(bool rejection, std::uint64_t identity) {
 }
 namespace {
 /**
- * Publish the document's changes. `render` also has the display update the
- * document when nothing changed, so its CSS animations reach the published
- * time; it requires `wait`.
+ * How a publication meets the display: `post` leaves changes unpublished
+ * while the display has not applied the previous snapshot; `await_display`
+ * waits for the display to apply them; `render` also publishes when nothing
+ * changed, so the display's CSS animations reach the snapshot's time.
  */
-void publish_window_document(bool wait, bool render) {
+enum class DocumentPublication { post, await_display, render };
+
+/** Publish the document's changes, stamped with the realm's fixed capture time. */
+void publish_window_document(DocumentPublication mode) {
     auto& doc = current_document();
     auto& host = *doc.host;
-    // The display's CSS animations follow this realm's fixed capture clock.
-    if (const auto time = EventLoop::current().fixed_animation_time())
-        host.document_time.store(*time);
+    const bool wait = mode != DocumentPublication::post;
     const auto await_display = [&host](std::unique_lock<std::mutex>& lock, std::uint64_t revision) {
         host.wake.wait(lock, [&] { return host.stopping || host.completed >= revision; });
         if (host.stopping)
@@ -1121,20 +1123,24 @@ void publish_window_document(bool wait, bool render) {
                     doc.published_text_selection_revision != doc.engine.ui_text_selection_revision)
             ? snapshot_document(doc.engine, text_since, doc.published_canvas_revision)
             : nullptr;
+    // A rendering update with no changes publishes an empty delta at its time.
+    if (!snapshot && mode == DocumentPublication::render) {
+        snapshot = std::make_unique<DocumentSnapshot>();
+        snapshot->text_updates.emplace();
+    }
     std::unique_lock lock(host.mutex);
     if (host.stopping)
         throw WorkerTerminated{};
-    if (snapshot || render) {
-        if (snapshot) {
-            snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
-            host.pending = std::move(snapshot);
-            doc.published_revision = doc.engine.ui_revision;
-            doc.published_text_revision = doc.engine.ui_text_revision;
-            doc.published_canvas_revision = doc.engine.ui_canvas_revision;
-            doc.published_focus_revision = doc.engine.ui_focus_revision;
-            doc.published_text_selection_revision = doc.engine.ui_text_selection_revision;
-            doc.published_input_revision = input_revision;
-        }
+    if (snapshot) {
+        snapshot->time = EventLoop::current().fixed_animation_time();
+        snapshot->scroll_requests = std::exchange(doc.engine.ui_scroll_requests, {});
+        host.pending = std::move(snapshot);
+        doc.published_revision = doc.engine.ui_revision;
+        doc.published_text_revision = doc.engine.ui_text_revision;
+        doc.published_canvas_revision = doc.engine.ui_canvas_revision;
+        doc.published_focus_revision = doc.engine.ui_focus_revision;
+        doc.published_text_selection_revision = doc.engine.ui_text_selection_revision;
+        doc.published_input_revision = input_revision;
         const auto revision = ++host.requested;
         host.wake.notify_all();
         if (wait)
@@ -1178,12 +1184,15 @@ void publish_window_document(bool wait, bool render) {
  * animations at the frame's time before the frame's canvases present.
  */
 void render_window_document() {
+    // A capture realm's engine selects its clock at startup.
     if (EventLoop::current().fixed_animation_time())
-        publish_window_document(true, true);
+        publish_window_document(DocumentPublication::render);
 }
 } // namespace
 
-void update_window_document(bool wait) { publish_window_document(wait, false); }
+void update_window_document(bool wait) {
+    publish_window_document(wait ? DocumentPublication::await_display : DocumentPublication::post);
+}
 namespace {
 std::shared_ptr<const LayoutSnapshot> window_host_layout() {
     auto& doc = current_document();
@@ -1373,17 +1382,16 @@ std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
 static Iteration<int> window_application_iterations(WorkerEntry initialize, EngineOptions options) {
     try {
         const auto frame_options = read_frame_options();
-        const auto capture_frame_text = environment_variable("BBLITE_CAPTURE_ENGINE_FRAME");
+        // BBLITE_CAPTURE_ENGINE_FRAMES=1: the screenshot frame counts engine frames.
+        const auto engine_frames = environment_variable("BBLITE_CAPTURE_ENGINE_FRAMES");
         std::uint64_t capture_frame_count = 0;
-        if (!capture_frame_text.empty()) {
-            std::size_t consumed = 0;
-            const auto frame = std::stoll(capture_frame_text, &consumed);
-            if (consumed != capture_frame_text.size() || frame < 0 || frame > 1000000 ||
-                frame_options.screenshot_path.empty()) {
-                throw std::invalid_argument(
-                    "BBLITE_CAPTURE_ENGINE_FRAME requires a screenshot and a frame in [0, 1000000].");
+        if (!engine_frames.empty()) {
+            if (engine_frames != "1" || frame_options.screenshot_path.empty() ||
+                frame_options.screenshot_frame < 0 || frame_options.screenshot_frame > 1000000) {
+                throw std::invalid_argument("BBLITE_CAPTURE_ENGINE_FRAMES=1 requires a screenshot "
+                                            "and a screenshot frame in [0, 1000000].");
             }
-            capture_frame_count = static_cast<std::uint64_t>(frame) + 1;
+            capture_frame_count = static_cast<std::uint64_t>(frame_options.screenshot_frame) + 1;
         }
         // The final screenshot counts engine frames under engine-frame
         // capture, presented frames otherwise; checkpoints count the same.
@@ -1397,7 +1405,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
         }
         SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #if BBLITE_HAS_GAMEPAD
-        // The realm polls gamepads; their connections arrive with this thread's events.
+        // This thread's SDL events announce the gamepads the realm reads.
         init_flags |= SDL_INIT_GAMEPAD;
 #endif
         if (!SDL_Init(init_flags))
@@ -1469,10 +1477,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         ~Reset() { document = nullptr; }
                     } reset;
                     WorkerRealm realm(loop, {}, services);
-                    realm.provide_device_pixel_ratio(window_device_pixel_ratio);
+                    realm.provide_host_accessor(HostAccessor::device_pixel_ratio,
+                                                window_device_pixel_ratio);
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
-                    loop.on_rendering_update(render_window_document);
+                    // Only a capture realm's animation frames end with a rendering update.
+                    if (frame_options.frame_delta_ms > 0)
+                        loop.on_rendering_update(render_window_document);
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
                         if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
                             EventLoop::current().dispatch_callback(
@@ -1630,9 +1641,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     snapshot = std::move(services->pending);
                     revision = services->requested;
                 }
-                // Under the fixed capture clock CSS animations run on the
-                // application realm's timeline.
-                advance_performance_milliseconds_to(services->document_time.load());
+                // Under the fixed capture clock CSS animations run at the
+                // time the application realm published the snapshot.
+                if (snapshot && snapshot->time)
+                    set_ui_rml_time(*ui, snapshot->time);
                 if (snapshot)
                     apply_document(display, std::move(*snapshot),
                                    [services](std::unique_ptr<ExternalEvent> event) {
@@ -1929,7 +1941,14 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     // frame: canvases and the document rendered at its time.
                     if (!repaint_batch ||
                         (!repaint_batch->ready() && (fixed_clock || !next_repaint))) {
-                        if (compositor_clock.available())
+                        if (fixed_clock && repaint_batch) {
+                            // The frame ends with a document publication to apply.
+                            std::unique_lock lock(services->mutex);
+                            services->wake.wait_for(lock, std::chrono::milliseconds(1), [&] {
+                                return finished || repaint_batch->ready() ||
+                                       services->requested > services->completed;
+                            });
+                        } else if (compositor_clock.available())
                             compositor_clock.wait_for(std::chrono::milliseconds(1));
                         else
                             SDL_Delay(1);

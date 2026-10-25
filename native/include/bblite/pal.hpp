@@ -70,15 +70,13 @@ std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine,
                                                      const FileDialogOptions& options);
 double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
-// monotonic clock; fixed-delta captures advance it deterministically.
+// monotonic clock; fixed-delta captures advance it deterministically, and a
+// capture realm reads its event loop's fixed clock.
 double performance_milliseconds();
 // `performance.timeOrigin`: the epoch time of `performance_milliseconds()`'s
 // zero, so the two add up to `Date.now()`; one per process.
 double performance_time_origin();
 void advance_performance_milliseconds(double delta_ms);
-// A fixed-delta capture thread's clock moves forward to `milliseconds`, a time
-// on the same steps another thread's clock reached; ordinary runs ignore it.
-void advance_performance_milliseconds_to(double milliseconds);
 /**
  * Resident bytes on Windows and Apple platforms; refuses on other platforms.
  * BBLITE_MEM_PROFILE uses this to measure whether a long run's memory settles.

@@ -381,7 +381,7 @@ public:
                             ? 1u
                             : upstream::preferred_sample_count(engine.options.msaa_samples);
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, state);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, state);
 #if BBLITE_HAS_POST_PROCESS
         WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
         sampler.addressModeU = WGPUAddressMode_ClampToEdge;
@@ -412,7 +412,8 @@ public:
             height = state.surface_height;
             build_graph(state, engine, width, height);
         }
-        return presentation.ready(state) ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(offscreen, state) ? FramePreparation::ready
+                                                    : FramePreparation::skip;
     }
     FramePreparation update() {
         static_cast<void>(
@@ -422,7 +423,7 @@ public:
         return FramePreparation::ready;
     }
     bool acquire() {
-        if (!presentation.acquire(state, surface_texture))
+        if (!presentation.acquire(offscreen, state, surface_texture))
             return false;
         surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
@@ -526,7 +527,7 @@ public:
             captures.screenshot_saved = true;
         }
         capture.readback.reset();
-        presentation.present(state);
+        presentation.present(offscreen, state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

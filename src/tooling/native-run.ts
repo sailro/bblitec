@@ -339,9 +339,6 @@ export function measuredRunEnvironment(
               }
             : {
                   BBLITE_SCREENSHOT_FRAME: String(options.frame),
-                  ...(environment.BBLITE_CAPTURE_ENGINE_FRAME === undefined
-                      ? {}
-                      : { BBLITE_CAPTURE_ENGINE_FRAME: String(options.frame) }),
                   BBLITE_MAX_FRAMES: String(
                       Math.max(options.frame + 1, options.maxFrames ?? 0),
                   ),

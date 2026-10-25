@@ -1,4 +1,5 @@
 #include <bblite/pal.hpp>
+#include <bblite/pal_offscreen.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/pal_storage_buffer.hpp>
 #include "pal_sdl_gpu_commands.hpp"
@@ -315,6 +316,8 @@ void finish_dawn_surface_capture(DawnDevice&, DawnSurfaceCapture&, std::uint32_t
 struct Context {
     Engine engine;
     FrameOptions frame_options;
+    /** A window run: no application realm presentation endpoint. */
+    OffscreenRun* offscreen = nullptr;
     CaptureGate captures{frame_options, 5, &engine};
     long frame = 0;
     std::uint32_t width = 320, height = 180, samples = 1;

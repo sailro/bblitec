@@ -72,7 +72,7 @@ export const featureSources: Record<Feature, string[]> = {
     "compute:uniform-layout": [],
     "compute:uniform-writer": [],
     "compute:uniform-arena": [],
-    // Browser Gamepad polling maps to SDL's standard gamepad API in the
+    // Browser Gamepads map to SDL's standard gamepad API and events in the
     // platform translation unit already selected by backend:sdl.
     "input:gamepad": [],
     "input:dom": [],

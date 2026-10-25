@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -342,5 +343,12 @@ private:
     std::optional<double> animation_frame_timestamp_;
     bool device_disposed_ = false;
 };
+
+/** A realm renderer presents to its Window host, which alone captures its frames. */
+inline void refuse_endpoint_capture(const OffscreenRun* endpoint,
+                                    const std::string& screenshot_path) {
+    if (endpoint && !screenshot_path.empty())
+        throw std::runtime_error("Capture offscreen output from its presentation host.");
+}
 
 } // namespace bbl::pal

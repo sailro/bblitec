@@ -6,9 +6,20 @@
 static SDL_Window* hidden_window(const char* title, int width, int height, SDL_WindowFlags flags) {
     return SDL_CreateWindow(title, width, height, flags | SDL_WINDOW_HIDDEN);
 }
+namespace bbl::pal {
+/** The latest realm capture time the Window display ran its CSS animations at. */
+double fixture_followed_milliseconds = 0;
+void fixture_set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) {
+    if (milliseconds)
+        fixture_followed_milliseconds = std::max(fixture_followed_milliseconds, *milliseconds);
+    set_ui_rml_time(runtime, milliseconds);
+}
+} // namespace bbl::pal
 #define SDL_CreateWindow hidden_window
 #define WindowFrameClock FixtureWindowFrameClock
+#define set_ui_rml_time fixture_set_ui_rml_time
 #include "pal_window_realm.cpp"
+#undef set_ui_rml_time
 #undef WindowFrameClock
 #undef SDL_CreateWindow
 #include "pal_media_query.cpp"

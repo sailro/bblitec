@@ -414,7 +414,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "input:gamepad": {
         provenance:
             "browser navigator.getGamepads + Gamepad standard mapping; " +
-            "native-architecture: SDL3 gamepad polling in pal_sdl.cpp",
+            "native-architecture: SDL3 gamepad device events and state in pal_sdl.cpp",
         consumers: CMAKE,
     },
     "camera:arc-rotate": {

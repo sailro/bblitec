@@ -34,6 +34,10 @@ import {
 import type { Value } from "./types.js";
 import { lightSetter } from "./assignments.js";
 import {
+    isInstrumentationHostWrite,
+    isRefusedRealmHostWrite,
+} from "./host-globals.js";
+import {
     sceneNodeTransformDescriptor,
     type SceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
@@ -2001,8 +2005,9 @@ export class StatementLowerer {
             ts.isBinaryExpression(expression) &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             (browserLocal(expression.left) ||
-                context.libraryGlobal(expression.left) === "fetch" ||
+                isInstrumentationHostWrite(context, expression.left) ||
                 (ts.isPropertyAccessExpression(expression.left) &&
+                    !isRefusedRealmHostWrite(context, expression.left) &&
                     context.browserErasure.isBrowserOnlyExpression(
                         expression.left.expression,
                     ))) &&

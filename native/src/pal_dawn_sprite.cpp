@@ -184,7 +184,7 @@ public:
                 "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
         }
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, state);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, state);
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer = std::make_unique<DawnTextRenderer>(
             state.device, state.queue, !frame_options.render_capture_path.empty());
@@ -224,7 +224,8 @@ public:
             width = state.surface_width;
             height = state.surface_height;
         }
-        return presentation.ready(state) ? FramePreparation::ready : FramePreparation::skip;
+        return presentation.ready(offscreen, state) ? FramePreparation::ready
+                                                    : FramePreparation::skip;
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
@@ -252,7 +253,7 @@ public:
         return FramePreparation::ready;
     }
     bool acquire() {
-        if (!presentation.acquire(state, surface_texture)) {
+        if (!presentation.acquire(offscreen, state, surface_texture)) {
             discard_frame();
             return false;
         }
@@ -365,7 +366,7 @@ public:
         }
         capture.readback.reset();
 
-        presentation.present(state);
+        presentation.present(offscreen, state);
         surface_view.reset();
         surface.reset();
         if (!state.uncaptured_error.empty()) {

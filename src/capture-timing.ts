@@ -19,8 +19,8 @@ export function fixedCaptureEnvironment(): Record<string, string> {
 
 /**
  * The native frame options that reproduce a browser settle interval: the
- * harness's own by default, or a longer span a scene waits out. One frame
- * names both the screenshot and the engine frame a Window captures.
+ * harness's own by default, or a longer span a scene waits out. The one
+ * capture frame counts engine frames, which a Window captures.
  */
 export function adHocCaptureEnvironment(
     settleMilliseconds = captureSettleMilliseconds,
@@ -38,6 +38,15 @@ export function adHocCaptureEnvironment(
         // index therefore equals the number of elapsed fixed steps needed to
         // cross the wall-clock boundary rather than being one less than it.
         BBLITE_SCREENSHOT_FRAME: String(elapsedFrameCount),
-        BBLITE_CAPTURE_ENGINE_FRAME: String(elapsedFrameCount),
+        ...engineFrameCapture,
     };
 }
+
+/**
+ * `BBLITE_SCREENSHOT_FRAME` counts engine frames: a Window presentation may
+ * repaint one canvas several times, and the browser's fixed RAF pose counts
+ * rendered engine frames.
+ */
+export const engineFrameCapture: Readonly<Record<string, string>> = {
+    BBLITE_CAPTURE_ENGINE_FRAMES: "1",
+};

@@ -9,9 +9,11 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
-// One pad reported for three polls, then none (the native fixture's navigator).
+// One pad announced at 50 ms and removed at 100 ms (the native fixture's
+// display); the queued microtask takes the application realm.
 const source = `
     import { createEngine } from "@babylonjs/lite";
+    queueMicrotask(() => {});
     const events: string[] = [];
     const connected = (event: GamepadEvent): void => {
         const reported = navigator.getGamepads()[event.gamepad.index];
@@ -37,12 +39,12 @@ const source = `
     void main();
 `;
 
-/** The browser's gamepad task source over the same scripted navigator. */
+/** The browser's gamepad task source announcing the same pad. */
 async function runInBrowserModel(): Promise<void> {
-    let polls = 0;
     const pad = { index: 0 };
+    let connected = false;
     const getGamepads = (): ({ index: number } | null)[] =>
-        ++polls <= 3 ? [pad] : [];
+        connected ? [pad] : [];
     const listeners = new Map<string, Set<(event: object) => void>>();
     let closed = false;
     const failures: string[] = [];
@@ -57,29 +59,20 @@ async function runInBrowserModel(): Promise<void> {
             listener: (event: object) => void,
         ) => listeners.get(type)?.delete(listener),
     };
-    let announced: { index: number }[] = [];
-    const poll = setInterval(() => {
-        if (closed || (listeners.get("gamepadconnected")?.size ?? 0) === 0)
-            return;
-        const present = getGamepads().filter((value) => value !== null);
-        const fire = (type: string, gamepad: { index: number }) => {
-            for (const listener of listeners.get(type) ?? [])
-                try {
-                    listener({ gamepad });
-                } catch (error) {
-                    failures.push(String(error));
-                }
-        };
-        for (const gone of announced.filter(
-            (value) => !present.includes(value),
-        ))
-            fire("gamepaddisconnected", gone);
-        for (const added of present.filter(
-            (value) => !announced.includes(value),
-        ))
-            fire("gamepadconnected", added);
-        announced = present;
-    }, 16);
+    const announce = (now: boolean) => {
+        connected = now;
+        const type = now ? "gamepadconnected" : "gamepaddisconnected";
+        for (const listener of listeners.get(type) ?? [])
+            try {
+                listener({ gamepad: pad });
+            } catch (error) {
+                failures.push(String(error));
+            }
+    };
+    const timers = [
+        setTimeout(() => announce(true), 50),
+        setTimeout(() => announce(false), 100),
+    ];
     runInNewContext(
         ts.transpileModule(source, {
             compilerOptions: {
@@ -93,6 +86,7 @@ async function runInBrowserModel(): Promise<void> {
             window,
             navigator: { getGamepads },
             OffscreenCanvas: class {},
+            queueMicrotask,
             setTimeout: (callback: () => void, delay: number) =>
                 setTimeout(() => {
                     try {
@@ -106,7 +100,7 @@ async function runInBrowserModel(): Promise<void> {
     );
     for (let turn = 0; turn < 100 && !closed && failures.length === 0; turn++)
         await new Promise((resolve) => setTimeout(resolve, 10));
-    clearInterval(poll);
+    for (const timer of timers) clearTimeout(timer);
     assert.deepEqual(failures, []);
     assert.equal(closed, true);
 }
@@ -114,10 +108,6 @@ async function runInBrowserModel(): Promise<void> {
 test("gamepad connections fire at the Window with the slots getGamepads reports", async (t) => {
     await runInBrowserModel();
     const result = compileSource(source, { fileName: "gamepad-events.ts" });
-    assert.match(
-        result.cpp,
-        /bbl::watch_dom_gamepads\(bbl::pal::window_document_engine\(\), /,
-    );
     assert.match(
         result.cpp,
         /bbl::on_dom_gamepad\(bbl::pal::window_document_engine\(\), bbl::DomEventTarget::window\(\), "gamepadconnected"/,
@@ -141,7 +131,7 @@ test("gamepad connections fire at the Window with the slots getGamepads reports"
     );
 });
 
-test("a gamepad listener takes the application realm", () => {
+test("a gamepad listener stays on the immediate path", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -151,6 +141,10 @@ test("a gamepad listener takes the application realm", () => {
         }
         void main();
     `);
-    assert.match(result.cpp, /bbl::pal::run_window_application/);
-    assert.match(result.cpp, /bbl::on_dom_gamepad\(/);
+    assert.doesNotMatch(result.cpp, /bbl::pal::run_window_application/);
+    assert.match(
+        result.cpp,
+        /bbl::on_dom_gamepad\([^\n]*bbl::DomEventTarget::window\(\), "gamepadconnected"/,
+    );
+    assert.ok(result.manifest.features.includes("input:gamepad"));
 });

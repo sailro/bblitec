@@ -98,65 +98,125 @@ const serviceNames = new Set([
     "dragend",
 ]);
 
-const dragNames = new Set(["dragenter", "dragover", "dragleave", "drop"]);
-
-const keyboardNames = new Set(["keydown", "keyup"]);
-
-/** The Window's gamepad task source fires these (`pal_dom_gamepads.hpp`). */
-const gamepadNames = new Set(["gamepadconnected", "gamepaddisconnected"]);
-
-/** CSS transition events the UI projection sources. */
-const transitionNames = new Set(["transitionend"]);
-
 /** Page lifecycle events the Window dispatches as its document unloads. */
 const pageLifecycleNames = new Set(["beforeunload", "pagehide"]);
+
+/**
+ * The DOM listener families (`bbl::on_dom_<family>`/`off_dom_<family>`):
+ * the types each dispatches (custom takes every type no other family or
+ * service claims), its callback's borrowed event (its own value kind, or the
+ * base Event view, `baseView`, its members are read through), whether an
+ * element `on<type>` handler joins it, the feature a listener reaches beside
+ * input:dom, and whether its listeners need a Document or Window target.
+ */
+const DOM_LISTENER_FAMILIES = {
+    storage: {
+        names: new Set(["storage"]),
+        event: { cppType: "const bbl::PlatformStorageEvent&", baseView: true },
+    },
+    keyboard: {
+        names: new Set(["keydown", "keyup"]),
+        event: {
+            cppType: "const bbl::PlatformKeyboardEvent&",
+            kind: "platform-keyboard-event",
+        },
+        elementHandler: true,
+    },
+    // GamepadEvent adds gamepad. The Window fires these as the platform
+    // announces gamepads (pal_platform_events.hpp).
+    gamepad: {
+        names: new Set(["gamepadconnected", "gamepaddisconnected"]),
+        event: { cppType: "const bbl::PlatformGamepadEvent&", baseView: true },
+        feature: "input:gamepad",
+    },
+    pointer: {
+        names: pointerNames,
+        event: {
+            cppType: "const bbl::PlatformMouseEvent&",
+            kind: "platform-mouse-event",
+        },
+        elementHandler: true,
+    },
+    // TransitionEvent adds propertyName; the UI projection sources it.
+    transition: {
+        names: new Set(["transitionend"]),
+        event: {
+            cppType: "const bbl::PlatformTransitionEvent&",
+            baseView: true,
+        },
+    },
+    drag: {
+        names: new Set(["dragenter", "dragover", "dragleave", "drop"]),
+        event: { cppType: "const bbl::PlatformDragEvent&", baseView: true },
+        elementHandler: true,
+    },
+    custom: {
+        event: {
+            cppType: "const bbl::PlatformCustomEvent&",
+            kind: "custom-event",
+            dataType: { kind: "handle", handle: "custom-event" },
+        },
+        feature: "data:json",
+        documentTarget: true,
+    },
+} as const;
+
+type DomListenerFamily = keyof typeof DOM_LISTENER_FAMILIES;
+type NamedDomListenerFamily = Exclude<DomListenerFamily, "custom">;
+
+/** The families with names, in the order they claim a type. */
+const NAMED_FAMILIES: readonly NamedDomListenerFamily[] = [
+    "storage",
+    "keyboard",
+    "gamepad",
+    "pointer",
+    "transition",
+    "drag",
+];
+
+/** The families an element `on<type>` handler joins. */
+export type ElementHandlerFamily = {
+    [F in DomListenerFamily]: (typeof DOM_LISTENER_FAMILIES)[F] extends {
+        elementHandler: true;
+    }
+        ? F
+        : never;
+}[DomListenerFamily];
+
+function isElementHandlerFamily(
+    family: DomListenerFamily,
+): family is ElementHandlerFamily {
+    return "elementHandler" in DOM_LISTENER_FAMILIES[family];
+}
 
 /** These names already carry a distinct native payload/service contract. */
 export function isCustomDomEventName(type: string): boolean {
     return (
-        !pointerNames.has(type) &&
+        !NAMED_FAMILIES.some((family) =>
+            DOM_LISTENER_FAMILIES[family].names.has(type),
+        ) &&
         !serviceNames.has(type) &&
-        !keyboardNames.has(type) &&
-        !gamepadNames.has(type) &&
-        !transitionNames.has(type) &&
-        !dragNames.has(type) &&
-        type !== "storage" &&
         !pageLifecycleNames.has(type)
     );
 }
 
-type DomListenerFamily =
-    | "custom"
-    | "keyboard"
-    | "pointer"
-    | "transition"
-    | "drag"
-    | "storage"
-    | "gamepad";
-
 /** The shared dispatch family a DOM event name joins, if any. */
 function domListenerFamily(type: string): DomListenerFamily | undefined {
-    if (type === "storage") return "storage";
-    if (keyboardNames.has(type)) return "keyboard";
-    if (gamepadNames.has(type)) return "gamepad";
-    if (pointerNames.has(type)) return "pointer";
-    if (transitionNames.has(type)) return "transition";
-    if (dragNames.has(type)) return "drag";
+    const named = NAMED_FAMILIES.find((family) =>
+        DOM_LISTENER_FAMILIES[family].names.has(type),
+    );
+    if (named) return named;
     return isCustomDomEventName(type) ? "custom" : undefined;
 }
 
 /** The DOM listener family an element `on<type>` handler joins, if any. */
 export function elementDomHandlerFamily(
     type: string,
-): "keyboard" | "pointer" | "drag" | undefined {
+): ElementHandlerFamily | undefined {
     const family = domListenerFamily(type);
-    return family === "custom" ||
-        family === "transition" ||
-        family === "storage" ||
-        family === "gamepad" ||
-        type === "resize"
-        ? undefined
-        : family;
+    return family && isElementHandlerFamily(family) && type !== "resize"
+        ? family
+        : undefined;
 }
 
 /**
@@ -182,34 +242,6 @@ export function resourceLoadEvent(
     if (!context.options.workers) throw new ApplicationRealmRequired();
     return true;
 }
-
-/**
- * Each family's borrowed event view: its own value kind, or the base Event
- * view (`baseView`) its members are read through.
- */
-const DOM_CALLBACK_EVENTS = {
-    storage: { cppType: "const bbl::PlatformStorageEvent&", baseView: true },
-    custom: {
-        cppType: "const bbl::PlatformCustomEvent&",
-        kind: "custom-event",
-    },
-    keyboard: {
-        cppType: "const bbl::PlatformKeyboardEvent&",
-        kind: "platform-keyboard-event",
-    },
-    pointer: {
-        cppType: "const bbl::PlatformMouseEvent&",
-        kind: "platform-mouse-event",
-    },
-    drag: { cppType: "const bbl::PlatformDragEvent&", baseView: true },
-    // TransitionEvent adds propertyName.
-    transition: {
-        cppType: "const bbl::PlatformTransitionEvent&",
-        baseView: true,
-    },
-    // GamepadEvent adds gamepad.
-    gamepad: { cppType: "const bbl::PlatformGamepadEvent&", baseView: true },
-} as const;
 
 /**
  * HTML's event handler processing: a handler that returns false cancels
@@ -452,7 +484,7 @@ function compileDomCallback(
     handler = false,
 ): { cpp: string; identity: string } {
     const name = context.allocateTemporaryCppName("dom_event");
-    const event = DOM_CALLBACK_EVENTS[family];
+    const event = DOM_LISTENER_FAMILIES[family].event;
     return context.callbacks.compilePlatformCallback(
         callback,
         { cppType: event.cppType, name },
@@ -469,13 +501,8 @@ function compileDomCallback(
                       cpp: name,
                       readOnly: true,
                       engineCpp: engine,
-                      ...(family === "custom"
-                          ? {
-                                dataType: {
-                                    kind: "handle" as const,
-                                    handle: "custom-event" as const,
-                                },
-                            }
+                      ...("dataType" in event
+                          ? { dataType: { ...event.dataType } }
                           : {}),
                   },
         ],
@@ -505,7 +532,7 @@ export function emitDomEventHandler(
         | "cppString"
     >,
     element: Value,
-    family: "keyboard" | "pointer" | "drag",
+    family: ElementHandlerFamily,
     type: string,
     handler: ts.Expression | undefined,
     site: ts.Expression,
@@ -642,13 +669,9 @@ export function emitDomEventListener(
     const family =
         pageLifecycle || resourceLoad ? "pointer" : domListenerFamily(type);
     if (!family) return false;
-    if (family === "gamepad") {
-        if (!context.options.workers) throw new ApplicationRealmRequired();
-        context.reachFeature("input:gamepad", call);
-    }
-    const custom = family === "custom";
+    const descriptor = DOM_LISTENER_FAMILIES[family];
     if (
-        custom &&
+        "documentTarget" in descriptor &&
         !storedTarget &&
         target !== "bbl::DomEventTarget::window()" &&
         target !== "bbl::DomEventTarget::document()"
@@ -658,7 +681,7 @@ export function emitDomEventListener(
             "Custom event listeners require a Document or Window target.",
         );
     context.reachFeature("input:dom", call);
-    if (custom) context.reachFeature("data:json", call);
+    if ("feature" in descriptor) context.reachFeature(descriptor.feature, call);
     const callback = call.arguments[1]!;
     context.callbacks.hoistForwardCallbackBindings(callback);
     const removing = callee.name === "removeEventListener";
@@ -677,12 +700,6 @@ export function emitDomEventListener(
         });
         return true;
     }
-    // Connections are those of the gamepads `navigator.getGamepads()` reads.
-    if (family === "gamepad")
-        context.emit({
-            kind: "expression",
-            code: `bbl::watch_dom_gamepads(${engine}, ${context.requireDefaultEngine(call)});`,
-        });
     const compiled = compileDomCallback(context, callback, family, engine);
     const { listener, options } = signalListener(
         context,

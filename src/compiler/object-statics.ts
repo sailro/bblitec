@@ -18,15 +18,15 @@ import { isJsonValue } from "./json-bridge.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import {
-    GLOBAL_OBJECT_NAMES,
-    isSymbolPropertyKey,
-    borrowedPrototypeMethod,
-} from "./symbols.js";
+import { borrowedPrototypeMethod, isSymbolPropertyKey } from "./symbols.js";
 import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { defineDevicePixelRatio } from "./device-pixel-ratio.js";
+import {
+    defineHostAccessor,
+    globalDefinitionRefusal,
+    isRealmGlobalObject,
+} from "./host-globals.js";
 import { callableRecordValue } from "./callable-records.js";
 import {
     compileCollectionEntries,
@@ -1445,22 +1445,7 @@ function applyPropertyDefinitions(
     return target;
 }
 
-/** A Window realm's global object, whose host properties a definition replaces. */
-function isRealmGlobalObject(
-    context: ObjectStaticContext,
-    expression: ts.Expression,
-): boolean {
-    const workers = context.options.workers;
-    return (
-        workers !== undefined &&
-        !workers.namespace &&
-        GLOBAL_OBJECT_NAMES.has(
-            context.libraryGlobal(context.unwrap(expression)) ?? "",
-        )
-    );
-}
-
-/** Evaluate every getter, then redefine the global's represented host properties in order. */
+/** Evaluate every getter, then redefine the global's host accessors in order. */
 function applyGlobalDefinitions(
     context: ObjectStaticContext,
     call: ts.CallExpression,
@@ -1470,20 +1455,18 @@ function applyGlobalDefinitions(
     const applied = definitions.map((definition) => {
         const refuse = (message: string): never =>
             context.fail(definition.node, `Object.${operation} ${message}`);
-        if (definition.key !== "devicePixelRatio")
-            return refuse(
-                `on the global object represents only 'devicePixelRatio', not '${definition.key}'.`,
-            );
+        const refusal = globalDefinitionRefusal(definition.key);
+        if (refusal) return refuse(refusal);
         const getter = definition.members.find(
             (member) => member.name === "get",
         );
         if (definition.setter || getter?.name !== "get")
             return refuse(
-                "defines the global devicePixelRatio only with a getter.",
+                `defines the global ${definition.key} only with a getter.`,
             );
         if (functionUsesDynamicThis(getter.callback))
             return refuse(
-                "does not represent a devicePixelRatio getter that reads 'this'.",
+                `does not represent a ${definition.key} getter that reads 'this'.`,
             );
         const name = context.allocateTemporaryCppName("defined_property");
         context.emit({
@@ -1496,7 +1479,11 @@ function applyGlobalDefinitions(
                 result: { kind: "number" },
             }),
         });
-        return defineDevicePixelRatio(name, definition.configurable);
+        return defineHostAccessor(
+            definition.key,
+            name,
+            definition.configurable,
+        );
     });
     for (const code of applied) context.emit({ kind: "expression", code });
     return ts.isExpressionStatement(call.parent)

@@ -2,7 +2,7 @@ import { requireWindowHost } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
-import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { hostAccessorValue } from "./host-globals.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
@@ -661,11 +661,11 @@ export class ExpressionLowerer {
         if (storage) return storage;
         const idleFunction = idleFunctionValue(this.context, unwrapped);
         if (idleFunction) return idleFunction;
-        const ratio = devicePixelRatioValue(this.context, unwrapped);
-        if (ratio) {
-            if (ratio.staticNumber === undefined)
+        const accessor = hostAccessorValue(this.context, unwrapped);
+        if (accessor) {
+            if (accessor.staticNumber === undefined)
                 requireWindowHost(this.context, unwrapped);
-            return ratio;
+            return accessor;
         }
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;

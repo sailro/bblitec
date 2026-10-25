@@ -389,7 +389,8 @@ public:
                             : gpu_sample_count_from(
                                   upstream::preferred_sample_count(engine.options.msaa_samples));
         const DeviceOptions device_options = frame_device_options(frame_options);
-        presentation.open(offscreen, engine, device_options, state.gpu);
+        presentation.open(offscreen, engine, frame_options.screenshot_path, device_options,
+                          state.gpu);
 #if BBLITE_HAS_POST_PROCESS
         SDL_GPUSamplerCreateInfo sampler{};
         sampler.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
@@ -422,7 +423,8 @@ public:
         swapchain = nullptr;
         width = 0;
         height = 0;
-        if (!presentation.acquire(command, state.gpu.window, engine, &swapchain, &width, &height)) {
+        if (!presentation.acquire(command, offscreen, state.gpu.window, engine, &swapchain, &width,
+                                  &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture frame graph");
         }
         if (!swapchain || width == 0 || height == 0) {
@@ -518,7 +520,7 @@ public:
             save_texture_png(state.gpu.device, command, capture_texture, state.gpu.swapchain_format,
                              width, height, frame_options.screenshot_path);
             captures.screenshot_saved = true;
-        } else if (!presentation.submit(command)) {
+        } else if (!presentation.submit(command, offscreen)) {
             gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
         }
         finish_gpu_task_timing_frame(engine);

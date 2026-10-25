@@ -42,9 +42,7 @@
 #include <bblite/features/workers.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
-#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
-#include "pal_sdl_gpu_source_device.hpp"
-#endif
+#include "pal_sdl_gpu_presentation.hpp"
 #if BBLITE_EXTERNAL_RENDERABLES
 #include "pal_sdl_gpu_webgpu.hpp"
 #endif
@@ -431,10 +429,9 @@ class SdlSceneRun {
 #else
         static constexpr bool transmission_enabled = false;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
+        /** The application realm's presentation endpoint, bound for the run; null in a window. */
         OffscreenRun* offscreen = nullptr;
-        std::optional<SdlOffscreenTarget> offscreen_target;
-#endif
+        SdlFramePresentation presentation;
         upstream::RenderPlan render_plan;
         std::vector<upstream::RenderPlan> overlay_plans;
         std::vector<std::uint64_t> overlay_topology_versions;
@@ -468,9 +465,6 @@ class SdlSceneRun {
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         const UiRenderFrame* ui_frame = nullptr;
         SDL_GPUTexture* present_swapchain = nullptr;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        SDL_GPUTexture* offscreen_texture = nullptr;
 #endif
         SdlGpuCommand command{nullptr};
         SDL_GPUTexture* swapchain = nullptr;
@@ -733,34 +727,15 @@ public:
 #if BBLITE_HAS_PICKING && BBLITE_HAS_BILLBOARDS
         [[maybe_unused]] auto& billboard_pick = data_.billboard_pick;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
         reject_unsupported_frame_options(frame_options, "SDL_GPU",
                                          /*supports_single_sample=*/true,
                                          /*supports_copy_task=*/true);
         apply_animation_seek(frame_options, scene);
 
-#if BBLITE_OFFSCREEN_SURFACES
         offscreen = OffscreenRun::current();
-        if (offscreen) {
-            bind_sdl_offscreen_device(*offscreen, state);
-            sync_engine_canvas_size(nullptr, engine);
-            if (!frame_options.screenshot_path.empty()) {
-                throw std::runtime_error("Capture offscreen output from its presentation host.");
-            }
-        } else {
-#endif
-#if BBLITE_GPU_RETIREMENT && !BBLITE_WORKERS
-            bind_sdl_source_device(engine, frame_device_options(frame_options), state);
-#else
-        create_sdl_gpu_device(engine.options, frame_device_options(frame_options), state);
-#endif
-            sync_engine_canvas_size(state.window, engine);
-#if BBLITE_OFFSCREEN_SURFACES
-        }
-        data_.offscreen_target.emplace(state.device);
-#endif
+        data_.presentation.open(offscreen, engine, frame_options.screenshot_path,
+                                frame_device_options(frame_options), state);
         for (const SDL_GPUTextureFormat candidate : {
                  SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
                  SDL_GPU_TEXTUREFORMAT_D24_UNORM,
@@ -1571,16 +1546,8 @@ public:
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
         [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
-#endif
         [[maybe_unused]] auto& start = current_frame().start;
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
-#endif
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
                 return;
@@ -1627,18 +1594,10 @@ public:
         // loop body; `pal_dawn.cpp` starts its own at the same point so
         // the published pair stays comparable.
         start = monotonic_milliseconds();
-#if BBLITE_OFFSCREEN_SURFACES
-        offscreen_texture = nullptr;
-        if (offscreen) {
-            offscreen_texture =
-                offscreen_target.acquire(static_cast<Uint32>(engine.options.width),
-                                         static_cast<Uint32>(engine.options.height), *offscreen);
-            if (!offscreen_texture) {
-                current_frame().yield_when_skipped = true;
-                return FramePreparation::skip;
-            }
+        if (!data_.presentation.lease(offscreen, engine)) {
+            current_frame().yield_when_skipped = true;
+            return FramePreparation::skip;
         }
-#endif
 
         return FramePreparation::ready;
     }
@@ -1647,31 +1606,20 @@ public:
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
         [[maybe_unused]] auto& acquired = current_frame().acquired;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
         [[maybe_unused]] auto& swapchain = current_frame().swapchain;
         [[maybe_unused]] auto& command = current_frame().command;
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
-#endif
         command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(state.device)};
         if (!command)
             gpu_error("SDL_AcquireGPUCommandBuffer");
         swapchain = nullptr;
         width = 0;
         height = 0;
-#if BBLITE_OFFSCREEN_SURFACES
-        if (offscreen) {
-            width = static_cast<Uint32>(engine.options.width);
-            height = static_cast<Uint32>(engine.options.height);
-            swapchain = offscreen_texture;
-        } else
-#endif
-            if (!command.acquire_swapchain(state.window, &swapchain, &width, &height)) {
+        if (!data_.presentation.acquire(command, offscreen, state.window, engine, &swapchain,
+                                        &width, &height)) {
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
         }
         if (!swapchain) {
@@ -4396,12 +4344,7 @@ public:
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& capture_ui = data_.frame_options.capture_ui;
 #endif
-#if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
-#endif
-#if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
-#endif
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
         [[maybe_unused]] const auto& matrix = current_frame().frame_camera.view_projection;
@@ -4452,13 +4395,7 @@ public:
                 save_texture_png(state.device, command, capture_texture, swapchain_format, width,
                                  height, screenshot_path);
                 captures.screenshot_saved = true;
-            }
-#if BBLITE_OFFSCREEN_SURFACES
-            else if (offscreen) {
-                offscreen_target.publish(command, *offscreen);
-            }
-#endif
-            else if (!command.submit()) {
+            } else if (!data_.presentation.submit(command, offscreen)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             }
         } else {
@@ -4497,13 +4434,7 @@ public:
                 save_texture_png(state.device, command, visible_color, swapchain_format, width,
                                  height, screenshot_path);
                 captures.screenshot_saved = true;
-            }
-#if BBLITE_OFFSCREEN_SURFACES
-            else if (offscreen) {
-                offscreen_target.publish(command, *offscreen);
-            }
-#endif
-            else if (!command.submit()) {
+            } else if (!data_.presentation.submit(command, offscreen)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
         }
