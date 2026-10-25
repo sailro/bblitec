@@ -66,6 +66,15 @@ function absenceTagDeclaration(
             ? declaration
             : undefined;
     }
+    // An element read keeps the tags of the array the storage holds.
+    if (ts.isElementAccessExpression(node))
+        return checker.isArrayType(
+            checker.getNonNullableType(
+                checker.getTypeAtLocation(node.expression),
+            ),
+        )
+            ? absenceTagDeclaration(checker, node.expression)
+            : undefined;
     if (ts.isPropertyAccessExpression(node)) {
         const declarations =
             declaredSymbol(checker, node.name)?.declarations ?? [];

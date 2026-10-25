@@ -1920,6 +1920,62 @@ check(
 );
 
 check(
+    "stored-class-instances-keep-an-optional-shared-field-apart",
+    `
+    class Registry {
+        private readonly lookups: number[] = [];
+        parent(slot: number): number { this.lookups.push(slot); return slot * 10; }
+        get count(): number { return this.lookups.length; }
+    }
+    class Pose {
+        private parentValue = -1;
+        private world = 0;
+        constructor(private readonly frame?: Registry) {}
+        bind(slot: number): boolean {
+            if (!this.frame) throw new Error("standalone pose");
+            this.parentValue = this.frame.parent(slot);
+            return true;
+        }
+        place(x: number): void { this.world = x; }
+        get x(): number { return this.parentValue >= 0 ? this.parentValue : this.world; }
+        get native(): boolean { return this.frame !== undefined; }
+    }
+    const registry = new Registry();
+    const poses: Pose[] = [];
+    for (let i = 0; i < 3; i++) poses.push(i < 2 ? new Pose(registry) : new Pose());
+    poses[0]!.bind(1); poses[1]!.bind(2); poses[2]!.place(7);
+    let refused = false;
+    try { poses[2]!.bind(3); } catch { refused = true; }
+    if (!refused || poses[0]!.x !== 10 || poses[1]!.x !== 20 || poses[2]!.x !== 7) throw new Error("pose values");
+    if (!poses[0]!.native || poses[2]!.native || registry.count !== 2) throw new Error("presence");
+`,
+);
+
+check(
+    "array-elements-keep-null-and-undefined-apart",
+    `
+    type Tint = readonly [number, number, number];
+    interface Plan { recolor: (Tint | null | undefined)[]; }
+    function plan(count: number): Plan {
+        const recolor: (Tint | null | undefined)[] = new Array(count).fill(undefined);
+        recolor[1] = null;
+        recolor[2] = [0.5, 0.25, 1];
+        return { recolor };
+    }
+    const planned = plan(3);
+    let untouched = 0, reset = 0, tinted = 0;
+    for (let i = 0; i < planned.recolor.length; i++) {
+        const tint = planned.recolor[i];
+        if (tint === undefined) { untouched++; continue; }
+        const [r, g, b] = tint ?? [1, 1, 1];
+        if (tint === null) reset += r + g + b;
+        else tinted += r + g + b;
+    }
+    if (untouched !== 1 || reset !== 3 || tinted !== 1.75) throw new Error("element absence tags");
+`,
+);
+
+check(
     "rebound-readonly-array-identity-comparisons",
     `
     interface Collider { x: number; }

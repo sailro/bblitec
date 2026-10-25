@@ -14,6 +14,7 @@ import {
     type Value,
 } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
+import { compiledUnlessUnobserved } from "../unread-properties.js";
 import { declaredSymbol, isNullishLiteral } from "../symbols.js";
 import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
@@ -390,13 +391,13 @@ function valueStruct(
         lowerer.context.dataTypes.cppType(dataType);
         return value.ownedCpp ?? value.cpp;
     }
-    if (
-        lowerer.context.dataTypes.isClassStruct(dataType.name) &&
-        value.kind === "record"
-    ) {
+    const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (sharedClass && value.kind === "record") {
         // A probe declines on the refusal; a committed store replays shared.
         if (!lowerer.context.speculating)
-            lowerer.context.dataTypes.requireSharedClass(dataType.name);
+            lowerer.context.dataTypes.requireSharedClass(
+                sharedClass.declaration,
+            );
         lowerer.context.fail(
             node,
             `An instance of '${dataType.name}' constructed before ` +
@@ -517,15 +518,24 @@ function valueStruct(
                             field,
                             method,
                         );
+                        const functionType = field.type;
+                        // A method nothing can read is stored empty when
+                        // its body refuses: no call can reach it.
                         const callback =
-                            lowerer.context.compileStoredDataFunction(
-                                method,
-                                field.type,
-                                value,
-                                ts.isMethodDeclaration(method) &&
-                                    ts.isClassLike(method.parent),
-                                homeReceiver(self, method),
-                            );
+                            compiledUnlessUnobserved(
+                                lowerer.context,
+                                field.sourceName,
+                                () =>
+                                    lowerer.context.compileStoredDataFunction(
+                                        method,
+                                        functionType,
+                                        value,
+                                        ts.isMethodDeclaration(method) &&
+                                            ts.isClassLike(method.parent),
+                                        homeReceiver(self, method),
+                                    ),
+                            ) ??
+                            lowerer.context.dataTypes.absentValue(field.type);
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
                             callback,

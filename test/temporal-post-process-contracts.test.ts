@@ -64,7 +64,8 @@ test("TAA descriptors preserve task aliases and refuse missing or non-render sou
         mutable = createBlackAndWhitePostProcessTask({ sourceTexture: source }, engine, scene);
         const taa = ${create("mutable")};
     `),
-        /Assignment operator '=' is not supported for task/,
+        // A rebound task name holds the effect task it was given.
+        /requires a proven scene render task/,
     );
     // Public factor does not name the private live factor slot. It must not
     // be mistaken for a supported composite setter before execute is lowered.

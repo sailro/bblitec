@@ -330,7 +330,7 @@ export function compileRenderTaskOptions(
     // The single-sample target an MSAA colour attachment resolves into. The
     // pin ignores it when `rt` is single-sample rather than refusing it, so
     // this carries the handle and lets the backend apply the same rule.
-    const resolve = optionalRenderTarget(context, object, "rst");
+    const resolve = optionalRenderTarget(context, object, "rst", false, true);
     if (resolve.value) {
         context.expectSameEngine(target, resolve.value, object);
     }
@@ -634,13 +634,15 @@ export function requiredObjectNumber(
  * Four task options are written this way -- a copy task's target and its
  * resolve, a render task's resolve, a post-process pass's target -- and each
  * means the same thing: a target when the scene named one, and the invalid
- * handle when it did not.
+ * handle when it did not. With `runtimeAbsence`, the option may also be held
+ * as optional data, which names its target only at run time.
  */
 export function optionalRenderTarget(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     property: string,
     nullable = false,
+    runtimeAbsence = false,
 ): { cpp: string; value?: Value } {
     const expression = context.objectProperty(object, property);
     if (!expression) {
@@ -649,6 +651,20 @@ export function optionalRenderTarget(
     const value = context.compileValue(expression);
     if (nullable && value.kind === "json-null")
         return { cpp: "bbl::RenderTargetHandle{}" };
+    const inner =
+        value.kind === "data" && value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : undefined;
+    if (inner?.kind === "handle" && inner.handle === "render-target") {
+        // A target held as optional data is decided at run time: absent is
+        // no target. A pass composed at generation needs to know which.
+        if (!runtimeAbsence)
+            context.fail(
+                expression,
+                `Option '${property}' held as optional data requires a target known at generation.`,
+            );
+        return { cpp: `${value.cpp}.value_or(bbl::RenderTargetHandle{})` };
+    }
     context.expectKind(value, "render-target", expression);
     return { cpp: value.cpp, value };
 }

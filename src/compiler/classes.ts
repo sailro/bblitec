@@ -32,7 +32,7 @@ import {
     tupleComponents,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { sameCompiledValue } from "./types.js";
+import { isAbsentValue, presenceCpp, sameCompiledValue } from "./types.js";
 import {
     borrowsReferenceParameter,
     type UserFunctionContext,
@@ -51,6 +51,7 @@ import {
 } from "./syntax.js";
 import { pinOperand } from "./evaluation-order.js";
 import {
+    isNullable,
     nullability,
     isVoid,
     holdsOnly,
@@ -60,6 +61,8 @@ import {
     unionMembers,
     boundedTupleElements,
 } from "./type-facts.js";
+import { ClassFieldPresenceRequired } from "./class-field-presence-storage.js";
+import { propertyNeverObserved } from "./unread-properties.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import {
     ERROR_CLASS_FIELDS,
@@ -424,6 +427,8 @@ export class ClassLowerer {
         string,
         Set<string>
     >();
+    /** Presence slots (`structFieldKey`) a stored instance read while absent everywhere. */
+    private readonly absentPresenceReads = new EmissionSet<string>();
     /** Generator methods whose bodies are being lowered. */
     private readonly activeGeneratorMethods =
         new EmissionSet<ts.MethodDeclaration>();
@@ -1118,6 +1123,12 @@ export class ClassLowerer {
                 expression,
             );
             if (structName) {
+                this.storeFieldPresence(
+                    structName,
+                    instance,
+                    fields,
+                    expression,
+                );
                 this.proveHoistedFields(
                     structName,
                     declaration,
@@ -1506,6 +1517,36 @@ export class ClassLowerer {
     }
 
     /**
+     * Stores, in each presence slot of the layout, whether this construction
+     * bound the field it tracks.
+     */
+    private storeFieldPresence(
+        structName: string,
+        instance: Value,
+        fields: Record<string, Value>,
+        node: ts.Node,
+    ): void {
+        for (const field of this.context.dataTypes.classStructLayout(
+            structName,
+        )) {
+            if (field.presenceOf === undefined) continue;
+            const value = fields[field.presenceOf];
+            // The slot starts false: only a bound field writes it.
+            if (!value || isAbsentValue(value)) continue;
+            if (value.kind === "data")
+                this.context.fail(
+                    node,
+                    `Field '${field.presenceOf}' of shared class '${structName}' ` +
+                        "stores its presence only for a value generation knows or an absent one.",
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `${instance.cpp}->${field.name} = ${presenceCpp(value) ?? "true"};`,
+            });
+        }
+    }
+
+    /**
      * Checks that every field the layout hoisted holds the same value at
      * this construction as at the first one.
      *
@@ -1529,11 +1570,13 @@ export class ClassLowerer {
             if (value.classStoredField) continue;
             hoisted.set(name, value);
         }
-        const declared = new EmissionSet(
-            classChainInstanceProperties(this.table(declaration)).map(
-                (member) => member.name.text,
-            ),
+        const properties = classChainInstanceProperties(
+            this.table(declaration),
         );
+        const declared = new EmissionSet(
+            properties.map((member) => member.name.text),
+        );
+        const className = declaration.name?.text ?? structName;
         const known = this.hoistedClassFields.get(structName);
         const seen = this.hoistedClassDeclared.get(structName);
         if (!known || !seen) {
@@ -1547,11 +1590,40 @@ export class ClassLowerer {
                 known.set(name, value);
                 continue;
             }
+            // A field with a presence slot holds one value or nothing.
+            const slot =
+                first &&
+                this.context.dataTypes.classFieldPresenceSlot(structName, name);
+            if (slot) {
+                if (isAbsentValue(value)) continue;
+                if (isAbsentValue(first)) {
+                    if (
+                        this.absentPresenceReads.has(
+                            structFieldKey(structName, slot),
+                        )
+                    )
+                        this.context.fail(
+                            node,
+                            `Field '${name}' of shared class '${className}' was ` +
+                                "read on a stored instance before any construction bound it.",
+                        );
+                    known.set(name, value);
+                    continue;
+                }
+            } else if (first && isAbsentValue(first) !== isAbsentValue(value)) {
+                const member = properties.find(
+                    (property) => property.name.text === name,
+                );
+                if (
+                    member &&
+                    isNullable(this.context.checker.getTypeAtLocation(member))
+                )
+                    throw new ClassFieldPresenceRequired(member);
+            }
             if (!first || !sameCompiledValue(first, value)) {
                 this.context.fail(
                     node,
-                    `Field '${name}' of shared class ` +
-                        `'${declaration.name?.text ?? structName}' is not the ` +
+                    `Field '${name}' of shared class '${className}' is not the ` +
                         "same at every construction, so a method inlined on a " +
                         `stored instance could not name it ` +
                         `(${first?.kind ?? "unbound"} ${first?.cpp ?? ""} then ` +
@@ -1563,8 +1635,7 @@ export class ClassLowerer {
             if (!hoisted.has(name) && declared.has(name)) {
                 this.context.fail(
                     node,
-                    `Field '${name}' of shared class ` +
-                        `'${declaration.name?.text ?? structName}' is bound at ` +
+                    `Field '${name}' of shared class '${className}' is bound at ` +
                         "one construction and not at another.",
                 );
             }
@@ -1696,12 +1767,54 @@ export class ClassLowerer {
                 structName,
                 source,
             );
-            const bound = stored
-                ? this.storedFieldValue(receiver.cpp, structName, stored)
-                : hoisted?.get(source);
-            if (bound) {
-                fields[source] = bound;
+            if (stored) {
+                fields[source] = this.storedFieldValue(
+                    receiver.cpp,
+                    structName,
+                    stored,
+                );
+                continue;
             }
+            const hoistedValue = hoisted?.get(source);
+            if (hoistedValue === undefined) {
+                // A field no construction has bound yet holds an instance of
+                // a local class: that class is stored, so the field is a slot.
+                const fieldClass = classInstanceDeclaration(
+                    this.context.checker.getNonNullableType(
+                        this.context.checker.getTypeAtLocation(member),
+                    ),
+                );
+                if (
+                    fieldClass &&
+                    !fieldClass.getSourceFile().isDeclarationFile &&
+                    !propertyNeverObserved(
+                        this.context.program,
+                        this.context.checker,
+                        source,
+                    )
+                )
+                    this.context.dataTypes.requireSharedClass(fieldClass);
+                continue;
+            }
+            const presence = this.context.dataTypes.classFieldPresenceSlot(
+                structName,
+                source,
+            );
+            if (presence && isAbsentValue(hoistedValue))
+                this.absentPresenceReads.add(
+                    structFieldKey(structName, presence),
+                );
+            fields[source] =
+                presence && !isAbsentValue(hoistedValue)
+                    ? {
+                          ...hoistedValue,
+                          optionalFoundCpp: this.storedFieldValue(
+                              receiver.cpp,
+                              structName,
+                              presence,
+                          ).cpp,
+                      }
+                    : hoistedValue;
         }
         const typeArguments = type
             ? this.context.dataTypes.typeArgumentsOf(declaration, type)

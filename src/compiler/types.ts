@@ -11,6 +11,7 @@ export {
     optionalPresentCpp,
     optionalValueCpp,
     contextCanvas,
+    isAbsentValue,
     isPresentValue,
     hasLiteralStringCpp,
     hasScalarFacts,
@@ -2612,7 +2613,7 @@ export interface ValueFields {
      * the container-level animation/camera wiring a second time.
      */
     assetRootClone?: true;
-    /** An iterated glTF root proven to be the container's only entity (no punctual lights). */
+    /** A glTF root proven to be the container's only entity (no punctual lights). */
     soleAssetEntity?: true;
     /** A clone with a widened node type; asset projection must check its concrete handle. */
     sceneNodeClone?: true;

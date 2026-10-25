@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { absenceOf } from "./values/model.js";
+import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
 import { domTargetIdentity, elementInterfaceTag } from "./dom-targets.js";
@@ -389,8 +389,8 @@ function listenerSignal(
     const stored = value.dataType;
     const optional = stored?.kind === "optional";
     const type = optional ? stored.inner : stored;
-    if (value.kind === "json-null" || type?.kind === "undefined") {
-        if (absenceOf(value) === "null")
+    if (isAbsentValue(value)) {
+        if (absenceOf(value) === "null" || type?.kind === "null")
             return context.fail(
                 site,
                 "Event listener signal accepts undefined or a DOM AbortSignal, not null.",

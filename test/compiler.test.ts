@@ -15,7 +15,7 @@ import {
     readUpstreamPin,
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
-import { CompileError, compileSource } from "../src/compiler.js";
+import { CompileError, compileSource, surveySource } from "../src/compiler.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -20953,6 +20953,33 @@ test("mirrors the pinned _gaussianSplats declaration", () => {
         ),
         /_gaussianSplats/,
     );
+});
+
+test("a function whose nested closure reads a canvas back is not a Canvas2D helper", () => {
+    // Only a helper whose own body reads the canvas back, returning the
+    // string, is run in the browser at generation; an entry that captures
+    // a canvas later in a callback is lowered like any other function.
+    const source = [
+        'import { createEngine, createSceneContext, registerScene, startEngine } from "babylon-lite";',
+        "",
+        "async function main(): Promise<void> {",
+        '    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
+        "    const engine = await createEngine(canvas);",
+        "    const scene = createSceneContext(engine);",
+        '    const shots = { capture(): string { return canvas.toDataURL("image/png"); } };',
+        "    (window as unknown as { shots: unknown }).shots = shots;",
+        "    await registerScene(scene);",
+        "    await startEngine(engine);",
+        "}",
+        "",
+        "void main().catch((error) => {",
+        "    console.error(error);",
+        "    throw error;",
+        "});",
+    ].join("\n");
+    const { report } = surveySource(source, { fileName: "input.ts" });
+    assert.equal(report.terminal, undefined);
+    assert.equal(report.complete, true);
 });
 
 test("bakes a Canvas2D helper reached through an inlined parameter", () => {

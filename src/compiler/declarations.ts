@@ -564,7 +564,8 @@ export class DeclarationLowerer {
     /**
      * A binding whose `null` and `undefined` the program tells apart
      * (`AbsenceTagStorageRequired`) keeps both in tagged storage: undefined
-     * until its initializer or an assignment defines it.
+     * until its initializer or an assignment defines it. An array keeps
+     * them per element.
      */
     private emitAbsenceTaggedDeclaration(
         declaration: ts.VariableDeclaration,

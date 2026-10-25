@@ -24,17 +24,22 @@ writeFileSync(
     }),
 );
 
-const compile = (body: string) =>
+const compile = (
+    body: string,
+    options: Parameters<typeof compileSource>[1] = {
+        fileName: resolve(output, "input.ts"),
+    },
+) =>
     compileSource(
         `
-        import { createEngine, loadGltf } from "@babylonjs/lite";
+        import { addToScene, createEngine, createSceneContext, loadGltf, type TransformNode } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             ${body}
         }
     `,
-        { fileName: resolve(output, "input.ts") },
+        options,
     );
 
 test("loads the packaged file a fetched response's bytes come from", () => {
@@ -71,5 +76,38 @@ test("refuses raw data that is not a fetched response's bytes", () => {
         await loadGltf(engine, new ArrayBuffer(8));
     `),
         /loadGltf raw data must be the arrayBuffer\(\) of a generation-time fetch response/,
+    );
+});
+
+test("a public file's fetched bytes load from that file and add their root", () => {
+    // The fetch names the file relative to the entry; the packaged source is
+    // that file, so its document proves the root is the container's one entity.
+    const app = resolve(output, "public-app");
+    mkdirSync(resolve(app, "public/assets"), { recursive: true });
+    mkdirSync(resolve(app, "src/entry"), { recursive: true });
+    copyFileSync(
+        resolve(output, "embedded.gltf"),
+        resolve(app, "public/assets/model.gltf"),
+    );
+    const result = compile(
+        `
+            const scene = createSceneContext(engine);
+            const response = await fetch("/assets/model.gltf");
+            if (!response.ok) throw new Error("missing");
+            const loaded = await loadGltf(engine, await response.arrayBuffer());
+            const root = loaded.entities[0] as TransformNode;
+            addToScene(scene, root);
+        `,
+        {
+            fileName: resolve(app, "src/entry/main.ts"),
+            publicDir: resolve(app, "public"),
+        },
+    );
+    assert.deepEqual(
+        result.manifest.assets.map(({ kind, source }) => [
+            kind,
+            resolve(app, "src/entry", source),
+        ]),
+        [["gltf", resolve(app, "public/assets/model.gltf")]],
     );
 });

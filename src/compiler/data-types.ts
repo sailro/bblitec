@@ -95,6 +95,7 @@ import {
 } from "./record-components.js";
 import ts from "typescript";
 import { requireDeclarationAbsenceTag } from "./absence-tag-storage.js";
+import { classFieldPresenceSource } from "./class-field-presence-storage.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
 import {
@@ -293,6 +294,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     StorageBuffer: "storage-buffer",
     ComputeStorageTexture: "compute-storage-texture",
     ComputeTask: "compute-task",
+    // A frame-graph task stored by its base interface.
+    Task: "task",
     ComputeOneShot: "compute-one-shot",
     UniformBuffer: "uniform-buffer",
     ComputeUniformArena: "compute-uniform-arena",
@@ -439,6 +442,8 @@ export interface DataStructField {
     defaultWhenMissing?: boolean;
     /** Which union tags actually own this field (wire serialization observes absence). */
     presentForTags?: Array<Array<{ discriminant: string; value: string }>>;
+    /** A class layout slot storing whether this source property is present. */
+    presenceOf?: string;
     /**
      * The source declared the property with `?`, so JavaScript can observe it
      * as absent rather than as null. `JSON.stringify` is the observer: it
@@ -605,6 +610,19 @@ export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
             names.includes(symbol.name) &&
             declaredIn(symbol, "babylon"),
     );
+}
+
+/**
+ * The facts a pinned type proves of every value it types: only
+ * `createRenderTask` returns the pin's `RenderTask`, so the type proves its
+ * factory's `renderTask` fact, even for a name never assigned.
+ */
+export function typeImpliedFacts(
+    type: ts.Type,
+): Pick<Value, "renderTask"> | undefined {
+    return isPinnedType(type, ["RenderTask"])
+        ? { renderTask: true }
+        : undefined;
 }
 
 /**
@@ -1534,28 +1552,38 @@ export class DataTypeRegistry {
             declaration === undefined ||
             !this.storage.absenceTags.has(declaration) ||
             type.kind === "json" ||
-            type.kind === "tagged" ||
-            this.slotPresentCpp(type, "slot") === undefined
+            type.kind === "tagged"
         )
             return type;
+        // An array is never absent itself: its elements keep the tags.
+        if (type.kind === "vector" && type.element.kind === "optional")
+            return {
+                ...type,
+                element: { kind: "tagged", inner: type.element },
+            };
+        if (this.slotPresentCpp(type, "slot") === undefined) return type;
         return { kind: "tagged", inner: type };
     }
 
     /**
-     * The tagged storage of a source declaration whose value has `type`
-     * (resolved at `site`), when the program observes which absent value it
-     * holds ({@link absenceTaggedStorage}); undefined while one state answers.
+     * The storage of a source declaration whose value has `type` (resolved
+     * at `site`) when the program observes which absent value it holds:
+     * tagged, or an array of tagged elements ({@link absenceTaggedStorage});
+     * undefined while one state answers.
      */
     public taggedDeclarationStorage(
         declaration: ts.Declaration,
         type: ts.Type,
         site: ts.Node,
-    ): DataType<"tagged"> | undefined {
+    ): DataType | undefined {
         if (!this.storage.absenceTags.has(declaration)) return undefined;
         const stored = this.fromStoredTsType(type, site);
         const storage =
             stored && this.absenceTaggedStorage(declaration, stored);
-        return storage?.kind === "tagged" ? storage : undefined;
+        return storage?.kind === "tagged" ||
+            (storage?.kind === "vector" && storage.element.kind === "tagged")
+            ? storage
+            : undefined;
     }
 
     /** @unjournaled Immutable checked source inventory shared across emission replays. */
@@ -7660,8 +7688,9 @@ export class DataTypeRegistry {
         // Demand mints the representation; it does not scope it. Once one
         // position stores a class, every mention of it is that same shared
         // object -- otherwise a field typed `Part | null` beside an array of
-        // `Part` would be a different thing from the array's elements.
-        if (!this.classDemanded) {
+        // `Part` would be a different thing from the array's elements. A
+        // class a replay shares is that object wherever it is mentioned.
+        if (!this.classDemanded && !this.isSharedClass(declaration)) {
             return undefined;
         }
         this.rejectUnsupportedRuntimeClass(declaration, node);
@@ -7861,6 +7890,18 @@ export class DataTypeRegistry {
                 );
             }
             if (!mapped) {
+                // A hoisted field one construction leaves absent stores
+                // whether it is present (`ClassFieldPresenceRequired`).
+                if (this.storage.classFieldPresence.has(member)) {
+                    fields.push({
+                        sourceName: classFieldPresenceSource(member.name.text),
+                        name: sanitizeIdentifier(`${nativeName}_present`),
+                        declarations: [member],
+                        type: { kind: "boolean" },
+                        presenceOf: member.name.text,
+                    });
+                    presences.push({});
+                }
                 continue;
             }
             const sourceName = member.name.text;
@@ -7998,11 +8039,7 @@ export class DataTypeRegistry {
         const declaration = (type.symbol?.declarations ?? []).find(
             ts.isClassLike,
         );
-        if (
-            !declaration ||
-            !this.storage.sharedClasses.has(this.sharedClassKey(declaration))
-        )
-            return undefined;
+        if (!declaration || !this.isSharedClass(declaration)) return undefined;
         const minted = this.withClassDemand(true, () =>
             this.fromLocalClassType(type, declaration),
         );
@@ -8010,14 +8047,23 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A compile-time instance reached a store of its class, which something
-     * demanded after that instance was built: replay with the class shared
-     * from its first construction. Returns when the replay already does.
+     * Something stores the class after one of its instances was built as a
+     * compile-time record: replay with the class shared from its first
+     * construction. Returns when the replay already does.
      */
-    public requireSharedClass(name: string): void {
-        const declaration = this.classStruct(name)?.declaration;
-        if (declaration && !this.storage.sharedClasses.has(declaration))
-            throw new SharedClassStorageRequired(declaration);
+    public requireSharedClass(declaration: ts.ClassLikeDeclaration): void {
+        if (!this.isSharedClass(declaration))
+            throw new SharedClassStorageRequired(
+                this.sharedClassKey(declaration),
+            );
+    }
+
+    /** Whether a replay shares the class from its first construction. */
+    private isSharedClass(declaration: ts.ClassLikeDeclaration): boolean {
+        return (
+            this.storage.sharedClasses.size > 0 &&
+            this.storage.sharedClasses.has(this.sharedClassKey(declaration))
+        );
     }
 
     /** A hierarchy shares one struct, named by its root. */
@@ -8049,6 +8095,21 @@ export class DataTypeRegistry {
         return this.classStructLayout(name).find(
             (candidate) => candidate.sourceName === property,
         );
+    }
+
+    /**
+     * The slot storing whether a class field is present
+     * (`ClassFieldPresenceRequired`), when its layout keeps one.
+     */
+    public classFieldPresenceSlot(
+        name: string,
+        property: string,
+    ): DataStructField | undefined {
+        return this.storage.classFieldPresence.size === 0
+            ? undefined
+            : this.classStructLayout(name).find(
+                  (field) => field.presenceOf === property,
+              );
     }
 
     /**
@@ -8264,7 +8325,8 @@ export class DataTypeRegistry {
      * is itself a local class would need that class to have a layout before
      * this one does, and a per-instance reference to another instance is not
      * part of the reached subset. Such a field is hoisted instead, and the
-     * hoist has to prove itself uniform across every construction.
+     * hoist has to prove itself uniform across every construction, unless a
+     * replay shares the field's class: its instance is then the slot's value.
      */
     public fromClassFieldType(
         type: ts.Type,

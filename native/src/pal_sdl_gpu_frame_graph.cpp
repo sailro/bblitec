@@ -442,7 +442,7 @@ public:
         GpuTaskTimingSequence timing_sequence(engine);
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-            if (task.execution_enabled == false) {
+            if (!frame_task_executes(task)) {
                 continue;
             }
             const auto timing_scope = timing_sequence.scoped_task(engine, handle);

@@ -2,6 +2,7 @@ import { filledLengthGrowth } from "./array-length-growth.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     hasScalarFacts,
+    isAbsentValue,
     isPresentValue,
     isStringValue,
     nativeDataMetadata,
@@ -780,6 +781,20 @@ function provenPresent(type: ts.Type): boolean {
         (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
         !isNullable(type)
     );
+}
+
+/**
+ * The index of a union's one record member: a record read of a union
+ * holding one record type is that member's, and a value holding another
+ * member throws where it is selected.
+ */
+function soleRecordMember(
+    type: DataType<"union">,
+): { index: number; member: DataType<"struct"> } | undefined {
+    const records = type.members.flatMap((member, index) =>
+        member.kind === "struct" ? [{ index, member }] : [],
+    );
+    return records.length === 1 ? records[0] : undefined;
 }
 
 export class DataLowerer {
@@ -4401,10 +4416,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             narrowed?.kind === "struct" &&
             assertsType(expression)
         ) {
-            const records = type.members.flatMap((member, index) =>
-                member.kind === "struct" ? [index] : [],
-            );
-            if (records.length === 1) return records[0]!;
+            const record = soleRecordMember(type);
+            if (record) return record.index;
         }
         // Array.isArray widens readonly arrays to any[] in lib.d.ts. The
         // represented union still supplies the element type when exactly one
@@ -8828,8 +8841,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): string {
         if (
             type.kind === "enum" &&
-            (value.kind === "json-null" ||
-                isUndefinedDataType(value.dataType) ||
+            (isAbsentValue(value) ||
                 value.kind === "number" ||
                 value.kind === "boolean" ||
                 value.dataType?.kind === "number" ||
@@ -9132,7 +9144,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 argument,
                 "A number argument that may be null or undefined requires distinguishable null and undefined storage.",
             );
-        if (value.kind === "json-null" || isUndefinedDataType(value.dataType)) {
+        if (isAbsentValue(value)) {
             this.context.emitDiscardedValue(value);
             if (absent.null && absent.undefined && undefinedReads !== 0)
                 ambiguous();
@@ -10551,11 +10563,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     .length === 0
             ) {
                 const value = this.context.compileValue(argument);
-                if (
-                    value.kind !== "json-null" &&
-                    value.dataType?.kind !== "null" &&
-                    !isUndefinedDataType(value.dataType)
-                )
+                if (!isAbsentValue(value))
                     this.context.fail(
                         argument,
                         "An absent collection initializer requires a represented null or undefined value.",
@@ -11601,11 +11609,48 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         node: ts.Node,
     ): string {
         return this.compileConvertedMember(
-            lane,
+            this.recordLane(lane, dataType),
             dataType,
             node,
             undefined,
             undefined,
+        );
+    }
+
+    /**
+     * A pair array types both its lanes as one union (`[key, record]` as
+     * `(string | Rec)[]`): a lane stored as another record type is the
+     * union's one record member, read checked and converted from there.
+     */
+    private recordLane(lane: Value, target: DataType): Value {
+        const type = lane.dataType;
+        const union = type?.kind === "optional" ? type.inner : type;
+        if (target.kind !== "struct" || union?.kind !== "union") return lane;
+        const record = soleRecordMember(union);
+        // The slot's own record already selects its member.
+        if (!record || record.member.name === target.name) return lane;
+        const { index, member } = record;
+        if (type?.kind !== "optional")
+            return this.projectedNativeValue(
+                lane,
+                `std::get<${index}>(${lane.cpp})`,
+                member,
+            );
+        // A reference record is nullable storage of its own.
+        const nullable: DataType = this.context.dataTypes.isReferenceStruct(
+            member.name,
+        )
+            ? member
+            : { kind: "optional", inner: member };
+        const held = pinCpp(
+            this.context,
+            lane.cpp,
+            "record_lane",
+            "const auto&",
+        );
+        return this.leafValue(
+            `(${optionalPresentCpp(held)} ? ${this.context.dataTypes.presentValue(nullable, `std::get<${index}>(${optionalValueCpp(held)})`)} : ${this.context.dataTypes.absentValue(nullable)})`,
+            nullable,
         );
     }
 

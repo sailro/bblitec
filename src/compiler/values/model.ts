@@ -1,6 +1,7 @@
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
+import { isUndefinedDataType } from "../data-types/operations.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
 import {
@@ -272,6 +273,15 @@ export function contextCanvas(value: Value | undefined): Value | undefined {
     if (!value?.uiCanvasContext) return undefined;
     const { uiCanvasContext: _context, ...canvas } = value;
     return canvas;
+}
+
+/** A value that is no value: `null` or `undefined`. */
+export function isAbsentValue(value: Value): boolean {
+    return (
+        value.kind === "json-null" ||
+        value.dataType?.kind === "null" ||
+        isUndefinedDataType(value.dataType)
+    );
 }
 
 /**

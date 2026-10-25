@@ -80,8 +80,10 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { propertyNeverObserved } from "./unread-properties.js";
-import { CompileError } from "./compile-error.js";
+import {
+    compiledUnlessUnobserved,
+    propertyNeverObserved,
+} from "./unread-properties.js";
 
 interface AsyncContext extends Pick<
     LoweringServices,
@@ -2572,25 +2574,15 @@ export class AsyncLowerer {
                 value.recordSetters?.[name]
             )
                 continue;
-            try {
-                recordProperties[name] = this.context.probeEmission(
-                    () =>
-                        this.ownResult(field, node, fieldType(name), [
-                            ...ancestors,
-                            value,
-                        ]),
-                    () => true,
-                );
-            } catch (error) {
-                if (
-                    !(error instanceof CompileError) ||
-                    !propertyNeverObserved(
-                        this.context.program,
-                        this.context.checker,
-                        name,
-                    )
-                )
-                    throw error;
+            const owned = compiledUnlessUnobserved(this.context, name, () =>
+                this.ownResult(field, node, fieldType(name), [
+                    ...ancestors,
+                    value,
+                ]),
+            );
+            if (owned) {
+                recordProperties[name] = owned;
+            } else {
                 delete recordProperties[name];
                 unobserved.add(name);
             }

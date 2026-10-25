@@ -1,5 +1,6 @@
 export type HandleKind =
     | "custom-event"
+    | "task"
     | "dom-event"
     | "dom-event-identity"
     | "worker-media-query"

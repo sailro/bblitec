@@ -7,6 +7,8 @@ import {
 import { staticAccessKey, libraryStaticMember } from "./symbols.js";
 import { unionMembers } from "./type-facts.js";
 import type { PatternRead } from "./syntax.js";
+import { unlessRefused } from "./compile-error.js";
+import type { LoweringServices } from "./lowering-services.js";
 
 const reflectiveObjectMethods = new Set([
     "assign",
@@ -120,4 +122,19 @@ export function propertyNeverObserved(
         .every((file) => !observes(file));
     names.set(name, unread);
     return unread;
+}
+
+/**
+ * What `compile` makes for a property named `name`, or undefined when that
+ * compile refuses and {@link propertyNeverObserved}: nothing would read the
+ * value back, so no storage needs it. A read property compiles unprobed.
+ */
+export function compiledUnlessUnobserved<T>(
+    context: Pick<LoweringServices, "probeEmission" | "program" | "checker">,
+    name: string,
+    compile: () => T,
+): T | undefined {
+    if (!propertyNeverObserved(context.program, context.checker, name))
+        return compile();
+    return unlessRefused(() => context.probeEmission(compile, () => true));
 }

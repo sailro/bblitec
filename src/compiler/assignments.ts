@@ -2446,6 +2446,7 @@ import {
     wrappersUnder,
     accessKey,
     propertyKey,
+    unwrapExpression,
 } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";
@@ -2533,7 +2534,7 @@ import {
     staticBooleanOf,
 } from "./values/model.js";
 import { recordAt } from "./record-access.js";
-import { isPinnedType } from "./data-types.js";
+import { isPinnedType, typeImpliedFacts } from "./data-types.js";
 import { creationInSegment } from "./creation-segments.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
@@ -2699,11 +2700,31 @@ function emitTargetPropertyAssignment(
         });
         return true;
     }
-    if (target.kind === "task" && property === "executionEnabled") {
-        requireSimpleAssignment(context, expression, "Task.executionEnabled");
+    // `RenderTask.enabled` is the app's own execute gate beside the Task
+    // one; absent reads as on.
+    const renderGate =
+        property === "enabled" &&
+        (target.renderTask === true ||
+            typeImpliedFacts(
+                context.checker.getNonNullableType(
+                    context.checker.getTypeAtLocation(
+                        unwrapExpression(targetExpression),
+                    ),
+                ),
+            )?.renderTask === true);
+    if (
+        target.kind === "task" &&
+        (property === "executionEnabled" || renderGate)
+    ) {
+        requireSimpleAssignment(
+            context,
+            expression,
+            renderGate ? "RenderTask.enabled" : "Task.executionEnabled",
+        );
+        const gate = `bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })})`;
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
+            code: `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.${renderGate ? `render_enabled = ${gate}.value_or(true)` : `execution_enabled = ${gate}.to_optional()`};`,
         });
         return true;
     }
@@ -4285,10 +4306,12 @@ function emitWorldMatrixProviderParent(
     const slot = context.allocateTemporaryCppName("world_provider_slot");
     context.emit({
         kind: "declaration",
-        type: "const auto",
+        type: "const auto&",
         name: slot,
         initializer: provider.cpp,
     });
+    // Each callback keeps its own reference to the shared provider.
+    const value = optional ? optionalValueCpp(slot) : slot;
     const held = context.allocateTemporaryCppName("world_provider");
     const read = (field: NonNullable<typeof fields.world>): string =>
         `${held}->${field.name}${field.accessor ? ".get()" : ""}`;
@@ -4300,11 +4323,10 @@ function emitWorldMatrixProviderParent(
         kind: "expression",
         code:
             `if (${optional ? optionalPresentCpp(slot) : `static_cast<bool>(${slot})`}) { ` +
-            `const auto ${held} = ${optional ? optionalValueCpp(slot) : slot}; ` +
             `bbl::set_mesh_world_matrix_provider(${engine}, ${target.cpp}, ` +
-            `static_cast<const void*>(${held}.get()), ` +
-            `[${held}]() { return bbl::provider_world_matrix(${read(fields.world)}); }, ` +
-            `[${held}]() { return static_cast<double>(${read(fields.version)}); }); ` +
+            `static_cast<const void*>(${value}.get()), ` +
+            `[${held} = ${value}]() { return bbl::provider_world_matrix(${read(fields.world)}); }, ` +
+            `[${held} = ${value}]() { return static_cast<double>(${read(fields.version)}); }); ` +
             `} else { bbl::set_mesh_transform_parent(${engine}, ${target.cpp}, bbl::TransformNodeHandle{}); }`,
     });
 }

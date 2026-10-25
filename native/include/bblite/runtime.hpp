@@ -1558,6 +1558,8 @@ enum class FrameTaskRecordState : std::uint8_t {
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     std::optional<bool> execution_enabled;
+    /** `RenderTask.enabled`: the app's own execute gate, default on. */
+    bool render_enabled = true;
     std::shared_ptr<ComputeTask> compute;
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
@@ -1596,6 +1598,11 @@ struct FrameTaskRecord {
     js::Callback<void()> record_override;
     js::Callback<void()> dispose_override;
 };
+
+/** Whether a task executes this frame: `executionEnabled` and a render task's `enabled`. */
+[[nodiscard]] inline bool frame_task_executes(const FrameTaskRecord& task) {
+    return task.execution_enabled != false && task.render_enabled;
+}
 
 struct RenderTargetTexture {
     RenderTargetHandle rt{};

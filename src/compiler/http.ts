@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { absenceOf } from "./values/model.js";
+import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -177,11 +177,7 @@ function requestSignal(
     site: ts.Node,
 ): string | undefined {
     const context = lowerer.context;
-    if (
-        value.kind === "json-null" ||
-        value.dataType?.kind === "undefined" ||
-        value.dataType?.kind === "null"
-    ) {
+    if (isAbsentValue(value)) {
         context.emitDiscardedValue(value);
         return undefined;
     }

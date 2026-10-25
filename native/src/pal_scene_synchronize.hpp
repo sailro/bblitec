@@ -280,8 +280,8 @@ Iteration<bool> prepare_scene_pipeline_draws(Engine& engine, const Scene& scene,
     for (const TaskHandle handle : tasks) {
         const FrameTaskRecord* task =
             handle.value == invalid_handle ? nullptr : &handle_at(engine.frame_tasks, handle);
-        if (task && (task->execution_enabled == false || (task->kind != FrameTaskKind::render &&
-                                                          task->kind != FrameTaskKind::geometry)))
+        if (task && (!frame_task_executes(*task) || (task->kind != FrameTaskKind::render &&
+                                                     task->kind != FrameTaskKind::geometry)))
             continue;
         if (task && task->kind == FrameTaskKind::geometry &&
             upstream::geometry_task_skips(geometry_pass_camera(engine, scene)))

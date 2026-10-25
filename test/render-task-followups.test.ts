@@ -275,6 +275,20 @@ sphere.material=createStandardMaterial();
 addToScene(scene,sphere);
 `;
 
+test("a render task's own enabled gate lowers beside executionEnabled", () => {
+    const result = compileSource(
+        nullableTaskPrefix +
+            `const target=createRenderTarget({lbl:"t",dFormat:"depth24plus",samples:1,size:engine});
+const task=createRenderTask({name:"overlay",rt:target,cam:camera,autoMirror:false},engine,scene);
+addTask(scene,task);
+task.enabled = false;
+(task as unknown as {enabled:boolean}).enabled = Math.random() < 2;
+await registerScene(scene);`,
+    );
+    assert.equal(result.cpp.match(/\.render_enabled = /g)?.length, 2);
+    assert.doesNotMatch(result.cpp, /execution_enabled = /);
+});
+
 // The application's optional visibility capture: a sample count fixed per
 // call site selects the task or null, and every later use is guarded.
 const visibilityCapture = (call: string): string => `

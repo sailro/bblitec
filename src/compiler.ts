@@ -198,6 +198,7 @@ import {
     handleCppType,
     isHandleKind,
     isPinnedType,
+    typeImpliedFacts,
     opaqueEngineValue,
     pinnedHandleKind,
     resourceValueCppType,
@@ -463,16 +464,9 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
         "AssetContainer",
         { origin: "babylon", kind: "asset", cppType: handleCppType("asset") },
     ],
-    // Only `createRenderTask` returns the pin's `RenderTask`, so the type
-    // proves its factory's `renderTask` fact even for a name never assigned.
     [
         "RenderTask",
-        {
-            origin: "babylon",
-            kind: "task",
-            cppType: "bbl::TaskHandle",
-            implied: { renderTask: true },
-        },
+        { origin: "babylon", kind: "task", cppType: "bbl::TaskHandle" },
     ],
 ]);
 
@@ -2145,10 +2139,11 @@ class Compiler implements LoweringServices {
         const name = member.symbol?.name;
         const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
         if (named && declaredIn(member.symbol, named.origin)) {
+            const implied = typeImpliedFacts(member);
             return {
                 kind: named.kind,
                 cppType: named.cppType,
-                ...(named.implied ? { implied: named.implied } : {}),
+                ...(implied ? { implied } : {}),
             };
         }
         // `createRenderTexture2D` returns the pin's ordinary `Texture2D`, so

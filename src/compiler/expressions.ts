@@ -241,6 +241,7 @@ import {
 import {
     booleanValue,
     commonResourceValue,
+    isAbsentValue,
     isCompileTimeOnlyValue,
     isStringValue,
     objectTruthinessCpp,
@@ -3588,11 +3589,7 @@ export class ExpressionLowerer {
             return undefined;
         return this.context.probeEmission(() => {
             const value = this.compileValue(receiver);
-            if (
-                value.kind !== "json-null" &&
-                !isUndefinedDataType(value.dataType)
-            )
-                return undefined;
+            if (!isAbsentValue(value)) return undefined;
             this.context.emitDiscardedValue(value);
             return undefinedValue();
         });
@@ -4190,11 +4187,7 @@ export class ExpressionLowerer {
         if (fetched) return fetched;
 
         const bound = this.context.bindings.lookupOptional(callee);
-        if (
-            call.questionDotToken &&
-            bound &&
-            (bound.kind === "json-null" || isUndefinedDataType(bound.dataType))
-        ) {
+        if (call.questionDotToken && bound && isAbsentValue(bound)) {
             this.context.emitDiscardedValue(bound);
             return undefinedValue();
         }
@@ -7721,9 +7714,7 @@ export class ExpressionLowerer {
                     memberName,
                     call,
                 ) &&
-                (!recordCallback ||
-                    recordCallback.kind === "json-null" ||
-                    isUndefinedDataType(recordCallback.dataType))
+                (!recordCallback || isAbsentValue(recordCallback))
             ) {
                 // An explicitly absent property short-circuits just like a
                 // missing one; none of the call's arguments are evaluated.

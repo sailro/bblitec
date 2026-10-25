@@ -471,6 +471,26 @@ interface HandleCollectionMember {
     index: number;
 }
 
+/**
+ * A glTF container's root node. `sole` when the root is the container's one
+ * entity (no punctual light appended one), so it stands for the container.
+ */
+function gltfRoot(
+    owner: Value<"asset">,
+    engineCpp: string,
+    cpp: string,
+    sole: boolean,
+): Value {
+    return {
+        ...containerIdentity(owner),
+        kind: "asset-root",
+        cpp,
+        assetKind: "gltf",
+        engineCpp,
+        ...(sole ? { soleAssetEntity: true as const } : {}),
+    };
+}
+
 /** A container's identity facts, without the storage that holds the container itself. */
 function containerIdentity<T extends Value>(
     owner: T,
@@ -1244,14 +1264,12 @@ export class HandleCollections {
             // Its entities are its root alone exactly when it is a glTF
             // load that appended no punctual light, which the read checks.
             const engineCpp = this.context.requireEngine(owner, unwrapped);
-            return {
-                ...containerIdentity(owner),
-                kind: "asset-root",
-                cpp: `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
-                assetKind: "gltf",
-                soleAssetEntity: true,
+            return gltfRoot(
+                owner,
                 engineCpp,
-            };
+                `bbl::asset_container_sole_root(${engineCpp}, ${owner.cpp})`,
+                true,
+            );
         }
         if ((owner.asset?.kind ?? owner.assetKind) !== "gltf") {
             this.context.fail(
@@ -1265,14 +1283,7 @@ export class HandleCollections {
         // `entities[0]` reads it.
         // A document generation cannot read keeps the entity walk.
         if (owner.asset && this.soleGltfRoot(owner.asset, unwrapped))
-            return {
-                ...containerIdentity(owner),
-                kind: "asset-root",
-                cpp: owner.cpp,
-                assetKind: "gltf",
-                soleAssetEntity: true,
-                engineCpp,
-            };
+            return gltfRoot(owner, engineCpp, owner.cpp, true);
         return {
             ...containerIdentity(owner),
             kind: "asset-entity",
@@ -1365,16 +1376,15 @@ export class HandleCollections {
             );
         }
         const engine = this.context.requireEngine(owner, collection);
-        return {
-            ...containerIdentity(owner),
-            kind: "asset-root",
-            cpp:
-                assetKind === "gltf"
-                    ? owner.cpp
-                    : `bbl::asset_container_root(${engine}, ${owner.cpp})`,
-            assetKind: "gltf",
-            engineCpp: engine,
-        };
+        return gltfRoot(
+            owner,
+            engine,
+            assetKind === "gltf"
+                ? owner.cpp
+                : `bbl::asset_container_root(${engine}, ${owner.cpp})`,
+            owner.asset !== undefined &&
+                this.soleGltfRoot(owner.asset, collection),
+        );
     }
 
     /**

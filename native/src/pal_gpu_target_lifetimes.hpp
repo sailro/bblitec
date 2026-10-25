@@ -176,7 +176,7 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
 inline void require_executable_frame_tasks(const Engine& engine) {
     const auto require = [&engine](TaskHandle handle) {
         const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
-        if (!task || task->execution_enabled == false)
+        if (!task || !frame_task_executes(*task))
             return;
 #if BBLITE_TASK_DISPOSAL || BBLITE_LIVE_TASK_ADD
         require_executable_task(*task);

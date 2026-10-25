@@ -16,6 +16,7 @@
 
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { canvasBakeBrowserArgs } from "../browser-harness.js";
@@ -24,6 +25,7 @@ import { evaluateInSharedPage } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { unwrapExpression, plainDataMembers } from "./syntax.js";
 import { namedMember } from "./symbols.js";
+import { holdsOnly } from "./type-facts.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -92,7 +94,14 @@ export function browserGeneratedString(
     // sent to Chromium, where it returned an object), while a body-scoped
     // one would still be a source-text decision, which generated behaviour
     // does not make.
-    if (!readsCanvasDataUrl(checker, declaration.body)) return undefined;
+    // What the bake carries back is the helper's string.
+    const signature = checker.getSignatureFromDeclaration(declaration);
+    if (
+        !signature ||
+        !holdsOnly(checker.getReturnTypeOfSignature(signature), ["string"]) ||
+        !readsCanvasDataUrl(checker, declaration.body)
+    )
+        return undefined;
     const source = declaration.getSourceFile();
 
     const functionName = declaration.name?.text;
@@ -213,22 +222,16 @@ function runCanvasHelperInChromium(
  * makes it is what generation executes. The test is the call's own
  * property name in the AST -- a `.toDataURL(` in a comment or a string is
  * not a call, and generated behaviour is never decided by source text.
+ * A nested function's read is that function's, not the helper's.
  */
 function readsCanvasDataUrl(checker: ts.TypeChecker, body: ts.Node): boolean {
-    let reads = false;
-    const visit = (node: ts.Node): void => {
-        if (reads) return;
-        if (
+    return someAnalysisNode(
+        body,
+        (node) =>
             ts.isCallExpression(node) &&
-            namedMember(checker, node.expression)?.name === "toDataURL"
-        ) {
-            reads = true;
-            return;
-        }
-        node.forEachChild(visit);
-    };
-    visit(body);
-    return reads;
+            namedMember(checker, node.expression)?.name === "toDataURL",
+        { functions: "skip" },
+    );
 }
 
 /**

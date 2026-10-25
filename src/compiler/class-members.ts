@@ -88,7 +88,9 @@ export function classInstanceProperties(
 }
 
 /** A class body's own instance property declarations, named plainly. */
-type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
+export type InstanceProperty = (
+    ts.PropertyDeclaration | ts.ParameterDeclaration
+) & {
     name: ts.MemberName;
 };
 
