@@ -7,9 +7,15 @@ import {
     type RecordObservationContext,
 } from "./record-observations.js";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
-import { nullability, arrayElementType } from "./type-facts.js";
+import {
+    nullability,
+    arrayElementType,
+    classInstanceDeclaration,
+    unionMembers,
+} from "./type-facts.js";
+import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
 import {
     NativeRecordStorageRequired,
@@ -73,6 +79,42 @@ export interface DemandedStorageContext {
         | "nullableType"
         | "withDynamicJsonTypes"
     >;
+}
+
+/**
+ * The class instance type a binding holds when a class instance initializes
+ * it and nothing rebinds it, whatever record type annotates it: JavaScript
+ * keeps one object, and its reads and calls go through the class.
+ */
+export function heldClassInstanceType(
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+): ts.Type | undefined {
+    const initializer = declaration.initializer;
+    if (!declaration.type || !initializer || !ts.isIdentifier(declaration.name))
+        return undefined;
+    const type = checker.getTypeAtLocation(initializer);
+    const instance = classInstanceDeclaration(type);
+    // Only record types: an open one (`unknown`, `object`) is a dynamic view.
+    const records = unionMembers(
+        checker.getTypeFromTypeNode(declaration.type),
+    ).filter(
+        (member) =>
+            (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0,
+    );
+    const symbol = declaredSymbol(checker, declaration.name);
+    return instance &&
+        symbol &&
+        records.length > 0 &&
+        records.every(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+                    0 && classInstanceDeclaration(member) !== instance,
+        ) &&
+        !isRebound(checker, [declaration.getSourceFile()], symbol)
+        ? type
+        : undefined;
 }
 
 /**
@@ -140,12 +182,13 @@ export function demandedStorageType(
     // carrier; it does not turn that object or its aliases into the native
     // owner. Later values must still pass the retained carrier's sink.
     const actualSource =
-        storage === "source" &&
+        heldClassInstanceType(checker, declaration) ??
+        (storage === "source" &&
         initializer &&
         ts.isObjectLiteralExpression(initializer) &&
         dataTypes.hasNativeRecordView(source)
             ? checker.getTypeAtLocation(initializer)
-            : undefined;
+            : undefined);
     return (
         dataTypes.fromStoredTsType(
             actualSource ?? source,

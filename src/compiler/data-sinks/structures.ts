@@ -3,7 +3,6 @@ import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
     isAbsentSpreadProperty,
-    propertyIsReadOnly,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -28,10 +27,20 @@ import {
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
+import { recordCopyObservation } from "../record-observations.js";
+import { classHandsOutThis } from "../kept-values.js";
+import {
+    yieldsFreshObject,
+    yieldsFreshRecordElements,
+} from "../fresh-records.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
-import { unionMembers } from "../type-facts.js";
+import {
+    arrayElementType,
+    classInstanceDeclaration,
+    unionMembers,
+} from "../type-facts.js";
 import { knownCondition } from "../values/model.js";
 
 function expressionEnum(
@@ -430,6 +439,7 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
+        refuseClassRecordCopy(lowerer, dataType, value, node);
         requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
@@ -925,7 +935,6 @@ function accessorGetter(
             `Property '${field.sourceName}' has a setter without a getter; a native record reads every property it stores.`,
         );
     if (!field.accessor) {
-        refuseClassFieldCopy(lowerer, dataType, record, node);
         lowerer.context.dataTypes.requireAccessorSlot(
             dataType,
             field.sourceName,
@@ -937,39 +946,86 @@ function accessorGetter(
 }
 
 /**
- * A class instance stored as a record type is one object: its accessors
- * and methods stay bound to it, but a mutable field the record stores as
- * data would be a copy.
+ * A class instance stored as another record type is a copy of its fields
+ * whose methods and accessors stay bound to the instance; JavaScript keeps
+ * one object, so the store refuses wherever the program can tell the copy
+ * apart (`recordCopyObservation`). The class's own records keep their
+ * storage rules.
  */
-function refuseClassFieldCopy(
+function refuseClassRecordCopy(
     lowerer: DataSinkHost,
     dataType: DataType<"struct">,
     record: Value,
     node: ts.Node,
 ): void {
+    const checker = lowerer.context.checker;
     const declaration = record.classDeclaration;
     const symbol = declaration?.name
-        ? declaredSymbol(lowerer.context.checker, declaration.name)
+        ? declaredSymbol(checker, declaration.name)
         : undefined;
-    if (!symbol) return;
-    const instance = lowerer.context.checker.getDeclaredTypeOfSymbol(symbol);
-    for (const field of lowerer.context.dataTypes.structFields(
-        dataType.name,
-        node,
-        "accessors",
-    )) {
-        const property = instance.getProperty(field.sourceName);
-        if (
-            field.type.kind !== "function" &&
-            record.recordProperties?.[field.sourceName] &&
-            property &&
-            !propertyIsReadOnly(property)
+    if (!symbol || !declaration) return;
+    const { type: target, fresh } = storedRecord(lowerer, node);
+    if (target && classInstanceDeclaration(target) === declaration) return;
+    const instance = checker.getDeclaredTypeOfSymbol(symbol);
+    const kept = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .filter(
+            (field) =>
+                field.type.kind !== "function" &&
+                record.recordProperties?.[field.sourceName] !== undefined,
         )
-            lowerer.context.fail(
-                node,
-                `A '${symbol.name}' instance stored as '${dataType.name}' would copy its mutable field '${field.sourceName}'; JavaScript keeps one object.`,
-            );
-    }
+        .map((field) => field.sourceName);
+    const observed = target
+        ? recordCopyObservation(
+              lowerer.context,
+              instance,
+              target,
+              kept,
+              instance
+                  .getProperties()
+                  .some((property) => !kept.includes(property.name)),
+              recordExpression(lowerer, record, node),
+              // A fresh instance whose class never hands out `this` has no
+              // other handle: the copy's identity is the object's.
+              fresh && !classHandsOutThis(checker, declaration)
+                  ? "sole"
+                  : "shared",
+          )
+        : "its record type has no checked source";
+    if (observed)
+        lowerer.context.fail(
+            node,
+            `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+        );
+}
+
+/**
+ * The checked record type a conversion stores into: the converted
+ * expression's contextual type (its own without one), or the element type
+ * of the array it is an element of, without null or undefined; and whether
+ * that expression or every element yields a fresh object.
+ */
+function storedRecord(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+): { type: ts.Type | undefined; fresh: boolean } {
+    const checker = lowerer.context.checker;
+    const stored = lowerer.convertedExpression(node);
+    if (stored)
+        return {
+            type: checker.getNonNullableType(
+                checker.getContextualType(stored) ??
+                    checker.getTypeAtLocation(stored),
+            ),
+            fresh: yieldsFreshObject(checker, stored),
+        };
+    const array = lowerer.convertedElementOf(node);
+    const arrayType = array && checker.getContextualType(array);
+    const element = arrayType && arrayElementType(checker, arrayType);
+    return {
+        type: element && checker.getNonNullableType(element),
+        fresh: array !== undefined && yieldsFreshRecordElements(checker, array),
+    };
 }
 
 /**

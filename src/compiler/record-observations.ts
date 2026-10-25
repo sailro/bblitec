@@ -83,7 +83,9 @@ const arrayIdentityAnswers = new WeakMap<ts.Type, string | null>();
  * program can. `fields` are the properties the copy keeps; `carries` says
  * whether the source records have other properties the copy drops; an
  * `argument` handed to a callee that only reads it needs only the writes
- * of the code the call runs.
+ * of the code the call runs. A class instance's `view` lists only the
+ * record type's members when enumerated (fidelity.md), and as its object's
+ * only handle (`"sole"`) cannot be told apart by identity.
  */
 export function recordCopyObservation(
     context: RecordObservationContext,
@@ -92,18 +94,19 @@ export function recordCopyObservation(
     fields: readonly string[],
     carries: boolean,
     argument?: ts.Node,
+    view?: "sole" | "shared",
 ): string | undefined {
     const call = argument && readOnlyArgumentCall(context.checker, argument);
-    const key = `${fields.join(",")}|${carries}`;
+    // A lent copy's answer is the call's own.
+    const lent = call ? `|${call.getSourceFile().fileName}:${call.pos}` : "";
+    const key = `${fields.join(",")}|${carries}|${view ?? ""}${lent}`;
     let byTarget = answers.get(source);
     if (!byTarget) answers.set(source, (byTarget = new WeakMap()));
     let byKey = byTarget.get(target);
     if (!byKey)
         byTarget.set(target, (byKey = new Map<string, string | null>()));
-    if (!call) {
-        const known = byKey.get(key);
-        if (known !== undefined) return known ?? undefined;
-    }
+    const known = byKey.get(key);
+    if (known !== undefined) return known ?? undefined;
     const observations = programObservations(context.program);
     const { checker } = context;
     const holds = holderTest(checker);
@@ -128,23 +131,27 @@ export function recordCopyObservation(
         // A copy handed to a callee that only reads it lives for the call:
         // only a write while the call runs can make it stale.
         const reached = context.evaluationOrder.reachedCode(call);
-        if (reached.opaque)
-            return "the call runs code the program does not hold";
-        const during = writesWhere(
-            observations,
-            (type) => holds(type, either),
-            (write) =>
-                keptWrite(write) &&
-                ts.findAncestor(
-                    write.node,
-                    (node) => node === call || reached.units.has(node),
-                ) !== undefined,
-        );
-        return during === undefined
+        const during = reached.opaque
             ? undefined
-            : during.property === undefined
-              ? "the call writes properties of such records"
-              : `the call writes '${during.property}' of such records`;
+            : writesWhere(
+                  observations,
+                  (type) => holds(type, either),
+                  (write) =>
+                      keptWrite(write) &&
+                      ts.findAncestor(
+                          write.node,
+                          (node) => node === call || reached.units.has(node),
+                      ) !== undefined,
+              );
+        const answer = reached.opaque
+            ? "the call runs code the program does not hold"
+            : during === undefined
+              ? undefined
+              : during.property === undefined
+                ? "the call writes properties of such records"
+                : `the call writes '${during.property}' of such records`;
+        byKey.set(key, answer ?? null);
+        return answer;
     }
     const answer = observed(
         observations,
@@ -152,6 +159,7 @@ export function recordCopyObservation(
         (type) => holds(type, copyTypes),
         keptWrite,
         carries,
+        view,
     );
     byKey.set(key, answer ?? null);
     return answer;
@@ -828,21 +836,23 @@ function observed(
     holdsCopy: (type: ts.Type) => boolean,
     keptWrite: (write: ObservedWrite) => boolean,
     carries: boolean,
+    view: "sole" | "shared" | undefined,
 ): string | undefined {
     const written = writesWhere(observations, holdsEither, keptWrite);
     if (written)
         return written.property === undefined
             ? "the program writes properties of such records"
             : `the program writes '${written.property}' of such records`;
-    if ([...observations.identities].some(holdsCopy))
+    if (view !== "sole" && [...observations.identities].some(holdsCopy))
         return "the program compares or keys such records by identity";
     const addsProperty =
-        carries ||
-        writesWhere(
-            observations,
-            holdsEither,
-            (write) => write.property !== undefined && !keptWrite(write),
-        ) !== undefined;
+        view === undefined &&
+        (carries ||
+            writesWhere(
+                observations,
+                holdsEither,
+                (write) => write.property !== undefined && !keptWrite(write),
+            ) !== undefined);
     if (addsProperty && [...observations.enumerations].some(holdsCopy))
         return "the program enumerates properties of such records";
     return undefined;

@@ -106,6 +106,7 @@ import {
     isAssignmentOperator,
     isTypeAssertion,
     outermostWrapper,
+    valueUse,
     wrappersAround,
 } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
@@ -2206,22 +2207,21 @@ function isStoredPrimitiveRead(value: Value): boolean {
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
 
-    /** A class method read without calling it: method values are unsupported. */
-    private refuseMethodValue(expression: ts.PropertyAccessExpression): void {
-        const position = outermostWrapper(expression);
+    /**
+     * A class method read as a value: method values are unsupported, though
+     * a call, test or comparison reads it (`valueUse`). `method` is what
+     * the read names, through the class of a kept instance where known.
+     */
+    private refuseMethodValue(
+        expression: ts.PropertyAccessExpression,
+        method = accessedPropertySymbol(this.context.checker, expression)
+            ?.valueDeclaration,
+    ): void {
         if (
-            ts.isCallExpression(position.parent) &&
-            position.parent.expression === position
-        )
-            return;
-        const declaration = accessedPropertySymbol(
-            this.context.checker,
-            expression,
-        )?.valueDeclaration;
-        if (
-            declaration &&
-            ts.isMethodDeclaration(declaration) &&
-            ts.isClassLike(declaration.parent)
+            method &&
+            ts.isMethodDeclaration(method) &&
+            ts.isClassLike(method.parent) &&
+            valueUse(expression).kind !== "read"
         )
             this.context.fail(
                 expression,
@@ -3569,7 +3569,16 @@ export class PropertyAccessLowerer {
                 ? this.context.compileRecordGetter(owner, accessor)
                 : owner.recordProperties?.[property];
             if (!value) {
-                const method = owner.recordMethods?.[property];
+                // A class instance read through another type has its class's
+                // methods, which a test or comparison reads as present.
+                const classMethod = this.context.classLowerer.viewMethod(
+                    owner,
+                    property,
+                    expression,
+                );
+                if (classMethod)
+                    this.refuseMethodValue(expression, classMethod);
+                const method = owner.recordMethods?.[property] ?? classMethod;
                 if (method) {
                     return {
                         kind: "callback",

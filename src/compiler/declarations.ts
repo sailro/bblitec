@@ -38,6 +38,7 @@ import {
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import {
     demandedStorageType,
+    heldClassInstanceType,
     requireOneObject,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
@@ -405,8 +406,13 @@ export class DeclarationLowerer {
         // A deployment constant the checker leaves untyped (an
         // `import.meta.env` key its declarations omit) holds its folded value.
         const deployed = browserDeploymentValue(this.context, initializer);
+        const held =
+            ts.isVariableDeclaration(name.parent) &&
+            heldClassInstanceType(this.context.checker, name.parent);
         return (
-            this.context.dataLowerer.dataTypeAt(name) ??
+            (held
+                ? this.context.dataTypes.fromStoredTsType(held, initializer)
+                : this.context.dataLowerer.dataTypeAt(name)) ??
             this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
@@ -1055,6 +1061,7 @@ export class DeclarationLowerer {
         }
 
         if (
+            !heldClassInstanceType(this.context.checker, declaration) &&
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,

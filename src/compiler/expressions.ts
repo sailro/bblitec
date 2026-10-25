@@ -7715,6 +7715,12 @@ export class ExpressionLowerer {
                 instance &&
                 call.questionDotToken &&
                 !recordMethod &&
+                // A class instance read through another type has its class's methods.
+                !this.context.classLowerer.viewMethod(
+                    instance,
+                    memberName,
+                    call,
+                ) &&
                 (!recordCallback ||
                     recordCallback.kind === "json-null" ||
                     isUndefinedDataType(recordCallback.dataType))

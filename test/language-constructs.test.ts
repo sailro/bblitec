@@ -2831,23 +2831,147 @@ test("a spread of a record holding a class's prototype accessor refuses", () => 
     );
 });
 
-test("a class instance stored as a record refuses copying its mutable fields", () => {
+check(
+    "a class instance keeps one object under an interface-typed binding",
+    `
+    interface Counting { n: number; inc(): number }
+    type Shaped = { n: number; inc(): number };
+    class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }
+    const a: Counting = new Counter();
+    a.inc(); a.inc();
+    const b: Counting = new Counter();
+    b.n = 5;
+    const stepped = b.inc();
+    let c: Counting = new Counter();
+    c.inc();
+    const k = new Counter();
+    const d: Counting = k;
+    d.inc(); k.inc();
+    const e: Shaped = new Counter();
+    e.inc();
+    if (a.n !== 2 || stepped !== 6 || b.n !== 6 || c.n !== 1 || k.n !== 2 || d.n !== 2 || d !== k || e.n !== 1)
+        throw new Error([a.n, stepped, b.n, c.n, k.n, d.n, e.n].join());
+    `,
+);
+
+check(
+    "a class instance fills an interface array where its copy is unobservable",
+    `
+    interface Named { readonly name: string; greet(): string }
+    class Person implements Named { constructor(readonly name: string) {} greet(): string { return "hi " + this.name; } }
+    interface Point { x: number; size(): number }
+    class Spot implements Point { x = 3; size(): number { return this.x; } }
+    const people: Named[] = [new Person("a"), new Person("b")];
+    const spots: Point[] = [new Spot()];
+    if (people.map((p) => p.greet()).join() !== "hi a,hi b" || spots[0]!.size() !== 3 || spots[0]!.x !== 3)
+        throw new Error("views");
+    `,
+);
+
+check(
+    "a class instance keeps its optional interface methods and its identity",
+    `
+    interface Part { update?(): void; ticks: number }
+    class Ticker implements Part { ticks = 0; update(): void { this.ticks++; } }
+    interface Counting { n: number; inc(): number }
+    class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }
+    const p: Part = new Ticker();
+    if (p.update) p.update();
+    p.update?.();
+    const a: Counting = new Counter();
+    const b: Counting = new Counter();
+    a.inc();
+    if (p.ticks !== 2 || a === b || a.n !== 1 || b.n !== 0) throw new Error("kept " + p.ticks);
+    `,
+);
+
+test("a class instance copied into an interface element or field refuses where the copy is observable", () => {
+    const prelude =
+        "interface Counting { n: number; inc(): number } class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }";
+    for (const store of [
+        "const xs: Counting[] = [new Counter()]; xs[0]!.inc();",
+        "const holder: { c: Counting } = { c: new Counter() }; holder.c.inc();",
+        "function make(): Counter[] { return [new Counter()]; } const xs: Counting[] = make(); xs[0]!.inc();",
+    ])
+        assert.throws(
+            () => compileSource(`${prelude} ${store} export {};`),
+            /A 'Counter' instance stored as 'Counting' would be a copy of the one object JavaScript keeps, and the program writes 'n'/,
+            store,
+        );
+    // A copy is also told apart by identity, and a getter reads its fields.
+    for (const [source, refusal] of [
+        [
+            "interface Named { readonly name: string } class Person implements Named { constructor(readonly name: string) {} } const ada = new Person('ada'); const people: Named[] = [ada]; const same = people[0] === ada;",
+            /A 'Person' instance stored as 'Named' would be a copy of the one object JavaScript keeps/,
+        ],
+        [
+            "interface Counter { count: number; readonly busy: boolean } class Tally { count = 0; get busy(): boolean { return this.count > 0; } bump(): void { this.count++; } view(): Counter { return this; } } const tallies = new Map<number, Tally>([[1, new Tally()]]); tallies.get(1)!.bump(); const view = tallies.get(1)!.view(); const busy = view.busy;",
+            /A 'Tally' instance stored as 'Counter' would be a copy of the one object JavaScript keeps/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(`${source} export {};`), refusal);
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude} const c: Counting = new Counter(); const f = c.inc.bind(c); export {};`,
+            ),
+        /Method 'inc' is read as a value; method values are unsupported/,
+    );
+});
+
+check(
+    "fresh class instances are the only handle of their interface views",
+    `
+    const log: string[] = [];
+    interface Tool { activate(): void; deactivate(): void }
+    class Move implements Tool { private on = false; activate(): void { this.on = true; log.push("m+"); } deactivate(): void { this.on = false; log.push("m-"); } }
+    class Paint implements Tool { private strokes = 0; activate(): void { this.strokes++; log.push("p+" + this.strokes); } deactivate(): void { log.push("p-"); } }
+    class Manager {
+        private active: Tool | null = null;
+        constructor(private readonly tools: Record<string, Tool>) {}
+        select(id: string): void {
+            const next = this.tools[id] ?? null;
+            if (next === this.active) return;
+            this.active?.deactivate();
+            this.active = next;
+            this.active?.activate();
+        }
+    }
+    const manager = new Manager({ move: new Move(), paint: new Paint() });
+    manager.select("move"); manager.select("paint"); manager.select("paint"); manager.select("move"); manager.select("paint");
+    if (log.join() !== "m+,m-,p+1,p-,m+,m-,p+2") throw new Error(log.join());
+    `,
+);
+
+test("a class handing out this keeps its identity apart from an interface view", () => {
     assert.throws(
         () =>
             compileSource(`
-            interface Counter { count: number; readonly busy: boolean; }
-            class Tally {
-                count = 0;
-                get busy(): boolean { return this.count > 0; }
-                view(): Counter { return this; }
-            }
-            const tallies = new Map<number, Tally>([[1, new Tally()]]);
-            const view = tallies.get(1)!.view();
-            if (view.busy) throw new Error("busy");
+            interface Tool { activate(): void }
+            const made: Tool[] = [];
+            class Move implements Tool { constructor() { made.push(this); } activate(): void {} }
+            const tools: Tool[] = [new Move()];
+            const same = tools[0] === made[0];
+            export {};
             `),
-        /A 'Tally' instance stored as 'Counter' would copy its mutable field 'count'/,
+        /A 'Move' instance stored as 'Tool' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
     );
 });
+
+check(
+    "a class instance whose fields nothing writes is viewed through its getters",
+    `
+    interface Counter { count: number; readonly busy: boolean; }
+    class Tally {
+        count = 0;
+        get busy(): boolean { return this.count > 0; }
+        view(): Counter { return this; }
+    }
+    const tallies = new Map<number, Tally>([[1, new Tally()]]);
+    const view = tallies.get(1)!.view();
+    if (view.busy) throw new Error("busy");
+    `,
+);
 
 check(
     "union-arms-told-apart-by-their-fields",
