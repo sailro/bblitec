@@ -217,10 +217,6 @@ export interface LoweringServices {
     executedModuleConstantElements(
         expression: ts.Expression,
     ): readonly Value[] | undefined;
-    /** Texts a read of an unwritten module constant can produce, each element for a `for...of` binding. */
-    moduleConstantTexts(
-        expression: ts.Expression,
-    ): readonly string[] | undefined;
     compileBrowserGeneratedString(call: ts.CallExpression): Value | undefined;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileStaticFetch(

@@ -2433,6 +2433,58 @@ export class BindingScopes {
     }
 
     /**
+     * `pinValueToTemporary` for the class instance a method runs on: a
+     * receiver other than a plain name is bound once to a writable local,
+     * and its object stays owned (`lifetime_owner`) while that local lives.
+     * A closure reading the receiver (a dispatch's tag test) captures the
+     * local, as one reading its fields does.
+     */
+    public pinReceiverToTemporary(
+        value: Value,
+        dataType: DataType & { kind: "struct" },
+        label: string,
+    ): Value {
+        if (cppIdentifierPattern.test(value.cpp)) return value;
+        const name = this.context.allocateTemporaryCppName(label);
+        const source = this.context.allocateTemporaryCppName(`${label}_source`);
+        const lifetime = this.context.allocateTemporaryCppName(
+            `${label}_lifetime`,
+        );
+        const cppType = this.context.dataTypes.cppType(dataType);
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name: source,
+            initializer: value.cpp,
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: lifetime,
+            initializer: `${source}.lifetime_owner()`,
+            attributes: "[[maybe_unused]] ",
+        });
+        this.context.emit({
+            kind: "declaration",
+            type: cppType,
+            name,
+            initializer: source,
+        });
+        this.context.registerNativeBindingType(name, cppType);
+        const capture = this.context.registerNativeBinding(name, false, true);
+        // The identity and presence spellings follow the binding, or an
+        // optional call would spell the call a second time; a storage read
+        // is stable and keeps its own.
+        const receiver = value.nativeLvalue
+            ? value
+            : withNativeMetadata(
+                  this.context.dataLowerer.leafValue(name, dataType),
+                  value,
+              );
+        return { ...receiver, cpp: name, nativeCaptures: [capture] };
+    }
+
+    /**
      * A plain-data tuple given a native home, so its lanes can be indexed.
      *
      * `tupleComponents` reads its base once per lane, which is wrong for

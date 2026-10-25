@@ -15,9 +15,9 @@ import { compileSymbolMethod } from "./symbol-values.js";
 import { compileBigIntMethod } from "./bigint-values.js";
 import {
     callbackTakesReceiver,
+    libraryMethodWritesReceiver,
     mutatingArrayMethods,
     readOnlyDataMethods,
-    receiverWritingMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
 import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
@@ -74,6 +74,8 @@ import {
     type Value,
 } from "./types.js";
 import {
+    calledDeclaration,
+    declarationInDefaultLibrary,
     libraryGlobal,
     namedMember,
     resolvedSymbol,
@@ -1155,6 +1157,16 @@ export function compileDataMethodCall(
         // The set lowerer captures the selected array before its arguments.
         constructedOwner = dynamicOwner;
     }
+    // A library method writes its receiver as the analyses classify it, by
+    // the receiver's type; a function the program declares does not.
+    const declared = calledDeclaration(lowerer.context.checker, call);
+    const writesReceiver =
+        (declared === undefined || declarationInDefaultLibrary(declared)) &&
+        libraryMethodWritesReceiver(
+            lowerer.context.checker,
+            callee.expression,
+            method,
+        );
     // An array literal receiver, or the array a built-in just created
     // (`entries.map(f).sort()`), is a fresh array only this call sees: a
     // method that changes it runs on a native copy of its elements, as it
@@ -1162,13 +1174,13 @@ export function compileDataMethodCall(
     const freshElement =
         callsFreshArrayBuiltin(lowerer.context.checker, ownerExpression) &&
         dynamicOwner?.kind === "tuple" &&
-        receiverWritingMethods.has(method)
+        writesReceiver
             ? lowerer.knownTupleElement(callee.expression, dynamicOwner)
             : undefined;
     if (
         (ts.isArrayLiteralExpression(ownerExpression) || freshElement) &&
         dynamicOwner?.kind === "tuple" &&
-        receiverWritingMethods.has(method)
+        writesReceiver
     ) {
         const element =
             freshElement ??
@@ -1210,7 +1222,7 @@ export function compileDataMethodCall(
             ? undefined
             : lowerer.compileDataPath(
                   callee.expression,
-                  receiverWritingMethods.has(method) ? "write" : "read",
+                  writesReceiver ? "write" : "read",
                   true,
               )) ??
         (dynamicOwner?.kind === "data" || dynamicOwner?.kind === "string"

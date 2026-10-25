@@ -8,7 +8,7 @@ import {
     rebaseSpelling,
     undefinedValue,
 } from "./values/model.js";
-import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
+import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,

@@ -44,7 +44,7 @@ import {
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
-import { writtenOnlyInDeadFunctions } from "./asset-url-domain.js";
+import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";

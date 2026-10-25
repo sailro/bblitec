@@ -136,6 +136,44 @@ test("runtime iteration selects the closed markup an unwritten module constant's
     );
 });
 
+test("the closed string domain selects the markup a parameter holds through a run-time key", () => {
+    const source = (rebind: string) => `
+        const ICONS: Record<string, string> = {
+            a: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v20"/></svg>',
+            b: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13"/></svg>',
+        };
+        function show(markup: string): void {
+            ${rebind}
+            const button = document.createElement("button");
+            button.innerHTML = markup;
+            document.body.appendChild(button);
+        }
+        async function main(): Promise<void> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+            const key = performance.now() > 1 ? "a" : "b";
+            show(ICONS[key]!);
+        }
+        main().catch(() => {});
+    `;
+    const selected = compileSource(source(""));
+    assert.ok(selected.manifest.features.includes("ui:inline-svg"));
+    assert.match(
+        selected.cpp,
+        /if \(v_bblite_markup_text_\d+ == "<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\"><path/,
+    );
+    assert.match(selected.cpp, /<rect x=\\"9\\" y=\\"9\\"[^>]*data-bbl-node=/);
+    // A plain rebind of the parameter joins its domain: run-time text is open.
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "if (performance.now() > 1) markup = String(performance.now());",
+                ),
+            ),
+        /Native UI innerHTML requires closed authored markup provenance/,
+    );
+});
+
 test("closed markup refuses ambiguous stored spans, unknown attributes and unsupported alternatives", () => {
     for (const [source, message] of [
         [

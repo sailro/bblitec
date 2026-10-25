@@ -14993,6 +14993,24 @@ check(
 `,
 );
 
+// An argument is checked against the call's type at its position: a
+// generic tuple parameter's instantiation, a bound function's rest element.
+check(
+    "arguments-checked-at-their-resolved-position",
+    `
+    function swap<T>(pair: [T, T]): [T, T] { return [pair[1], pair[0]]; }
+    let n = 1;
+    for (let i = 0; i < 3; i++) n += i;
+    const swapped = swap([n, 2]);
+    const box = { n: 1 };
+    function bump(this: { n: number }, by: number, label: string): void { this.n += by + label.length; }
+    const bound = bump.bind(box);
+    bound(5, "ab");
+    if (swapped[0] !== 2 || swapped[1] !== n || box.n !== 8)
+        throw new Error("arguments " + swapped[0] + " " + box.n);
+`,
+);
+
 check(
     "numeric-logical-operators-and-array-membership",
     `
@@ -15008,6 +15026,25 @@ check(
         throw new Error("logical " + calls);
     if (!(1 in L) || far in L || !("length" in L) || !("push" in L) || !("2" in L) || Object.hasOwn(L, "push"))
         throw new Error("membership");
+`,
+);
+
+// A static key is an index only in its canonical form; typed arrays and
+// tuples answer as arrays do.
+check(
+    "array-membership-index-keys",
+    `
+    const xs = [1, 2, 3];
+    const bytes = new Uint8Array(2);
+    const pair: [number, string] = [1, "a"];
+    let k = 0;
+    for (let i = 0; i < 2; i++) k += i;
+    if ("-1" in xs || "01" in xs || "1.5" in xs || !("2" in xs) || "3" in xs)
+        throw new Error("vector");
+    if (!("1" in bytes) || "2" in bytes || !(k in bytes) || !Object.hasOwn(bytes, "0"))
+        throw new Error("typed");
+    if (!("1" in pair) || "2" in pair || !(k in pair))
+        throw new Error("tuple");
 `,
 );
 
