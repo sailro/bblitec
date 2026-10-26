@@ -670,7 +670,7 @@ export async function materialSubjects(
             materialFeatures,
             ...scene,
             animatedBaseColorFactor:
-                !variant && animatedBaseColor?.has(sourceIndex) === true,
+                animatedBaseColor?.has(sourceIndex) === true,
             animatedEmissive:
                 !variant && animatedEmissive?.has(sourceIndex) === true,
             animatedUvTransform:

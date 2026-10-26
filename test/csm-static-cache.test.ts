@@ -250,4 +250,11 @@ void receiver;`,
             ),
         /awaits enableCsmStaticCache directly/,
     );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prefix}await enableCsmStaticCache(engine,sg,{refitAngle:0.01,cascadeCoveragePadding:0.1});`,
+            ),
+        /Reached enableCsmStaticCache options/,
+    );
 });

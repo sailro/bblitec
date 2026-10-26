@@ -239,6 +239,8 @@ test(
             "void register_scene(",
             "void unregister_scene(",
             "void retire_scene_shadow_states(",
+            "void throw_scene_disposal_failures(",
+            "template<class Cleanup>\nvoid dispose_scene_callbacks(",
             "void dispose_scene(",
         ]
             .map((signature) => cppFunction(scene, signature))
@@ -248,6 +250,7 @@ test(
             `
         #include <bblite/runtime.hpp>
         #include <bblite/js_data.hpp>
+        #include <bblite/js_aggregate_error.hpp>
         #include <bblite/upstream/pinned_surface.hpp>
         #include <algorithm>
         #include <cassert>

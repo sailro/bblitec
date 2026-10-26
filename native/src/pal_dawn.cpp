@@ -1554,7 +1554,7 @@ public:
             return FramePreparation::restart;
         }
         sync_engine_canvas_size(state.window, engine);
-        if (resize_dawn_surface(state, engine.options)) {
+        if (resize_dawn_presentation(state, engine, offscreen)) {
             width = state.surface_width;
             height = state.surface_height;
             recreate_dawn_scene_targets(state, scene, width, height);
@@ -3773,8 +3773,7 @@ public:
                                     throw std::runtime_error(
                                         "Temporal source has no retained scene.");
                                 restore_temporal_source_buffer(state, source, gpu_source);
-                                CameraRecord* source_camera =
-                                    handle_find(engine.cameras, source.source_scene->camera);
+                                CameraRecord* source_camera = task_pass_camera(engine, source);
                                 [[maybe_unused]] const double draws =
                                     upstream::execute_taa_post_process(
                                         taa, task.post_process.passes.at(0).params[0],

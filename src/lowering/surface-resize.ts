@@ -1,7 +1,11 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    absentBinding,
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { sameSource } from "../compiler/syntax.js";
 import { realmHostAccessorCpp } from "../compiler/host-globals.js";
 
@@ -16,6 +20,16 @@ export function lowerSurfaceResize(
     name: string,
 ): { prototype: string; lines: string[] } {
     const module = "src/engine/surface.ts";
+    const factory = context.functionDeclaration(module, "_buildSurface");
+    const defaultCap = new PinnedNumericLowerer(factory.file, {
+        bindings: new Map([["options?.maxDevicePixelRatio", absentBinding()]]),
+        calls: new Map(),
+    }).expression(
+        context.propertyInitializer(
+            context.returnObject(factory.declaration),
+            "maxDevicePixelRatio",
+        ),
+    );
     const { file, declaration: resize } = context.functionDeclaration(
         module,
         "resizeSurface",
@@ -39,19 +53,13 @@ export function lowerSurfaceResize(
         "Surface backing size",
     );
     const bindings = new Map<string, PinnedBinding>([
-        ["surface", { cpp: "engine", type: "opaque" }],
-        ["canvas", { cpp: "engine", type: "opaque" }],
+        ["surface", { cpp: "canvas", type: "opaque" }],
+        ["canvas", { cpp: "canvas", type: "opaque" }],
         // `enableSurfaceResizeObserver` caches the same client box.
         ["surface._w", { cpp: "0.0", type: "scalar", staticallyAbsent: true }],
         ["surface._h", { cpp: "0.0", type: "scalar", staticallyAbsent: true }],
-        [
-            "canvas.clientWidth",
-            { cpp: "engine.canvas_client_width", type: "scalar" },
-        ],
-        [
-            "canvas.clientHeight",
-            { cpp: "engine.canvas_client_height", type: "scalar" },
-        ],
+        ["canvas.clientWidth", { cpp: "client_width", type: "scalar" }],
+        ["canvas.clientHeight", { cpp: "client_height", type: "scalar" }],
         // The realm global's own value, read once (a defined getter runs per
         // read): a Window host provides it, a worker global reads undefined,
         // which the pin's only test (`|| 1`) treats as it treats NaN.
@@ -65,7 +73,7 @@ export function lowerSurfaceResize(
         [
             "surface.maxDevicePixelRatio",
             {
-                cpp: "bbl::surface_max_device_pixel_ratio(engine)",
+                cpp: "maximum_pixel_ratio",
                 type: "scalar",
             },
         ],
@@ -74,23 +82,23 @@ export function lowerSurfaceResize(
         [
             "canvas.width",
             {
-                cpp: "static_cast<double>(engine.offscreen_run->extent().width)",
+                cpp: "static_cast<double>(canvas.extent().width)",
                 type: "scalar",
             },
         ],
         [
             "canvas.height",
             {
-                cpp: "static_cast<double>(engine.offscreen_run->extent().height)",
+                cpp: "static_cast<double>(canvas.extent().height)",
                 type: "scalar",
             },
         ],
     ]);
     const calls = new Map<string, (args: readonly string[]) => string>([
-        ["isDomCanvas", () => "engine.dom_canvas"],
+        ["isDomCanvas", () => "dom_canvas"],
         [
             "setSurfaceSize",
-            (args) => `${name}_size(engine, ${args.slice(1).join(", ")})`,
+            (args) => `${name}_size(canvas, ${args.slice(1).join(", ")})`,
         ],
     ]);
     const canvasRead = (statement: ts.Statement): boolean =>
@@ -118,19 +126,30 @@ export function lowerSurfaceResize(
             .filter((statement) => !canvasRead(statement)),
         { bindings, calls },
     );
-    const prototype = `void ${name}(bbl::Engine& engine);`;
+    const canvasSignature = `void ${name}_canvas(bbl::pal::OffscreenRun& canvas, bool dom_canvas, double client_width, double client_height, double maximum_pixel_ratio)`;
+    const auxiliarySignature = `void ${name}_auxiliary(bbl::pal::OffscreenRun& canvas, double client_width, double client_height)`;
+    const prototype = `void ${name}(bbl::Engine& engine);\n${canvasSignature};\n${auxiliarySignature};`;
     return {
         prototype,
         lines: [
             `// ${context.provenance(module, "resizeSurface, setSurfaceSize")}`,
-            `static void ${name}_size(bbl::Engine& engine, double widthPx, double heightPx) {`,
+            `static void ${name}_size(bbl::pal::OffscreenRun& canvas, double widthPx, double heightPx) {`,
             sizeBody,
-            "    bbl::pal::resize_realm_surface(engine, static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h));",
+            "    canvas.resize(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h));",
             "}",
             "",
+            `${canvasSignature} {`,
+            resizeBody,
+            "}",
+            `${auxiliarySignature} {`,
+            `    ${name}_canvas(canvas, true, client_width, client_height, ${defaultCap});`,
+            "}",
             `void ${name}(bbl::Engine& engine) {`,
             "    if (!engine.offscreen_run) return;",
-            resizeBody,
+            `    ${name}_canvas(*engine.offscreen_run, engine.dom_canvas, engine.canvas_client_width, engine.canvas_client_height, bbl::surface_max_device_pixel_ratio(engine));`,
+            "    const auto extent = engine.offscreen_run->extent();",
+            "    engine.options.width = static_cast<int>(extent.width);",
+            "    engine.options.height = static_cast<int>(extent.height);",
             "}",
         ],
     };

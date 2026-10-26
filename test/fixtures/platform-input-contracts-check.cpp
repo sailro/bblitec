@@ -58,6 +58,10 @@ struct InputState {
     } gpu{window};
 };
 bool resize_dawn_surface(InputState&, const EngineOptions&) { return false; }
+bool resize_dawn_presentation(InputState&, const Engine&, const OffscreenRun* offscreen) {
+    assert(!offscreen);
+    return false;
+}
 void recreate_dawn_scene_targets(InputState&, Scene&, unsigned, unsigned) { assert(false); }
 void build_graph(InputState&, Engine&, unsigned, unsigned) { assert(false); }
 bool request_renderer_restart_if_scene_set_changed(Engine&,

@@ -77,8 +77,7 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     for (const [file, name] of setters)
         add(`src/material/pbr/${file}.ts`, name);
     add("src/loader-gltf/animation-pointer-ext.ts", "iorToF0Factor");
-    for (const file of ["gltf-pbr-builder", "gltf-pbr-builder-ext"])
-        add(`src/loader-gltf/${file}.ts`, "isDefaultBaseColorFactor");
+    add("src/loader-gltf/gltf-pbr-builder.ts", "getGltfBaseColorRgbFactor");
     add("src/loader-gltf/gltf-ext-uv-transform.ts", "wrapTexture", true);
     add("src/loader-gltf/gltf-pbr-builder-ext.ts", "wrapTexCoord");
     add("src/loader-gltf/gltf-pbr-builder.ts", "needsGltfEmissive");
@@ -102,7 +101,7 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
         "gltf-ext-orm",
     ])
         add(`src/loader-gltf/${file}.ts`, "applyMaterial", true);
-    add("src/loader-gltf/animation-pointer-basecolor.ts", "whiteFallback");
+    add("src/loader-gltf/animation-pointer-basecolor.ts", "prepareMaterial");
     add(
         "src/loader-gltf/gltf-feature-animation-pointer.ts",
         "applyMaterial",
@@ -110,6 +109,25 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     );
     for (const target of functions.slice(-2)) {
         const declaration = target.declaration;
+        const statements = declaration.body!.statements.filter((statement) => {
+            if (
+                target.name !== "prepareMaterial" ||
+                !ts.isExpressionStatement(statement) ||
+                !ts.isBinaryExpression(statement.expression) ||
+                !context.expressionMatchesShape(
+                    statement.expression.left,
+                    "mat._onMaterialCreated",
+                )
+            )
+                return true;
+            context.assertExpressionShape(
+                statement.expression,
+                "mat._onMaterialCreated = (material) => { targets.push(material); }",
+                "Recorded base-color material registration",
+            );
+            // The recording loader captures this target group in the pointer plan.
+            return false;
+        });
         const file = ts.createSourceFile(
             target.module,
             `function ${target.name}(${[
@@ -117,7 +135,9 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                     parameter.getText(),
                 ),
                 "pointerContext",
-            ].join(", ")}) ${declaration.body!.getText()}`,
+            ].join(
+                ", ",
+            )}) { ${statements.map((statement) => statement.getText()).join("\n")} }`,
             ts.ScriptTarget.Latest,
             true,
         );
@@ -261,10 +281,10 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                 )?.cpp,
             (call, lowerer) => {
                 if (
-                    target.name === "whiteFallback" &&
+                    target.name === "prepareMaterial" &&
                     context.expressionMatchesShape(
                         call.expression,
-                        "_animBaseColorDefs?.has",
+                        "_animBaseColorDefs?.get",
                     )
                 ) {
                     if (call.arguments.length !== 1)
@@ -277,6 +297,19 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                         "mat._rawMatDef",
                         "Source animation base-color owner",
                     );
+                    // Registration is captured in the loader plan; only the
+                    // source membership guard remains in this native body.
+                    context.expectShapeCount(
+                        target.declaration.body!,
+                        "targets",
+                        "Source base-color target membership",
+                        2,
+                    );
+                    context.expectShapeCount(
+                        target.declaration.body!,
+                        "!targets",
+                        "Source base-color target membership guard",
+                    );
                     return "GltfPbrValue{pointerContext.base_color_definition}";
                 }
                 if (
@@ -284,7 +317,7 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                         "src/loader-gltf/gltf-feature-animation-pointer.ts" &&
                     context.expressionMatchesShape(
                         call.expression,
-                        "_baseColorMod?.whiteFallback",
+                        "_baseColorMod?.prepareMaterial",
                     )
                 ) {
                     if (call.arguments.length !== 1)
@@ -293,9 +326,19 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                             "Expected the source base-color material feature call.",
                         );
                     const handler = functions.find(
-                        (target) => target.name === "whiteFallback",
+                        (target) => target.name === "prepareMaterial",
                     )!;
                     return `(pointerContext.base_color_module ? ${handler.cpp}(${lowerer.expression(call.arguments[0]!)}, pointerContext) : GltfPbrValue{})`;
+                }
+                if (
+                    target.name === "applyGltfOptInPbrFeatures" &&
+                    context.expressionMatchesShape(
+                        call,
+                        "mat._onMaterialCreated?.(props)",
+                    )
+                ) {
+                    // Material identities in this callback are retained by the recorded pointer plan.
+                    return "GltfPbrValue{}";
                 }
                 if (
                     target.module !== "src/loader-gltf/gltf-ext-orm.ts" ||
@@ -331,9 +374,9 @@ struct GltfPbrContext {
     std::function<GltfPbrValue(const GltfPbrValue&, bool)> upload_image;
     /** compositeOrm's bitmap of a material's metallic-roughness and occlusion images. */
     std::function<std::shared_ptr<const pal::DecodedImage>(const GltfMaterialImage&, const GltfMaterialImage&)> composite_orm;
-    std::function<GltfPbrValue(const GltfPbrValue&)> default_textures;
-    std::function<GltfPbrValue(const GltfPbrValue&)> sampled_textures;
-    std::function<GltfPbrValue(const GltfPbrValue&)> extended_textures;
+    std::function<GltfPbrValue(const GltfPbrValue&, const GltfPbrValue&)> default_textures;
+    std::function<GltfPbrValue(const GltfPbrValue&, const GltfPbrValue&)> sampled_textures;
+    std::function<GltfPbrValue(const GltfPbrValue&, const GltfPbrValue&)> extended_textures;
 };
 ${lowerGltfOrmComposition(context)}
 /** compositeOrm over the two images \`decode\` turns into bitmaps, in the pin's order. */

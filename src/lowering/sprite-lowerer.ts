@@ -197,9 +197,23 @@ export class SpriteLowerer {
             "ensureWide uvScroll attribute offset",
         );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "newStride"),
-            "oldStride + UVSCROLL_EXTRA_FLOATS_PER_SPRITE",
-            "ensureWide newStride",
+            this.context.variableInitializer(declaration, "oldStride"),
+            "_appendSprite2DInstanceData(layer, UVSCROLL_EXTRA_FLOATS_PER_SPRITE)",
+            "ensureWide instance extension",
+        );
+        const append = this.context.functionDeclaration(
+            "src/sprite/sprite-2d-instance-layout.ts",
+            "_appendSprite2DInstanceData",
+        ).declaration;
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(append, "oldStride"),
+            "layer._instanceFloatsPerSprite",
+            "Instance extension offset",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(append, "newStride"),
+            "oldStride + extraFloats",
+            "Extended instance stride",
         );
         return {
             location,

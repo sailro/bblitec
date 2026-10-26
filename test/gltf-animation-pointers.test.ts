@@ -208,7 +208,7 @@ test("source clip order, converted sampler bytes, controller bindings and group 
     );
 });
 
-test("pointer resolution records physical material owners after the source map's later replay overwrite", async () => {
+test("base-color pointer resolution retains every physical material copy", async () => {
     const input = fixture([
         pointer("/materials/0/pbrMetallicRoughness/baseColorFactor", 2),
     ]);
@@ -216,8 +216,9 @@ test("pointer resolution records physical material owners after the source map's
     input.document.scenes = [{ nodes: [0, 1] }];
     const ordinary = await gltfMeshPlan(input.document, input.bin);
     assert.deepEqual(
-        closure(ordinary.animation!.clips[0]!.channels[0]!.writer).values.mat,
-        { kind: "material", index: 0, path: [] },
+        closure(ordinary.animation!.clips[0]!.channels[0]!.writer).values
+            .targets,
+        { kind: "array", values: [{ kind: "material", index: 0, path: [] }] },
     );
     const distinct = await gltfMeshPlan(
         input.document,
@@ -233,16 +234,24 @@ test("pointer resolution records physical material owners after the source map's
         [0, 1],
     );
     assert.deepEqual(
-        closure(distinct.animation!.clips[0]!.channels[0]!.writer).values.mat,
-        { kind: "material", index: 1, path: [] },
+        closure(distinct.animation!.clips[0]!.channels[0]!.writer).values
+            .targets,
+        {
+            kind: "array",
+            values: [0, 1].map((index) => ({
+                kind: "material",
+                index,
+                path: [],
+            })),
+        },
     );
     const nullWriter = await gltfMeshPlan(
         input.document,
         input.bin,
         doctoredContext(
-            pointerModule,
-            "if (!mat?.baseColorFactor)",
-            "if (true)",
+            "src/loader-gltf/animation-pointer-basecolor.ts",
+            "const targets = _animBaseColorDefs?.get(def);\n    if (!targets)",
+            "const targets = _animBaseColorDefs?.get(def);\n    if (true)",
         ),
     );
     assert.equal(nullWriter.animation!.accepted, false);
@@ -276,7 +285,10 @@ test("actual pointer preparation supplies material initialization and base-color
             deferAnimationPointers: true,
         },
     );
-    assert.deepEqual(material!.input.baseColorFactor, factor);
+    assert.deepEqual(material!.input.baseColorFactor, [
+        ...factor.slice(0, 3),
+        1,
+    ]);
     const patches = plan.animation!.materialState[0]!.patches;
     assert.equal(
         patches.some(
@@ -299,7 +311,7 @@ test("actual pointer preparation supplies material initialization and base-color
         input.bin,
         doctoredContext(
             "src/loader-gltf/animation-pointer-basecolor.ts",
-            "if (def) {",
+            "if (def && !_animBaseColorDefs?.has(def)) {",
             "if (def && false) {",
         ),
     );
@@ -484,9 +496,39 @@ test("source normalized sampler converter and variant construction share the com
         [0, 1],
     );
     assert.deepEqual(
-        closure(clip.channels[0]!.writer).values.mat,
-        { kind: "material", index: 0, path: [] },
+        closure(clip.channels[0]!.writer).values.targets,
+        { kind: "array", values: [{ kind: "material", index: 0, path: [] }] },
         "variant construction does not retarget a pointer captured against the base material owner",
+    );
+});
+
+test("animated base color targets every default and variant instance of its material definition", async () => {
+    const input = fixture([
+        pointer("/materials/0/pbrMetallicRoughness/baseColorFactor", 2),
+    ]);
+    input.document.extensionsUsed = [
+        "KHR_animation_pointer",
+        "KHR_materials_variants",
+    ];
+    input.document.extensions = {
+        KHR_materials_variants: { variants: [{ name: "same material" }] },
+    };
+    asRecords(asRecords(input.document.meshes)[0]!.primitives)[0]!.extensions =
+        {
+            KHR_materials_variants: {
+                mappings: [{ material: 0, variants: [0] }],
+            },
+        };
+    const plan = await gltfMeshPlan(input.document, input.bin);
+    assert.deepEqual(
+        closure(plan.animation!.clips[0]!.channels[0]!.writer).values.targets,
+        {
+            kind: "array",
+            values: [
+                { kind: "material", index: 0, path: [] },
+                { kind: "material", index: 1, path: [] },
+            ],
+        },
     );
 });
 

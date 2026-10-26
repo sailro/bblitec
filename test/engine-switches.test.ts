@@ -213,6 +213,12 @@ bbl::set_surface_max_device_pixel_ratio(engine,0.75,&bblscene::resize);bbl::resi
 ratio=0;bbl::set_surface_max_device_pixel_ratio(engine,1,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
 for(const double cap:{0.0,-1.0,std::nan("")}){bbl::set_surface_max_device_pixel_ratio(engine,cap,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));}
 engine.canvas_client_width=0;bbl::set_surface_max_device_pixel_ratio(engine,0.5,&bblscene::resize);bbl::resize_engine(engine);assert(extent(1001,601));
+// An additional canvas uses the same pinned sizing, with its independent default DPR cap.
+auto second=std::make_shared<bbl::pal::OffscreenSurface>(300,150);
+bbl::pal::OffscreenRun auxiliary(second,std::make_shared<Device>());
+ratio=1.5;bblscene::resize_auxiliary(auxiliary,81.25,60.75);
+assert(auxiliary.extent().width==121&&auxiliary.extent().height==91);
+assert(extent(1001,601));
 }`,
         {
             expectedOutput: "",

@@ -161,17 +161,17 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
         [
             builderModule,
             "buildDefaultPbrTextures",
-            "GltfPbrTextures gltf_default_pbr_textures(const GltfCoreMaterial& mat, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)",
+            "GltfPbrTextures gltf_default_pbr_textures(const GltfCoreMaterial& mat, const GltfPbrTextures& ext_layers = {}, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)",
         ],
         [
             extModule,
             "buildDefaultPbrTexturesExt",
-            "GltfPbrTextures gltf_default_pbr_textures_ext(const GltfCoreMaterial& mat, bool sampled = false, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr, const std::function<GltfMaterialTexture(GltfMaterialImage, bool)>& upload = {})",
+            "GltfPbrTextures gltf_default_pbr_textures_ext(const GltfCoreMaterial& mat, const GltfPbrTextures& ext_layers = {}, bool sampled = false, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr, const std::function<GltfMaterialTexture(GltfMaterialImage, bool)>& upload = {})",
         ],
         [
             "src/loader-gltf/gltf-sampler-desc.ts",
             "buildSampledPbrTextures",
-            "GltfPbrTextures gltf_sampled_pbr_textures(const GltfCoreMaterial& mat, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)",
+            "GltfPbrTextures gltf_sampled_pbr_textures(const GltfCoreMaterial& mat, const GltfPbrTextures& ext_layers = {}, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)",
         ],
     ] as const) {
         const { file, declaration } = context.functionDeclaration(
@@ -179,6 +179,13 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
             symbol,
         );
         const bindings = new Map<string, PinnedBinding>();
+        for (const field of ["baseColorTexture", "ormTexture"]) {
+            bindings.set(`extLayers.${field}`, {
+                cpp: `ext_layers.${field}`,
+                type: "opaque",
+                absentCpp: `!ext_layers.${field}`,
+            });
+        }
         const objects = new Set<string>(
             symbol === "occlusionNeedsSplit" ? ["raw"] : [],
         );
@@ -320,6 +327,8 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
                         return `gltf_cached_material_texture(tex_cache, ${argument(0)}, ${argument(1)}, sampler_context ? sampler_context->default_sampler : nullptr)`;
                     if (name === "pickTex" && args.length === 3)
                         return `pick_texture(${argument(0)}, ${argument(1)}, ${argument(2)})`;
+                    if (name === "coreTex" && args.length === 4)
+                        return `core_texture(${argument(0)}, ${argument(1)}, ${argument(2)}, ${argument(3)})`;
                     if (
                         name === "cached" &&
                         symbol === "buildSampledPbrTextures" &&
@@ -357,6 +366,30 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
                     init =
                         variable.initializer &&
                         context.unwrapExpression(variable.initializer);
+                if (
+                    symbol === "buildDefaultPbrTexturesExt" &&
+                    name === "coreTex"
+                ) {
+                    if (
+                        !init ||
+                        !ts.isArrowFunction(init) ||
+                        ts.isBlock(init.body)
+                    )
+                        context.contractError(
+                            variable,
+                            "Expected the supplied texture view builder.",
+                        );
+                    context.assertExpressionShape(
+                        init,
+                        "(image: ImageBitmap, srgb: boolean, ti: unknown, supplied: Texture2D | undefined): Texture2D => wrap(supplied ? { texture: supplied.texture, view: supplied.view, sampler: supplied.sampler, width: supplied.width, height: supplied.height } : pickTex(image, srgb, ti), ti)",
+                        "Supplied texture view transport",
+                    );
+                    return [
+                        `${indent}const auto core_texture = [&](GltfMaterialImage image, bool srgb, const ts::JsonValue* info, GltfMaterialTexture supplied) {`,
+                        `${indent}    return gltf_wrap_material_texture(supplied ? supplied.clone() : pick_texture(std::move(image), srgb, info), info);`,
+                        `${indent}};`,
+                    ];
+                }
                 if (
                     symbol === "buildSampledPbrTextures" &&
                     name === "cached" &&

@@ -18,6 +18,7 @@ import { lowerPbrMaterialGroups } from "./pbr-material-groups.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerMeshGeometryAccess } from "./mesh-geometry-access.js";
 import { lowerSceneNodeRemoval } from "./scene-node-removal.js";
+import { lowerSceneDisposalCallbacks } from "./scene-disposal.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
 import {
     lowerFrameGraphTaskBuild,
@@ -149,6 +150,8 @@ export class SceneLowerer {
         const addName = "addToScene";
         const beforeName = "onBeforeRender";
         const disposeName = "onSceneDispose";
+        const disposeModule =
+            this.context.store.resolvePublicExport(disposeName).modulePath;
         const registerName = "registerScene";
         const { file, declaration } = this.context.functionDeclaration(
             modulePath,
@@ -442,26 +445,22 @@ export class SceneLowerer {
             );
         }
         const { declaration: onSceneDispose } =
-            this.context.functionDeclaration(modulePath, disposeName);
-        if (
-            !this.context.hasNode(
-                onSceneDispose,
-                (node) =>
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    node.expression.name.text === "push" &&
-                    ts.isPropertyAccessExpression(node.expression.expression) &&
-                    node.expression.expression.name.text === "_disposables" &&
-                    node.arguments.length === 1 &&
-                    ts.isIdentifier(node.arguments[0]!) &&
-                    node.arguments[0].text === "cb",
-            )
-        ) {
-            this.context.contractError(
-                onSceneDispose,
-                "Expected scene-disposal callbacks to be appended.",
-            );
-        }
+            this.context.functionDeclaration(disposeModule, disposeName);
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(onSceneDispose, "disposables"),
+            "scene._disposables",
+            "Scene-disposal callback storage",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(onSceneDispose, "registered"),
+            "(): void => callback()",
+            "Scene-disposal callback wrapper",
+        );
+        this.context.expectShapeCount(
+            onSceneDispose,
+            "disposables.push(registered)",
+            "Scene-disposal callback append",
+        );
         const { declaration: registerScene } = this.context.functionDeclaration(
             modulePath,
             registerName,
@@ -738,6 +737,11 @@ export class SceneLowerer {
             "src/scene/scene-remove.ts",
             "removeMeshFromScene",
         );
+        this.context.expectShapeCount(
+            meshRemoval,
+            "o.splice(oi, 1)",
+            "Retired material group output removal",
+        );
         const meshSplices = this.context.findNodes(
             meshRemoval,
             (node): node is ts.CallExpression =>
@@ -809,7 +813,7 @@ export class SceneLowerer {
             modulePath,
             symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
             header: "",
-            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
+            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${disposeModule}#${disposeName}, ${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
 ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_ui.hpp>
@@ -2079,6 +2083,10 @@ Surface create_surface(Engine& engine, UiElementHandle canvas) {
     Surface surface;
     surface.engine = &engine;
     surface.canvas = canvas;
+    if (engine.attach_surface) {
+        engine.attach_surface(canvas, surface.disposed);
+        return surface;
+    }
 #if BBLITE_HAS_UI
     if (canvas.value < engine.ui_elements.size()) {
         ${recordAt("engine.ui_elements", "canvas")}.client_rect_requested = true;
@@ -2242,7 +2250,10 @@ void remove_from_scene(Scene& scene, MeshHandle mesh) {
 ${options.nodeMaterials ? "    for (const auto& group : scene.state->node_material_groups) erase_first_mesh(group->meshes, mesh);\n" : ""}\
     if (scene.state->source_material_groups) {
         for (const auto& [builder, group] : *scene.state->source_material_groups) {
-            if (group) erase_first_mesh(group->meshes, mesh);
+            if (group) {
+                erase_first_mesh(group->meshes, mesh);
+                std::erase_if(group->outputs, [mesh](const auto& output) { return output->mesh == mesh; });
+            }
         }
     }
     erase_first_mesh(scene.state->pbr_material_swap_queue, mesh);
@@ -2682,10 +2693,12 @@ void focus_canvas(Engine& engine) {
 
 void request_pointer_lock(Engine& engine) {
     engine.pointer_lock_requested = true;
+    if (engine.request_platform_pointer_lock) engine.request_platform_pointer_lock(true);
 }
 
 void exit_pointer_lock(Engine& engine) {
     engine.pointer_lock_requested = false;
+    if (engine.request_platform_pointer_lock) engine.request_platform_pointer_lock(false);
 }
 
 void on_visibility_change(
@@ -2951,15 +2964,13 @@ void retire_scene_shadow_states(Scene& scene) {
 }
 #endif
 
+${lowerSceneDisposalCallbacks(this.context)}
+
 void dispose_scene(Scene& scene) {
     if (scene.disposed) return;
     scene.disposed = true;
     unregister_scene(scene);
-    auto disposables = std::move(scene.disposables);
-    scene.disposables.clear();
-    for (const auto& dispose : disposables) {
-        dispose();
-    }
+    dispose_scene_callbacks(scene, [&] {
     for (const auto mesh : scene.meshes) unregister_mesh_material_scene(scene, mesh);
     scene.meshes.clear();
     scene.lights.clear();
@@ -2997,6 +3008,7 @@ ${
         : ""
 }\
     scene.camera = {};
+    });
 }
 
 ${

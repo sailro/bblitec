@@ -1242,6 +1242,7 @@ struct TaaPostProcessState {
     bool first_update;
     double last_camera_version;
     double halton_index;
+    const void* last_camera = nullptr;
     std::vector<float> halton{};
     std::array<float, 16> jitter_scratch{};
     /** Diagnostic completed executions across GPU resource rebuilds. */
@@ -4319,6 +4320,12 @@ struct Engine {
     bool dom_canvas = false;
     /** The pin's `resizeSurface`, installed on every realm engine; frame heads run it. */
     std::function<void(Engine&)> resize_surface;
+    void (*resize_surface_canvas)(pal::OffscreenRun&, double, double) = nullptr;
+    /** Window canvas ownership and native presentation layout stay in the owning realm. */
+    std::function<void(UiElementHandle, std::shared_ptr<bool>)> attach_surface;
+    std::function<void(Engine&)> update_surface_layout;
+    /** Internal presentation panes; invalid_handle names the primary surface. */
+    std::unordered_map<std::uint32_t, PixelViewport> surface_panes;
     /** Retained primary-canvas dataset, including the harness readiness handshake. */
     std::unordered_map<std::string, std::string> canvas_dataset;
     /**
@@ -4397,6 +4404,10 @@ struct Engine {
     /** Desired and applied equivalents of the browser pointer-lock state. */
     bool pointer_lock_requested = false;
     bool pointer_locked = false;
+    /** Window engines send platform requests to their display thread. */
+    std::function<void(bool)> request_platform_pointer_lock;
+    /** The Window display's locked DOM canvas, separate from renderer records. */
+    std::optional<UiElementHandle> pointer_lock_canvas;
     /** CSS cursor requested on the engine's browser canvas. */
     std::string canvas_cursor;
     /** Programmatic focus requested by the source render canvas. */
@@ -5501,10 +5512,13 @@ inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
 }
 
 /** A realm engine's surface resize, which the pin's createEngine runs once. */
-inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&)) {
+inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&),
+                                   void (*resize_canvas)(pal::OffscreenRun&, double,
+                                                         double) = nullptr) {
     if (!engine.resize_surface)
         engine.resize_surface = resize_surface;
     engine.resize_surface(engine);
+    engine.resize_surface_canvas = resize_canvas;
 }
 
 /** `resizeEngine`: native frame heads refresh extents; an installed resize runs here too. */

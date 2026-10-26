@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { runCheck } from "../src/tooling/check-run.js";
 import { getScene } from "../src/scene-registry.js";
 import {
@@ -20,6 +21,49 @@ import {
 // The check driver's report and plugin dispatch, over an offline check
 // (no phases) so no native run is spent; the native gate itself refuses
 // a missing executable before composing anything.
+
+test("Window trace parsing preserves every canvas with and without layout bounds", async () => {
+    const plugin = (await import(
+        pathToFileURL(resolve("checks/plugins/support.mjs")).href
+    )) as { windowSamples(log: string): unknown };
+    assert.deepEqual(
+        plugin.windowSamples(
+            "window frame=0 now-ms=0\n" +
+                "window frame=60 now-ms=1000 canvas=12:40@640x720[640,0,640,720] canvas=4:60@640x720[0,0,640,720]\n" +
+                "window frame=120 now-ms=2000 canvas=4:120@1280x720 canvas=12:100@300x150\n",
+        ),
+        [
+            {
+                frame: 60,
+                time: 1000,
+                canvases: [
+                    {
+                        id: 4,
+                        sequence: 60,
+                        width: 640,
+                        height: 720,
+                        rectangle: [0, 0, 640, 720],
+                    },
+                    {
+                        id: 12,
+                        sequence: 40,
+                        width: 640,
+                        height: 720,
+                        rectangle: [640, 0, 640, 720],
+                    },
+                ],
+            },
+            {
+                frame: 120,
+                time: 2000,
+                canvases: [
+                    { id: 4, sequence: 120, width: 1280, height: 720 },
+                    { id: 12, sequence: 100, width: 300, height: 150 },
+                ],
+            },
+        ],
+    );
+});
 
 test("runs an offline check's plugins and records the verdict in its report", async () => {
     const pluginDirectory = resolve(".cache", "check-run-test");

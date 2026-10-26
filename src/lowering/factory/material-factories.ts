@@ -104,7 +104,7 @@ export class FactoryLowerer extends MeshBuilderLowerer {
             this.context,
             this.context.functionDeclaration(
                 "src/scene/scene-core.ts",
-                "addToScene",
+                "joinMaterialGroup",
             ).declaration,
         );
         const modulePath = "src/material/node/node-material.ts";

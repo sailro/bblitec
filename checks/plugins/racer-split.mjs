@@ -1,11 +1,6 @@
-// Antigravity racer, split-screen: the second player's canvas is created at
-// run time and appended to host chrome the retained UI does not project, so
-// it never has a layout rectangle. Both panes must still present: each half
-// of the image between the HUD row and the hint bar holds a substantial
-// number of lit pixels against the black clear colour, and the two halves
-// differ because they follow different ships.
+// Both source canvases must present populated views following different ships.
 import assert from "node:assert/strict";
-import { loadPng } from "./support.mjs";
+import { loadPng, windowSamples } from "./support.mjs";
 
 /**
  * @import { PNG } from "pngjs"
@@ -15,6 +10,21 @@ import { loadPng } from "./support.mjs";
 const HUD_ROWS = 80;
 const HINT_ROWS = 60;
 const DIVIDER = 4;
+
+/** @param {string} log */
+function canvasViews(log) {
+    const sample = windowSamples(log).at(-1);
+    assert(sample, "missing Window canvas trace");
+    return sample.canvases
+        .map((canvas) => {
+            assert(canvas.rectangle, "missing canvas layout rectangle");
+            return {
+                backing: [canvas.width, canvas.height],
+                rectangle: canvas.rectangle,
+            };
+        })
+        .sort((a, b) => Number(a.rectangle[0]) - Number(b.rectangle[0]));
+}
 
 /**
  * @param {PNG} png
@@ -67,30 +77,60 @@ export function check(context) {
     /** @type {Record<string, { leftLitShare: number, rightLitShare: number, halvesDifference: number }>} */
     const details = {};
     for (const backend of context.backends) {
-        const phase = context.results[backend]?.split;
-        const where = `${backend}/split`;
-        assert(phase, `${where}: missing phase`);
-        const png = loadPng(phase.image);
-        const left = paneStatistics(png, false);
-        const right = paneStatistics(png, true);
-        assert(
-            left.share > 0.5,
-            `${where}: the left pane presents nothing (${left.lit} of ${left.total} pixels lit)`,
+        for (const id of ["split", "split-reentered"]) {
+            const phase = context.results[backend]?.[id];
+            const where = `${backend}/${id}`;
+            assert(phase, `${where}: missing phase`);
+            const png = loadPng(phase.image);
+            const half = png.width / 2;
+            assert.deepEqual(
+                canvasViews(phase.log),
+                [
+                    {
+                        backing: [half, png.height],
+                        rectangle: [0, 0, half, png.height],
+                    },
+                    {
+                        backing: [half, png.height],
+                        rectangle: [half, 0, half, png.height],
+                    },
+                ],
+                `${where}: each player must own one half-width canvas`,
+            );
+            const left = paneStatistics(png, false);
+            const right = paneStatistics(png, true);
+            assert(
+                left.share > 0.5,
+                `${where}: the left pane presents nothing (${left.lit} of ${left.total} pixels lit)`,
+            );
+            assert(
+                right.share > 0.5,
+                `${where}: the right pane presents nothing (${right.lit} of ${right.total} pixels lit)`,
+            );
+            const difference = halvesDifference(png);
+            assert(
+                difference > 1,
+                `${where}: both panes show the same image (mean difference ${difference.toFixed(3)})`,
+            );
+            details[where] = {
+                leftLitShare: +left.share.toFixed(3),
+                rightLitShare: +right.share.toFixed(3),
+                halvesDifference: +difference.toFixed(3),
+            };
+        }
+        const editor = context.results[backend]?.["editor-after-split"];
+        assert(editor, `${backend}: missing editor-after-split phase`);
+        const png = loadPng(editor.image);
+        assert.deepEqual(
+            canvasViews(editor.log),
+            [
+                {
+                    backing: [png.width, png.height],
+                    rectangle: [0, 0, png.width, png.height],
+                },
+            ],
+            `${backend}/editor-after-split: the editor must reclaim the full canvas`,
         );
-        assert(
-            right.share > 0.5,
-            `${where}: the right pane presents nothing (${right.lit} of ${right.total} pixels lit)`,
-        );
-        const difference = halvesDifference(png);
-        assert(
-            difference > 1,
-            `${where}: both panes show the same image (mean difference ${difference.toFixed(3)})`,
-        );
-        details[where] = {
-            leftLitShare: +left.share.toFixed(3),
-            rightLitShare: +right.share.toFixed(3),
-            halvesDifference: +difference.toFixed(3),
-        };
     }
     return { details };
 }

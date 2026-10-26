@@ -5,6 +5,7 @@ import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { gltfBaseMaterialConstruction } from "./lowering/gltf/material-construction.js";
 import { featureMethod } from "./lowering/gltf/shared.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
+import { pinnedGltfMaterialCore } from "./pinned-gltf-material-core.js";
 import {
     importPinnedModule,
     pinnedModuleTextUrl,
@@ -283,7 +284,11 @@ interface SourceLoader {
     ): Promise<
         | {
               clearMaterialMap(this: void, meshes: object[]): void;
-              baseColorDefinitions?: WeakSet<object> | null;
+              baseColorDefinitions?: WeakMap<object, object[]> | null;
+              prepareBaseColorMaterial(
+                  this: void,
+                  material: JsonObject,
+              ): unknown;
           }
         | undefined
     >;
@@ -680,7 +685,7 @@ async function recordingLoader(
         if (features.length !== 1 || features[0] !== pointer.default) throw new Error("Unrepresented source pointer feature identity.");
         ${[statements[binaryStart]!, binaryLoop].map((statement) => statement.getText(file)).join("\n")}
         if (activeBin !== binChunk) throw new Error("Animation pointer preparation changed binary storage.");
-        return {clearMaterialMap: pointer.__clearPointerMaterialMap, baseColorDefinitions: pointer.__baseColorDefinitions()};
+        return {clearMaterialMap: pointer.__clearPointerMaterialMap, baseColorDefinitions: pointer.__baseColorDefinitions(), prepareBaseColorMaterial: pointer.__prepareBaseColorMaterial};
     }`,
         module,
     );
@@ -1219,26 +1224,53 @@ export async function recordMeshPlan(
         let animation: GltfAnimationReceipt | null = null,
             animationBindings: GltfAnimationBindings | null = null;
         if (features.includes(loader.__animationFeature)) {
-            const materialInputs = pointerPreparation
-                ? (
-                      await (
-                          await import("./pinned-material-arms.js")
-                      ).materialSubjects(
-                          document,
-                          {},
-                          {
-                              meshPlan: {
-                                  cores,
-                                  materials,
-                                  meshes: plannedMeshes,
-                                  geometries: geometryRecords,
-                              },
-                              deferAnimationPointers: true,
-                              ...(context ? { context } : {}),
+            const materialSubjects = pointerPreparation
+                ? await (
+                      await import("./pinned-material-arms.js")
+                  ).materialSubjects(
+                      document,
+                      {},
+                      {
+                          meshPlan: {
+                              cores,
+                              materials,
+                              meshes: plannedMeshes,
+                              geometries: geometryRecords,
                           },
-                      )
-                  ).map((subject) => subject.input)
+                          deferAnimationPointers: true,
+                          ...(context ? { context } : {}),
+                      },
+                  )
                 : [];
+            const materialInputs = materialSubjects.map(
+                (subject) => subject.input,
+            );
+            if (pointerPreparation) {
+                const assembleCore = pinnedGltfMaterialCore(context);
+                materialSubjects.forEach(
+                    ({ input, sourceIndex: definitionIndex }) => {
+                        if (definitionIndex === -1) return;
+                        const definition =
+                            definitionIndex === undefined
+                                ? undefined
+                                : sourceMaterials[definitionIndex];
+                        if (!definition)
+                            throw new Error(
+                                "Animation pointer lost its material definition.",
+                            );
+                        const core = assembleCore(definition, () => undefined);
+                        pointerPreparation.prepareBaseColorMaterial(core);
+                        const register = core._onMaterialCreated;
+                        if (register !== undefined) {
+                            if (typeof register !== "function")
+                                throw new Error(
+                                    "Invalid source material registration callback.",
+                                );
+                            Reflect.apply(register, undefined, [input]);
+                        }
+                    },
+                );
+            }
             const recording = packageAnimationReceipt(
                 loader.__animationBindingsSource,
                 loader.__animationPointerBridge,

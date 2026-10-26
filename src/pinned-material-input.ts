@@ -255,8 +255,8 @@ export function gltfImageResolver(
 
 /** The texture set `buildDefaultPbrTexturesExt` returns; `void 0` slots stay. */
 interface PinnedTextureSet {
-    baseColorTexture: JsonObject;
-    ormTexture: JsonObject;
+    baseColorTexture: JsonObject | undefined;
+    ormTexture: JsonObject | undefined;
     normalTexture: JsonObject | undefined;
     emissiveTexture: JsonObject | undefined;
     occlusionTexture: JsonObject | undefined;
@@ -273,6 +273,7 @@ interface PinnedLoaderExecution {
         generateMipmaps: () => void,
         getCachedTex: (image: unknown, srgb: boolean) => JsonObject,
         wrapTex: (texture: JsonObject, texInfo: unknown) => JsonObject,
+        extLayers: JsonObject | undefined,
         samplerFor: undefined,
     ) => PinnedTextureSet;
     assemblePbrPropsExt: (
@@ -352,6 +353,7 @@ const knownLayerProperties = new Set([
     ...reflectanceProperties,
     ...specGlossProperties,
     "baseColorFactor",
+    "alpha",
     "metadata",
 ]);
 
@@ -611,6 +613,7 @@ export function pinnedMaterialInputFromGltf(
         noopGenerateMipmaps,
         () => ({}),
         prepared.wrapTexture,
+        layers,
         undefined,
     );
     const props = pin.assemblePbrPropsExt(mat, textures, layers);
@@ -684,10 +687,7 @@ export function pinnedMaterialInputFromGltf(
         pin.enableMaterialUvTransform(input);
     }
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
-    // The factor field exists exactly when the executed assembly carried it —
-    // `mat._baseColorImage && !isDefaultBaseColorFactor(...)` — or when an
-    // animated pointer needs the UBO lane regardless (Scene 242 carries
-    // `[1,1,1,1]` at load and the browser's fragment still declares it).
+    // The factor field follows source assembly or animated-pointer preparation.
     // Without an image the factor is baked into the uploaded texel instead.
     if ("baseColorFactor" in props || scene.animatedBaseColorFactor) {
         input.baseColorFactor = (
@@ -752,9 +752,7 @@ export function pinnedMaterialInputFromGltf(
     for (const property of specGlossProperties) {
         if (property in layers) input[property] = layers[property];
     }
-    // `gltf-ext-unlit.ts`: presence sets `_unlit`, and the tint is carried
-    // only over a base colour image, since without one the factor is already
-    // baked into the texel.
+    // The extension owns unlit fields; base-color assembly owns the tint.
     if ("_unlit" in layers) {
         input["_unlit"] = layers["_unlit"];
         if ("_unlitColor" in layers) {

@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.34.0",
+  "version": "1.36.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0",
+  "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961",
   "scenes": [
     {
       "id": "scene1",
@@ -686,7 +686,7 @@
       "id": "scene27",
       "upstreamPath": "lab/lite/src/lite/scene27.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene27.ts",
-      "sha256": "6d672d6837e2c1287c56c3c1f491db10e73ee8a618b077516c4a8bb0017919e8"
+      "sha256": "f2ec0a76594f7b79790ed4d65e03b353e1d97deabf50c16d5b7360f7bd509559"
     },
     {
       "id": "scene177",
@@ -3677,7 +3677,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "87063885c4e7a560a23cacddcfe32a5d746272e99c70b4b3dba846f2381a1ea6"
+          "sha256": "9952461b45d7da4b7d296cab98aa998da018b757381c4ea6b1cf59f68781fe34"
         }
       },
       "files": [
@@ -4565,10 +4565,10 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
       "reference": {
         "source": "reference/playroom/babylon-lite-golden.png",
-        "sha256": "b31b197769657f9283fd072b20e62afaf35b80ac810c7ca536b96babadd2aa45",
+        "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "0e6973541784d9e062bf50c03b4863cc9510bcc40111f97d6ceb1925dd8d9bfa"
+          "sha256": "5630424416f5e80a64a7f7d9e31a4379f27a89f2fea922a813f395f0fe74b59b"
         }
       },
       "files": [
@@ -5089,10 +5089,10 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
       "reference": {
         "source": "reference/trogir-streaming/babylon-lite-golden.png",
-        "sha256": "afd723aa637ab0687b0480ce52bc48d9f12e3d373b733d68135b30e377a91972",
+        "sha256": "883744715c476d12a00ba38a6043940eacf8971fcc79e341494af72169fc0221",
         "provenance": {
           "source": "reference/trogir-streaming/provenance.json",
-          "sha256": "e628cffdb8a501ad33ff86515ef3ee35fd440f4cb4efde1d8d1f7893af3a06c3"
+          "sha256": "424117ab9ade6ee0e6578b6d565051100173368210f146ce51fe6713313b6c60"
         }
       },
       "files": [

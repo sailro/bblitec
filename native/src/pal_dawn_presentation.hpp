@@ -22,6 +22,15 @@
 
 namespace bbl::pal {
 
+inline bool resize_dawn_presentation(DawnDevice& state, const Engine& engine,
+                                     const OffscreenRun* offscreen) {
+    if (offscreen) {
+        const auto extent = offscreen->render_extent();
+        return resize_dawn_surface(state, extent.width, extent.height);
+    }
+    return resize_dawn_surface(state, engine.options);
+}
+
 /**
  * The colour image a renderer (scene, 2D, effect, frame graph) draws each
  * frame: the surface of the window its run opens or, while an application
@@ -49,7 +58,7 @@ public:
         create_dawn_device(engine.options, options, state);
 #endif
         sync_engine_canvas_size(state.window, engine);
-        resize_dawn_surface(state, engine.options);
+        resize_dawn_presentation(state, engine, offscreen);
     }
 
     /** Whether a frame can draw: always into the endpoint, into a window while it has a surface. */

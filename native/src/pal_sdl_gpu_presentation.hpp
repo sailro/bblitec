@@ -57,9 +57,10 @@ public:
     std::pair<int, int> extent([[maybe_unused]] OffscreenRun* offscreen, SDL_Window* window,
                                [[maybe_unused]] const Engine& engine) const {
 #if BBLITE_OFFSCREEN_SURFACES
-        if (offscreen)
-            return {static_cast<int>(engine.options.width),
-                    static_cast<int>(engine.options.height)};
+        if (offscreen) {
+            const auto size = offscreen->render_extent();
+            return {static_cast<int>(size.width), static_cast<int>(size.height)};
+        }
 #endif
         int width = 0, height = 0;
         SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -75,8 +76,8 @@ public:
         if (offscreen) {
             if (!images_)
                 throw std::logic_error("An endpoint frame leases an image before its run opened.");
-            leased_ = images_->acquire(static_cast<Uint32>(engine.options.width),
-                                       static_cast<Uint32>(engine.options.height), *offscreen);
+            const auto size = offscreen->render_extent();
+            leased_ = images_->acquire(size.width, size.height, *offscreen);
             return leased_ != nullptr;
         }
 #endif
@@ -96,8 +97,9 @@ public:
         if (offscreen) {
             if (!leased_)
                 lease(offscreen, engine);
-            *width = static_cast<Uint32>(engine.options.width);
-            *height = static_cast<Uint32>(engine.options.height);
+            const auto size = offscreen->render_extent();
+            *width = size.width;
+            *height = size.height;
             *texture = std::exchange(leased_, nullptr);
             return true;
         }

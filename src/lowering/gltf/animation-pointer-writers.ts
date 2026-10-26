@@ -24,6 +24,7 @@ export function lowerGltfAnimationPointerWriters(context: LoweringContext): {
         "src/loader-gltf/animation-pointer.ts",
         "src/loader-gltf/animation-pointer-ext.ts",
         "src/loader-gltf/animation-pointer-lights.ts",
+        "src/loader-gltf/animation-pointer-basecolor.ts",
     ];
     const helpers = new Map<string, GltfMaterialFunction>();
     const writers: GltfPointerWriterFunction[] = [];
@@ -38,7 +39,17 @@ export function lowerGltfAnimationPointerWriters(context: LoweringContext): {
                 node.name?.text === name &&
                 !!node.body,
         );
-        if (!declaration) return undefined;
+        if (!declaration) {
+            const imported = context
+                .findNodes(file, ts.isImportSpecifier)
+                .find((element) => element.name.text === name);
+            const importedName = imported?.propertyName?.text ?? name;
+            const importedModule =
+                imported && context.moduleOfImport(module, importedName);
+            return importedModule && modules.includes(importedModule)
+                ? helper(importedModule, importedName)
+                : undefined;
+        }
         const cpp = `gltf_animation_pointer_helper_${modules.indexOf(module)}_${name}`;
         helpers.set(key, { module, name, cpp, declaration });
         for (const call of context.findNodes(

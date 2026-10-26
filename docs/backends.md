@@ -109,6 +109,8 @@ buffer; SDL delays draw encoding until final writes exist. Resize recreates targ
 | Producer | Engine, scene, encoders, resources, image publication |
 
 - Only typed messages, document snapshots, dimensions and fenced image leases cross threads.
+- Window engine surfaces retain independent backing sizes and publish canvas views of one leased GPU image;
+  disposed surfaces leave presentation and capture accounting.
 - `close` finishes the active callback and microtasks; `terminate` stops at compiled cancellation points only.
 - Window pacing: compositor-clock heartbeat on Windows (mailbox, FIFO fallback), presentation completion elsewhere.
   A three-image mailbox keeps the latest frame; captures use readback.

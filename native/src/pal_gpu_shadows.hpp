@@ -258,6 +258,10 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
     // the pin's own `foCam ? ... : 0`. A frame constant, so it is read once
     // here rather than per generator.
     const Vec3d eye = frame_floating_origin_offset(scene, engine);
+    const CameraRecord* fo_camera = nullptr;
+#if BBLITE_FLOATING_ORIGIN
+    fo_camera = scene_camera(engine, scene);
+#endif
 #if BBLITE_SHADOWS_CSM
     // `csmCameraAspect` is `getEffectiveAspectRatio(camera, rt._width,
     // rt._height)`, so a camera carrying a viewport fits its cascades to
@@ -357,6 +361,7 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             if (csm_fit && !generator.force_refresh_every_frame) {
                 camera_key.change_key = upstream::scene_camera_change_key(*fit_camera);
                 camera_key.aspect = aspect;
+                camera_key.camera = fit_camera;
             }
 #endif
 #if BBLITE_CSM_STATIC_CACHE
@@ -408,9 +413,9 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
                 // below — keep their last-render values. The verdict lands on
                 // the gate, where each backend's task loop reads it to skip
                 // the caster pass itself.
-                const bool due =
-                    shadow_enabled && upstream::shadow_refresh_due(engine, generator, light_record,
-                                                                   eye, csm_camera, gate);
+                const bool due = shadow_enabled &&
+                                 upstream::shadow_refresh_due(engine, generator, light_record, eye,
+                                                              csm_camera, gate, fo_camera);
                 gate.due = due;
                 if (due) {
                     if (generator.filter == ShadowFilter::pcf_spot) {

@@ -18190,6 +18190,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
         "loader:babylon",
         "material:standard",
         "frame-graph:resources",
+        "frame-graph:target-disposal",
         "frame-graph:live-task-add",
         "renderer:scene",
         "renderer:geometry-output",

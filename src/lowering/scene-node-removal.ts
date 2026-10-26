@@ -58,6 +58,35 @@ export function lowerSceneNodeRemoval(context: LoweringContext): string {
             ],
         ]),
     });
+    // Scene-change subscription APIs are outside the admitted source surface.
+    // Their hook is absent; retain the ordinary removal path.
+    const changeGuard = remove.declaration.body!.statements[0]!;
+    context.assertStatementShapes(
+        changeGuard,
+        [changeGuard],
+        "if (_hasSceneChangeHook() && scene._sceneChanges && scene._sceneChanges.depth === 0) { _runSceneChange(scene, () => removeFromScene(scene, entity)); return; }",
+        "Uninstalled scene-change removal hook",
+    );
+    if (!ts.isIfStatement(changeGuard))
+        context.contractError(
+            changeGuard,
+            "Expected the scene-change hook guard.",
+        );
+    removeBody.bindLocal(changeGuard.expression, {
+        cpp: "false",
+        type: "bool",
+        staticBoolean: false,
+    });
+    const removeStatements = remove.declaration.body!.statements.filter(
+        (statement) =>
+            !(
+                ts.isExpressionStatement(statement) &&
+                context.expressionMatchesShape(
+                    statement.expression,
+                    '_notifySceneChange(scene, entity, "removed")',
+                )
+            ),
+    );
     // This specialization receives only TransformNode or synthetic root records;
     // native mesh dispatch uses the existing mesh retirement implementation.
     const absentFields = new Set([
@@ -110,7 +139,7 @@ void remove_scene_node_children(Scene& scene, const SceneNodeHandle& node) {
 ${lowerPinnedStatements(childBody, children.declaration.body!.statements)}
 }
 void remove_scene_graph_node(Scene& scene, const SceneNodeHandle& node) {
-${lowerPinnedStatements(removeBody, remove.declaration.body!.statements)}
+${lowerPinnedStatements(removeBody, removeStatements)}
 }
 }
 void remove_from_scene(Scene& scene, const SceneNodeHandle& node) {

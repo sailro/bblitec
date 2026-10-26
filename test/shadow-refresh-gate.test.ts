@@ -94,7 +94,7 @@ test("swaps the floating-origin term for the camera key on the CSM arm", () => {
     // fitted to, and no floating-origin term -- its pinned gate has none.
     assert.match(
         header,
-        /const bool camera_unchanged = csm_camera == nullptr\s*\? eye\.x == gate\.last_fo_offset\.x &&/,
+        /const bool camera_unchanged = csm_camera == nullptr\s*\? fo_camera == gate\.last_camera && eye\.x == gate\.last_fo_offset\.x &&/,
     );
     assert.match(
         header,
@@ -147,6 +147,15 @@ int main() {
     original::CsmCameraKey camera{12,1.5};
     const auto refresh = [&] { return original::shadow_refresh_due(engine,generator,light,{},&camera,gate); };
     assert(refresh() && !refresh());
+    CameraRecord first_camera, second_camera;
+    camera.camera = &first_camera;
+    assert(refresh() && !refresh());
+    camera.camera = &second_camera;
+    assert(refresh() && !refresh());
+    original::ShadowRefreshGate floating_gate;
+    assert(original::shadow_refresh_due(engine,generator,light,{},nullptr,floating_gate,&first_camera));
+    assert(!original::shadow_refresh_due(engine,generator,light,{},nullptr,floating_gate,&first_camera));
+    assert(original::shadow_refresh_due(engine,generator,light,{},nullptr,floating_gate,&second_camera));
     camera.change_key += 1;
     assert(refresh() && !refresh());
     camera.aspect = 2;
@@ -215,7 +224,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // task loops read.
     assert.match(
         shared,
-        /const bool due =\s*shadow_enabled && upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_camera,\s*gate\);\s*gate\.due = due;/,
+        /const bool due =\s*shadow_enabled &&\s*upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_camera,\s*gate,\s*fo_camera\);\s*gate\.due = due;/,
     );
     // Every fit runs only on a due frame; the caster fold is hoisted once
     // ahead of the family switch, and the spot arm alone skips it.

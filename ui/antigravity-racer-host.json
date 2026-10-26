@@ -1,6 +1,27 @@
 {
   "styleRules": [
     {
+      "kind": "id",
+      "primary": "ag-canvas-wrap",
+      "style": "position:fixed;inset:0;display:flex;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#ag-canvas-wrap canvas",
+      "style": "flex:1 1 auto;width:100%;height:100%;display:block;touch-action:none;outline:none;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#ag-canvas-wrap.ag-split canvas",
+      "style": "width:50%;"
+    },
+    {
+      "kind": "sequence",
+      "primary": "#ag-canvas-wrap.ag-split",
+      "pseudo": "after",
+      "style": "content:\"\";position:absolute;top:0;bottom:0;left:50%;width:2px;background:rgba(150,220,255,0.45);box-shadow:0 0 12px rgba(120,200,255,0.6);pointer-events:none;"
+    },
+    {
       "kind": "class",
       "primary": "ag-btn",
       "style": "border:1px solid rgba(150,200,255,0.22);border-radius:12px;padding:14px 22px;font:600 0.95rem/1 system-ui,sans-serif;letter-spacing:0.01em;color:#eaf0ff;background:rgba(255,255,255,0.06);backdrop-filter:blur(8px);cursor:pointer;text-align:left;"
@@ -196,5 +217,13 @@
       "style": "font-size:0.7rem;color:#9aa0c0;"
     }
   ],
-  "elements": []
+  "elements": [
+    {
+      "tag": "div",
+      "attributes": { "id": "ag-canvas-wrap" },
+      "children": [
+        { "tag": "canvas", "attributes": { "id": "renderCanvas" } }
+      ]
+    }
+  ]
 }

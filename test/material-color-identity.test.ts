@@ -380,7 +380,7 @@ test("material-color transport refuses unsupported widths and later material-gro
     );
 });
 
-test("glTF public factor presence comes from the pinned conditional and retains its array", async () => {
+test("glTF public factor presence and RGB copies follow the pinned builders", async () => {
     const { assemblePbrProps } = await importPinnedModule<{
         assemblePbrProps(
             this: void,
@@ -419,9 +419,11 @@ test("glTF public factor presence comes from the pinned conditional and retains 
                 undefined,
                 {},
             );
-            assert.equal(
+            assert.deepEqual(
                 mat.baseColorFactor,
-                image && factor[0] !== 1 ? factor : undefined,
+                image && factor[0] !== 1
+                    ? [factor[0], factor[1], factor[2], 1]
+                    : undefined,
             );
             const extended = assemblePbrPropsExt(
                 {
@@ -433,6 +435,10 @@ test("glTF public factor presence comes from the pinned conditional and retains 
                 { baseColorTexture: texture },
                 {},
             );
-            assert.equal(extended.baseColorFactor, mat.baseColorFactor);
+            assert.deepEqual(extended.baseColorFactor, mat.baseColorFactor);
+            if (mat.baseColorFactor) {
+                assert.notEqual(mat.baseColorFactor, factor);
+                assert.notEqual(extended.baseColorFactor, mat.baseColorFactor);
+            }
         }
 });

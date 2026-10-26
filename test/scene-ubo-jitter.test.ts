@@ -90,6 +90,7 @@ test("pinned jitter preserves clean data, writes one matrix after history, and w
             sourceTexture: target,
             samples: 8,
             sourceRenderTask: {
+                _config: { cam: null },
                 scene: { camera: null },
                 _suData: clean,
                 _sceneUBO: drawn,

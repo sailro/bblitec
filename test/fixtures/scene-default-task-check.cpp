@@ -33,6 +33,9 @@ RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions opti
     return {static_cast<std::uint32_t>(targets.size() - 1)};
 }
 RenderTargetHandle swapchain_render_target(Engine&) { return {100}; }
+void dispose_render_target(Engine&, RenderTargetHandle) {
+    throw std::runtime_error("Unexpected target disposal during registration fixture");
+}
 RenderTextureRef render_target_texture(RenderTargetHandle target) { return {.target = target}; }
 TaskHandle create_render_task(Engine&, Scene& scene, RenderTaskOptions options) {
     assert(scene.state->default_render_task);

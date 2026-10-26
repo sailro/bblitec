@@ -21,15 +21,10 @@
 namespace bbl::pal {
 
 /**
- * Native presents every browser canvas through one operating-system window.
- * Retained layout supplies each canvas's actual rectangle when the page
- * attached the canvas to the projected document (scenes 227 and 228). A
- * canvas the source created and appended to host chrome outside that
- * document -- antigravity-racer's second player -- is never laid out, so
- * the primary scene and every registered auxiliary surface scene without a
- * rectangle share the window in equal horizontal panes, in registration
- * order. The scene's render targets use the pane extent; only presentation
- * applies its offset.
+ * Window realms publish a view per canvas from the renderer's internal panes.
+ * Standalone hosts use retained layout rectangles; surfaces without layout
+ * share their window in equal horizontal panes. Render targets use the pane
+ * extent; only presentation applies its offset.
  */
 #if BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {

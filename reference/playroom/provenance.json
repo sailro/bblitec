@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.34.0",
-    "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0"
+    "version": "1.36.0",
+    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
   },
   "reference": {
     "source": "reference/playroom/babylon-lite-golden.png",
-    "sha256": "b31b197769657f9283fd072b20e62afaf35b80ac810c7ca536b96babadd2aa45"
+    "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-playroom.html",
@@ -430,5 +430,71 @@
       "path": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
       "sha256": "cd79214496f089fa1401922159a7cff38548e1083161218f88d9dcefc2f6200e"
     }
-  ]
+  ],
+  "readiness": {
+    "fixedAnimationFrame": "206",
+    "fixedCaptureFrame": "180",
+    "fixedAnimationCallbacks": "1",
+    "uiOrientation": "landscape",
+    "loadingSize": "Estimated demo assets: 26 MB",
+    "progress": "100",
+    "engine": "Babylon Lite v1.36.0",
+    "loadingDetail": "Preparing scene…",
+    "gamePhase": "ready",
+    "throwCount": "1",
+    "score": "0",
+    "bodyCount": "150",
+    "constraintCount": "9",
+    "sourceUiRevision": "d22ce23ef308e28d1f8b6598b4c72ea944205925",
+    "fixedEngineStarting": "true",
+    "initMs": "0",
+    "assetCount": "80",
+    "ready": "true"
+  },
+  "browser": {
+    "version": "155.0.8059.85",
+    "arguments": [
+      "--force-color-profile=srgb",
+      "--enable-unsafe-webgpu",
+      "--disable-lcd-text"
+    ],
+    "showScrollbars": false,
+    "adapter": {
+      "info": {
+        "vendor": "nvidia",
+        "architecture": "lovelace",
+        "device": "",
+        "description": ""
+      },
+      "features": [
+        "depth32float-stencil8",
+        "rg11b10ufloat-renderable",
+        "texture-formats-tier1",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "texture-compression-bc",
+        "dual-source-blending",
+        "chromium-experimental-sampling-resource-table",
+        "core-features-and-limits",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "float32-filterable",
+        "indirect-first-instance",
+        "float32-blendable",
+        "atomic-vec2u-min-max",
+        "subgroup-size-control",
+        "texture-compression-unaligned",
+        "depth-clip-control",
+        "texture-compression-bc-sliced-3d",
+        "timestamp-query",
+        "texture-formats-tier2",
+        "shader-f16",
+        "clip-distances",
+        "primitive-index",
+        "texture-component-swizzle",
+        "subgroups"
+      ]
+    }
+  },
+  "capturedAt": "2026-10-25T19:24:04.877Z",
+  "canvasSha256": "48408eee75ba8fd01a3537d4e7ce0560899559a8703cfe57e84689f72a69fdd0"
 }

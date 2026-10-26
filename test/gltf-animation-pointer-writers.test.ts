@@ -32,11 +32,22 @@ function sourceWriter(
     captures: Value,
     effects: Value,
 ): (...args: unknown[]) => unknown {
-    const declarations = context
+    let declarations = context
         .sourceFile(writer.site.split(":")[0]!)
         .statements.filter(ts.isFunctionDeclaration)
         .map((value) => value.getText())
         .join("\n");
+    if (
+        writer.site.startsWith(
+            "src/loader-gltf/animation-pointer-basecolor.ts:",
+        )
+    )
+        declarations += context
+            .functionDeclaration(
+                "src/loader-gltf/animation-pointer.ts",
+                "_writeBaseColorFactor",
+            )
+            .declaration.getText();
     const names = [...Object.keys(effects), ...writer.captures];
     const source = `${declarations}\nreturn (${writer.declaration.getText()});`;
     return createJavaScriptFunction(
@@ -141,6 +152,7 @@ function sourceCases(
             };
             const captures = {
                 mat: state.mat,
+                targets: [state.mat],
                 n: state.n,
                 tex: state.mat.baseColorTexture,
                 refr: state.mat._subsurface.refraction,
@@ -251,6 +263,7 @@ void run(const nlohmann::json& item) {
     if (light && state.get("withBump").truthy()) light.set("_bumpLightVersion", GltfPbrValue{true});
     auto context = GltfPbrValue::object(); context.set("_json", document);
     for (const auto& key : {"mat", "n", "field", "isScale"}) captures.set(key, state.get(key));
+    captures.set("targets", GltfPbrValue::array({mat}));
     captures.set("tex", mat.get("baseColorTexture")); captures.set("refr", mat.get("_subsurface").get("refraction"));
     captures.set("iri", mat.get("_iridescence")); captures.set("m", GltfPbrValue::array({GltfPbrValue{"pointer"}, GltfPbrValue{"0"}, state.get("branch")}));
     captures.set("ctx", context); captures.set("lightIdx", GltfPbrValue{0.0});

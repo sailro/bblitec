@@ -3,8 +3,8 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.34.0",
-    "sourceVersion": "22bd82496ecbb38f7bbd4107ef5eca40c2897bd0"
+    "version": "1.36.0",
+    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
@@ -20,12 +20,12 @@
     "referenceFrame": 30
   },
   "readiness": {
-    "loadingSize": "Estimated demo assets: 6.1 MB",
-    "progress": "100",
-    "fixedAnimationFrame": "130",
+    "fixedAnimationFrame": "79",
     "fixedCaptureFrame": "30",
     "fixedAnimationCallbacks": "1",
-    "engine": "Babylon Lite v1.34.0",
+    "loadingSize": "Estimated demo assets: 6.1 MB",
+    "progress": "100",
+    "engine": "Babylon Lite v1.36.0",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
@@ -33,23 +33,6 @@
     "fixedEngineStarting": "true",
     "oceanStage": "complete",
     "ready": "true"
-  },
-  "camera": {
-    "position": {
-      "x": -33.91187023336096,
-      "y": 4.727123075533213,
-      "z": -8.578004717405992
-    },
-    "rotation": {
-      "x": 0.10888242375229738,
-      "y": 1.5924857677541429,
-      "z": 0
-    },
-    "target": {
-      "x": -32.91802588437002,
-      "y": 4.835790486320023,
-      "z": -8.599564026570702
-    }
   },
   "moduleSha256": "b518d19afb681d86f032d34d5fbef22fd668af1a58b202101b4b2a9a0c162184",
   "sourceFiles": [
@@ -143,15 +126,13 @@
     }
   ],
   "browser": {
-    "showScrollbars": true,
-    "ignoredDefaultArguments": [
-      "--hide-scrollbars"
-    ],
-    "version": "155.0.8059.39",
+    "version": "155.0.8059.85",
     "arguments": [
       "--force-color-profile=srgb",
-      "--enable-unsafe-webgpu"
+      "--enable-unsafe-webgpu",
+      "--disable-lcd-text"
     ],
+    "showScrollbars": true,
     "adapter": {
       "info": {
         "vendor": "nvidia",
@@ -162,8 +143,8 @@
       "features": [
         "depth32float-stencil8",
         "rg11b10ufloat-renderable",
-        "bgra8unorm-storage",
         "texture-formats-tier1",
+        "bgra8unorm-storage",
         "chromium-experimental-multi-draw-indirect",
         "texture-compression-bc",
         "dual-source-blending",
@@ -173,14 +154,15 @@
         "float32-filterable",
         "indirect-first-instance",
         "float32-blendable",
+        "atomic-vec2u-min-max",
         "subgroup-size-control",
         "texture-compression-unaligned",
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
-        "shader-f16",
-        "clip-distances",
         "timestamp-query",
         "texture-formats-tier2",
+        "shader-f16",
+        "clip-distances",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
@@ -196,5 +178,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-10-12T18:42:06.326Z"
+  "capturedAt": "2026-10-25T19:22:10.682Z"
 }

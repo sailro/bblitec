@@ -45,6 +45,14 @@ export class TaaPostProcessLowerer {
                 },
             ]),
             ["task", { cpp: "state", type: "opaque" }],
+            [
+                "task._lastCam",
+                {
+                    cpp: "state.last_camera",
+                    type: "opaque",
+                    absentCpp: "state.last_camera == nullptr",
+                },
+            ],
             ["task._factor", { cpp: "blend_factor", type: "scalar" }],
         ]);
     }
@@ -159,7 +167,7 @@ ${body}
         const { file, declaration } = this.method("execute");
         const children = this.children();
         const bindings = this.bindings();
-        bindings.set("task._sourceRenderTask.scene.camera", {
+        bindings.set("src._config.cam ?? src.scene.camera", {
             cpp: "camera",
             type: "opaque",
             absentCpp: "camera == nullptr",
@@ -213,7 +221,15 @@ ${body}
                 type: "scalar",
             });
         }
+        const sourceTask = declaration.body.statements[0]!;
+        this.context.assertStatementShapes(
+            sourceTask,
+            [sourceTask],
+            "const src = task._sourceRenderTask;",
+            "TAA source pass camera owner",
+        );
         const body = declaration.body.statements
+            .slice(1)
             .flatMap((statement) => lowerer.statement(statement, "    "))
             .join("\n");
         return `template<class Camera, class CameraKey, class UploadUniforms, class ExecutePass, class AdvanceJitter>
