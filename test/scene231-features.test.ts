@@ -11,10 +11,7 @@ import {
     pinnedStandardMeshAlpha,
 } from "../src/lowering/standard-mesh-alpha.js";
 import { lowerStandardUvTransformWriter } from "../src/lowering/standard-uv-transform-lowerer.js";
-import {
-    pinnedSharedVariantDecls,
-    pinnedStandardVariantsHeader,
-} from "../src/pinned-pbr-variant-cpp.js";
+import { pinnedStandardVariantsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import {
     composePinnedStandardVariant,
     pinnedStandardVariantManifestEntry,
@@ -24,6 +21,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { writeSharedVariantHeaders } from "./variant-headers.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
@@ -141,9 +139,10 @@ test(
         );
         const output = resolve("artifacts/scene231-contracts/uv-headers");
         mkdirSync(join(output, "bblite/upstream"), { recursive: true });
-        writeFileSync(
-            join(output, "bblite/upstream/pinned_variant_bindings.hpp"),
-            pinnedSharedVariantDecls(context, "test"),
+        writeSharedVariantHeaders(
+            join(output, "bblite/upstream"),
+            context,
+            "test",
         );
         writeFileSync(
             join(output, "standard.hpp"),

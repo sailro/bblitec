@@ -107,6 +107,26 @@
     },
     {
       "kind": "sequence",
+      "primary": ".toggle",
+      "style": "display: flex; align-items: center; gap: 8px; margin-top: 10px; cursor: pointer;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".toggle input",
+      "style": "margin: 0; accent-color: #58c6ff;"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".point-options",
+      "style": "margin-top: 10px; padding-top: 2px; border-top: 1px solid rgba(255, 255, 255, 0.13);"
+    },
+    {
+      "kind": "sequence",
+      "primary": ".point-options .stats",
+      "style": "margin-top: 10px; margin-bottom: 0;"
+    },
+    {
+      "kind": "sequence",
       "primary": ".camera-pose",
       "style": "margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, 0.13);"
     },
@@ -245,6 +265,17 @@
             "class": "stats"
           },
           "children": [
+            {
+              "tag": "span",
+              "text": "Frame rate"
+            },
+            {
+              "tag": "output",
+              "attributes": {
+                "id": "fps"
+              },
+              "text": "— FPS · — ms"
+            },
             {
               "tag": "span",
               "text": "Phase"
@@ -416,6 +447,235 @@
                 "id": "splatBudgetValue"
               },
               "text": "1000k"
+            }
+          ]
+        },
+        {
+          "tag": "label",
+          "attributes": {
+            "class": "toggle",
+            "for": "pointSampling"
+          },
+          "children": [
+            {
+              "tag": "input",
+              "attributes": {
+                "id": "pointSampling",
+                "type": "checkbox",
+                "aria-controls": "pointSamplingOptions"
+              }
+            },
+            {
+              "tag": "span",
+              "text": "Point sampling"
+            }
+          ]
+        },
+        {
+          "tag": "p",
+          "attributes": {
+            "id": "pointSamplingStatus",
+            "role": "status",
+            "hidden": ""
+          }
+        },
+        {
+          "tag": "div",
+          "attributes": {
+            "id": "pointSamplingOptions",
+            "class": "point-options",
+            "role": "group",
+            "aria-label": "Point sampling options",
+            "hidden": ""
+          },
+          "children": [
+            {
+              "tag": "label",
+              "attributes": {
+                "class": "control",
+                "for": "pointScale"
+              },
+              "children": [
+                {
+                  "tag": "span",
+                  "text": "Point density"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "pointScale",
+                    "type": "range",
+                    "min": "0.1",
+                    "max": "4",
+                    "value": "1",
+                    "step": "0.1"
+                  }
+                },
+                {
+                  "tag": "output",
+                  "attributes": {
+                    "id": "pointScaleValue"
+                  },
+                  "text": "1.0×"
+                }
+              ]
+            },
+            {
+              "tag": "label",
+              "attributes": {
+                "class": "control",
+                "for": "renderScale"
+              },
+              "children": [
+                {
+                  "tag": "span",
+                  "text": "Render scale"
+                },
+                {
+                  "tag": "select",
+                  "attributes": {
+                    "id": "renderScale"
+                  },
+                  "children": [
+                    {
+                      "tag": "option",
+                      "attributes": {
+                        "value": "auto"
+                      },
+                      "text": "Auto"
+                    },
+                    {
+                      "tag": "option",
+                      "attributes": {
+                        "value": "1"
+                      },
+                      "text": "1 (full)"
+                    },
+                    {
+                      "tag": "option",
+                      "attributes": {
+                        "value": "2"
+                      },
+                      "text": "1/2"
+                    },
+                    {
+                      "tag": "option",
+                      "attributes": {
+                        "value": "3"
+                      },
+                      "text": "1/3"
+                    },
+                    {
+                      "tag": "option",
+                      "attributes": {
+                        "value": "4"
+                      },
+                      "text": "1/4"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "tag": "label",
+              "attributes": {
+                "class": "toggle",
+                "for": "occlusionCulling"
+              },
+              "children": [
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "occlusionCulling",
+                    "type": "checkbox"
+                  }
+                },
+                {
+                  "tag": "span",
+                  "text": "Occlusion culling"
+                }
+              ]
+            },
+            {
+              "tag": "label",
+              "attributes": {
+                "class": "toggle",
+                "for": "temporalReprojection"
+              },
+              "children": [
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "temporalReprojection",
+                    "type": "checkbox"
+                  }
+                },
+                {
+                  "tag": "span",
+                  "text": "Temporal reprojection (experimental)"
+                }
+              ]
+            },
+            {
+              "tag": "label",
+              "attributes": {
+                "class": "control",
+                "for": "maxAccumFrames"
+              },
+              "children": [
+                {
+                  "tag": "span",
+                  "text": "Max accum."
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "maxAccumFrames",
+                    "type": "range",
+                    "min": "1",
+                    "max": "1024",
+                    "value": "255",
+                    "step": "1"
+                  }
+                },
+                {
+                  "tag": "output",
+                  "attributes": {
+                    "id": "maxAccumFramesValue"
+                  },
+                  "text": "255"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "stats"
+              },
+              "children": [
+                {
+                  "tag": "span",
+                  "text": "Accumulated frames"
+                },
+                {
+                  "tag": "output",
+                  "attributes": {
+                    "id": "accumulatedFrames"
+                  },
+                  "text": "—"
+                },
+                {
+                  "tag": "span",
+                  "text": "Pixel cycle length"
+                },
+                {
+                  "tag": "output",
+                  "attributes": {
+                    "id": "pixelCycleLength"
+                  },
+                  "text": "—"
+                }
+              ]
             }
           ]
         },

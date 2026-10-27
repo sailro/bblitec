@@ -16,7 +16,11 @@
  * scene can carry it.
  */
 import ts from "typescript";
-import { sharedPinnedContext } from "./lowering/context.js";
+import {
+    type LoweringContext,
+    sharedPinnedContext,
+} from "./lowering/context.js";
+import { sourceFunctionName, writeSites } from "./compiler/syntax.js";
 import {
     pinnedOptionFlag,
     pinnedOptionNumber,
@@ -163,15 +167,16 @@ export function pinnedParameterFlag(
 }
 
 /**
- * `createTransformNode`'s own parameter defaults.
+ * `createTransformNode`'s parameter defaults, wherever the pin states them.
  *
  * A different read from the `??` one above, and the same question: the
  * factory takes a name and ten optional numbers — the TRS triple, the
  * rotation as a quaternion — so what an unparameterised node composes is
- * decided by the pinned declaration's own parameter initializers
- * (`createTransformNode(name, px = 0, ..., qw = 1, sx = 1, sy = 1, sz = 1)`).
- * Reading them means a pin that retunes one regenerates, and a pin that
- * reorders the list fails naming the parameter it no longer has.
+ * decided by pinned parameter initializers. The factory forwards the ten,
+ * unwritten and in order, down a chain of calls to the one declaration that
+ * initializes them (`initSceneNodeTransform(node, px = 0, ..., sz = 1)`), so
+ * the read follows that chain. A pin that retunes one regenerates; a pin
+ * that reorders, writes or stops forwarding one fails naming it.
  */
 const transformNodeModule = "src/scene/transform-node.ts";
 const transformNodeFactory = "createTransformNode";
@@ -200,7 +205,7 @@ export function transformNodeDefaults(): ReadonlyMap<
 > {
     if (transformDefaults) return transformDefaults;
     const context = sharedPinnedContext();
-    const { file, declaration } = context.functionDeclaration(
+    let { declaration } = context.functionDeclaration(
         transformNodeModule,
         transformNodeFactory,
     );
@@ -211,24 +216,97 @@ export function transformNodeDefaults(): ReadonlyMap<
             "Expected createTransformNode to take a name first.",
         );
     }
-    const defaults = new Map<TransformNodeParameter, number>();
-    for (const [index, parameter] of transformParameters.entries()) {
-        const declared = declaration.parameters[index + 1];
-        const initializer = declared?.initializer;
-        if (
-            !declared ||
-            !ts.isIdentifier(declared.name) ||
-            declared.name.text !== parameter ||
-            initializer === undefined
-        ) {
-            return context.contractError(
-                declared ?? declaration,
-                `Expected createTransformNode parameter '${parameter}' ` +
-                    "with a default.",
+    let first = 1;
+    for (;;) {
+        const declared = transformParameters.map((parameter, index) => {
+            const candidate = declaration.parameters[first + index];
+            return candidate &&
+                ts.isIdentifier(candidate.name) &&
+                candidate.name.text === parameter
+                ? candidate
+                : context.contractError(
+                      candidate ?? declaration,
+                      `Expected ${functionName(declaration)} parameter ` +
+                          `'${parameter}' at position ${first + index}.`,
+                  );
+        });
+        const initializers = declared.flatMap(({ initializer }) =>
+            initializer ? [initializer] : [],
+        );
+        if (initializers.length === declared.length) {
+            transformDefaults = new Map(
+                transformParameters.map((parameter, index) => [
+                    parameter,
+                    context.numericValue(
+                        initializers[index]!,
+                        declaration.getSourceFile(),
+                    ),
+                ]),
             );
+            return transformDefaults;
         }
-        defaults.set(parameter, context.numericValue(initializer, file));
+        if (initializers.length > 0)
+            context.contractError(
+                declaration,
+                `Expected ${functionName(declaration)} to default all of ` +
+                    `${transformParameters.join(", ")} or none.`,
+            );
+        const forward = transformForward(context, declaration);
+        ({ declaration } = context.functionOf(forward.callee));
+        first = forward.first;
     }
-    transformDefaults = defaults;
-    return defaults;
+}
+
+function functionName(declaration: ts.FunctionDeclaration): string {
+    return sourceFunctionName(declaration) ?? "<anonymous>";
+}
+
+/**
+ * The one call through which a declaration without the defaults forwards
+ * the ten parameters, unwritten, as consecutive arguments in pinned order.
+ */
+function transformForward(
+    context: LoweringContext,
+    declaration: ts.FunctionDeclaration,
+): { callee: ts.Identifier; first: number } {
+    const names = new Set<string>(transformParameters);
+    const forwards: { callee: ts.Identifier; first: number }[] = [];
+    const visit = (node: ts.Node): void => {
+        for (const site of writeSites(node))
+            if (ts.isIdentifier(site.target) && names.has(site.target.text))
+                context.contractError(
+                    site.node,
+                    `Expected ${functionName(declaration)} to forward ` +
+                        `'${site.target.text}' unwritten.`,
+                );
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+            const first = node.arguments.findIndex(
+                (argument) =>
+                    ts.isIdentifier(argument) &&
+                    argument.text === transformParameters[0],
+            );
+            if (
+                first >= 0 &&
+                transformParameters.every((parameter, index) => {
+                    const argument = node.arguments[first + index];
+                    return (
+                        argument !== undefined &&
+                        ts.isIdentifier(argument) &&
+                        argument.text === parameter
+                    );
+                })
+            )
+                forwards.push({ callee: node.expression, first });
+        }
+        ts.forEachChild(node, visit);
+    };
+    if (declaration.body) visit(declaration.body);
+    const [forward, ...others] = forwards;
+    return forward && others.length === 0
+        ? forward
+        : context.contractError(
+              declaration,
+              `Expected ${functionName(declaration)} to forward ` +
+                  `${transformParameters.join(", ")} through exactly one call.`,
+          );
 }

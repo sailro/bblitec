@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedSharedVariantDecls } from "../src/pinned-pbr-variant-cpp.js";
+import { meshFeaturesHeader } from "../src/lowering/mesh-attribute-features.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { pinnedInstanceAttributesCpp } from "../src/lowering/thin-instance-attributes.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
@@ -62,6 +63,11 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
         bindStart,
     );
     assert.ok(bindStart >= 0 && bindEnd > bindStart);
+    mkdirSync(join(output, "bblite/upstream"), { recursive: true });
+    writeFileSync(
+        join(output, "bblite/upstream/pinned_mesh_features.hpp"),
+        meshFeaturesHeader(new LoweringContext()),
+    );
     writeFileSync(
         join(output, "features.hpp"),
         pinnedSharedVariantDecls(

@@ -432,7 +432,7 @@ void seek_vat(Engine& engine, double seconds) {
             `
             const vat = mesh.vat;
             if (!vat) {
-                ThrowLiteError(905);
+                ThrowLiteError(909);
             }
             const time = (_vatTime ??= new Float32Array(1));
             time[0] = seconds;
@@ -480,10 +480,10 @@ void set_vat_time(Engine& engine, MeshHandle mesh, double seconds) {
             `
             const vat = mesh.vat;
             if (!vat) {
-                ThrowLiteError(903);
+                ThrowLiteError(907);
             }
             if (buffer && (buffer._destroyed || buffer._engine !== engine || !engine._storageBuffers?.has(buffer))) {
-                ThrowLiteError(904);
+                ThrowLiteError(908);
             }
             vat._instanceStorage = buffer;
         `,

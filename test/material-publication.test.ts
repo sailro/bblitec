@@ -18,6 +18,8 @@ import { lowerPbrMaterialGroups } from "../src/lowering/pbr-material-groups.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
+import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
+import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
 
 test("material output publication and captured draw identity follow source frame boundaries", async (t) => {
     const native = optionalNativeFixtureTools(false);
@@ -241,10 +243,12 @@ test("material output publication and captured draw identity follow source frame
     double default_render_order(const RenderItem&) { return 0; }
     ${["bool mesh_draws(", "bool render_item_material_draws(", "bool render_item_draws_now(", "void append_draw(", "void order_draw_lists(", "RenderDrawLists build_render_draw_lists(", "RenderPlan build_render_plan("].map((name) => cppFunction(renderer.source, name)).join("\n")}
     }
+    ${meshFeaturesNamespace(context)}
     namespace bbl {
+    ${featurelessPbrMaterialFeatures}
     bool reject_material_build = false;
     void run_pbr_scene_hooks(Scene&, const std::vector<MeshHandle>&) { if (reject_material_build) throw std::runtime_error("builder"); }
-    std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes, bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {
+    std::optional<PbrLazyWidening> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes, PbrLazyWidening (*builder)(Scene&, const std::vector<MeshHandle>&)) {
         return builder(scene, meshes);
     }
     void rebuild_scene_renderables(Scene&) {}

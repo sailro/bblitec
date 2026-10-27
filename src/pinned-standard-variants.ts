@@ -2359,18 +2359,11 @@ namespace bbl::upstream {
 
 using bbl::MaterialRecord;
 
-// src/material/mesh-features.ts -- the pin's own MSH_* values, evaluated
-// from their declarations. The runtime ORs the pool/deformation bits onto
-// the static per-handle table below, because thin instances attach and
-// morph weights arrive after mesh creation.
+// src/material/mesh-features.ts MSH_HAS_MORPH_TARGETS, evaluated from its
+// declaration. The runtime ORs it onto the static per-handle table below,
+// because morph weights arrive after mesh creation.
 inline constexpr std::uint32_t std_msh_has_morph_targets =
     ${mesh("MSH_HAS_MORPH_TARGETS")}u;
-inline constexpr std::uint32_t std_msh_has_thin_instances =
-    ${mesh("MSH_HAS_THIN_INSTANCES")}u;
-// _computeMeshFeatures sets this one from mesh.thinInstances.colors, so it
-// rides the pool bit above and arrives with the same call.
-inline constexpr std::uint32_t std_msh_has_instance_color =
-    ${mesh("MSH_HAS_INSTANCE_COLOR")}u;
 // src/material/standard/standard-flags.ts NEEDS_UV -- the mask
 // writeStdMaterialData's textureLevel parameter is derived from
 // ((features & NEEDS_UV) != 0 ? 1 : 0, standard-renderable.ts).

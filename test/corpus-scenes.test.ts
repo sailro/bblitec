@@ -6,6 +6,7 @@ import test from "node:test";
 import { suiteBrowserModuleDigest } from "../src/capture-suite-reference.js";
 import { getScene, sceneReferencePage, scenes } from "../src/scene-registry.js";
 import { compareImages, compareRegion } from "../src/parity.js";
+import { pinnedLabMaterializedDirectories } from "../src/pinned-lab-materializers.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
 
@@ -94,11 +95,11 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
 test("keeps pinned build tooling byte-identical to the pin", () => {
     const manifest = readBabylonLiteCorpus();
     const tooling = manifest.tooling ?? [];
-    // The one script generation executes today; a second joins this list
-    // when a lowerer starts running it.
+    // The scripts generation executes today; another joins this list when a
+    // lowerer or materializer starts running it.
     assert.deepEqual(
         tooling.map(({ upstreamPath }) => upstreamPath),
-        ["scripts/wgsl-minify-plugin.ts"],
+        ["scripts/wgsl-minify-plugin.ts", "scripts/fetch-flight-helmet.ts"],
     );
     for (const file of tooling) {
         assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
@@ -174,6 +175,9 @@ test("lists every corpus file in the pinned manifest", () => {
         // The repository's own corpus documentation, not upstream bytes.
         "corpus/babylon-lite/README.md",
     ]);
+    // Written by a pinned tooling script, which verifies each file's Git
+    // blob digest; ignored by git like the pin's own copies.
+    const materialized = pinnedLabMaterializedDirectories(".");
     const unlisted: string[] = [];
     for (const entry of readdirSync("corpus", {
         recursive: true,
@@ -181,7 +185,11 @@ test("lists every corpus file in the pinned manifest", () => {
     })) {
         if (!entry.isFile()) continue;
         const source = join(entry.parentPath, entry.name).split(sep).join("/");
-        if (pinned.has(source) || allowedUnpinned.has(source)) {
+        if (
+            pinned.has(source) ||
+            allowedUnpinned.has(source) ||
+            materialized.some((directory) => source.startsWith(`${directory}/`))
+        ) {
             continue;
         }
         unlisted.push(source);

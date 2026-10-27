@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { backgroundFactories } from "../pinned-background-factories.js";
 import ts from "typescript";
 import { CameraLowerer } from "./camera-lowerer.js";
 import { lowerCameraMatrixCaches } from "./camera-matrix-cache.js";
@@ -83,6 +84,7 @@ import {
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { recordAt } from "../compiler/record-access.js";
 import { unwrapExpression } from "../compiler/syntax.js";
+import { finalReturn } from "../compiler/loop-control.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -154,10 +156,6 @@ const perspectiveMatrixModule =
     "src/math/write-perspective-mat4-lh-into-buffer.ts";
 const cameraModule = "src/camera/camera.ts";
 const cameraViewportModule = "src/camera/viewport.ts";
-const backgroundGroundModule = "src/material/pbr/background-ground.ts";
-const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
-const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
-const backgroundSolidModule = "src/material/pbr/background-solid-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
@@ -180,58 +178,6 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
             );
         }
         return Number(node.text);
-    };
-    // The enclosing renderable object's literal `isTransparent`, when
-    // one exists — classifies the plain-numeric shader-material stamps.
-    const literalTransparency = (node: ts.Node): boolean | undefined => {
-        for (
-            let current: ts.Node | undefined = node;
-            current;
-            current = current.parent
-        ) {
-            if (
-                ts.isVariableDeclaration(current) &&
-                ts.isIdentifier(current.name)
-            ) {
-                const name = current.name.text;
-                const scope = current.parent.parent.parent;
-                const values = new Set<boolean>();
-                const findUse = (candidate: ts.Node): void => {
-                    if (
-                        ts.isObjectLiteralExpression(candidate) &&
-                        candidate.properties.some(
-                            (property) =>
-                                ts.isShorthandPropertyAssignment(property) &&
-                                property.name.text === name,
-                        )
-                    ) {
-                        const value = literalTransparency(candidate);
-                        if (value !== undefined) values.add(value);
-                    } else ts.forEachChild(candidate, findUse);
-                };
-                ts.forEachChild(scope, findUse);
-                return values.size === 1 ? [...values][0] : undefined;
-            }
-            if (!ts.isObjectLiteralExpression(current)) continue;
-            for (const property of current.properties) {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    !ts.isIdentifier(property.name) ||
-                    property.name.text !== "isTransparent"
-                ) {
-                    continue;
-                }
-                const value = unwrapExpression(property.initializer);
-                if (value.kind === ts.SyntaxKind.TrueKeyword) {
-                    return true;
-                }
-                if (value.kind === ts.SyntaxKind.FalseKeyword) {
-                    return false;
-                }
-                return undefined;
-            }
-        }
-        return undefined;
     };
     const collectFallbacks = (root: ts.Expression): void => {
         const visit = (node: ts.Node): void => {
@@ -264,37 +210,31 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
                 arms.push(numeric(fallback.whenFalse));
                 return;
             }
-            const transparent = literalTransparency(node);
-            if (transparent === undefined) {
-                throw new Error(
-                    `Pinned ${file.fileName} order stamp has no ` +
-                        "conditional arm and no literal isTransparent " +
-                        "sibling to classify it.",
-                );
-            }
-            if (!transparent) {
-                arms.push(numeric(fallback));
-            }
+            // A plain fallback is an opaque arm: the pin merges only
+            // opaque shader packets (`order = Math.min(order, ...)`), so a
+            // plain transparent stamp would split the arms and refuse.
+            arms.push(numeric(fallback));
         };
         visit(root);
     };
+    // The value an `order` stamp takes: a renderable's property, a local's
+    // initializer, or an assignment to that local.
+    const orderValue = (node: ts.Node): ts.Expression | undefined =>
+        ts.isPropertyAssignment(node) ||
+        (ts.isVariableDeclaration(node) && node.initializer)
+            ? ts.isIdentifier(node.name) && node.name.text === "order"
+                ? node.initializer
+                : undefined
+            : ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "order"
+              ? node.right
+              : undefined;
     const visit = (node: ts.Node): void => {
         ts.forEachChild(node, visit);
-        if (
-            ts.isPropertyAssignment(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === "order"
-        ) {
-            collectFallbacks(node.initializer);
-        }
-        if (
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === "order" &&
-            node.initializer !== undefined
-        ) {
-            collectFallbacks(node.initializer);
-        }
+        const value = orderValue(node);
+        if (value) collectFallbacks(value);
     };
     visit(file);
     return arms;
@@ -305,9 +245,8 @@ function opaqueOrderArmsOf(file: ts.SourceFile): number[] {
  * opaque sort: every renderable module that can reach the native draw
  * lists stamps `mesh.renderOrder ?? <arm>`, and the non-transparent
  * arms must agree on one constant for the pinned stable sort to be
- * the identity on the emitted opaque list. A missing substitution, a
- * numeric fallback with no literal `isTransparent` sibling, or arms
- * that disagree refuse generation — the moment the retired pipeline
+ * the identity on the emitted opaque list. A missing substitution or
+ * arms that disagree refuse generation — the moment the retired pipeline
  * grouping question has to be reopened.
  */
 export function lowerOpaqueOrderStamp(files: readonly ts.SourceFile[]): string {
@@ -1592,7 +1531,7 @@ PbrUniforms build_pbr_uniforms(
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
-${options.gpuInstancing ? "#if BBLITE_NODE_VARIANTS > 0\n#include <bblite/upstream/node_variants.hpp>\n#endif\n" : ""}\
+${options.gpuInstancing ? "#include <bblite/upstream/pinned_mesh_features.hpp>\n#if BBLITE_NODE_VARIANTS > 0\n#include <bblite/upstream/node_variants.hpp>\n#endif\n" : ""}\
 
 #include <algorithm>
 #include <cmath>
@@ -2770,35 +2709,54 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 "Shader scene camera fields",
             );
         }
-        for (const [modulePath, builder, order] of [
-            [backgroundDdsModule, "buildDdsSkyboxRenderable", 0],
-            [backgroundHdrModule, "buildHdrSkyboxRenderable", 0],
-            [backgroundGroundModule, "buildGroundRenderable", 200],
-        ] as const) {
-            const { file, declaration } = this.context.functionDeclaration(
-                modulePath,
-                builder,
-            );
-            const stamps = this.context.findNodes(
-                declaration,
+        const orderStamps = (scope: ts.Node) =>
+            this.context.findNodes(
+                scope,
                 (node): node is ts.PropertyAssignment =>
                     ts.isPropertyAssignment(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === "order",
             );
+        // A factory that returns a shared Renderable shell (the cubemap
+        // skyboxes' `createCubemapSkyboxRenderable`) stamps through it.
+        const stampScope = (
+            factory: ts.FunctionDeclaration,
+        ): ts.FunctionDeclaration => {
+            const shell = finalReturn(factory.body);
+            return orderStamps(factory).length === 0 &&
+                shell?.expression &&
+                ts.isCallExpression(shell.expression) &&
+                ts.isIdentifier(shell.expression.expression)
+                ? this.context.functionOf(shell.expression.expression)
+                      .declaration
+                : factory;
+        };
+        for (const [{ modulePath, factory }, order] of [
+            [backgroundFactories.ddsSkybox, 0],
+            [backgroundFactories.hdrSkybox, 0],
+            [backgroundFactories.ground, 200],
+        ] as const) {
+            const declaration = stampScope(
+                this.context.functionDeclaration(modulePath, factory)
+                    .declaration,
+            );
+            const [stamp, ...others] = orderStamps(declaration);
             if (
-                stamps.length !== 1 ||
-                this.context.numericValue(stamps[0]!.initializer, file) !==
-                    order
+                !stamp ||
+                others.length ||
+                this.context.numericValue(
+                    stamp.initializer,
+                    stamp.getSourceFile(),
+                ) !== order
             ) {
                 this.context.contractError(
                     declaration,
-                    `Expected ${builder} to stamp order ${order}, which the native background stage sequence mirrors.`,
+                    `Expected ${factory} to stamp order ${order}, which the native background stage sequence mirrors.`,
                 );
             }
         }
         const ddsCube = this.context.functionDeclaration(
-            backgroundDdsModule,
+            backgroundFactories.ddsSkybox.modulePath,
             "loadDdsCube",
         );
         const ddsFormat = this.context.variableInitializer(
@@ -3042,16 +3000,16 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 },
                 {
                     id: "hdr-cubemap-skybox",
-                    upstreamModule: backgroundHdrModule,
-                    upstreamMarker: "buildHdrSkyboxRenderable",
+                    upstreamModule: backgroundFactories.hdrSkybox.modulePath,
+                    upstreamMarker: backgroundFactories.hdrSkybox.factory,
                     nativeBehavior:
                         "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
                     validation: ["scene 8 GPU parity"],
                 },
                 {
                     id: "solid-skybox",
-                    upstreamModule: backgroundSolidModule,
-                    upstreamMarker: "buildSolidSkyboxRenderable",
+                    upstreamModule: backgroundFactories.solidSkybox.modulePath,
+                    upstreamMarker: backgroundFactories.solidSkybox.factory,
                     nativeBehavior:
                         "The clear-colour skybox an .env scene reaches without a DDS or HDR skybox is drawn as the pin's own cube, with its infinite-distance vertex stage and unconditional dither taken from the packaged WGSL.",
                     validation: [

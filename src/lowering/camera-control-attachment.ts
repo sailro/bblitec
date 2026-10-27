@@ -80,6 +80,9 @@ export function lowerCameraControlLifecycle(
             });
     }
     const events: string[] = [];
+    // Names the listener table reads: native listeners keep no options, so a
+    // local options record the table shares (`nonPassive`) goes with it.
+    const tableNames = new Set<string>();
     const listeners = statements
         .flatMap((statement) =>
             ts.isVariableStatement(statement)
@@ -109,6 +112,8 @@ export function lowerCameraControlLifecycle(
                 );
             events.push(row.elements[0].text);
         }
+        for (const name of context.findNodes(array, ts.isIdentifier))
+            tableNames.add(name.text);
     }
     const lower = (body: readonly ts.Statement[]) =>
         lowerPinnedBody(file, body, {
@@ -150,6 +155,19 @@ export function lowerCameraControlLifecycle(
                         (variable) =>
                             ts.isIdentifier(variable.name) &&
                             variable.name.text === "listeners",
+                    )
+                )
+                    return [];
+                if (
+                    ts.isVariableStatement(statement) &&
+                    statement.declarationList.declarations.every(
+                        (variable) =>
+                            ts.isIdentifier(variable.name) &&
+                            tableNames.has(variable.name.text) &&
+                            variable.initializer !== undefined &&
+                            ts.isObjectLiteralExpression(
+                                context.unwrapExpression(variable.initializer),
+                            ),
                     )
                 )
                     return [];

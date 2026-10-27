@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { imageSkyboxLoader } from "../pinned-background-factories.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { assertEnvironmentTextureIdentity } from "./scene-uniform-identity.js";
 import { assertAsyncSceneBuilder } from "./scene-deferred.js";
@@ -35,8 +36,7 @@ export class EnvironmentLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerImageSkyboxAdapter(): LoweredSource {
-        const modulePath = "src/loader-skybox/load-skybox.ts";
-        const symbolName = "loadSkybox";
+        const { modulePath, factory: symbolName } = imageSkyboxLoader;
         const { file, declaration } = this.context.functionDeclaration(
             modulePath,
             symbolName,
@@ -53,7 +53,7 @@ export class EnvironmentLowerer {
         }
         for (const called of [
             "loadCubeTexture",
-            "createBoxData",
+            imageSkyboxLoader.builder,
             "buildSkyboxRenderable",
         ]) {
             if (!this.context.hasCall(declaration, called)) {

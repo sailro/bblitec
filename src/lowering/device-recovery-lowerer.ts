@@ -1035,6 +1035,11 @@ void begin_device_recovery(Engine& engine) {
     rebuild_cpu_storage_buffers(engine);
     ${shaderUniformRecoveryReset(context)}
     recover_retained_meshes(engine);
+    // rebuildSceneGpu: each material group's build result installs its _w again.
+    for (const auto& registered : engine.scenes()) {
+        if (registered && !registered->disposed && registered->state->recover_material_groups)
+            registered->state->recover_material_groups(*registered);
+    }
     ${shaderUniformRecoveryPublication(context, thinBindings)}
     engine.stopped = !was_running;
 }

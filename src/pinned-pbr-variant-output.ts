@@ -45,6 +45,7 @@ interface PinnedVariantSelector {
     materialName: string;
     materialView?: "no-color" | "esm-shadow";
     meshFeatures: number;
+    materialFeatures: number;
     lightMode: 0 | 1 | 2;
     singleLightType: string;
     toneMapping: boolean;
@@ -110,6 +111,7 @@ export function writePinnedPbrVariants(
                 ? { materialView: variant.materialView }
                 : {}),
             meshFeatures: variant.meshFeatures,
+            materialFeatures: variant.materialFeatures,
             lightMode: variant.lightMode,
             singleLightType: variant.singleLightType,
             toneMapping: variant.toneMapping,

@@ -102,6 +102,8 @@ export interface SceneDefinition {
     buildDirectory: string;
     /** Audited host-page UI that exists outside the immutable scene module. */
     nativeHostUi?: string;
+    /** Compile registered missing APIs the source reaches as throwing boundaries (docs/features.md). */
+    deferredCapabilities?: CompileOptions["deferredCapabilities"];
     /**
      * The HTML page hosting `source`: its markup is the native host and the
      * browser reference is captured from it.
@@ -5276,18 +5278,29 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Trogir Gaussian Splat Streaming",
         nativeHostUi: "ui/trogir-streaming-host.json",
+        // The HUD's point-sampling toggle reaches the pin's Gaussian point
+        // splatting, which the demo catches to keep classic rendering.
+        deferredCapabilities: "runtime-throw",
         parity: {
             neutralityPartition: {
                 width: 1280,
                 height: 720,
-                // The HUD's live first coarse frame value (#firstFrame, wall
-                // milliseconds), laid out natively at the start of the stats
-                // value column; its label and the other stats stay strict.
+                // The HUD's live values, laid out natively at the start of the
+                // stats value column: the frame rate (#fps) and the first
+                // coarse frame (#firstFrame, wall milliseconds). Their labels
+                // and the other stats stay strict.
                 regions: [
                     {
+                        name: "Frame rate",
+                        x: 243,
+                        y: 55,
+                        width: 100,
+                        height: 16,
+                    },
+                    {
                         name: "First coarse frame",
-                        x: 247,
-                        y: 75,
+                        x: 243,
+                        y: 95,
                         width: 100,
                         height: 16,
                     },
@@ -5303,11 +5316,12 @@ const sceneInputs: readonly SceneInput[] = [
                 values: ["idle"],
                 settleMilliseconds: 3000,
             },
-            // The canvas matches the settled browser frame (0.000 / 0.001); the
-            // full-page residual is the retained HUD over it (text
-            // rasterization and the live first-frame timing).
-            maxFullMad: 0.3,
-            maxForegroundMad: 0.3,
+            // The canvas matches the settled browser frame (0.000); the
+            // full-page residual is the retained HUD over it: text
+            // rasterization (0.273 measured) and the live frame-rate and
+            // first coarse frame values (0.035), which move every run.
+            maxFullMad: 0.33,
+            maxForegroundMad: 0.33,
             canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [8, 11, 14],
             backgroundThreshold: 30,
@@ -5599,7 +5613,7 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
-import type { HostPageProgram } from "./compiler/types.js";
+import type { CompileOptions, HostPageProgram } from "./compiler/types.js";
 import {
     hostPageRoot,
     isHostPagePath,

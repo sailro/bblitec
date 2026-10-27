@@ -3,12 +3,12 @@
   "scene": "trogir-streaming",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.36.0",
-    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
+    "version": "1.37.0",
+    "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986"
   },
   "reference": {
     "source": "reference/trogir-streaming/babylon-lite-golden.png",
-    "sha256": "883744715c476d12a00ba38a6043940eacf8971fcc79e341494af72169fc0221"
+    "sha256": "cbe02fad441f87ff6383e6ec7e1c11e8da9c10d173be3fb1c8e0394483bf86d0"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
@@ -30,19 +30,19 @@
     "quality": "low"
   },
   "readiness": {
-    "engine": "Babylon Lite v1.36.0",
+    "engine": "Babylon Lite v1.37.0",
     "streamPhase": "idle",
     "selectedSplats": "1000000",
     "residentFiles": "8",
     "collisionReady": "true",
     "coarseSubmitted": "true",
-    "coarseSubmittedAt": "846.5",
+    "coarseSubmittedAt": "933.4000000059605",
     "coarseReady": "true",
-    "coarseReadyAt": "846.5",
+    "coarseReadyAt": "933.4000000059605",
     "ready": "true"
   },
   "browser": {
-    "version": "155.0.8059.85",
+    "version": "156.0.8078.48",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -59,13 +59,13 @@
       "features": [
         "depth32float-stencil8",
         "rg11b10ufloat-renderable",
-        "bgra8unorm-storage",
         "texture-formats-tier1",
+        "bgra8unorm-storage",
         "chromium-experimental-multi-draw-indirect",
         "texture-compression-bc",
         "dual-source-blending",
-        "core-features-and-limits",
         "chromium-experimental-sampling-resource-table",
+        "core-features-and-limits",
         "chromium-experimental-timestamp-query-inside-passes",
         "float32-filterable",
         "indirect-first-instance",
@@ -76,16 +76,16 @@
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
         "texture-formats-tier2",
-        "clip-distances",
-        "timestamp-query",
         "shader-f16",
+        "timestamp-query",
+        "clip-distances",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
       ]
     }
   },
-  "capturedAt": "2026-10-25T19:25:10.397Z",
-  "moduleSha256": "1dc9e34b5e8f7ef017320a4860dc9cb8236bff7a3a027b960f846c792d644508",
-  "canvasSha256": "b91457539713afaebeef0a6702e6d39872eaa1728c09887b238b655a1c39de5e"
+  "capturedAt": "2026-10-27T11:57:14.885Z",
+  "moduleSha256": "8ba30892eabad3a314143c244a6e1564e29b39ce1708773c41503bb6e5175c5a",
+  "canvasSha256": "4133e51e21d3bf2fcacb8dcdd3ef83a6993f9abe84367e5b08d025b85308dac2"
 }

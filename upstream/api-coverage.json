@@ -169,7 +169,7 @@
         },
         {
           "id": "getPhysicsBodyInstanceCount:function:d1feb39f5d9cf011",
-          "fingerprint": "722f93954bbe800276b0fb613bab7f2d00a15225c997fed7c97a80c7edcb083b"
+          "fingerprint": "67da4806cbc9411d9883a506fb461a5c136dd3f59d5efde14edc1b780743a5e3"
         }
       ]
     },
@@ -185,11 +185,11 @@
       "targets": [
         {
           "id": "onPhysicsCollision:function:6cee00ba31744e3c",
-          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+          "fingerprint": "3b63f1d17032b3c5f5f9a8e07e59ed72f1aadfd34aedf350181b33cdbbacc610"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
-          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+          "fingerprint": "7c782af70d3be0fc342cc7570801a4e1ca46c37000e0a85610e8e39ac7eaeb2e"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
@@ -197,7 +197,7 @@
         },
         {
           "id": "PhysicsCollisionInfo:interface.collider:property",
-          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+          "fingerprint": "3da12497eca56d42928697601ddf445ece1956b3e82009513bf8b6f6c23a8036"
         },
         {
           "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
@@ -225,7 +225,7 @@
         },
         {
           "id": "removePhysicsBody:function:85f1a0533be3e3a1",
-          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+          "fingerprint": "9eaae69b2089d6aa7b39cb19f37a4e034cc1f8559626467e48f7bc8f47bd9de6"
         }
       ]
     },
@@ -245,11 +245,11 @@
         },
         {
           "id": "onPhysicsCollision:function:6cee00ba31744e3c",
-          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+          "fingerprint": "3b63f1d17032b3c5f5f9a8e07e59ed72f1aadfd34aedf350181b33cdbbacc610"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
-          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+          "fingerprint": "7c782af70d3be0fc342cc7570801a4e1ca46c37000e0a85610e8e39ac7eaeb2e"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
@@ -257,7 +257,7 @@
         },
         {
           "id": "PhysicsCollisionInfo:interface.collider:property",
-          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+          "fingerprint": "3da12497eca56d42928697601ddf445ece1956b3e82009513bf8b6f6c23a8036"
         },
         {
           "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
@@ -285,11 +285,11 @@
         },
         {
           "id": "removePhysicsBody:function:85f1a0533be3e3a1",
-          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+          "fingerprint": "9eaae69b2089d6aa7b39cb19f37a4e034cc1f8559626467e48f7bc8f47bd9de6"
         },
         {
           "id": "setPhysicsBodyCollisionEventsEnabled:function:1075f0e7c06c5237",
-          "fingerprint": "054e50a41ea7966a9b55664edcee33df7f5083fce42e9cd69f81b20b8f6770f6"
+          "fingerprint": "db8ec26fecd8e08bd69ac294c6e0bc5d6be5a6df6a754f518b77385f3dc283fe"
         }
       ]
     },
@@ -309,11 +309,11 @@
         },
         {
           "id": "onPhysicsCollision:function:6cee00ba31744e3c",
-          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+          "fingerprint": "3b63f1d17032b3c5f5f9a8e07e59ed72f1aadfd34aedf350181b33cdbbacc610"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
-          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+          "fingerprint": "7c782af70d3be0fc342cc7570801a4e1ca46c37000e0a85610e8e39ac7eaeb2e"
         },
         {
           "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
@@ -321,7 +321,7 @@
         },
         {
           "id": "PhysicsCollisionInfo:interface.collider:property",
-          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+          "fingerprint": "3da12497eca56d42928697601ddf445ece1956b3e82009513bf8b6f6c23a8036"
         },
         {
           "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
@@ -349,11 +349,11 @@
         },
         {
           "id": "removePhysicsBody:function:85f1a0533be3e3a1",
-          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+          "fingerprint": "9eaae69b2089d6aa7b39cb19f37a4e034cc1f8559626467e48f7bc8f47bd9de6"
         },
         {
           "id": "setPhysicsBodyCollisionEventsEnabled:function:1075f0e7c06c5237",
-          "fingerprint": "054e50a41ea7966a9b55664edcee33df7f5083fce42e9cd69f81b20b8f6770f6"
+          "fingerprint": "db8ec26fecd8e08bd69ac294c6e0bc5d6be5a6df6a754f518b77385f3dc283fe"
         }
       ]
     },
@@ -369,7 +369,7 @@
       "targets": [
         {
           "id": "CharacterCollisionEvent:interface.collider:property",
-          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+          "fingerprint": "3da12497eca56d42928697601ddf445ece1956b3e82009513bf8b6f6c23a8036"
         },
         {
           "id": "CharacterCollisionEvent:interface.colliderIndex:property",

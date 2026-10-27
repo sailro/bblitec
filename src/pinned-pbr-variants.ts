@@ -430,39 +430,57 @@ export async function composePinnedPbrVariant(
               ) => Promise<(slots: readonly ShadowLightSlot[]) => unknown>;
           }>("material/pbr/fragments/pbr-shadow-fragment.js")
         : undefined;
-    const [compose, templateExt, flatNormal, fog, thinInstance] =
-        await Promise.all([
-            importPinnedModule<{
-                createPbrComposer: (
-                    deps: Record<string, unknown>,
-                ) => PinnedComposeFn;
-            }>("material/pbr/pbr-compose.js"),
-            importPinnedModule<{ createPbrTemplateExt: unknown }>(
-                "material/pbr/pbr-template-ext.js",
-            ),
-            // The pin imports these only when a primitive lacks normals or the
-            // scene enables fog; passing them unconditionally is identical because
-            // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
-            // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
-            // fallback in another shape: Scene 255's captured fragment carried the
-            // flat-normal lines while "" composed the smooth-normal arm against
-            // them, and the byte-for-byte gate only logs a fragment nothing
-            // matches.
-            importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
-                "material/pbr/fragments/flat-normal-wgsl.js",
-            ),
-            importPinnedModule<{
-                PBR_FOG_HELPER: string;
-                PBR_FOG_BLOCK: string;
-            }>("material/pbr/pbr-fog-wgsl.js"),
-            // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
-            // fog snippets by their bits.
-            importPinnedModule<{
-                createThinInstanceFragment: (
-                    hasInstanceColor: boolean,
-                ) => unknown;
-            }>("shader/fragments/thin-instance-fragment.js"),
-        ]);
+    const [
+        compose,
+        templateExt,
+        flatNormal,
+        fog,
+        thinInstance,
+        tangentNormal,
+        cotangentNormal,
+        specGloss,
+    ] = await Promise.all([
+        importPinnedModule<{
+            createPbrComposer: (
+                deps: Record<string, unknown>,
+            ) => PinnedComposeFn;
+        }>("material/pbr/pbr-compose.js"),
+        importPinnedModule<{ createPbrTemplateExt: unknown }>(
+            "material/pbr/pbr-template-ext.js",
+        ),
+        // The pin imports these only when a primitive lacks normals or the
+        // scene enables fog; passing them unconditionally is identical because
+        // insertion is governed by the `MSH_FLAT_NORMAL` mesh bit and the
+        // `PBR_HAS_FOG` scene bit. An empty string here is the transcribed
+        // fallback in another shape: Scene 255's captured fragment carried the
+        // flat-normal lines while "" composed the smooth-normal arm against
+        // them, and the byte-for-byte gate only logs a fragment nothing
+        // matches.
+        importPinnedModule<{ FLAT_NORMAL_WGSL: string }>(
+            "material/pbr/fragments/flat-normal-wgsl.js",
+        ),
+        importPinnedModule<{
+            PBR_FOG_HELPER: string;
+            PBR_FOG_BLOCK: string;
+        }>("material/pbr/pbr-fog-wgsl.js"),
+        // Gated by `MSH_HAS_THIN_INSTANCES` exactly like the flat-normal and
+        // fog snippets by their bits.
+        importPinnedModule<{
+            createThinInstanceFragment: (hasInstanceColor: boolean) => unknown;
+        }>("shader/fragments/thin-instance-fragment.js"),
+        // `buildPbrRenderables` loads these when a mesh of the group needs
+        // them; `composePbr` gates each through `_pbrLazyWgslNeeds` per
+        // variant, so supplying all three composes the same text.
+        importPinnedModule<Record<string, unknown>>(
+            "material/pbr/fragments/pbr-normal-tangent-wgsl.js",
+        ),
+        importPinnedModule<Record<string, unknown>>(
+            "material/pbr/fragments/pbr-normal-cotangent-wgsl.js",
+        ),
+        importPinnedModule<Record<string, unknown>>(
+            "material/pbr/fragments/pbr-spec-gloss-wgsl.js",
+        ),
+    ]);
     const deps = {
         _singleLightWGSL: options.singleLightWgsl ?? "",
         _getSingleLightBlock:
@@ -476,6 +494,9 @@ export async function composePinnedPbrVariant(
         _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
+        _tangentNormal: tangentNormal,
+        _cotangentNormal: cotangentNormal,
+        _specGloss: specGloss,
         _createPbrShadowFragment: pbrShadow
             ? await pbrShadow.preparePbrShadowFragment(shadowLights)
             : null,

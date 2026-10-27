@@ -3,8 +3,8 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.36.0",
-    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
+    "version": "1.37.0",
+    "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
@@ -25,7 +25,7 @@
     "fixedAnimationCallbacks": "1",
     "loadingSize": "Estimated demo assets: 6.1 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.36.0",
+    "engine": "Babylon Lite v1.37.0",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
@@ -70,7 +70,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/debug.ts",
-      "sha256": "4ba9a2778848e7e63ec6a7e661b3d19833f2dd69ad8e8275ea1008f9f38388cd"
+      "sha256": "d1cdfd5f4e3a6dc779c06f7be9c8a7cc0e3130b96194a5dea39ba5e502228705"
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/ocean/demo.ts",
@@ -126,7 +126,7 @@
     }
   ],
   "browser": {
-    "version": "155.0.8059.85",
+    "version": "156.0.8078.48",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -178,5 +178,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-10-25T19:22:10.682Z"
+  "capturedAt": "2026-10-27T11:39:28.518Z"
 }

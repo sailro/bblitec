@@ -15,7 +15,6 @@ import {
 } from "../src/pinned-shader-composer.js";
 import {
     materialTextureSlotsHeader,
-    pinnedSharedVariantDecls,
     pinnedStandardVariantsHeader,
 } from "../src/pinned-pbr-variant-cpp.js";
 import {
@@ -29,6 +28,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { writeSharedVariantHeaders } from "./variant-headers.js";
 
 const setterFeatures = {
     diffuse: false,
@@ -139,9 +139,10 @@ test(
                 lightmapCoordIndex: 1,
             }),
         );
-        writeFileSync(
-            join(directory, "bblite/upstream/pinned_variant_bindings.hpp"),
-            pinnedSharedVariantDecls(context, "lightmap control"),
+        writeSharedVariantHeaders(
+            join(directory, "bblite/upstream"),
+            context,
+            "lightmap control",
         );
         writeFileSync(
             join(directory, "bblite/upstream/material_texture_slots.hpp"),

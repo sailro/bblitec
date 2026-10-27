@@ -134,92 +134,23 @@ export function lowerMaterialPublication(
         "src/material/pbr/pbr-renderable.ts",
         "buildPbrRenderables",
     );
-    const draw = context.variableInitializer(pbr.declaration, "drawWith");
-    if (!ts.isArrowFunction(draw) || !ts.isBlock(draw.body))
-        context.contractError(draw, "Expected the captured PBR draw closure.");
-    const first = draw.body.statements[0]!;
-    const guard = lowerPinnedBody(pbr.file, [first], {
-        bindings: new Map([
-            ["isOverride", { cpp: "is_override", type: "bool" }],
-            ["mesh.material", { cpp: "current.value", type: "scalar" }],
-            ["mat", { cpp: "captured.value", type: "scalar" }],
-        ]),
-        calls: new Map(),
-
-        returnValue(expression) {
-            if (!expression)
-                context.contractError(
-                    first,
-                    "Expected the captured-material draw result.",
-                );
-            context.assertExpressionShape(
-                expression,
-                "0",
-                "Suppressed stale draw",
-            );
-            return "false";
-        },
-    });
-    const familyGuard = (
-        module: string,
-        name: string,
-        condition: string,
-        current: string,
-        captured: string,
-    ): string => {
-        const source = context.functionDeclaration(module, name);
-        const checks = context.findNodes(
-            source.declaration,
-            (node): node is ts.IfStatement =>
-                ts.isIfStatement(node) &&
-                context.expressionMatchesShape(node.expression, condition) &&
-                ts.isBlock(node.thenStatement) &&
-                node.thenStatement.statements.some(
-                    (statement) =>
-                        ts.isReturnStatement(statement) &&
-                        statement.expression !== undefined &&
-                        context.expressionMatchesShape(
-                            statement.expression,
-                            "0",
-                        ),
-                ),
-        );
-        if (checks.length !== 1)
-            context.contractError(
-                source.declaration,
-                "Expected the family's captured-material draw guard.",
-            );
-        const bindings = new Map<string, PinnedBinding>([
-            ["isOverride", { cpp: "is_override", type: "bool" }],
-            // Native outputs are removed before packet storage is released.
-            [
-                "packet._disposed",
-                { cpp: "false", type: "bool", staticallyAbsent: true },
-            ],
-            [current, { cpp: "current.value", type: "scalar" }],
-            [captured, { cpp: "captured.value", type: "scalar" }],
-        ]);
-        return lowerPinnedBody(source.file, checks, {
-            bindings,
-            calls: new Map(),
-            expression: shaderPacketInactiveHook(context, bindings),
-            returnValue: () => "false",
-        });
-    };
-    const standardGuard = familyGuard(
+    const guard = capturedMaterialGuard(
+        context,
+        pbr.file,
+        context.variableInitializer(pbr.declaration, "drawWith"),
+        "PBR",
+    );
+    const standard = context.functionDeclaration(
         "src/material/standard/standard-renderable.ts",
         "buildStandardMeshRenderables",
-        "!isOverride && mesh.material !== mat",
-        "mesh.material",
-        "mat",
     );
-    const shaderGuard = familyGuard(
-        "src/material/shader/shader-renderable.ts",
-        "createTransparentRenderable",
-        "isPacketInactive(packet, material, isOverride)",
-        "packet.mesh.material",
-        "material",
+    const standardGuard = capturedMaterialGuard(
+        context,
+        standard.file,
+        standard.declaration,
+        "Standard",
     );
+    const shaderGuard = shaderMaterialGuard(context);
     const runtime = context.functionDeclaration(
         "src/scene/scene-runtime-mesh-build.ts",
         "materializeRuntimeMesh",
@@ -574,6 +505,104 @@ ${shaderGuard}
     return true;
 }
 `;
+}
+
+/**
+ * A draw closure's captured-material guard: the one `if (<condition>)` of
+ * `root`, asserted with its `body`, and the bindings every family reads it
+ * through -- the override flag, and the mesh's current material against
+ * the captured one, by the family's own spelling of each.
+ */
+function capturedMaterialCheck(
+    context: LoweringContext,
+    root: ts.Node,
+    condition: string,
+    body: string,
+    label: string,
+    material: { current: string; captured: string },
+): { check: ts.IfStatement; bindings: Map<string, PinnedBinding> } {
+    const [check, ...others] = context.findNodes(
+        root,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            context.expressionMatchesShape(node.expression, condition),
+    );
+    if (!check || others.length)
+        return context.contractError(root, `Expected the ${label}.`);
+    context.assertStatementShapes(
+        root,
+        [check],
+        `if (${condition}) { ${body} }`,
+        label,
+    );
+    return {
+        check,
+        bindings: new Map<string, PinnedBinding>([
+            ["isOverride", { cpp: "is_override", type: "bool" }],
+            [material.current, { cpp: "current.value", type: "scalar" }],
+            [material.captured, { cpp: "captured.value", type: "scalar" }],
+        ]),
+    };
+}
+
+/**
+ * The captured-material draw guard a PBR or Standard draw closure holds: a
+ * draw whose mesh moved to another material is suppressed.
+ */
+function capturedMaterialGuard(
+    context: LoweringContext,
+    file: ts.SourceFile,
+    root: ts.Node,
+    family: string,
+): string {
+    const { check, bindings } = capturedMaterialCheck(
+        context,
+        root,
+        "!isOverride && mesh.material !== mat",
+        "return 0;",
+        `${family} captured-material draw guard`,
+        { current: "mesh.material", captured: "mat" },
+    );
+    return lowerPinnedBody(file, [check], {
+        bindings,
+        calls: new Map(),
+        returnValue: () => "false",
+    });
+}
+
+/**
+ * ShaderMaterial's captured-material draw guard. The pin's draw loop skips a
+ * packet whose material moved (`isPacketInactive`) or, opaque only, whose mesh
+ * is hidden; visibility is the native draw's own test, so the inactive
+ * operand alone guards the captured material.
+ */
+function shaderMaterialGuard(context: LoweringContext): string {
+    const { declaration } = context.functionDeclaration(
+        "src/material/shader/shader-renderable.ts",
+        "createShaderRenderable",
+    );
+    const { check, bindings } = capturedMaterialCheck(
+        context,
+        context.variableInitializer(declaration, "draw"),
+        "isPacketInactive(packet, material, isOverride) || (!transparent && packet.mesh.visible === false)",
+        "continue;",
+        "shader captured-material draw skip",
+        { current: "packet.mesh.material", captured: "material" },
+    );
+    if (!ts.isBinaryExpression(check.expression))
+        return context.contractError(check, "Expected the shader draw skip.");
+    // Native outputs are removed before packet storage is released.
+    bindings.set("packet._disposed", {
+        cpp: "false",
+        type: "bool",
+        staticallyAbsent: true,
+    });
+    // The condition shape fixed the left operand as the inactive-packet test.
+    const inactive = shaderPacketInactiveHook(
+        context,
+        bindings,
+    )(check.expression.left)!;
+    return `    if (${inactive}) {\n        return false;\n    }`;
 }
 
 /** Native module/GPU construction resolves synchronously; its continuation runs after submission. */

@@ -1104,15 +1104,20 @@ TaskHandle create_screen_space_task(
         // Every key the scene wrote reaches the pin's config, so the set is
         // checked against the config the pin declares: a renamed setting
         // would otherwise take its default silently.
-        this.context.assertSuppliedOptions(module, facts.configType, [
-            "sourceTexture",
-            "camera",
-            ...(manifest.hasDepthTexture ? ["depthTexture"] : []),
-            ...(manifest.hasTarget ? ["targetTexture"] : []),
-            ...(manifest.name !== undefined ? ["name"] : []),
-            ...(kind === "scalar" ? ["lightDirection"] : []),
-            ...Object.keys(manifest.options),
-        ]);
+        this.context.assertSuppliedOptions(
+            module,
+            facts.configType,
+            [
+                "sourceTexture",
+                "camera",
+                ...(manifest.hasDepthTexture ? ["depthTexture"] : []),
+                ...(manifest.hasTarget ? ["targetTexture"] : []),
+                ...(manifest.name !== undefined ? ["name"] : []),
+                ...(kind === "scalar" ? ["lightDirection"] : []),
+                ...Object.keys(manifest.options),
+            ],
+            "any-optional",
+        );
         const name = manifest.name ?? this.pinnedDefault(declaration, "name");
         const composition =
             manifest.options.composition ??

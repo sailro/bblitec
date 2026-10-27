@@ -72,12 +72,12 @@ import {
     libraryName,
 } from "../compiler/symbols.js";
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
 import {
     cppIdentifier,
     doubleCpp,
     doubleLiteral,
     lazyStaticAccessor,
+    moduleCppStem,
     snakeCase,
     stringLiteral,
 } from "../cpp-literals.js";
@@ -396,9 +396,7 @@ const regExpCaptureShape: RecordShape = {
 function detailNamespace(module: string): string {
     // `_matrix-allocator.ts` is internal by its underscore; the native
     // namespace already says so.
-    let stem = posix.basename(module, ".ts");
-    while (stem.startsWith("_")) stem = stem.slice(1);
-    return `bbl::${stem.replaceAll("-", "_")}_detail`;
+    return `bbl::${moduleCppStem(module)}_detail`;
 }
 
 /** Whether a node is a function-like body the record model lowers. */

@@ -29,6 +29,10 @@
 //   "none" (an unmapped unit) is asserted against by the test suite, so
 //   a new activation unit cannot land without naming what it mirrors.
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
+import {
+    backgroundFactories,
+    imageSkyboxLoader,
+} from "./pinned-background-factories.js";
 import type { Activation, ActivationPlan } from "./asset-feature-join.js";
 import type { Feature } from "./compiler/types.js";
 import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
@@ -494,7 +498,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "background:ground": {
-        provenance: "src/material/pbr/background-ground.ts",
+        provenance: backgroundFactories.ground.modulePath,
         consumers: CMAKE,
     },
     "background:dds-environment": {
@@ -502,17 +506,17 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "background:skybox": {
-        provenance: "src/material/pbr/background-dds-skybox.ts",
+        provenance: backgroundFactories.ddsSkybox.modulePath,
         consumers: CMAKE,
     },
     "background:image-skybox": {
         provenance:
-            "src/loader-skybox/load-skybox.ts + " +
+            `${imageSkyboxLoader.modulePath} + ` +
             "src/loader-skybox/skybox-renderable.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "background:solid-skybox": {
-        provenance: "src/material/pbr/background-solid-skybox.ts",
+        provenance: backgroundFactories.solidSkybox.modulePath,
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "light:hemispheric": {
@@ -2430,8 +2434,9 @@ function capabilityRows(
             "src/loader-gltf/gltf-ext-spec-gloss.ts (registry row " +
                 "KHR_materials_pbrSpecularGlossiness) stamps " +
                 "specGlossTexture; src/material/pbr/pbr-material.ts " +
-                "_computePbrMaterialFeatures sets PBR_HAS_SPEC_GLOSS from it " +
-                "and pbr-template.ts binds the pair for that bit; the " +
+                "_computePbrMaterialFeatures sets PBR_HAS_SPEC_GLOSS from it, " +
+                "pbr-compose.ts _pbrLazyWgslNeeds supplies the spec-gloss " +
+                "WGSL for that bit and pbr-template.ts binds the pair; the " +
                 "workflow replacement has no scene half",
             [
                 "render_capabilities.hpp",

@@ -166,6 +166,9 @@ import {
     type TaskRecordOptions,
 } from "./lowering/geometry-output-lowerer.js";
 import { renderTaskRemovalHeader } from "./lowering/render-task-removal.js";
+import { meshFeaturesHeader } from "./lowering/mesh-attribute-features.js";
+import { backgroundFactories } from "./pinned-background-factories.js";
+import { subtreeVisibilityHeader } from "./lowering/subtree-visibility.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import {
@@ -1319,6 +1322,17 @@ ${lowerThinInstanceSync(context)}
         this.tree.write(
             "upstream/include/bblite/upstream/render_task_removal.hpp",
             renderTaskRemovalHeader(context),
+        );
+        // `_computeMeshFeatures` and `_meshTangentFeature`: the variant key,
+        // the thin binding capture and the PBR lazy caps all call them.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_mesh_features.hpp",
+            meshFeaturesHeader(context),
+        );
+        // `setSubtreeVisible` over the scene and glTF node graphs.
+        this.tree.write(
+            "upstream/include/bblite/upstream/subtree_visibility.hpp",
+            subtreeVisibilityHeader(context),
         );
         emitReached("upstream/src/scene_core.cpp", () =>
             new SceneLowerer(context).lowerCore({
@@ -3086,12 +3100,12 @@ ${wgsl}`,
                     symbolName: "_packSceneUniforms",
                 },
                 {
-                    modulePath: "src/material/pbr/background-ground.ts",
-                    symbolName: "buildGroundRenderable",
+                    modulePath: backgroundFactories.ground.modulePath,
+                    symbolName: backgroundFactories.ground.factory,
                 },
                 {
-                    modulePath: "src/material/pbr/background-dds-skybox.ts",
-                    symbolName: "buildDdsSkyboxRenderable",
+                    modulePath: backgroundFactories.ddsSkybox.modulePath,
+                    symbolName: backgroundFactories.ddsSkybox.factory,
                 },
                 {
                     modulePath: "src/loader-env/rgbd-decode.ts",
@@ -3109,8 +3123,8 @@ ${wgsl}`,
                         symbolName: "equirectToCubemapGPU,prefilterCubemapGPU",
                     },
                     {
-                        modulePath: "src/material/pbr/background-hdr-skybox.ts",
-                        symbolName: "buildHdrSkyboxRenderable",
+                        modulePath: backgroundFactories.hdrSkybox.modulePath,
+                        symbolName: backgroundFactories.hdrSkybox.factory,
                     },
                 );
             }

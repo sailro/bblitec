@@ -1,8 +1,12 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import {
+    lowerPinnedBody,
+    lowerPinnedStatements,
+} from "./pinned-body-lowerer.js";
 import {
     collectionBinding,
+    PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { lowerRebuildTransaction } from "./pbr-transmission-transaction.js";
@@ -12,8 +16,49 @@ import {
     materialPublicationTransport,
 } from "./material-publication.js";
 import { recordAt } from "../compiler/record-access.js";
+import { finalReturn } from "../compiler/loop-control.js";
+import { conditionalExpression } from "../compiler/syntax.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import { meshTangentFeatureCall } from "./mesh-attribute-features.js";
 
 const sceneModule = "src/scene/scene-core.ts";
+
+const pbrRenderableModule = "src/material/pbr/pbr-renderable.ts";
+
+const recoveryModule = "src/engine/recovery-rebuild.ts";
+
+/** `_lazyPbrCaps(mesh)`, lowered below as `pbr_lazy_caps`. */
+const lazyCapsCall = (args: readonly string[]): string =>
+    `pbr_lazy_caps(scene, ${args[0]})`;
+
+/** `lazyCapsWidening(caps)`, lowered below as `pbr_lazy_caps_widening`. */
+const lazyCapsWideningCall = (args: readonly string[]): string =>
+    `pbr_lazy_caps_widening(${args[0]})`;
+
+/**
+ * A group's published widening (`group._w`, null when nothing can be
+ * missing) and a build result's (`result._w`, undefined for a builder that
+ * publishes none), as the group build, its rebuild and device recovery
+ * read and store them.
+ */
+const groupWideningSlot: PinnedBinding = {
+    cpp: "group->widening",
+    type: "opaque",
+};
+const groupWidening: PinnedBinding = {
+    ...groupWideningSlot,
+    optional: {
+        present: "group->widening.has_value()",
+        members: new Map([["_c", { cpp: "*group->widening" }]]),
+    },
+};
+const wideningPublication: ReadonlyMap<string, PinnedBinding> = new Map<
+    string,
+    PinnedBinding
+>([
+    ["result._w", { cpp: "*widening", type: "opaque", absentCpp: "!widening" }],
+    ["meshes._w", groupWideningSlot],
+]);
 
 /** Source builder identities own membership; the backend owns draw construction. */
 export function lowerPbrMaterialGroups(
@@ -400,6 +445,7 @@ void complete_scene_material_group(Scene& scene, MaterialHandle material) {
         group->rebuild_ready = true;
     }
 }
+${lowerPbrLazyCaps(context)}
 ${lowerPbrGroupBuild(context, gltfSceneHooks)}
 void enqueue_pbr_material_swap(Scene& scene, MeshHandle mesh) {
 ${enqueue}
@@ -408,6 +454,7 @@ void queue_pbr_material_group(Scene& scene, MeshHandle mesh) {
     scene.state->process_material_groups = process_pbr_material_swaps;
     scene.state->enqueue_material_group = enqueue_pbr_material_swap;
     scene.state->complete_material_group = complete_scene_material_group;
+    scene.state->recover_material_groups = recover_pbr_material_groups;
     const auto* material = pbr_mesh_material(scene, mesh);
 ${body}
 }
@@ -429,182 +476,108 @@ function lowerPbrGroupBuild(
     context: LoweringContext,
     gltfSceneHooks: boolean,
 ): string {
-    const module = "src/material/pbr/pbr-renderable.ts";
+    const module = pbrRenderableModule;
     const { file, declaration } = context.functionDeclaration(
         module,
         "buildPbrRenderables",
     );
-    const gamma = context.variableInitializer(declaration, "hasGammaAlbedo")
-        .parent.parent.parent;
-    const scan = declaration.body!.statements.find(
-        (statement) =>
+    const recovery = context.functionDeclaration(
+        recoveryModule,
+        "rebuildSceneGpu",
+    );
+    const statements = declaration.body!.statements;
+    const declared = (name: string): ts.VariableStatement => {
+        const statement = context.variableInitializer(declaration, name).parent
+            .parent.parent;
+        return ts.isVariableStatement(statement)
+            ? statement
+            : context.contractError(
+                  statement,
+                  `Expected the PBR group build's '${name}' declaration.`,
+              );
+    };
+    const folds = (name: string) => (node: ts.Node) =>
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.BarEqualsToken &&
+        context.expressionMatchesShape(node.left, name);
+    // The scan: of the mesh walk, only the lazy-capability fold reaches native.
+    const scan = statements.find(
+        (statement): statement is ts.ForStatement =>
             ts.isForStatement(statement) &&
-            context.hasNode(
-                statement,
-                (node) =>
-                    ts.isBinaryExpression(node) &&
-                    context.expressionMatchesShape(node.left, "hasGammaAlbedo"),
-            ),
+            context.hasNode(statement, folds("lazyCaps")),
     );
-    const guard = declaration.body!.statements.find(
-        (statement) =>
-            ts.isIfStatement(statement) &&
-            context.expressionMatchesShape(
-                statement.expression,
-                "!hasGammaAlbedo || !group.r",
-            ),
-    );
-    if (
-        !ts.isVariableStatement(gamma) ||
-        !scan ||
-        !ts.isForStatement(scan) ||
-        !ts.isBlock(scan.statement) ||
-        !guard
-    )
-        context.contractError(
+    if (!scan || !ts.isBlock(scan.statement))
+        return context.contractError(
             declaration,
-            "Expected the PBR group gamma-albedo invalidator.",
+            "Expected the PBR group lazy-capability scan.",
         );
-    const statements = scan.statement.statements.filter(
-        (statement) =>
-            ts.isVariableStatement(statement) ||
-            (ts.isExpressionStatement(statement) &&
-                ts.isBinaryExpression(statement.expression) &&
-                context.expressionMatchesShape(
-                    statement.expression.left,
-                    "hasGammaAlbedo",
-                )),
-    );
     const projectedScan = ts.factory.updateForStatement(
         scan,
         scan.initializer,
         scan.condition,
         scan.incrementor,
-        ts.factory.updateBlock(scan.statement, statements),
+        ts.factory.updateBlock(
+            scan.statement,
+            scan.statement.statements.filter(
+                (statement) =>
+                    (ts.isVariableStatement(statement) &&
+                        statement.declarationList.declarations.some(
+                            (variable) =>
+                                ts.isIdentifier(variable.name) &&
+                                variable.name.text === "m",
+                        )) ||
+                    (ts.isExpressionStatement(statement) &&
+                        folds("lazyCaps")(statement.expression)),
+            ),
+        ),
     );
-    const groupRead = context.variableInitializer(declaration, "group");
+    const group = declared("group");
     context.assertExpressionShape(
-        groupRead,
+        group.declarationList.declarations[0]!.initializer!,
         "scene._groups.get(meshes[0]!.material!._buildGroup)!",
         "PBR builder group identity",
     );
-    const bindings = new Map<string, PinnedBinding>([
-        [
-            "meshes.length",
-            { cpp: "static_cast<double>(meshes.size())", type: "scalar" },
-        ],
-        ["mat._gammaAlbedo", { cpp: "mat.source_gamma_albedo", type: "bool" }],
-        ["group.r", { cpp: "group->rebuild_ready", type: "bool" }],
-        ["group._w", { cpp: "group->gamma_invalidates", type: "bool" }],
-    ]);
-    const body = lowerPinnedBody(
-        file,
-        [
-            gamma,
-            projectedScan,
-            groupRead.parent.parent.parent as ts.VariableStatement,
-            guard,
-        ],
-        {
-            bindings,
-            calls: new Map(),
-
-            statement(statement, lowerer, indent) {
-                if (
-                    ts.isExpressionStatement(statement) &&
-                    ts.isBinaryExpression(statement.expression) &&
-                    context.expressionMatchesShape(
-                        statement.expression.left,
-                        "hasGammaAlbedo",
-                    )
-                ) {
-                    const expression = statement.expression;
-                    const operator =
-                        expression.operatorToken.kind ===
-                        ts.SyntaxKind.BarBarEqualsToken
-                            ? "||"
-                            : expression.operatorToken.kind ===
-                                ts.SyntaxKind.AmpersandAmpersandEqualsToken
-                              ? "&&"
-                              : undefined;
-                    if (!operator)
-                        context.contractError(
-                            expression,
-                            "Expected the PBR gamma-albedo fold.",
-                        );
-                    return [
-                        `${indent}hasGammaAlbedo = hasGammaAlbedo ${operator} ${lowerer.expression(expression.right)};`,
-                    ];
-                }
-                if (
-                    !ts.isVariableStatement(statement) ||
-                    statement.declarationList.declarations.length !== 1
-                )
-                    return undefined;
-                const variable = statement.declarationList.declarations[0]!;
-                if (!ts.isIdentifier(variable.name) || !variable.initializer)
-                    return undefined;
-                if (variable.name.text === "group")
-                    return [
-                        `${indent}const auto* first_material = pbr_mesh_material(scene, meshes.at(0));`,
-                        `${indent}const auto group = first_material && first_material->source_pbr_group_builder ? scene.state->pbr_material_group : nullptr;`,
-                        `${indent}if (!group) throw std::runtime_error("PBR builder has no material group");`,
-                    ];
-                if (variable.name.text === "m") {
-                    const read = context.unwrapExpression(variable.initializer);
-                    if (
-                        !ts.isElementAccessExpression(read) ||
-                        !context.expressionMatchesShape(
-                            read.expression,
-                            "meshes",
-                        )
-                    )
-                        context.contractError(
-                            read,
-                            "Expected the gamma-albedo group mesh read.",
-                        );
-                    return [
-                        `${indent}const auto m = meshes.at(static_cast<std::size_t>(${lowerer.expression(read.argumentExpression)}));`,
-                    ];
-                }
-                if (variable.name.text === "mat") {
-                    context.assertExpressionShape(
-                        variable.initializer,
-                        "m.material",
-                        "PBR group current material",
-                    );
-                    return [
-                        `${indent}const auto& mat = ${recordAt("scene.engine->materials", `${recordAt("scene.engine->meshes", "m")}.material`)};`,
-                    ];
-                }
-                return undefined;
-            },
-            expression(node) {
-                if (node.kind === ts.SyntaxKind.NullKeyword) return "false";
-                if (ts.isArrowFunction(node)) {
-                    context.assertExpressionShape(
-                        node,
-                        "(mesh) => (mesh.material as PbrMaterialProps | null)?._gammaAlbedo",
-                        "PBR gamma-albedo invalidation predicate",
-                    );
-                    return "true";
-                }
-                return undefined;
-            },
-        },
+    /** The statement after a declaration, asserted to the pin's shape. */
+    const following = (
+        variable: ts.VariableStatement,
+        shape: string,
+        label: string,
+    ): ts.Statement => {
+        const next = statements[statements.indexOf(variable) + 1];
+        if (!next) return context.contractError(variable, `Expected ${label}.`);
+        context.assertStatementShapes(declaration.body!, [next], shape, label);
+        return next;
+    };
+    const live = declared("liveCaps");
+    const install = following(
+        live,
+        "group._w = lazyCapsWidening(liveCaps);",
+        "PBR live closure widening",
     );
-    const result = declaration.body!.statements.at(-1);
-    if (
-        !result ||
-        !ts.isReturnStatement(result) ||
-        !result.expression ||
-        !ts.isObjectLiteralExpression(result.expression)
-    )
-        context.contractError(declaration, "Expected the PBR group result.");
+    // Recounted after this build's extensions register; the native
+    // composition table already carries every extension's feature bits.
+    const load = declared("loadCaps");
+    const loadScan = following(
+        load,
+        "for (const m of meshes) { loadCaps |= _lazyPbrCaps(m); }",
+        "PBR load-cap recount",
+    );
+    const result = finalReturn(declaration.body);
+    if (!result?.expression || !ts.isObjectLiteralExpression(result.expression))
+        return context.contractError(
+            declaration,
+            "Expected the PBR group result.",
+        );
     context.assertExpressionShape(
         context.propertyInitializer(result.expression, "rebuildSingle"),
         "rebuildSingle",
         "PBR single-mesh rebuild result",
+    );
+    const widening = context.propertyInitializer(result.expression, "_w");
+    context.assertExpressionShape(
+        widening,
+        "lazyCapsWidening(loadCaps)",
+        "PBR build result widening",
     );
     const single = context.variableInitializer(declaration, "rebuildSingle");
     if (!ts.isArrowFunction(single))
@@ -612,10 +585,255 @@ function lowerPbrGroupBuild(
             single,
             "Expected the PBR single-mesh builder closure.",
         );
-    return `bool build_pbr_material_group(Scene& scene, const std::vector<MeshHandle>& meshes) {
+    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ["meshes", collectionBinding("meshes")],
+            ["group.r", { cpp: "group->rebuild_ready", type: "bool" }],
+            ["group._w", groupWidening],
+        ]),
+        calls: new Map([
+            ["_lazyPbrCaps", lazyCapsCall],
+            ["lazyCapsWidening", lazyCapsWideningCall],
+        ]),
+        // The group the pin looks up by the first material's build group
+        // is the scene's one PBR group.
+        statement: (statement, _lowerer, indent) =>
+            statement === group
+                ? [
+                      `${indent}const auto* first_material = pbr_mesh_material(scene, meshes.at(0));`,
+                      `${indent}const auto group = first_material && first_material->source_pbr_group_builder ? scene.state->pbr_material_group : nullptr;`,
+                      `${indent}if (!group) throw std::runtime_error("PBR builder has no material group");`,
+                  ]
+                : undefined,
+    });
+    const body = lowerPinnedStatements(lowerer, [
+        declared("lazyCaps"),
+        projectedScan,
+        group,
+        live,
+        install,
+        load,
+        loadScan,
+    ]);
+    return `// ${context.provenance(module, "buildPbrRenderables")}
+PbrLazyWidening pbr_group_build_widening(Scene& scene, const std::vector<MeshHandle>& meshes) {
 ${body}
+    return ${lowerer.expression(widening)};
+}
+PbrLazyWidening build_pbr_material_group(Scene& scene, const std::vector<MeshHandle>& meshes) {
+    const auto widening = pbr_group_build_widening(scene, meshes);
 ${gltfSceneHooks ? "    run_pbr_scene_hooks(scene, meshes);" : ""}
-    return hasGammaAlbedo;
+    return widening;
+}
+// ${context.provenance(recoveryModule, "rebuildSceneGpu")}
+void recover_pbr_material_groups(Scene& scene) {
+    const auto group = scene.state->pbr_material_group;
+    if (!group || group->meshes.empty()) return;
+    const std::optional<PbrLazyWidening> widening = pbr_group_build_widening(scene, group->meshes);
+${lowerPinnedBody(recovery.file, [wideningPublicationGuard(context, recovery.declaration)], { bindings: new Map(wideningPublication), calls: new Map() })}
+}
+`;
+}
+
+/** `if (result._w !== undefined) { meshes._w = result._w; }`: a build result publishes its widening onto the group. */
+function wideningPublicationGuard(
+    context: LoweringContext,
+    root: ts.Node,
+): ts.IfStatement {
+    const [guard, ...others] = context.findNodes(
+        root,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            context.expressionMatchesShape(
+                node.expression,
+                "result._w !== undefined",
+            ),
+    );
+    if (!guard || others.length)
+        return context.contractError(
+            root,
+            "Expected one build-result widening publication.",
+        );
+    context.assertStatementShapes(
+        root,
+        [guard],
+        "if (result._w !== undefined) { meshes._w = result._w; }",
+        "Build-result widening publication",
+    );
+    return guard;
+}
+
+/**
+ * The capabilities a PBR group's rebuild closure composes (`_lazyPbrCaps`)
+ * and the widening predicate a group publishes over them
+ * (`lazyCapsWidening`): a material swap a live closure cannot compose goes
+ * to the asynchronous group rebuild, as the pin's does.
+ */
+function lowerPbrLazyCaps(context: LoweringContext): string {
+    const module = pbrRenderableModule;
+    const needs = lowerPinnedFunction(
+        context,
+        "src/material/pbr/pbr-compose.ts",
+        "_pbrLazyWgslNeeds",
+        [
+            { pinned: "features", kind: "number", cpp: "features" },
+            { pinned: "meshFeatures", kind: "number", cpp: "mesh_features" },
+        ],
+        {
+            cppName: "pbr_lazy_wgsl_needs",
+            returns: "double",
+        },
+    );
+    const caps = context.functionDeclaration(module, "_lazyPbrCaps");
+    const [material, absent, features, returned, ...rest] =
+        caps.declaration.body!.statements;
+    if (!material || !absent || !features || !returned || rest.length)
+        context.contractError(
+            caps.declaration,
+            "Expected the PBR lazy-capability read.",
+        );
+    context.assertStatementShapes(
+        caps.declaration.body!,
+        [material, absent, features],
+        `const mat = mesh.material as PbrMaterialProps | null;
+         if (!mat) { return 0; }
+         const features = ((mat._renderFeatures as MaterialRenderFeatures | undefined) ?? _computePbrMaterialFeatures(mat)).features;`,
+        "PBR lazy-capability material features",
+    );
+    const read = lowerPinnedBody(caps.file, caps.declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                "mat._gammaAlbedo",
+                { cpp: "mat->source_gamma_albedo", type: "bool" },
+            ],
+            ["mesh", { cpp: "mesh", type: "opaque" }],
+        ]),
+        calls: new Map([
+            [
+                "_pbrLazyWgslNeeds",
+                (args: readonly string[]) =>
+                    `pbr_lazy_wgsl_needs(${args.join(", ")})`,
+            ],
+            [
+                "_meshTangentFeature",
+                ([mesh]) =>
+                    meshTangentFeatureCall(
+                        `pbr_mesh_has_tangents(scene, ${mesh})`,
+                    ),
+            ],
+        ]),
+        // The material record, and its _computePbrMaterialFeatures word from
+        // the composition table.
+        statement(statement, lowerer, indent) {
+            const variable = ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations[0]
+                : undefined;
+            if (!variable || !ts.isIdentifier(variable.name)) return undefined;
+            if (statement === material) {
+                lowerer.bindLocal(variable.name, {
+                    cpp: "mat",
+                    type: "opaque",
+                    absentCpp: "!mat",
+                });
+                return [
+                    `${indent}const auto* mat = pbr_mesh_material(scene, mesh);`,
+                ];
+            }
+            if (statement === features) {
+                lowerer.bindLocal(variable.name, {
+                    cpp: "features",
+                    type: "scalar",
+                });
+                return [
+                    `${indent}const double features = static_cast<double>(pinned_pbr_material_features(*scene.engine, ${recordAt("scene.engine->meshes", "mesh")}.material));`,
+                ];
+            }
+            return undefined;
+        },
+        returnValue: (expression, numeric) =>
+            expression
+                ? numeric.expression(expression)
+                : context.contractError(
+                      returned,
+                      "Expected the lazy-capability word.",
+                  ),
+    });
+    const widening = context.functionDeclaration(module, "lazyCapsWidening");
+    context.assertFunctionBodyShape(
+        widening.declaration,
+        `{
+            return caps === ALL_LAZY_CAPS ? null : Object.assign((mesh: Mesh) => _lazyPbrCaps(mesh) & ~caps, { _c: caps });
+        }`,
+        "PBR lazy-capability widening predicate",
+    );
+    // The published widening is its capability mask: null, or the
+    // predicate's `_c`.
+    const wideningCpp = lowerPinnedFunction(
+        context,
+        module,
+        "lazyCapsWidening",
+        [{ pinned: "caps", kind: "number", cpp: "caps" }],
+        {
+            cppName: "pbr_lazy_caps_widening",
+            returns: {
+                type: "PbrLazyWidening",
+                // The asserted body fixes the arms: null, or the predicate
+                // whose `_c` is the mask.
+                value: (lowerer, expression) => {
+                    const choice = expression
+                        ? conditionalExpression(expression)
+                        : undefined;
+                    const [mask, ...others] = context.findNodes(
+                        widening.declaration,
+                        (node): node is ts.PropertyAssignment =>
+                            ts.isPropertyAssignment(node) &&
+                            context.propertyName(node.name) === "_c",
+                    );
+                    if (!choice || !mask || others.length)
+                        return context.contractError(
+                            widening.declaration,
+                            "Expected the widening's null-or-predicate choice.",
+                        );
+                    return `${lowerer.expression(choice.condition)} ? PbrLazyWidening{} : PbrLazyWidening{${lowerer.expression(mask.initializer)}}`;
+                },
+            },
+        },
+    );
+    const [predicate] = context.findNodes(
+        widening.declaration,
+        ts.isArrowFunction,
+    );
+    if (!predicate || ts.isBlock(predicate.body))
+        return context.contractError(
+            widening.declaration,
+            "Expected the widening predicate's expression body.",
+        );
+    const applies = new PinnedNumericLowerer(widening.file, {
+        bindings: new Map(),
+        calls: new Map([["_lazyPbrCaps", lazyCapsCall]]),
+    });
+    applies.bindPorts(
+        [
+            ["mesh", { cpp: "mesh", type: "opaque" }],
+            ["caps", { cpp: "*widening", type: "scalar" }],
+        ],
+        predicate.body,
+    );
+    const appliedCpp = applies.expression(predicate.body);
+    return `${needs}
+// The mesh's \`_gpu.tangentBuffer\` port; a mesh with no geometry has none.
+bool pbr_mesh_has_tangents(const Scene& scene, MeshHandle mesh) {
+    const auto geometry = ${recordAt("scene.engine->meshes", "mesh")}.geometry;
+    return geometry != invalid_handle && scene.engine->geometries.at(geometry).has_tangents;
+}
+// ${context.provenance(module, "_lazyPbrCaps")}
+double pbr_lazy_caps(const Scene& scene, MeshHandle mesh) {
+${read}
+}
+${wideningCpp}
+// The published predicate, applied: \`group._w?.(mesh)\` is truthy.
+bool pbr_lazy_widening_applies(const Scene& scene, MeshHandle mesh, const PbrLazyWidening& widening) {
+    return widening && ${appliedCpp} != 0.0;
 }
 `;
 }
@@ -835,7 +1053,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
             },
             expression(node) {
                 if (context.expressionMatchesShape(node, "group._w?.(mesh)"))
-                    return "(group && group->gamma_invalidates && mat->source_gamma_albedo)";
+                    return "(group && pbr_lazy_widening_applies(scene, mesh, group->widening))";
                 return undefined;
             },
         },
@@ -1110,15 +1328,7 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
         variable.parent.statements[
             variable.parent.statements.indexOf(variable) + 1
         ];
-    const gammaGuard = context.findNodes(
-        declaration,
-        (node): node is ts.IfStatement =>
-            ts.isIfStatement(node) &&
-            context.expressionMatchesShape(
-                node.expression,
-                'builder._materialFamily === "pbr" && result._G',
-            ),
-    )[0];
+    const wideningGuard = wideningPublicationGuard(context, declaration);
     const emptyGroup = context.findNodes(
         declaration,
         (node): node is ts.IfStatement =>
@@ -1128,7 +1338,7 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
                 "meshes.length === 0",
             ),
     )[0];
-    if (!empty || !gammaGuard || !emptyGroup)
+    if (!empty || !emptyGroup)
         context.contractError(
             declaration,
             "Expected the group rebuild publication.",
@@ -1199,7 +1409,6 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
             },
         ],
         ["builder", { cpp: "builder", type: "scalar" }],
-        ["result._G", { cpp: "gamma", type: "bool" }],
         [
             "meshes.length",
             {
@@ -1210,6 +1419,7 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
         ["meshes.o", { cpp: "group->rebuild_ready", type: "bool" }],
         ["meshes.r", { cpp: "group->rebuild_ready", type: "bool" }],
         ["changed", { cpp: "changed", type: "bool" }],
+        ...wideningPublication,
     ]);
     const scope = {
         bindings,
@@ -1221,16 +1431,6 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
             ],
         ]),
 
-        expression(node: ts.Expression) {
-            if (
-                context.expressionMatchesShape(
-                    node,
-                    'builder._materialFamily === "pbr"',
-                )
-            )
-                return "builder == 1";
-            return undefined;
-        },
         statement(
             node: ts.Statement,
             numeric: import("./pinned-numeric-lowerer.js").PinnedNumericLowerer,
@@ -1290,13 +1490,6 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
                     )
                 )
                     return [];
-                if (
-                    context.expressionMatchesShape(
-                        node.expression,
-                        "meshes._w = null",
-                    )
-                )
-                    return [`${indent}group->gamma_invalidates = false;`];
             }
             return undefined;
         },
@@ -1313,11 +1506,15 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
     // cancellation gates output replacement and its captured material identities.
     return `${lowerPinnedBody(file, [emptyGroup, variable, empty], scope)}
     const auto outputs = capture_material_outputs(scene, group_meshes);
-    const auto rebuilt = builder == 1 ? run_pbr_rebuild_transaction(scene, group_meshes, build_pbr_material_group) : std::optional<bool>{false};
-    if (!rebuilt) { aborted = true; return; }
-    const bool gamma = *rebuilt;
+    // The build result's _w, absent for a builder that omits it.
+    std::optional<PbrLazyWidening> widening;
+    if (builder == 1) {
+        const auto rebuilt = run_pbr_rebuild_transaction(scene, group_meshes, build_pbr_material_group);
+        if (!rebuilt) { aborted = true; return; }
+        widening = *rebuilt;
+    }
     group->rebuild_ready = true;
-${lowerPinnedBody(file, [gammaGuard], scope)}
+${lowerPinnedBody(file, [wideningGuard], scope)}
     publish_full_material_outputs(scene, group, outputs);`;
 }
 

@@ -41,6 +41,9 @@ import {
     type Recorder,
 } from "./recording-device.js";
 
+/** A caster view receives no shadows and writes no MRT attachments. */
+const casterViewOmissions = ["_shadowEmitter", "_mrtOutput"];
+
 /** One vertex input the composed module declares, at its own location. */
 export interface ComposedNodeAttribute {
     location: number;
@@ -1090,6 +1093,7 @@ async function composeNodeEsmCaster(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),
+        casterViewOmissions,
     );
     const compiled = pipeline.compileNodePipeline(
         material._state,
@@ -1159,6 +1163,7 @@ async function composeNodePcfCaster(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),
+        casterViewOmissions,
     );
     const compiled = pipeline.compileNodePipeline(
         material._state,

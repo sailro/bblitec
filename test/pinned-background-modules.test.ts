@@ -130,7 +130,7 @@ test("lowers each arm's builders into the backgrounds header", async () => {
     // stored at the pin's own float32 width from double arithmetic.
     assert.match(
         header,
-        /inline std::array<float, 24> pinned_ground_mesh_block\(/,
+        /inline std::array<float, 24> pinned_background_ground_create_bg_mesh_ubo\(/,
     );
     assert.match(header, /const double eps = 2\.220446049250313e-16;/);
     assert.match(header, /= static_cast<float>\(0\.9\);/);
@@ -148,11 +148,18 @@ test("lowers each arm's builders into the backgrounds header", async () => {
     // and the .env arm passes the scene's clear colour through whole.
     assert.match(
         header,
-        /pinned_hdr_skybox_geometry\(\(scene\.environment\.skybox_size \/ 2\.0\)\)/,
+        /pinned_cubemap_skybox_material_create_skybox_buffers\(\(scene\.environment\.skybox_size \/ 2\.0\)\)/,
     );
     assert.match(
         header,
-        /pinned_hdr_skybox_mesh_block\([^;]*scene\.clear_color,/,
+        /pinned_background_hdr_skybox_create_sky_hdr_mesh_ubo\([^;]*scene\.clear_color,/,
+    );
+    // The DDS and HDR skyboxes share one createSkyboxBuffers, lowered once.
+    assert.equal(
+        header.match(
+            /PinnedBackgroundGeometry pinned_cubemap_skybox_material_create_skybox_buffers\(/g,
+        )?.length,
+        1,
     );
     // The image skybox's box is the lowered createBoxData.
     assert.match(
@@ -180,7 +187,7 @@ test("background size arguments derive from the loader expressions", async () =>
     );
     assert.match(
         pinnedBackgroundsHeader(context, arms),
-        /pinned_hdr_skybox_geometry\(\(scene\.environment\.skybox_size \* 0\.25\)\)/,
+        /pinned_cubemap_skybox_material_create_skybox_buffers\(\(scene\.environment\.skybox_size \* 0\.25\)\)/,
     );
     assert.throws(
         () =>

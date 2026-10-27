@@ -180,12 +180,12 @@ export function assertRotationPointerContract(
         } else { anglesUniform[0] = 0; }
         anglesUniform[1] = 0; anglesUniform[2] = 1;
         setShaderUniform(rotationDisplayMaterial, "angles", anglesUniform);
-        rotationDisplayPlane.visible = true;
+        setSubtreeVisible(rotationDisplayPlane, true);
     `,
     );
     callbackBody(
         "onDragEnd",
-        `lastDragPoint = null; setMeshesMaterial([ring], materials.colored); rotationDisplayPlane.visible = false;`,
+        `lastDragPoint = null; setMeshesMaterial([ring], materials.colored); setSubtreeVisible(rotationDisplayPlane, false);`,
     );
     const hover = callback("onHoverStart");
     if (ts.isBlock(hover.body))

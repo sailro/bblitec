@@ -839,6 +839,8 @@ export interface PinnedRenderableVariant {
     materialView?: "no-color" | "esm-shadow";
     /** The pin's `MSH_*` bits for the primitive this material is drawn on. */
     meshFeatures: number;
+    /** The material's `_computePbrMaterialFeatures` word, which `_lazyPbrCaps` reads. */
+    materialFeatures: number;
     lightMode: 0 | 1 | 2;
     singleLightType: string;
     toneMapping: boolean;
@@ -973,6 +975,7 @@ export async function composeRenderableVariants(
                         ? { materialView: scene.materialView }
                         : {}),
                     meshFeatures,
+                    materialFeatures: variant.features,
                     lightMode: arm.lightMode,
                     singleLightType: arm.singleLightType,
                     toneMapping: arm.toneMapping,
@@ -1008,6 +1011,7 @@ export async function composeRenderableVariants(
                         materialIndex: materialIndexBase + subject.index,
                         materialName: subject.name,
                         meshFeatures,
+                        materialFeatures: geometry.features,
                         lightMode: arm.lightMode,
                         singleLightType: arm.singleLightType,
                         toneMapping: arm.toneMapping,
@@ -1502,6 +1506,7 @@ export async function composeScenePbrVariants(
                           ? { materialView: "esm-shadow" as const }
                           : {}),
                     meshFeatures,
+                    materialFeatures: variant.features,
                     lightMode: arm.lightMode,
                     singleLightType: arm.singleLightType,
                     toneMapping: arm.toneMapping,

@@ -16,16 +16,14 @@ import {
     pinnedNodeVariantsHeader,
     nodeVariantStageStems,
 } from "../src/pinned-node-material-cpp.js";
-import {
-    materialTextureSlotsHeader,
-    pinnedSharedVariantDecls,
-} from "../src/pinned-pbr-variant-cpp.js";
+import { materialTextureSlotsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { writeSharedVariantHeaders } from "./variant-headers.js";
 
 const prefix = `
 import { createEngine, createSceneContext, parseNodeMaterialFromSnippet,
@@ -200,7 +198,7 @@ test("actual pinned node builders retain private slots and start the complete fa
     const failing = scene();
     core.addToScene(failing, mesh(missing));
     core.addToScene(failing, mesh(valid));
-    await assert.rejects(core.buildScene(failing), /#406/);
+    await assert.rejects(core.buildScene(failing), /#410/);
     assert.equal(
         bindings.length,
         3,
@@ -286,10 +284,7 @@ test(
                 ),
             ),
         );
-        writeFileSync(
-            join(includes, "pinned_variant_bindings.hpp"),
-            pinnedSharedVariantDecls(context, "input lifecycle"),
-        );
+        writeSharedVariantHeaders(includes, context, "input lifecycle");
         writeFileSync(
             join(includes, "material_texture_slots.hpp"),
             inlineCpp(

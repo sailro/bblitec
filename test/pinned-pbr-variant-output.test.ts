@@ -17,6 +17,7 @@ function variant(
         materialIndex,
         materialName: `material-${materialIndex}`,
         meshFeatures: materialIndex,
+        materialFeatures: 0,
         lightMode: 2,
         singleLightType: "",
         toneMapping: true,

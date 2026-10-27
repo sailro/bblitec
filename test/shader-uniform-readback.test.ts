@@ -51,9 +51,9 @@ if(held!==getShaderUniform(source,"uVector")||held[0]!==4||copied[0]!==1)throw n
 const storage=new Float32Array(32).fill(7);setShaderMatrix(source,"uMatrix",storage.subarray(16));
 if(matrix!==getShaderUniform(source,"uMatrix")||matrix[15]!==7)throw new Error("matrix alias");
 const system=getShaderUniform(source,"worldViewProjection");if(typeof system==="number"||system.length!==16||system[0]!==0)throw new Error("system stored slot");
-let missing=false;try{getShaderUniform(source,"missing");}catch(error){missing=error.message.includes("#479");}if(!missing)throw new Error("missing name");
-const absentNames:string[]=["missing"];for(const name of absentNames){let missingWrite=false;try{setShaderUniform(source,name,new Float32Array(1));}catch(error){missingWrite=error.message.includes("#477");}if(!missingWrite)throw new Error("missing write name");}
-let length=false;for(const name of ["uVector"]){try{setShaderUniform(source,name,new Float32Array(3));}catch(error){length=error.message.includes("#478");}}if(!length)throw new Error("dynamic length");
+let missing=false;try{getShaderUniform(source,"missing");}catch(error){missing=error.message.includes("#483");}if(!missing)throw new Error("missing name");
+const absentNames:string[]=["missing"];for(const name of absentNames){let missingWrite=false;try{setShaderUniform(source,name,new Float32Array(1));}catch(error){missingWrite=error.message.includes("#481");}if(!missingWrite)throw new Error("missing write name");}
+let length=false;for(const name of ["uVector"]){try{setShaderUniform(source,name,new Float32Array(3));}catch(error){length=error.message.includes("#482");}}if(!length)throw new Error("dynamic length");
 enableShaderMaterialUniformCaching();`);
     const { compiled, cpp } = nativeParts(source);
     assert.deepEqual(compiled.manifest.deferredCapabilities ?? [], []);

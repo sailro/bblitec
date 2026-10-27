@@ -131,7 +131,7 @@ function collectInterfaceMembers(
     for (const clause of declaration.heritageClauses ?? []) {
         for (const base of clause.types) {
             const baseName = heritageBaseName(source, base);
-            const baseModule = declaringModule(source, module, baseName);
+            const baseModule = source.declaringModule(module, baseName);
             if (baseModule === undefined) {
                 source.contractError(
                     base,
@@ -172,23 +172,6 @@ function heritageBaseName(
         );
     }
     return base.expression.text;
-}
-
-/** The module declaring a name: this one, or the one it imports it from. */
-function declaringModule(
-    source: LoweringContext,
-    module: string,
-    name: string,
-): string | undefined {
-    const file = source.sourceFile(module);
-    const declaredHere = file.statements.some(
-        (statement) =>
-            (ts.isInterfaceDeclaration(statement) ||
-                ts.isTypeAliasDeclaration(statement) ||
-                ts.isEnumDeclaration(statement)) &&
-            statement.name.text === name,
-    );
-    return declaredHere ? module : source.moduleOfImport(module, name);
 }
 
 /** The shape a declared type takes, resolving the pin's own type names. */
@@ -252,7 +235,7 @@ function classify(
         }
         if (ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName)) {
             const name = type.typeName.text;
-            const declaredIn = declaringModule(source, module, name);
+            const declaredIn = source.declaringModule(module, name);
             if (declaredIn === undefined) {
                 return refuse(
                     type,

@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.36.0",
+  "version": "1.37.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961",
+  "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986",
   "scenes": [
     {
       "id": "scene1",
@@ -86,13 +86,13 @@
       "id": "scene104",
       "upstreamPath": "lab/lite/src/lite/scene104.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene104.ts",
-      "sha256": "884491a54742d7d4e6cd09e59b2b667407d29015c55fdb79bdf4a951cff29e32"
+      "sha256": "98082c83c4eda4a5c09d12ddb41c6f1b5bed40d3133a9cea11da00d405d84995"
     },
     {
       "id": "scene105",
       "upstreamPath": "lab/lite/src/lite/scene105.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene105.ts",
-      "sha256": "73cfaaffd6608f65defaf93e3695b8c1ecb131852b2e3eb02c365553e88c269d"
+      "sha256": "20d5f7ee938bca1dc4607485ac9b174b3bdc84ca91f6329801357607b095d245"
     },
     {
       "id": "scene165",
@@ -128,7 +128,7 @@
       "id": "scene43",
       "upstreamPath": "lab/lite/src/lite/scene43.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene43.ts",
-      "sha256": "246c0531ce3b60f5aad9ea74949734166116eb1a73598a7afbef0d0a0ec5c212"
+      "sha256": "972cbabf6337683fdaa537069fb1c7e528ed2c5a8c79f94dcb008095e1c9eb6d"
     },
     {
       "id": "scene50",
@@ -242,13 +242,13 @@
       "id": "scene125",
       "upstreamPath": "lab/lite/src/lite/scene125.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene125.ts",
-      "sha256": "660bef96312e9a80b5b5e619bea3f05e40ee0f980068128311e92df8c4fcab2e"
+      "sha256": "2be22aa1526f84e39f0e2acc698c158e212d3d942ca7ba0a8f2ab6301fdc55f0"
     },
     {
       "id": "scene126",
       "upstreamPath": "lab/lite/src/lite/scene126.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene126.ts",
-      "sha256": "633ccf82b36a72a057186a70fa5d4f35eab6f6a69381a61ced40818f0ecf6780"
+      "sha256": "20e367dae462d062ae65b889168bf83c1b9cd3825d2f9866d4e0f969c4c065f6"
     },
     {
       "id": "scene127",
@@ -398,7 +398,7 @@
       "id": "scene176",
       "upstreamPath": "lab/lite/src/lite/scene176.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene176.ts",
-      "sha256": "1882839a79cec1353c4c7d2d618d94f6f346057a1fd0f61748950957bd61feea"
+      "sha256": "77ba3a51621bee34ced444d9ce702d7f69d762e9d3fa114e8ca7db648c7962b5"
     },
     {
       "id": "scene170",
@@ -1310,7 +1310,7 @@
       "id": "scene112",
       "upstreamPath": "lab/lite/src/lite/scene112.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene112.ts",
-      "sha256": "234373e22bbed4f2b4ffa5620d643f3e927ef2449337938300d81498fa645346"
+      "sha256": "23a5b34238de00459e610b6c521fdd32dcd4f6ecbeb180b65af138ee5ccf9503"
     },
     {
       "id": "scene221",
@@ -1358,7 +1358,7 @@
       "id": "scene102",
       "upstreamPath": "lab/lite/src/lite/scene102.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene102.ts",
-      "sha256": "4d77e2f26b3a0b0d3fab0ffffccbdd174322728f55cd46fc383394c6d68634d0"
+      "sha256": "b2c712e35a5c7b48ef834563fed32487db2b92fe0f16ad0dee93afa541b9c970"
     },
     {
       "id": "scene209",
@@ -1376,7 +1376,7 @@
       "id": "scene103",
       "upstreamPath": "lab/lite/src/lite/scene103.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene103.ts",
-      "sha256": "af248577397b063ce4bee983fb973a88d3951517c1640699bf21f9b4db1f327e"
+      "sha256": "bcbdae42210e07660bb46606b4311e86bc36affd47499f9912a0785142889182"
     },
     {
       "id": "scene106",
@@ -1454,7 +1454,7 @@
       "id": "scene121",
       "upstreamPath": "lab/lite/src/lite/scene121.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene121.ts",
-      "sha256": "46bac70e9b72f34cb76ddd2ed68fe367a789a58b4566b992e9c84f1d5c93d68e"
+      "sha256": "d2d4a81b8935b83ce99d4fc43532c924868df9b40254132eba365a64e15a6d38"
     },
     {
       "id": "scene261",
@@ -1849,6 +1849,36 @@
       "upstreamPath": "LICENSE",
       "source": "corpus/babylon-lite/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstreamPath": "lab/lite/demo-mesh-lod.html",
+      "source": "corpus/babylon-lite/lab/lite/demo-mesh-lod.html",
+      "sha256": "5b5f31bda110a6029705bdd0b7c072194c6c93e0fba9d016b0bff080c10da9a3"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/mesh-lod.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod.ts",
+      "sha256": "5612ca5ace9b3c06ce02d30a2a5d8c4d297b08c553448d6f85d683ea257997af"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/mesh-lod-camera-path.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod-camera-path.ts",
+      "sha256": "68c48fa6d8c62aa5f8d2dd76a98c19b77a5f67c9f9309b690097d841404a9006"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/mesh-lod-controls.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod-controls.ts",
+      "sha256": "4f1de358a5643ed74b644217cd549618b63e529d0463e7f6878ef4a66f2f581e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/mesh-lod-diagnostics.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod-diagnostics.ts",
+      "sha256": "01a771da624e972c95765c16ad2072bf37566a552feef91c645d845461a9c1ed"
+    },
+    {
+      "upstreamPath": "lab/lite/src/demos/mesh-lod-network-simulator.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod-network-simulator.ts",
+      "sha256": "7401489dcbf28fd1ae9af57bd607b23496e3617d93c7364c43e840b2d10817df"
     }
   ],
   "tooling": [
@@ -1856,6 +1886,11 @@
       "upstreamPath": "scripts/wgsl-minify-plugin.ts",
       "source": "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts",
       "sha256": "898a5c45a629e2ef3c75e18523656ad2ef3cd0b1193ce4b5a796560d67075147"
+    },
+    {
+      "upstreamPath": "scripts/fetch-flight-helmet.ts",
+      "source": "corpus/babylon-lite/scripts/fetch-flight-helmet.ts",
+      "sha256": "f21154725f9bace24d2ba4f8d423fca8d129ac4bcd678a2855161c1e184a7d59"
     }
   ],
   "applications": [
@@ -2927,7 +2962,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/break-meshes.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
-          "sha256": "b3519e21f67ecc3bc4bd09d125864109ffc78baba4d3ee8248aa0ff5fa4044d1"
+          "sha256": "45ccccf30fcf116df3403aff07425c93d0a618da9e439703c1216181712fbce7"
         },
         {
           "upstreamPath": "lab/lite/src/demos/break-mesh.ts",
@@ -2997,7 +3032,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/racer/physics.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/racer/physics.ts",
-          "sha256": "e3b6ebca1273ad20a6cb42fe2d57da627136bfac412f511b526462127ea12bed"
+          "sha256": "df6ae0a2a2c7b12f25ed7e2b18928f09c7a7b04103eddfe55dd73de58ea2699b"
         },
         {
           "upstreamPath": "lab/lite/src/demos/racer/race.ts",
@@ -3677,7 +3712,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "9952461b45d7da4b7d296cab98aa998da018b757381c4ea6b1cf59f68781fe34"
+          "sha256": "5df03d43f6a686c1d51b9c0771b9b228048615043c4fbbc46023b23db0936135"
         }
       },
       "files": [
@@ -3724,7 +3759,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/ocean/debug.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/ocean/debug.ts",
-          "sha256": "4ba9a2778848e7e63ec6a7e661b3d19833f2dd69ad8e8275ea1008f9f38388cd"
+          "sha256": "d1cdfd5f4e3a6dc779c06f7be9c8a7cc0e3130b96194a5dea39ba5e502228705"
         },
         {
           "upstreamPath": "lab/lite/src/demos/ocean/demo.ts",
@@ -4408,7 +4443,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/screen-space-effects.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
-          "sha256": "18dd234dea1b384e0cbf3b4b22fdcb0603a588b02e722e25e2cdba53017e0285"
+          "sha256": "8c5f8f63a795ef92286b9aa852dfe80acbc52c8ba4d75ca848deeb4146322ed8"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
@@ -4568,7 +4603,7 @@
         "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "5630424416f5e80a64a7f7d9e31a4379f27a89f2fea922a813f395f0fe74b59b"
+          "sha256": "928c3f27c6cbd5551592290c269e6c3bcd820eb5b1701487ae7f41d083a2f722"
         }
       },
       "files": [
@@ -4605,7 +4640,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom/effects.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/effects.ts",
-          "sha256": "49672c58ebc06b34ff98b9548a6f3388d30a2971ff6a7f6fb487098f1ac0279c"
+          "sha256": "294c3004e9140ab61f9da34893898ace6a71bd23a893b44d04a4375e6f7ab7aa"
         },
         {
           "upstreamPath": "lab/lite/src/demos/playroom/game.ts",
@@ -4630,7 +4665,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom/physics.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/physics.ts",
-          "sha256": "29ef16c9c3bae50a42615533b72bf24db3a18a4d2ff64efad46a53d0fdd1a3c5"
+          "sha256": "b47d41bf981aa5872ad090e844a138e3fafbb9f524957207ddd065f26c1b8dc7"
         },
         {
           "upstreamPath": "lab/lite/src/demos/playroom/puzzles.ts",
@@ -4655,7 +4690,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/playroom/world.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/playroom/world.ts",
-          "sha256": "457c01e543eead951cee1da93be10cc3f8b93c5de17f67180a704bb89125e851"
+          "sha256": "6ed47bc4587d0d99f275f737a56de3cebff0baabbbbbc93e83096df38773a9bb"
         },
         {
           "upstreamPath": "lab/public/playroom/README.md",
@@ -5089,22 +5124,22 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
       "reference": {
         "source": "reference/trogir-streaming/babylon-lite-golden.png",
-        "sha256": "883744715c476d12a00ba38a6043940eacf8971fcc79e341494af72169fc0221",
+        "sha256": "cbe02fad441f87ff6383e6ec7e1c11e8da9c10d173be3fb1c8e0394483bf86d0",
         "provenance": {
           "source": "reference/trogir-streaming/provenance.json",
-          "sha256": "424117ab9ade6ee0e6578b6d565051100173368210f146ce51fe6713313b6c60"
+          "sha256": "23974821bddd1b4821bcb3020a74fbe4adc7b61252eb3846cd507755d358599f"
         }
       },
       "files": [
         {
           "upstreamPath": "lab/lite/demo-trogir-streaming.html",
           "source": "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
-          "sha256": "ebdebd8b62bf8630aed160404298c5cd741eae8c386ab3bb4e0ba1bc8aeaadbd"
+          "sha256": "b68e4d9ab3c86089d043aca1f183d4382db5c309cb4115ad92772fbe949e07a6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/trogir-streaming.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
-          "sha256": "e5023c409383bcdc11010c32b7bfe90702714fd3b1c815cb8b57b706ecf7656e"
+          "sha256": "fa1ec99b2ecf8b3612473a6837b0b8af106e13cc0e9bbddb7b30168b154240e4"
         },
         {
           "upstreamPath": "lab/lite/src/demos/trogir-assets.ts",
@@ -5140,6 +5175,11 @@
           "upstreamPath": "lab/lite/src/demos/trogir-streaming-placement.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming-placement.ts",
           "sha256": "073f2a9f69ef4369a7b993d87188702ecabea6ae39a7d14f0121eafe53ce2a9c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/trogir-point-surface.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/trogir-point-surface.ts",
+          "sha256": "6691eb77537281d9dc75333476b37f03a666a20ee231b739d89269aebd939cf1"
         }
       ]
     }

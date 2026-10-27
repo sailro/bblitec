@@ -1,7 +1,8 @@
 /**
  * Compiles a Gaussian-splat asset into the row buffer the native runtime reads.
  *
- * `loadSplat` forks on the container (`isPly` / `isPlyCompressedOrSH`) and
+ * `loadSplat` forks on the container (`isPly`, then `parsePlySplat`'s
+ * `isPlyCompressedOrSH`) and
  * converts whatever it finds into ONE interchange form: the 32-byte-per-splat
  * row buffer `buildSplatGeometry` consumes. Upstream's own `.splat` files are
  * that buffer written to disk — scene 126's `Halo_Believe.splat` is byte-for-
@@ -57,14 +58,18 @@ interface ParsedSplat {
     shDegree?: number;
 }
 
-const pinnedPlyParser = await importPinnedModule<{
+/** The header sniff `loadSplat` imports statically, apart from the parser. */
+const pinnedPlyHeader = await importPinnedModule<{
     isPly: (data: ArrayBuffer) => boolean;
+}>("loader-splat/splat-ply-header.js");
+
+const pinnedPlyParser = await importPinnedModule<{
     isPlyCompressedOrSH: (data: ArrayBuffer) => boolean;
     convertPlyToSplat: (data: ArrayBuffer) => ParsedSplat;
 }>("loader-splat/splat-ply-parser.js");
 
 /**
- * The pin's second container parser, which `loadSplat` reaches through a
+ * The pin's second container parser, which `parsePlySplat` reaches through a
  * dynamic import exactly when `isPlyCompressedOrSH` says so.
  *
  * Executed for the same reason its plain sibling is — a PLY header is a
@@ -171,7 +176,7 @@ function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
  * Parses a fetched splat asset into the interchange row buffer.
  *
  * Both PLY containers reach the pin's own parser, on the same fork
- * `loadSplat` takes: `isPlyCompressedOrSH` selects the chunked/SH parser the
+ * `parsePlySplat` takes: `isPlyCompressedOrSH` selects the chunked/SH parser the
  * pin dynamically imports, and either one yields the same 32-byte rows plus,
  * for the compressed container, a flat spherical-harmonic byte stream.
  * An `.spz` is a different pinned loader and goes to `packageSpz` below, and
@@ -189,7 +194,7 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
                   bytes.byteOffset + bytes.byteLength,
               ) as ArrayBuffer);
 
-    if (!pinnedPlyParser.isPly(data)) {
+    if (!pinnedPlyHeader.isPly(data)) {
         // A pre-converted `.splat` is already the row layout; the pin takes
         // this same fast path.
         return packagedSplat(new Uint8Array(data), undefined, 0);

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { bumpVisibilityEpochCall } from "./subtree-visibility.js";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -222,7 +223,7 @@ function lowerMeshFactoryFunction(
     );
     const calls = new Map<string, (args: readonly string[]) => string>([
         ["invalidateRenderBundles", () => invalidation],
-        ["bumpVisibilityEpoch", () => "(++engine.draw_list_epoch)"],
+        bumpVisibilityEpochCall(),
         [
             "uploadMeshToGPU",
             (args) => `upload_mesh_geometry_data(${args.join(",")})`,

@@ -6,7 +6,7 @@ import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
-import { lowerMeshAttributeFeatures } from "../src/lowering/mesh-attribute-features.js";
+import { lowerMeshFeatures } from "../src/lowering/mesh-attribute-features.js";
 import {
     cppFunction,
     cppRecord,
@@ -47,7 +47,7 @@ test(
 #include <cassert>
 namespace bbl::upstream {
 ${materialShadowReceiverCpp(new LoweringContext())}
-${lowerMeshAttributeFeatures(new LoweringContext())}
+${lowerMeshFeatures(new LoweringContext())}
 enum class RenderMaterialKind { pbr, standard };
 struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
@@ -60,8 +60,6 @@ constexpr std::size_t pinned_msh_has_skeleton = ${bits.MSH_HAS_SKELETON};
 constexpr std::size_t pinned_msh_vat = ${bits.MSH_VAT};
 constexpr std::size_t pinned_msh_has_thin_instances = ${bits.MSH_HAS_THIN_INSTANCES};
 constexpr std::size_t pinned_msh_has_instance_color = ${bits.MSH_HAS_INSTANCE_COLOR};
-constexpr auto std_msh_has_thin_instances = pinned_msh_has_thin_instances;
-constexpr auto std_msh_has_instance_color = pinned_msh_has_instance_color;
 constexpr std::size_t std_msh_has_morph_targets = ${bits.MSH_HAS_MORPH_TARGETS};
 constexpr std::size_t base = 1u << 20;
 std::array<std::size_t, 1> pbr_renderable_mesh_features{base | pinned_msh_receive_shadows};
@@ -75,10 +73,11 @@ unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }
 namespace bbl::pal {
 constexpr auto npos = std::size_t(-1);
-${["PinnedVariantKey", "StandardVariantKey"].map((name) => cppRecord(source, `struct ${name} {`)).join("\n")}
+${["PinnedVariantKey", "StandardVariantKey", "PinnedPbrMaterialRow"].map((name) => cppRecord(source, `struct ${name} {`)).join("\n")}
 ${[
     "inline bool pinned_record_instanced(",
     "inline bool pinned_record_instance_colored(",
+    "PinnedPbrMaterialRow pinned_pbr_material_row(",
     "PinnedVariantKey pinned_variant_key(",
     "StandardVariantKey standard_variant_key(",
 ]

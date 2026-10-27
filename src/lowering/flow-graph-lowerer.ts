@@ -89,7 +89,6 @@ const PATH_CONVERTER_MODULE = "src/flow-graph/gltf/path-converter.ts";
 const SCENE_MODULE = "src/flow-graph/scene-flow-graph.ts";
 const POINTER_MODULE = "src/flow-graph/scene-flow-graph-pointer.ts";
 const LOADER_MODULE = "src/loader-gltf/gltf-feature-interactivity.ts";
-const VISIBILITY_MODULE = "src/scene/visibility.ts";
 
 /**
  * The pin's event channel names (`FgEventType`) the lowering dispatches.
@@ -2465,19 +2464,6 @@ export class FlowGraphLowerer {
             "resolveSelectability",
         ).declaration;
         shape(selectability, "selectable = !!v", "selectability write");
-        const cascade = this.context.functionDeclaration(
-            VISIBILITY_MODULE,
-            "cascade",
-        ).declaration;
-        shape(cascade, "node.visible !== v", "visibility cascade change");
-        shape(
-            this.context.functionDeclaration(
-                VISIBILITY_MODULE,
-                "setSubtreeVisible",
-            ).declaration,
-            "bumpVisibilityEpoch()",
-            "visibility epoch",
-        );
     }
 
     // ── Emission ──────────────────────────────────────────────────────────

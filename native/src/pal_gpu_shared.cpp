@@ -953,6 +953,46 @@ upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
+namespace {
+struct PinnedPbrMaterialRow {
+    std::uint32_t index = 0;
+    /** Why the material has no row, when it has none. */
+    std::string refusal;
+};
+
+// Imported materials retain generation-known loader slots. Source-created
+// materials carry their creation profile, including when loops allocate a
+// runtime number of handles. Caster views select their source's profile.
+PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandle material) {
+    PinnedPbrMaterialRow row;
+    if (material.value >= engine.materials.size()) {
+        row.refusal = "the draw material handle is invalid";
+        return row;
+    }
+    const MaterialRecord& record = handle_at(engine.materials, material);
+    row.index = record.source_material.value == invalid_handle ? material.value
+                                                               : record.source_material.value;
+    if (row.index >= engine.materials.size()) {
+        row.refusal = "the source material handle is invalid";
+        return row;
+    }
+    const auto profile = engine.materials[row.index].pbr_composition_profile;
+    if (profile != invalid_handle) {
+        if (profile >= upstream::pbr_scene_material_indices.size()) {
+            row.refusal = "the source material composition profile is invalid";
+            return row;
+        }
+        row.index = upstream::pbr_scene_material_indices[profile];
+    }
+    if (row.index >= upstream::pbr_variant_material_count) {
+        row.refusal = "material " + std::to_string(row.index) + " is past the " +
+                      std::to_string(upstream::pbr_variant_material_count) +
+                      " the composed table names";
+    }
+    return row;
+}
+} // namespace
+
 PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
                                     const upstream::RenderDrawCommand& draw) {
     PinnedVariantKey key;
@@ -960,36 +1000,14 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
         key.refusal = "the draw names no PBR material";
         return key;
     }
-    // Imported materials retain generation-known loader slots. Source-created
-    // materials carry their creation profile, including when loops allocate a
-    // runtime number of handles. Caster views select their source's profile.
-    if (draw.item.material.value >= engine.materials.size()) {
-        key.refusal = "the draw material handle is invalid";
+    const PinnedPbrMaterialRow row = pinned_pbr_material_row(engine, draw.item.material);
+    if (!row.refusal.empty()) {
+        key.refusal = row.refusal;
         return key;
     }
     const MaterialRecord& draw_material = handle_at(engine.materials, draw.item.material);
     key.material_view = draw_material.esm_shadow ? 2u : draw_material.no_color ? 1u : 0u;
-    key.material_index = draw_material.source_material.value == invalid_handle
-                             ? draw.item.material.value
-                             : draw_material.source_material.value;
-    if (key.material_index >= engine.materials.size()) {
-        key.refusal = "the source material handle is invalid";
-        return key;
-    }
-    const auto profile = engine.materials[key.material_index].pbr_composition_profile;
-    if (profile != invalid_handle) {
-        if (profile >= upstream::pbr_scene_material_indices.size()) {
-            key.refusal = "the source material composition profile is invalid";
-            return key;
-        }
-        key.material_index = upstream::pbr_scene_material_indices[profile];
-    }
-    if (key.material_index >= upstream::pbr_variant_material_count) {
-        key.refusal = "material " + std::to_string(key.material_index) + " is past the " +
-                      std::to_string(upstream::pbr_variant_material_count) +
-                      " the composed table names";
-        return key;
-    }
+    key.material_index = row.index;
     // The mesh half of the key comes per original renderable. Renderer
     // startup assigns its stable generated-table row and gives every clone
     // the same row, even when clone handles precede later imported meshes.
@@ -1013,12 +1031,12 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
         if (record.runtime_attribute_features && record.geometry < engine.geometries.size()) {
             const auto& geometry = engine.geometries[record.geometry];
             if (geometry.owned_packed_geometry) {
-                const auto attributes = upstream::pinned_mesh_attribute_features(
-                    geometry.has_tangents, geometry.has_vertex_colors, geometry.cpu_uv2s);
+                const auto attributes = upstream::pinned_mesh_features(
+                    geometry.has_tangents, geometry.has_vertex_colors, geometry.cpu_uv2s, false,
+                    false);
                 key.mesh_features =
-                    (key.mesh_features &
-                     ~static_cast<std::size_t>(
-                         upstream::pinned_mesh_attribute_features(true, true, true))) |
+                    (key.mesh_features & ~static_cast<std::size_t>(upstream::pinned_mesh_features(
+                                             true, true, true, false, false))) |
                     static_cast<std::size_t>(attributes);
             }
         }
@@ -1030,16 +1048,12 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
             key.mesh_features &= ~static_cast<std::size_t>(upstream::pinned_msh_has_skeleton);
             key.mesh_features |= static_cast<std::size_t>(upstream::pinned_msh_vat);
         }
-        if (pinned_record_instanced(record)) {
-            key.mesh_features |= upstream::pinned_msh_has_thin_instances;
-            // `_computeMeshFeatures` nests this under the pool and reads the
-            // mesh's colour stream. Use the binding predicate too, so the
-            // selected PBR stage and the stream each backend binds cannot
-            // disagree about `instanceColor`.
-            if (pinned_record_instance_colored(record)) {
-                key.mesh_features |= upstream::pinned_msh_has_instance_color;
-            }
-        }
+        // A pool attaches after generation recorded the static row. The
+        // binding predicates decide the thin bits, so the selected stage and
+        // the stream each backend binds cannot disagree about `instanceColor`.
+        key.mesh_features |=
+            upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
+                                           pinned_record_instance_colored(record));
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -1179,16 +1193,12 @@ StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine
     }
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-        if (pinned_record_instanced(record)) {
-            key.mesh_features |= upstream::std_msh_has_thin_instances;
-            // `_computeMeshFeatures` reads `mesh.thinInstances.colors`, so
-            // the colour bit arrives with the pool rather than with the
-            // material: a coloured pool composes the Standard family's own
-            // final-colour slot, an uncoloured one the plain fragment.
-            if (pinned_record_instance_colored(record)) {
-                key.mesh_features |= upstream::std_msh_has_instance_color;
-            }
-        }
+        // The colour bit arrives with the pool rather than with the
+        // material: a coloured pool composes the Standard family's own
+        // final-colour slot, an uncoloured one the plain fragment.
+        key.mesh_features |=
+            upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
+                                           pinned_record_instance_colored(record));
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -2426,6 +2436,28 @@ void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
 #endif
 
 } // namespace bbl::pal
+
+#if BBLITE_PBR_VARIANTS > 0
+namespace bbl {
+std::uint32_t pinned_pbr_material_features(const Engine& engine, MaterialHandle material) {
+    const auto row = pal::pinned_pbr_material_row(engine, material);
+    if (!row.refusal.empty())
+        throw std::runtime_error("PBR material features: " + row.refusal + ".");
+    const std::uint32_t features = upstream::pbr_variant_material_features[row.index];
+    if (features == std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("PBR material features: material " + std::to_string(row.index) +
+                                 " has no composed colour variant.");
+    return features;
+}
+} // namespace bbl
+#else
+namespace bbl {
+std::uint32_t pinned_pbr_material_features(const Engine&, MaterialHandle) {
+    throw std::runtime_error(
+        "PBR material features: a PBR material in a build with no composed variants.");
+}
+} // namespace bbl
+#endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_THIN_INSTANCES
 namespace bbl {

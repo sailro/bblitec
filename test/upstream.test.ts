@@ -13,6 +13,7 @@ import { lightSetter } from "../src/compiler/assignments.js";
 import type { LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { subtreeVisibilityHeader } from "../src/lowering/subtree-visibility.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { lowerAnimationManagerDispatch } from "../src/lowering/animation-manager-dispatch.js";
@@ -284,28 +285,30 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
 });
 
-test("bumps the visibility epoch only when setMeshVisible changes a flag", () => {
-    // The pin's two-writer rule (src/scene/visibility.ts): setMeshVisible
+test("bumps the visibility epoch only when setSubtreeVisible changes a flag", () => {
+    // The pin's two-writer rule (src/scene/visibility.ts): setSubtreeVisible
     // bumps the epoch only when the cascade actually moved a
     // flag -- a per-frame re-assertion of the same value stays a true
     // no-op, and a bare `visible` field write defers to the next rebuild
     // (the regression-mesh-flags gate measures that deferral). The epoch
     // is what makes a hide or show land the same frame; without the bump,
     // a weapon picked up after the lists were built could never draw.
+    const header = subtreeVisibilityHeader(new LoweringContext());
+    assert.match(header, /bool changed = \(graph\.visible\(node\) != v\);/);
+    const set = cppFunction(header, "void set_subtree_visible(");
+    assert.match(
+        set,
+        /if \(subtree_visible_cascade\(graph, node, v\)\) \{\s*\(\+\+graph\.engine\.draw_list_epoch\);/,
+    );
+    // The bump is conditional: no unguarded increment exists.
+    assert.equal(set.match(/\+\+graph\.engine\.draw_list_epoch/g)?.length, 1);
     const lowered = new SceneLowerer(new LoweringContext()).lowerCore({
         visibility: true,
     });
-
-    assert.match(lowered.source, /bool changed = record\.visible != visible;/);
     assert.match(
-        lowered.source,
-        /if \(set_mesh_visible_cascade\(engine, mesh, visible\)\) \{[\s\S]*?\+\+engine\.draw_list_epoch;/,
+        cppFunction(lowered.source, "void set_mesh_visible("),
+        /upstream::set_subtree_visible\(upstream::MeshVisibilityGraph\{engine\}, mesh, visible\)/,
     );
-    // The bump is conditional: no unguarded increment exists.
-    const bumps = cppFunction(lowered.source, "void set_mesh_visible(").match(
-        /\+\+engine\.draw_list_epoch;/g,
-    );
-    assert.equal(bumps?.length, 1);
 });
 
 test("preserves full pinned TRS when setParent relinks a mesh", () => {
@@ -2222,7 +2225,7 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#761"\);/,
+        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#765"\);/,
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

@@ -3292,18 +3292,15 @@ export class PinnedNumericLowerer {
         access: ts.ElementAccessExpression,
     ): PinnedBinding | undefined {
         const owner = this.elementOwner(access);
-        // One record of a record list is the struct itself, read in place.
-        if (owner?.type === "record-list" && owner.record) {
-            return {
-                cpp: this.elementAccess(access),
-                type: "opaque",
-                record: owner.record,
-            };
-        }
-        const type = elementType(owner?.type ?? "scalar");
-        return owner && type
-            ? { cpp: this.elementAccess(access), type }
-            : undefined;
+        if (!owner) return undefined;
+        const cpp = this.elementAccess(access);
+        // An element of a modelled collection (a record list's struct, or
+        // the caller's own model) is that model's element, read in place,
+        // as a for-of over it binds one.
+        const modelled = this.elementsOf(owner)?.element?.(cpp).get(cpp);
+        if (modelled) return modelled;
+        const type = elementType(owner.type);
+        return type ? { cpp, type } : undefined;
     }
 
     /**
@@ -3528,37 +3525,45 @@ export class PinnedNumericLowerer {
     }
 
     /**
-     * A module-scope `const` of the file being lowered, as its own value.
+     * A module-scope `const` a pinned body reads, as its own value.
      *
-     * A name the module DECLARES is the pin's own text and is read straight
-     * off that declaration, and only a name it does not declare — an import, or
-     * something the caller owns — has to be supplied through `bindings`. So
-     * an unbound identifier resolves here before it fails, which is what
-     * lets a pinned body reach its own constants (`extract-highlights.ts`
-     * raises its threshold through a module-scope `TO_GAMMA_SPACE`) without
-     * every caller pre-binding them.
+     * A name a module DECLARES is the pin's own text and is read straight
+     * off that declaration, whether the body's module declares it or
+     * imports it; only something the caller owns has to be supplied
+     * through `bindings`. So an unbound identifier resolves here before it
+     * fails, which is what lets a pinned body reach its constants
+     * (`extract-highlights.ts` raises its threshold through a module-scope
+     * `TO_GAMMA_SPACE`, `_pbrLazyWgslNeeds` tests imported feature bits)
+     * without every caller pre-binding them.
      *
-     * The initializer is LOWERED rather than folded, so the arithmetic
-     * stays the pin's; one this translator cannot lower fails by the name
-     * that reads it, naming the constant rather than the reader.
+     * The initializer is LOWERED rather than folded, in its declaring
+     * module, so the arithmetic stays the pin's; one this translator cannot
+     * lower fails by the name that reads it, naming the constant rather
+     * than the reader.
      */
     private moduleConstant(
         identifier: ts.Identifier,
     ): PinnedBinding | undefined {
-        const initializer = constantOf(identifier, {
-            sameFile: true,
-        })?.initializer;
-        if (!initializer) return undefined;
+        const constant = constantOf(identifier);
+        if (!constant) return undefined;
+        const { initializer, file } = constant;
         const cached = this.moduleConstants.get(initializer);
         if (cached !== undefined) return cached;
         // A binding under its own name first, so a constant that names
         // itself recurses no further than one step and fails there.
         this.moduleConstants.set(initializer, undefined);
+        const declaring =
+            file === this.file
+                ? this
+                : new PinnedNumericLowerer(file, {
+                      bindings: new Map(),
+                      calls: new Map(),
+                  });
         // A constant number is also a value generation knows, which is
         // what lets a serialized enumerator compare against it at
         // generation (`lockMode === LOCK_PER_PARTICLE`).
-        const cpp = `(${this.expression(initializer)})`;
-        const staticNumber = this.staticNumberOf(initializer);
+        const cpp = `(${declaring.expression(initializer)})`;
+        const staticNumber = declaring.staticNumberOf(initializer);
         const binding: PinnedBinding = {
             cpp,
             type: "scalar",
@@ -4484,6 +4489,7 @@ export class PinnedNumericLowerer {
                 binding.type === "f64-buffer" ||
                 binding.type === "function-list" ||
                 binding.type === "record-list" ||
+                binding.elements !== undefined ||
                 isListShape(binding.type)
             ) {
                 return `static_cast<double>(${binding.cpp}.size())`;

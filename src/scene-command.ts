@@ -309,6 +309,9 @@ function compilerArguments(scene: SceneDefinition): string[] {
     if (scene.nativeHostUi !== undefined) {
         arguments_.push("--host-ui", scene.nativeHostUi);
     }
+    if (scene.deferredCapabilities !== undefined) {
+        arguments_.push("--deferred-capabilities", scene.deferredCapabilities);
+    }
     if (
         scene.parity?.attribution?.drawIds ||
         scene.parity?.attribution?.triangleClusters

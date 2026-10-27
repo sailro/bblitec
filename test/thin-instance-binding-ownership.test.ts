@@ -17,6 +17,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 
 test("thin material bindings retain source captures across overrides, refresh and recovery", (t) => {
     const native = optionalNativeFixtureTools(false);
@@ -78,6 +79,7 @@ const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
 }
 ${cppFunction(renderer.header, "inline void require_shader_instance_layout(")}
 }
+${meshFeaturesNamespace(context)}
 namespace bbl {
 ${lowerThinInstanceBindingCreation(context)}
 ${["bool source_material_draw_matches(", "bool source_standard_material_draw_matches(", "bool source_shader_material_draw_matches("].map((name) => cppFunction(publication, name)).join("\n")}
