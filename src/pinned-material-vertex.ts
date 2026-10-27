@@ -1,4 +1,4 @@
-import type ts from "typescript";
+import ts from "typescript";
 import { LoweringContext } from "./lowering/context.js";
 import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import {
@@ -16,6 +16,8 @@ import {
 import { emitWgslFunction, emitWgslStatements } from "./shader-wgsl-emitter.js";
 
 const templateModule = "src/material/pbr/pbr-template.ts";
+const tangentNormalModule =
+    "src/material/pbr/fragments/pbr-normal-tangent-wgsl.ts";
 const skeletonModule = "src/shader/fragments/skeleton-fragment.ts";
 const morphModule = "src/shader/fragments/morph-fragment-core.ts";
 const instanceModule = "src/shader/fragments/thin-instance-fragment.ts";
@@ -75,6 +77,40 @@ function substitute(
 }
 
 /**
+ * A pinned module's exports as `import()` hands them over: the fragment
+ * modules `pbr-renderable` loads on demand and `createPbrTemplate` takes whole.
+ */
+function pinnedModuleNamespace(
+    context: LoweringContext,
+    builders: PinnedShaderBuilders,
+    modulePath: string,
+): Readonly<Record<string, unknown>> {
+    const exported = (statement: ts.Statement): boolean =>
+        ts.canHaveModifiers(statement) &&
+        (ts.getModifiers(statement) ?? []).some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        );
+    const names = context
+        .sourceFile(modulePath)
+        .statements.filter(exported)
+        .flatMap((statement) =>
+            ts.isFunctionDeclaration(statement) && statement.name
+                ? [statement.name.text]
+                : ts.isVariableStatement(statement)
+                  ? statement.declarationList.declarations.flatMap(
+                        (variable) =>
+                            ts.isIdentifier(variable.name)
+                                ? [variable.name.text]
+                                : [],
+                    )
+                  : [],
+        );
+    return Object.fromEntries(
+        names.map((name) => [name, builders.value(modulePath, name)]),
+    );
+}
+
+/**
  * Raw pinned vertex computation, shared by GPU transport and CPU projections:
  * the `_vertexTemplate` `createPbrTemplate` builds for a tangent-space
  * normal, with or without the morph fragment's inputs.
@@ -94,7 +130,14 @@ function pinnedPbrVertexTemplate(
     );
     const builders = new PinnedShaderBuilders(context);
     const template = builders.call(templateModule, "createPbrTemplate", [
-        { _hasMorph: morph, _normalMode: "tangent" },
+        {
+            _hasMorph: morph,
+            _tangentNormal: pinnedModuleNamespace(
+                context,
+                builders,
+                tangentNormalModule,
+            ),
+        },
     ]);
     const declared: unknown =
         typeof template === "object" && template !== null

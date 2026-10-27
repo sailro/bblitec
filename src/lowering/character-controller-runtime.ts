@@ -4,7 +4,8 @@ import {
     characterControllerModule,
     lowerCharacterControllerKernel,
 } from "./character-controller-lowerer.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import { sameSource } from "../compiler/syntax.js";
+import { transformNodeDefaults } from "../pinned-mesh-defaults.js";
 
 /** The pinned controller class above the existing physics/node APIs. */
 export function characterControllerHeader(
@@ -30,28 +31,12 @@ export function characterControllerHeader(
         );
     }
     const observableSource = characterCollisionObservableSource(context);
-    const createNode = context.functionDeclaration(
-        "src/scene/transform-node.ts",
-        "createTransformNode",
-    ).declaration;
-    const nodeDefaults = new Map(
-        createNode.parameters
-            .slice(4)
-            .map((parameter) => [
-                soleBindingName(parameter.name),
-                context.floatLiteral(
-                    context.numericValue(
-                        parameter.initializer!,
-                        createNode.getSourceFile(),
-                    ),
-                ),
-            ]),
-    );
-    const defaultRotation = ["qx", "qy", "qz", "qw"]
-        .map((name) => nodeDefaults.get(name))
+    const nodeDefaults = transformNodeDefaults();
+    const defaultRotation = (["qx", "qy", "qz", "qw"] as const)
+        .map((name) => context.floatLiteral(nodeDefaults.get(name)!))
         .join(", ");
-    const defaultScale = ["sx", "sy", "sz"]
-        .map((name) => nodeDefaults.get(name))
+    const defaultScale = (["sx", "sy", "sz"] as const)
+        .map((name) => context.floatLiteral(nodeDefaults.get(name)!))
         .join(", ");
     const bodyFactory = context.functionDeclaration(
         "src/physics/havok.ts",

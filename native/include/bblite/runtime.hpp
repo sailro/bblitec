@@ -3628,7 +3628,7 @@ struct AssetRecord {
     std::vector<std::vector<MeshHandle>> node_meshes;
     std::vector<std::vector<std::size_t>> node_children;
     std::vector<MaterialHandle> materials;
-    std::vector<bool> node_visible;
+    std::vector<MeshVisibility> node_visible;
     /**
      * `container.flowGraphs`: the graphs the document declares, in graph
      * order, filled at load; the generated flow-graph unit runs them.
@@ -5783,11 +5783,15 @@ struct SourceMaterialDraw {
 using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
 using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;
 
+/** A group's `_w`: the lazy capability mask (`_c`) its rebuild closure composes;
+ *  empty while `_w` is null or unset, when the closure composes every mesh. */
+using PbrLazyWidening = std::optional<double>;
+
 struct SourceMaterialGroupState {
     SourceMaterialOutputs outputs;
     std::vector<MeshHandle> meshes;
     bool rebuild_ready = false;
-    bool gamma_invalidates = false;
+    PbrLazyWidening widening;
 };
 using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMaterialGroupState>>;
 
@@ -5907,6 +5911,8 @@ struct SceneState {
     void (*process_material_groups)(Scene&) = nullptr;
     void (*enqueue_material_group)(Scene&, MeshHandle) = nullptr;
     void (*complete_material_group)(Scene&, MaterialHandle) = nullptr;
+    /** Device recovery's group rebuild: each result's `_w` installs again. */
+    void (*recover_material_groups)(Scene&) = nullptr;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
@@ -7605,9 +7611,11 @@ void register_frame_graph_context(FrameGraphContext& context);
 void register_scene_with_shadow_support(Scene& scene);
 void enable_scene_transmission(Scene& scene);
 void run_pbr_scene_hooks(Scene& scene, const std::vector<MeshHandle>& meshes);
-std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
-                                                bool (*builder)(Scene&,
-                                                                const std::vector<MeshHandle>&));
+std::optional<PbrLazyWidening>
+run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+                            PbrLazyWidening (*builder)(Scene&, const std::vector<MeshHandle>&));
+/** `_computePbrMaterialFeatures(mat).features` of a PBR material, from its composed table row. */
+std::uint32_t pinned_pbr_material_features(const Engine& engine, MaterialHandle material);
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
 void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh);
 void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
@@ -7644,6 +7652,7 @@ void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandl
 void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
+void set_scene_node_visible(Engine& engine, const SceneNodeHandle& node, bool visible);
 /** Private source fields share their retained typed-array owner; public geometry getters copy. */
 template <class Values>
 [[nodiscard]] js::Nullable<Values>

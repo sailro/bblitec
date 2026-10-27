@@ -9,13 +9,15 @@ import { soleBindingName, propertyPath } from "../compiler/syntax.js";
 
 /**
  * An expression hook lowering shader-renderable.ts's inactive-packet test,
- * `isPacketInactive(packet, material, isOverride)`, over the caller's
- * bindings of its three parameters: every caller passes its own packet,
- * material and override, which are the parameters' names.
+ * `isPacketInactive(<packet>, material, isOverride)`, over the caller's
+ * bindings of its three parameters: every caller passes its own material and
+ * override, which are the parameters' names, and one of `packets`, the names
+ * the caller binds to the packet the native invocation transports.
  */
 export function shaderPacketInactiveHook(
     context: LoweringContext,
     bindings: Map<string, PinnedBinding>,
+    packets: readonly string[] = ["packet"],
 ): (node: ts.Expression) => string | undefined {
     const inactive = context.functionDeclaration(
         "src/material/shader/shader-renderable.ts",
@@ -46,9 +48,11 @@ export function shaderPacketInactiveHook(
     let inactiveCpp: string | undefined;
     return (node) => {
         if (
-            !context.expressionMatchesShape(
-                node,
-                "isPacketInactive(packet, material, isOverride)",
+            !packets.some((packet) =>
+                context.expressionMatchesShape(
+                    node,
+                    `isPacketInactive(${packet}, material, isOverride)`,
+                ),
             )
         )
             return undefined;
@@ -63,91 +67,95 @@ export function shaderPacketInactiveHook(
 /** One native candidate transports one packet of the pin's bound shader update. */
 export function lowerShaderBindingUpdate(context: LoweringContext): string {
     const module = "src/material/shader/shader-renderable.ts";
-    const closure = (name: string) => {
-        const { file, declaration } = context.functionDeclaration(module, name);
-        const update = context.variableInitializer(declaration, "update");
-        if (!ts.isArrowFunction(update) || !ts.isBlock(update.body))
-            return context.contractError(
-                update,
-                "Expected a shader binding update closure.",
-            );
-        return { file, update, statements: update.body.statements };
-    };
-    const opaque = closure("createOpaqueRenderable");
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        "createShaderRenderable",
+    );
+    // A transparent renderable wraps exactly one packet (the pin builds it
+    // over `[packet]`), so `first` is the packet a native invocation carries
+    // whenever the sort center that selects its test exists.
+    context.assertExpressionShape(
+        context.variableInitializer(declaration, "first"),
+        "packets[0]!",
+        "Shader renderable leading packet",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(declaration, "sortCenter"),
+        "transparent ? [0, 0, 0] : undefined",
+        "Transparent shader sort center",
+    );
+    const update = context.variableInitializer(declaration, "update");
+    if (!ts.isArrowFunction(update) || !ts.isBlock(update.body))
+        return context.contractError(
+            update,
+            "Expected a shader binding update closure.",
+        );
+    const statements = update.body.statements;
     context.assertStatementShapes(
-        opaque.update,
-        opaque.statements,
+        update,
+        statements,
         `
+        if (sortCenter && isPacketInactive(first, material, isOverride)) { return; }
         updateCustomUbo(scene.surface.engine, material, uniformBatch);
         for (const packet of packets) {
             if (isPacketInactive(packet, material, isOverride)) { continue; }
             updatePacket(scene, material, packet, context, uniformBatch);
-        }`,
-        "Opaque shader binding update order",
+        }
+        syncSortCenter();`,
+        "Shader binding update order",
     );
-    const loop = opaque.statements[1]!;
+    const loop = statements[2]!;
     if (!ts.isForOfStatement(loop) || !ts.isBlock(loop.statement))
         return context.contractError(
             loop,
-            "Expected the opaque binding's packet iteration.",
+            "Expected the shader binding's packet iteration.",
         );
-    const transparent = closure("createTransparentRenderable");
-    const transparentUpdates = transparent.statements.slice(0, 3);
-    context.assertStatementShapes(
-        transparent.update,
-        transparentUpdates,
-        `
-        if (isPacketInactive(packet, material, isOverride)) { return; }
-        updateCustomUbo(scene.surface.engine, material, uniformBatch);
-        updatePacket(scene, material, packet, context, uniformBatch);`,
-        "Transparent shader binding update order",
-    );
     const bindings = new Map<string, PinnedBinding>([
+        ["sortCenter", { cpp: "transparent", type: "bool" }],
         ["packet._disposed", { cpp: "disposed", type: "bool" }],
         // The native draw guard already includes the override arm.
         ["isOverride", { cpp: "false", type: "bool" }],
         ["packet.mesh.material", { cpp: "material_matches", type: "bool" }],
         ["material", { cpp: "true", type: "bool" }],
     ]);
-    const inactive = shaderPacketInactiveHook(context, bindings);
-    const lower = (file: ts.SourceFile, statements: readonly ts.Statement[]) =>
-        lowerPinnedBody(
-            file,
-            statements,
-            {
-                bindings,
-                calls: new Map(),
-                expression: inactive,
-                statement(node, _lowerer, indent) {
-                    if (
-                        ts.isExpressionStatement(node) &&
-                        ts.isCallExpression(node.expression)
-                    ) {
-                        const target = propertyPath(
-                            node.expression.expression,
-                        )?.join(".");
-                        if (target === "updateCustomUbo")
-                            return [`${indent}update_custom();`];
-                        if (target === "updatePacket")
-                            return [`${indent}update_system();`];
-                    }
-                    // Each invocation represents one packet, so the source loop's continue finishes it.
-                    return ts.isContinueStatement(node)
-                        ? [`${indent}return;`]
-                        : undefined;
-                },
+    // The trailing sort-center sync is not lowered: the native transparent
+    // sort reads the mesh world matrix itself.
+    const body = lowerPinnedBody(
+        file,
+        [statements[0]!, statements[1]!, ...loop.statement.statements],
+        {
+            bindings,
+            calls: new Map(),
+            expression: shaderPacketInactiveHook(context, bindings, [
+                "packet",
+                "first",
+            ]),
+            statement(node, _lowerer, indent) {
+                if (
+                    ts.isExpressionStatement(node) &&
+                    ts.isCallExpression(node.expression)
+                ) {
+                    const target = propertyPath(
+                        node.expression.expression,
+                    )?.join(".");
+                    if (target === "updateCustomUbo")
+                        return [`${indent}update_custom();`];
+                    if (target === "updatePacket")
+                        return [`${indent}update_system();`];
+                }
+                // Each invocation represents one packet, so the source loop's continue finishes it.
+                return ts.isContinueStatement(node)
+                    ? [`${indent}return;`]
+                    : undefined;
             },
-            "        ",
-        );
-    return `// ${context.provenance(module, "createOpaqueRenderable, createTransparentRenderable")}
+        },
+        "    ",
+    );
+    return `// ${context.provenance(module, "createShaderRenderable")}
 template<class Custom, class System>
 void update_shader_binding(bool transparent, bool disposed, bool material_matches,
     Custom&& update_custom, System&& update_system) {
-    if (transparent) {
-${lower(transparent.file, transparentUpdates)}
-    } else {
-${lower(opaque.file, [opaque.statements[0]!, ...loop.statement.statements])}
-    }
+${body}
 }
 `;
 }

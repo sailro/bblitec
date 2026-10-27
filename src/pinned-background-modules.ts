@@ -41,6 +41,14 @@ import {
     wgslEntryPoints,
 } from "./shader-ir.js";
 import { pinnedSceneLayout } from "./pinned-scene-layout.js";
+import { sharedPinnedContext } from "./lowering/context.js";
+import { factoryBuilder } from "./lowering/pinned-background-lowerer.js";
+import {
+    backgroundFactories,
+    imageSkyboxLoader,
+    type PinnedBackgroundFactory,
+} from "./pinned-background-factories.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One attribute of a pinned vertex buffer layout. */
 interface PinnedVertexAttribute {
@@ -598,10 +606,10 @@ interface RecordedArm {
  */
 async function recordArm(
     stems: { vertex: string; fragment: string },
-    modulePath: string,
-    symbolName: string,
+    producer: Pick<PinnedBackgroundFactory, "modulePath" | "factory">,
     run: (engine: { _device: BackgroundDevice }) => Promise<unknown>,
 ): Promise<RecordedArm> {
+    const { modulePath, factory: symbolName } = producer;
     const { device, encoder, recorder } =
         createRecordingDevice<BackgroundShapes>({
             producer: `${modulePath}#${symbolName}`,
@@ -841,12 +849,10 @@ const cubeTextureShim = javascriptModuleUrl(
         "}\n",
 );
 
-const groundModule = "material/pbr/background-ground.js";
-const ddsModule = "material/pbr/background-dds-skybox.js";
-const hdrModule = "material/pbr/background-hdr-skybox.js";
-const solidModule = "material/pbr/background-solid-skybox.js";
-const imageLoaderModule = "loader-skybox/load-skybox.js";
-const boxModule = "mesh/create-box.js";
+/** The packaged module a factory runs from. */
+function packaged(modulePath: string): string {
+    return sharedUpstreamStore().packagedModulePath(modulePath);
+}
 
 /**
  * The inputs each factory runs at. Distinct values, so every buffer a
@@ -869,15 +875,12 @@ interface PinnedBackgroundReach {
 }
 
 async function groundArms(): Promise<PinnedBackgroundArm[]> {
-    const pinned = await pinnedFunctions(groundModule, [
-        "buildGroundRenderable",
-        "createGroundBuffers",
-    ]);
-    const build = pinnedFunction(pinned, "buildGroundRenderable");
-    const buffers = pinnedFunction(pinned, "createGroundBuffers")(
-        bufferEngine("createGroundBuffers"),
-        groundSize,
+    const factory = backgroundFactories.ground;
+    const build = pinnedFunction(
+        await pinnedFunctions(packaged(factory.modulePath), [factory.factory]),
+        factory.factory,
     );
+    const buffers = await builderBuffers(factory, groundSize);
     const arms: PinnedBackgroundArm[] = [];
     for (const [name, enableNoise, stem] of [
         ["ground", false, "background-ground.frag"],
@@ -885,8 +888,7 @@ async function groundArms(): Promise<PinnedBackgroundArm[]> {
     ] as const) {
         const recorded = await recordArm(
             { vertex: "background-ground.vert", fragment: stem },
-            "src/material/pbr/background-ground.ts",
-            "buildGroundRenderable",
+            factory,
             async (engine) =>
                 await build(
                     engine,
@@ -898,19 +900,50 @@ async function groundArms(): Promise<PinnedBackgroundArm[]> {
                     enableNoise,
                 ),
         );
-        arms.push(finishArm(name, recorded, buffers, "createGroundBuffers"));
+        arms.push(finishArm(name, recorded, buffers, factory.builder));
     }
     return arms;
+}
+
+/** A factory's geometry builder, imported from the packaged module declaring it. */
+async function builderFunction(
+    factory: Pick<
+        PinnedBackgroundFactory,
+        "modulePath" | "factory" | "builder"
+    >,
+): Promise<PinnedFunction> {
+    const { modulePath } = factoryBuilder(sharedPinnedContext(), factory);
+    return pinnedFunction(
+        await pinnedFunctions(packaged(modulePath), [factory.builder]),
+        factory.builder,
+    );
+}
+
+/** A builder's buffers at one size, run once however many factories share it. */
+const builtBuffers = new Map<string, Promise<unknown>>();
+function builderBuffers(
+    factory: PinnedBackgroundFactory,
+    size: number,
+): Promise<unknown> {
+    const { modulePath } = factoryBuilder(sharedPinnedContext(), factory);
+    const key = `${modulePath}#${factory.builder}@${size}`;
+    const known = builtBuffers.get(key);
+    if (known) return known;
+    const built = builderFunction(factory).then((build) =>
+        build(bufferEngine(factory.builder), size),
+    );
+    builtBuffers.set(key, built);
+    return built;
 }
 
 async function skyboxArms(
     ddsEnvironment: boolean,
 ): Promise<PinnedBackgroundArm[]> {
-    const hdr = await pinnedFunctions(hdrModule, [
-        "buildHdrSkyboxRenderable",
-        "createSkyboxBuffers",
-    ]);
-    const buildHdr = pinnedFunction(hdr, "buildHdrSkyboxRenderable");
+    const hdr = backgroundFactories.hdrSkybox;
+    const buildHdr = pinnedFunction(
+        await pinnedFunctions(packaged(hdr.modulePath), [hdr.factory]),
+        hdr.factory,
+    );
     const arms = [
         finishArm(
             "hdrSkybox",
@@ -919,8 +952,7 @@ async function skyboxArms(
                     vertex: "background-skybox.vert",
                     fragment: "background-skybox.frag",
                 },
-                "src/material/pbr/background-hdr-skybox.ts",
-                "buildHdrSkyboxRenderable",
+                hdr,
                 async (engine) =>
                     await buildHdr(
                         sceneFor(engine),
@@ -930,11 +962,8 @@ async function skyboxArms(
                         primaryColor,
                     ),
             ),
-            pinnedFunction(hdr, "createSkyboxBuffers")(
-                bufferEngine("createSkyboxBuffers"),
-                skyHalfSize,
-            ),
-            "createSkyboxBuffers",
+            await builderBuffers(hdr, skyHalfSize),
+            hdr.builder,
         ),
     ];
     const ddsArms: Array<readonly [PinnedBackgroundArmName, boolean, string]> =
@@ -946,17 +975,23 @@ async function skyboxArms(
             "background-skybox-dds.frag",
         ]);
     }
-    const symbols = ["buildDdsSkyboxRenderable", "createSkyboxBuffers"];
+    const dds = backgroundFactories.ddsSkybox;
+    const ddsModule = packaged(dds.modulePath);
+    const ddsBuffers = await builderBuffers(dds, skyHalfSize);
     for (const [name, enableNoise, stem] of ddsArms) {
         const { module, release } = await importPinnedModuleFetching<
             Record<string, unknown>
-        >(ddsModule, unitDdsCube, new Map(), exportsFor(ddsModule, symbols));
+        >(
+            ddsModule,
+            unitDdsCube,
+            new Map(),
+            exportsFor(ddsModule, [dds.factory]),
+        );
         try {
-            const build = exportedFunction(module, ddsModule, symbols[0]!);
+            const build = exportedFunction(module, ddsModule, dds.factory);
             const recorded = await recordArm(
                 { vertex: "background-skybox-dds.vert", fragment: stem },
-                "src/material/pbr/background-dds-skybox.ts",
-                "buildDdsSkyboxRenderable",
+                dds,
                 async (engine) =>
                     await build(
                         sceneFor(engine),
@@ -967,18 +1002,7 @@ async function skyboxArms(
                         enableNoise,
                     ),
             );
-            arms.push(
-                finishArm(
-                    name,
-                    recorded,
-                    exportedFunction(
-                        module,
-                        ddsModule,
-                        symbols[1]!,
-                    )(bufferEngine("createSkyboxBuffers"), skyHalfSize),
-                    "createSkyboxBuffers",
-                ),
-            );
+            arms.push(finishArm(name, recorded, ddsBuffers, dds.builder));
         } finally {
             release();
         }
@@ -987,15 +1011,14 @@ async function skyboxArms(
 }
 
 async function solidSkyboxArm(): Promise<PinnedBackgroundArm> {
-    const solid = await pinnedFunctions(solidModule, [
-        "buildSolidSkyboxRenderable",
-        "createSkyboxBuffers",
-    ]);
-    const build = pinnedFunction(solid, "buildSolidSkyboxRenderable");
+    const solid = backgroundFactories.solidSkybox;
+    const build = pinnedFunction(
+        await pinnedFunctions(packaged(solid.modulePath), [solid.factory]),
+        solid.factory,
+    );
     const recorded = await recordArm(
         { vertex: "solid-skybox.vert", fragment: "solid-skybox.frag" },
-        "src/material/pbr/background-solid-skybox.ts",
-        "buildSolidSkyboxRenderable",
+        solid,
         async (engine) =>
             await build(
                 sceneFor(engine),
@@ -1008,27 +1031,21 @@ async function solidSkyboxArm(): Promise<PinnedBackgroundArm> {
     return finishArm(
         "solidSkybox",
         recorded,
-        pinnedFunction(solid, "createSkyboxBuffers")(
-            bufferEngine("createSkyboxBuffers"),
-            skyHalfSize,
-        ),
-        "createSkyboxBuffers",
+        await builderBuffers(solid, skyHalfSize),
+        solid.builder,
     );
 }
 
 async function imageSkyboxArm(): Promise<PinnedBackgroundArm> {
     const loader = pinnedFunction(
         await pinnedFunctions(
-            imageLoaderModule,
-            ["loadSkybox"],
+            packaged(imageSkyboxLoader.modulePath),
+            [imageSkyboxLoader.factory],
             new Map([["../texture/cube-texture.js", cubeTextureShim]]),
         ),
-        "loadSkybox",
+        imageSkyboxLoader.factory,
     );
-    const createBoxData = pinnedFunction(
-        await pinnedFunctions(boxModule, ["createBoxData"]),
-        "createBoxData",
-    );
+    const createBoxData = await builderFunction(imageSkyboxLoader);
     const recordings: RecordedArm[] = [];
     for (const size of imageSkyboxSizes) {
         recordings.push(
@@ -1037,8 +1054,7 @@ async function imageSkyboxArm(): Promise<PinnedBackgroundArm> {
                     vertex: "skybox-cubemap.vert",
                     fragment: "skybox-cubemap.frag",
                 },
-                "src/loader-skybox/load-skybox.ts",
-                "loadSkybox",
+                imageSkyboxLoader,
                 async (engine) => {
                     const scene = sceneFor(engine);
                     await loader(scene, "unit", ".png", size);
@@ -1074,7 +1090,7 @@ async function imageSkyboxArm(): Promise<PinnedBackgroundArm> {
             "imageSkybox",
             first!,
             createBoxData(imageSkyboxSizes[0]),
-            "createBoxData",
+            imageSkyboxLoader.builder,
         ),
         constantMeshBlock: [...floats],
     };

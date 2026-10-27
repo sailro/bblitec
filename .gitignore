@@ -14,3 +14,6 @@ native/android/build/
 *.suo
 *.user
 CMakeUserPresets.json
+
+# Materialized by the pinned scripts/fetch-flight-helmet.ts (src/pinned-lab-materializers.ts).
+corpus/babylon-lite/lab/public/models/FlightHelmetKTX/

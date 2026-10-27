@@ -980,7 +980,7 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${
 #include <bblite/upstream/pinned_matrix.hpp>
 ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
-
+${interactivity || animationPointer ? "#include <bblite/upstream/subtree_visibility.hpp>\n#include <variant>\n" : ""}
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1842,8 +1842,8 @@ ${lowered.animationWeightedTransport.dispatcher}
 void run_pbr_scene_hooks(Scene& scene, const std::vector<MeshHandle>& meshes) {
     run_pbr_scene_hooks_impl(scene, meshes);
 }
-std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
-    bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {
+std::optional<PbrLazyWidening> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+    PbrLazyWidening (*builder)(Scene&, const std::vector<MeshHandle>&)) {
     return run_pbr_rebuild_transaction_impl(scene, meshes, builder);
 }
 
@@ -1888,29 +1888,41 @@ ${lowered.boneControlEntryPoints}${
 // KHR_interactivity's accessors over this asset's tables, the pin's
 // path-converter.ts resolved against the loaded document: resolveVisibility
 // reads \`node.visible !== false\` off the per-node flag, and writes through
-// setSubtreeVisible (scene/visibility.ts) -- the cascade over the node's
-// subtree, then the epoch bump that rebuilds the draw lists when a flag
-// actually moved.
+// setSubtreeVisible (scene/visibility.ts) over the asset's node graph.
 bool gltf_node_visible(const Engine& engine, AssetHandle asset_handle, std::size_t node) {
     const AssetRecord& asset = ${recordAt("engine.assets", "asset_handle")};
-    return node < asset.node_visible.size() ? asset.node_visible[node] : true;
+    return node < asset.node_visible.size() ? static_cast<bool>(asset.node_visible[node]) : true;
 }
 
 namespace {
 
-bool gltf_visibility_cascade(Engine& engine, AssetRecord& asset, std::size_t node, bool visible) {
-    bool changed = asset.node_visible[node] != visible;
-    asset.node_visible[node] = visible;
-    for (const MeshHandle mesh : asset.node_meshes[node]) {
-        // The pin writes a removed mesh too; once a later mesh holds its
-        // slot nothing can observe that write.
-        if (MeshRecord* record = current_mesh_record(engine, mesh)) record->visible = visible;
+// A glTF node's children are its own meshes and its child nodes; a mesh is
+// the mesh graph's.
+struct GltfNodeVisibilityGraph {
+    using Node = std::variant<std::size_t, MeshHandle>;
+    Engine& engine;
+    AssetRecord& asset;
+    MeshVisibility& visible(const Node& node) {
+        if (const auto* mesh = std::get_if<MeshHandle>(&node)) return upstream::MeshVisibilityGraph{engine}.visible(*mesh);
+        return asset.node_visible[std::get<std::size_t>(node)];
     }
-    for (const std::size_t child : asset.node_children[node]) {
-        if (gltf_visibility_cascade(engine, asset, child, visible)) changed = true;
+    // The meshes, then the child nodes, read in place.
+    struct Children {
+        const std::vector<MeshHandle>& meshes;
+        const std::vector<std::size_t>& nodes;
+        std::size_t size() const { return meshes.size() + nodes.size(); }
+        Node operator[](std::size_t index) const {
+            return index < meshes.size() ? Node{meshes[index]} : Node{nodes[index - meshes.size()]};
+        }
+    };
+    Children children(const Node& node) {
+        static const std::vector<std::size_t> no_nodes;
+        if (const auto* mesh = std::get_if<MeshHandle>(&node))
+            return {upstream::MeshVisibilityGraph{engine}.children(*mesh), no_nodes};
+        const std::size_t index = std::get<std::size_t>(node);
+        return {asset.node_meshes[index], asset.node_children[index]};
     }
-    return changed;
-}
+};
 
 } // namespace
 
@@ -1919,7 +1931,7 @@ void set_gltf_node_visible(Engine& engine, AssetHandle asset_handle, std::size_t
     if (node >= asset.node_visible.size()) {
         throw std::runtime_error("KHR_interactivity visibility pointer names a node the asset lacks.");
     }
-    if (gltf_visibility_cascade(engine, asset, node, visible)) ++engine.draw_list_epoch;
+    upstream::set_subtree_visible(GltfNodeVisibilityGraph{engine, asset}, GltfNodeVisibilityGraph::Node{node}, visible);
 }
 
 // resolveMaterialUvTransform over the glTF material index: the base-colour

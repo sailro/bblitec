@@ -1,7 +1,6 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
-import { lowerThinMeshFeatures } from "./mesh-attribute-features.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     PinnedNumericLowerer,
@@ -52,8 +51,7 @@ export function lowerThinInstanceBindingCreation(
         ]),
         callShapes: new Map([["attrNames.includes", "bool"]]),
     }).expression(context.variableInitializer(nodeFile, "requiresInstances"));
-    return `${lowerThinMeshFeatures(context)}
-#if BBLITE_NODE_VARIANTS > 0
+    return `#if BBLITE_NODE_VARIANTS > 0
 // ${context.provenance(nodePath, "createNodeRenderable", "requiresInstances")}
 template<class Includes>
 static bool thin_node_requires_instances(Includes&& includes, bool uses_instance_index) {
@@ -67,8 +65,8 @@ ThinMaterialBindingOwner create_thin_material_binding(const Engine& engine, Mesh
     const auto& material = ${recordAt("engine.materials", "material_handle")};
     auto result = std::make_shared<ThinMaterialBinding>();
     result->pool = mesh.thin_instances;
-    const bool has_colors = result->pool && static_cast<bool>(result->pool->colors);
-    result->mesh_features = thin_mesh_features(static_cast<bool>(result->pool), has_colors);
+    const bool has_colors = has_instance_colors(mesh);
+    result->mesh_features = upstream::pinned_mesh_features(false, false, false, static_cast<bool>(result->pool), has_colors);
     if (material.shader_material) {
         result->shader_has_color = ${shaderHasColor};
     }

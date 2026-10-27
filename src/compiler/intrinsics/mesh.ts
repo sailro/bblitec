@@ -929,14 +929,19 @@ function compileSetMeshVisible(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
-    const mesh = context.compileValue(argumentAt(call, 0));
-    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    const node = context.compileValue(argumentAt(call, 0));
     context.reachFeature("mesh:visible", call);
+    // The pin's `setSubtreeVisible` takes any SceneNode.
+    const sceneNode = ["scene-node", "transform-node", "asset-root"].includes(
+        node.kind,
+    );
+    if (sceneNode) context.reachFeature("scene:node-transforms", call);
+    else context.expectKind(node, "mesh", argumentAt(call, 0));
     return {
         kind: "void",
         cpp:
-            `bbl::set_mesh_visible(` +
-            `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+            `bbl::${sceneNode ? "set_scene_node_visible" : "set_mesh_visible"}(` +
+            `${context.requireEngine(node, call)}, ${node.cpp}, ` +
             `${context.conditions.compileCondition(argumentAt(call, 1))})`,
     };
 }

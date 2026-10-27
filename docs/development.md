@@ -288,6 +288,10 @@ Update pin, package lock, corpus catalog and reference provenance together; then
 generation, `npm run corpus:verify` and validation. Preview with
 `npm run corpus:manifest -- --previous-version <version> --previous-commit <sha>` before `--write`.
 
+- Diff the upstream `lab/` inventory between the two commits; new scenes and demos join the catalog's `staged` list until
+  registered.
+- Lab files the pin fetches instead of committing come from its corpus `tooling` scripts (`src/pinned-lab-materializers.ts`).
+
 ## API coverage
 
 ```powershell

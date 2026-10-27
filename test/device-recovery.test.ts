@@ -294,8 +294,8 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         ],
         [
             "recovery-rebuild",
-            "rebuilt.push(await rebuild())",
-            "rebuilt.push(rebuild())",
+            "const renderable = await rebuild();",
+            "const renderable = rebuild();",
         ],
         ["recovery-rebuild", "rt._lastVersion = -1", "rt._lastVersion = 0"],
         ["recovery-rebuild", "indices.length", "positions.length"],

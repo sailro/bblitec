@@ -3392,7 +3392,7 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     readAssetBytes?: CompileOptions["readAssetBytes"];
     /** An authored page replaces the default host, including its implicit canvas. */
     hostPage?: HostPageProgram;
-    deferredCapabilities?: "runtime-throw";
+    deferredCapabilities?: CompileOptions["deferredCapabilities"];
     workers?: WorkerCompilation;
     /** Reached query mutation requires native identities throughout this realm. */
     runtimeSearchParams?: boolean;

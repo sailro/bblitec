@@ -8039,19 +8039,7 @@ class Compiler implements LoweringServices {
             (ts.isPropertyAccessExpression(left) ||
                 ts.isElementAccessExpression(left))
         ) {
-            const owner = this.unwrap(left.expression);
-            if (
-                this.probeEmission(
-                    () => this.resolveRecordValue(owner)?.cameraVector,
-                    () => false,
-                ) ||
-                isCameraExpression(this, owner) ||
-                (ts.isPropertyAccessExpression(owner) &&
-                    ["target", "position", "upVector"].includes(
-                        owner.name.text,
-                    ) &&
-                    isCameraExpression(this, owner.expression))
-            ) {
+            if (this.mayOwnCameraState(left.expression)) {
                 this.admissions.noteUntrackedCameraWrite({
                     node: left,
                     reason: "this camera mutation syntax does not invoke its pinned setter",
@@ -8620,8 +8608,16 @@ class Compiler implements LoweringServices {
             )
                 return false;
         }
+        const assigned = call.arguments[0];
         if (
-            isLibraryStatic(this.checker, call.expression, "Object", "assign")
+            isLibraryStatic(
+                this.checker,
+                call.expression,
+                "Object",
+                "assign",
+            ) &&
+            assigned &&
+            this.mayOwnCameraState(assigned)
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.
@@ -8631,6 +8627,26 @@ class Compiler implements LoweringServices {
             });
         }
         return this.browserErasure.isBrowserInstrumentationCall(call);
+    }
+
+    /**
+     * Whether writing through `target` writes camera state the pin observes
+     * through setters: a camera, a camera vector value, or a camera's
+     * `target`, `position` or `upVector`.
+     */
+    private mayOwnCameraState(target: ts.Expression): boolean {
+        const owner = this.unwrap(target);
+        return (
+            this.probeEmission(
+                () =>
+                    this.resolveRecordValue(owner)?.cameraVector !== undefined,
+                () => false,
+            ) ||
+            isCameraExpression(this, owner) ||
+            (ts.isPropertyAccessExpression(owner) &&
+                ["target", "position", "upVector"].includes(owner.name.text) &&
+                isCameraExpression(this, owner.expression))
+        );
     }
 
     public platformDocumentHidden(): string | undefined {

@@ -377,6 +377,7 @@ test("a moved shared opaque stamp flows out of the lowering", () => {
             [["isAlphaBlend ? 200 : 100", "isAlphaBlend ? 200 : 90"]],
         ),
         doctoredSourceFile("src/material/shader/shader-renderable.ts", [
+            ["transparent ? 200 : 100", "transparent ? 200 : 90"],
             ["renderOrder ?? 100", "renderOrder ?? 90"],
         ]),
         doctoredSourceFile("src/material/shader/shader-thin-instance.ts", [
@@ -422,15 +423,15 @@ test("an order stamp that stops substituting renderOrder refuses", () => {
     );
 });
 
-test("a plain stamp with no literal transparency to classify it refuses", () => {
+test("a merged stamp that leaves the shared opaque order refuses", () => {
     assert.throws(
         () =>
             lowerOpaqueOrderStamp([
                 doctoredSourceFile("src/material/shader/shader-renderable.ts", [
-                    ["isTransparent: false,", "isTransparent: opaqueFlag,"],
+                    ["renderOrder ?? 100", "renderOrder ?? 200"],
                 ]),
             ]),
-        /no literal isTransparent sibling/,
+        /no longer stamp one shared opaque order/,
     );
 });
 

@@ -110,7 +110,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bone Control |
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003/0.006 | 0.003/0.006 | Havok Collision Event; Scene 40 plus the collision event |
 | 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027/0.178 | 0.027/0.178 | Physics Trigger Volume; trigger drop two elastic bounces in; the rebound rule's 0.2% compounding |
-| 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003/0.125 | 0.003/0.125 | Havok Filtered Raycast; raycast over triangle-soup colliders |
+| 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Havok Filtered Raycast; raycast over triangle-soup colliders |
 | 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
 | 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.013/0.012 | 0.013/0.012 | Havok Character Controller; Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps |
 | 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.032/0.023 | 0.032/0.023 | Havok Character Moving Platform; Character movement and animated platform |
@@ -288,7 +288,7 @@ Unchanged pinned applications.
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.139/0.169 | 0.139/0.169 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
-| Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.270/0.271 | 0.272/0.273 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual, with the live first-frame timing; canvas-only MAD: 0.001/0.001 on both backends. |
+| Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.303/0.300 | 0.297/0.293 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual, with the live frame-rate and first-frame values; canvas-only MAD: 0.000/0.000 on both backends. |
 
 ## Project-owned differential gates
 

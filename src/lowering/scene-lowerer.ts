@@ -825,6 +825,8 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/render_task_removal.hpp>
+${options.pbrSceneHooks ? "#include <bblite/upstream/pinned_mesh_features.hpp>" : ""}
+${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -926,40 +928,35 @@ void mark_transform_node_dirty(
     private visibilitySource(options: SceneCoreOptions): string {
         return options.visibility
             ? `
-// ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
-namespace {
-// The cascade half: writes the subtree, reports whether any flag moved.
-bool set_mesh_visible_cascade(
-    Engine& engine,
-    MeshHandle mesh,
-    bool visible) {
-    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-    bool changed = record.visible != visible;
-    record.visible = visible;
-    for (const MeshHandle child : record.children) {
-        // The pin writes a disposed child too; once a later mesh holds its
-        // slot nothing can observe that write.
-        if (!current_mesh_record(engine, child)) continue;
-        if (set_mesh_visible_cascade(engine, child, visible)) {
-            changed = true;
-        }
-    }
-    return changed;
-}
-} // namespace
-
+// setSubtreeVisible (subtree_visibility.hpp) over the scene's node graphs.
 void set_mesh_visible(
     Engine& engine,
     MeshHandle mesh,
     bool visible) {
-    if (set_mesh_visible_cascade(engine, mesh, visible)) {
-        // The pin's visibility epoch feeds the shared native draw-list
-        // membership epoch. A bare \`visible\` field write deliberately does
-        // not bump it, and a same-value call stays a true no-op.
-        ++engine.draw_list_epoch;
-    }
+    upstream::set_subtree_visible(upstream::MeshVisibilityGraph{engine}, mesh, visible);
+}
+${
+    options.sceneNodeTransforms
+        ? `
+namespace {
+// Any retained scene node: a mesh, a transform node or an asset root.
+struct SceneNodeVisibilityGraph {
+    using Node = SceneNodeHandle;
+    Engine& engine;
+    MeshVisibility& visible(const SceneNodeHandle& node) { return scene_node_visibility(engine, node); }
+    SceneNodeChildrenView children(const SceneNodeHandle& node) { return scene_node_children(engine, node); }
+};
+} // namespace
+
+void set_scene_node_visible(
+    Engine& engine,
+    const SceneNodeHandle& node,
+    bool visible) {
+    upstream::set_subtree_visible(SceneNodeVisibilityGraph{engine}, node, visible);
 }
 `
+        : ""
+}`
             : "";
     }
 

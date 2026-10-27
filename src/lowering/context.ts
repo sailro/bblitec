@@ -574,6 +574,36 @@ export class LoweringContext {
             declaration.moduleSpecifier.text,
         );
     }
+
+    /**
+     * The module declaring a name a module uses: the module itself when it
+     * declares the name at top level, else the one it imports the name from.
+     * 1.37.0 moved the cubemap skyboxes' `createSkyboxBuffers` into a module
+     * both import, so a builder is read where it is declared.
+     */
+    public declaringModule(
+        modulePath: string,
+        name: string,
+    ): string | undefined {
+        const declaredHere = this.sourceFile(modulePath).statements.some(
+            (statement) =>
+                ts.isVariableStatement(statement)
+                    ? statement.declarationList.declarations.some(
+                          (variable) =>
+                              ts.isIdentifier(variable.name) &&
+                              variable.name.text === name,
+                      )
+                    : (ts.isFunctionDeclaration(statement) ||
+                          ts.isClassDeclaration(statement) ||
+                          ts.isInterfaceDeclaration(statement) ||
+                          ts.isTypeAliasDeclaration(statement) ||
+                          ts.isEnumDeclaration(statement)) &&
+                      statement.name?.text === name,
+        );
+        return declaredHere
+            ? modulePath
+            : this.moduleOfImport(modulePath, name);
+    }
     /**
      * The mesh name a pinned factory finishes under.
      *
@@ -1553,17 +1583,20 @@ export class LoweringContext {
      * composed PBR fragment came out with no tone mapping and no exposure,
      * which nothing at generation could see.
      *
-     * The rule is deliberately not set equality. A member the pin declares
-     * OPTIONAL is one the caller may legitimately omit — the composer's own
-     * `_tm` is optional, for a scene with tone mapping off — so what has to
-     * hold is that every supplied key is declared, and every REQUIRED
-     * declared key is supplied. An additive optional dependency upstream
-     * therefore passes, and a renamed or dropped one fails naming it.
+     * An ADDED optional member is silent the same way: 1.37.0 moved the PBR
+     * normal-map and spec-gloss WGSL behind three optional composer
+     * dependencies, and leaving them unsupplied composed every normal-mapped
+     * fragment without its normal map. So every supplied key must be
+     * declared, and every declared key supplied or named in `omitted`, which
+     * only an OPTIONAL member may be. A bag holding the scene's own options
+     * passes `"any-optional"`: an option the scene left unset takes the pin's
+     * default in the browser too.
      */
     public assertSuppliedOptions(
         modulePath: string,
         interfaceName: string,
         supplied: readonly string[],
+        omitted: readonly string[] | "any-optional" = [],
     ): void {
         const { declaration } = this.interfaceDeclaration(
             modulePath,
@@ -1579,16 +1612,24 @@ export class LoweringContext {
         });
         const declared = new Set(members.map(({ key }) => key));
         const missing = members
-            .filter(({ key, required }) => required && !supplied.includes(key))
+            .filter(
+                ({ key, required }) =>
+                    !supplied.includes(key) &&
+                    (required ||
+                        (omitted !== "any-optional" && !omitted.includes(key))),
+            )
             .map(({ key }) => key);
-        const unread = supplied.filter((key) => !declared.has(key));
+        const unread = [
+            ...supplied,
+            ...(omitted === "any-optional" ? [] : omitted),
+        ].filter((key) => !declared.has(key));
         if (missing.length === 0 && unread.length === 0) return;
         this.contractError(
             declaration,
             `${interfaceName} declares [${[...declared].join(", ")}]; this ` +
                 `port supplies [${[...supplied].sort().join(", ")}]. ` +
                 (missing.length > 0
-                    ? `Required but unsupplied: ${missing.join(", ")}. `
+                    ? `Neither supplied nor omitted: ${missing.join(", ")}. `
                     : "") +
                 (unread.length > 0
                     ? `Supplied but undeclared: ${unread.join(", ")}. `

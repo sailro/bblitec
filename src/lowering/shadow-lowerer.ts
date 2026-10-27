@@ -1083,18 +1083,22 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         "!sg._config._forceRefreshEveryFrame && " +
         "casterVersion === state._lastCasterVersion && " +
         "lightVersion === state._lastLightVersion && ";
-    for (const [module, renderer, ensure, stateLocal] of [
+    for (const [module, renderer, ensure, stateLocal, identity] of [
         [
             esmModule,
             "renderEsmShadowMap",
             "ensureEsmShadowTaskState",
             "taskState",
+            "existing._casterMeshes === casterMeshes",
         ],
         [
             hooksModule,
             "renderPcfShadowMap",
             "ensurePcfShadowTaskState",
             "state",
+            // PCF seeds its change flag with the identity test; its whole
+            // rebuild rule is asserted below.
+            "existing._casterMeshes !== casterMeshes",
         ],
     ] as const) {
         const { file, declaration } = context.functionDeclaration(
@@ -1141,13 +1145,47 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         );
         // The identity test that makes `caster_list_version` the right
         // mirror: the pin rebuilds this state — fresh -1 sentinels, so a
-        // forced next render — exactly when `ensure*` is handed a new
-        // caster ARRAY, not new contents.
+        // forced next render — when `ensure*` is handed a new caster ARRAY,
+        // not new contents.
         context.expectShapeCount(
             ensureDeclaration,
-            "existing._casterMeshes === casterMeshes",
+            identity,
             `${ensure} caster-array identity`,
         );
+        // PCF also rebuilds when a caster's view material changes, except a
+        // caster held while its view cannot be built: it waits on the pin's
+        // asynchronous factory imports and group builds, which native
+        // registration settles before the first frame.
+        if (module === hooksModule) {
+            const reuse = ensureDeclaration.body!.statements.find(
+                (statement): statement is ts.IfStatement =>
+                    ts.isIfStatement(statement) &&
+                    context.expressionMatchesShape(
+                        statement.expression,
+                        "existing",
+                    ),
+            );
+            if (!reuse || !ts.isBlock(reuse.thenStatement))
+                context.contractError(
+                    ensureDeclaration,
+                    `Expected ${ensure} to reuse an unchanged state.`,
+                );
+            context.assertStatementShapes(
+                reuse.thenStatement,
+                reuse.thenStatement.statements.slice(0, 3),
+                `let changed = existing._casterMeshes !== casterMeshes;
+                for (let i = 0; !changed && i < casterMeshes.length; i++) {
+                    const mesh = casterMeshes[i]!;
+                    const material = mesh.material;
+                    const terminal = material ? resolveShadowCasterMaterial(material) : null;
+                    if (existing._casterMaterials[i] !== terminal || existing._casterMatGens[i] !== (terminal?._csmGen ?? 0)) {
+                        changed = !(material && existing._held?.has(mesh) && holdShadowCaster(scene, sg, material));
+                    }
+                }
+                if (!changed) { return existing; }`,
+                `${ensure} rebuild rule`,
+            );
+        }
         const taskState = context.unwrapExpression(
             context.variableInitializer(ensureDeclaration, stateLocal),
         );

@@ -19,6 +19,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 
 interface OracleMesh {
     id: number;
@@ -185,6 +186,7 @@ mesh.material=material;addToScene(scene,mesh);
 #include <cassert>
 #include <span>
 #include <utility>
+${meshFeaturesNamespace(context)}
 namespace bbl {
 ${lowerThinInstanceBindingCreation(context)}
 ${lowerMeshMaterialSetter(context)}

@@ -271,10 +271,10 @@ export function lowerRebuildTransaction(
         undefined,
     );
     return `// ${context.provenance(module, "rebuildSceneGroups")}
-std::optional<bool> ${functionName}(Scene& scene, const std::vector<MeshHandle>& meshes,
-    bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {
+std::optional<PbrLazyWidening> ${functionName}(Scene& scene, const std::vector<MeshHandle>& meshes,
+    PbrLazyWidening (*builder)(Scene&, const std::vector<MeshHandle>&)) {
     std::optional<PbrTransmissionTransaction> transmission;
-    bool result = false;
+    PbrLazyWidening result;
     {
         struct ReceiverTeardown {
             Scene& scene;

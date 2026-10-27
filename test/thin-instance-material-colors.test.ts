@@ -7,6 +7,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 
 test("shader thin color captures preserve absent and explicit source options independently of compiled lanes", (t) => {
     const fixture = compileShaderMaterialFixture(`
@@ -31,6 +32,7 @@ const enabled=createLineMaterial({useThinInstances:true,useThinInstanceColors:tr
         native,
         "thin-instance-material-colors",
         `${fixture.cpp}
+${meshFeaturesNamespace(new LoweringContext())}
 namespace bbl {
 ${lowerThinInstanceBindingCreation(new LoweringContext())}
 }

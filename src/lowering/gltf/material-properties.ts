@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweringContext } from "../context.js";
+import { moduleCppStem } from "../../cpp-literals.js";
 import {
     lowerGltfMaterialObjectFunction,
     type GltfMaterialFunction,
@@ -65,7 +66,7 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
                 contextName,
                 "Expected a material texture context.",
             );
-        const cpp = `gltf_pbr_${module.slice(module.lastIndexOf("/") + 1, -3).replaceAll("-", "_")}_${name}`;
+        const cpp = `gltf_pbr_${moduleCppStem(module)}_${name}`;
         functions.push({
             module,
             name,

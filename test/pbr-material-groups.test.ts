@@ -17,6 +17,9 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
+import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 const pbrModule = "src/material/pbr/pbr-renderable.ts";
@@ -225,6 +228,7 @@ const scenarios: Scenario[] = [
 /** Execute the pin's queue, runtime dispatch and complete rebuild core with inert GPU objects. */
 function sourceOracle(
     context: LoweringContext,
+    lazyPbrCaps: (mesh: unknown) => number,
 ): (input: Scenario) => Promise<unknown> {
     const declaration = (module: string, name: string) =>
         context
@@ -246,42 +250,45 @@ function sourceOracle(
         pbrModule,
         "buildPbrRenderables",
     ).declaration;
-    const gamma = context
-        .variableInitializer(pbr, "hasGammaAlbedo")
-        .parent.parent.parent.getText();
-    const scan = pbr.body!.statements.find(
-        (node) =>
-            ts.isForStatement(node) &&
-            node.getText().includes("hasGammaAlbedo"),
-    );
+    const declared = (name: string): ts.Statement => {
+        const statement = context.variableInitializer(pbr, name).parent.parent
+            .parent;
+        assert.ok(ts.isVariableStatement(statement));
+        return statement;
+    };
+    const following = (statement: ts.Statement): ts.Statement =>
+        pbr.body!.statements[pbr.body!.statements.indexOf(statement) + 1]!;
+    // The lazy-capability scan, projected as the lowering projects it: the
+    // mesh read and the fold.
+    const scan = following(declared("lazyCaps"));
     assert.ok(scan && ts.isForStatement(scan) && ts.isBlock(scan.statement));
-    const gammaStatements = scan.statement.statements.filter(
-        (node) =>
-            ts.isVariableStatement(node) ||
-            node.getText().startsWith("hasGammaAlbedo"),
-    );
-    const gammaScan = ts
-        .createPrinter()
-        .printNode(
-            ts.EmitHint.Unspecified,
-            ts.factory.updateForStatement(
-                scan,
-                scan.initializer,
-                scan.condition,
-                scan.incrementor,
-                ts.factory.updateBlock(scan.statement, gammaStatements),
+    const capsScan = ts.createPrinter().printNode(
+        ts.EmitHint.Unspecified,
+        ts.factory.updateForStatement(
+            scan,
+            scan.initializer,
+            scan.condition,
+            scan.incrementor,
+            ts.factory.updateBlock(
+                scan.statement,
+                scan.statement.statements.filter((node) =>
+                    ts.isVariableStatement(node)
+                        ? node.getText().startsWith("const m =")
+                        : node.getText().startsWith("lazyCaps"),
+                ),
             ),
-            pbr.getSourceFile(),
-        );
-    const group = context
-        .variableInitializer(pbr, "group")
-        .parent.parent.parent.getText();
-    const invalidator = pbr
-        .body!.statements.find(
-            (node) =>
-                ts.isIfStatement(node) && node.getText().includes("group._w"),
-        )!
-        .getText();
+        ),
+        pbr.getSourceFile(),
+    );
+    const widening = [
+        declared("lazyCaps").getText(),
+        capsScan,
+        declared("group").getText(),
+        declared("liveCaps").getText(),
+        following(declared("liveCaps")).getText(),
+        declared("loadCaps").getText(),
+        following(declared("loadCaps")).getText(),
+    ].join("\n");
     const rebuildFile = context.sourceFile("src/scene/scene-rebuild.ts");
     const rebuildSource = rebuildFile.statements
         .filter((node) => !ts.isImportDeclaration(node))
@@ -291,6 +298,8 @@ function sourceOracle(
     const code = transpileCommonJs(
         `
         const require = () => ({A, C, X, rebuildScenePbrPipelines});
+        const ALL_LAZY_CAPS = ${context.pinnedNumber(pbrModule, "ALL_LAZY_CAPS")};
+        ${declaration(pbrModule, "lazyCapsWidening")}
         const _lateCleanup = undefined;
         const retireGpuResources = (_engine, callback) => callback();
         ${declaration("src/scene/mesh-scene-registry.ts", "enqueueMaterialSwap")}
@@ -319,19 +328,18 @@ function sourceOracle(
                 _renderables: [], _uniformUpdaters: [], _disposables: [], _meshDisposables: new Map(),
                 _frameGraph: {build() {}}, surface: {engine: {}}, _built: false};
             const builder = Object.assign(async (scene, meshes) => {
-                ${gamma}
-                ${gammaScan}
-                ${group}
-                ${invalidator}
+                ${widening}
                 events.push(meshes.map(mesh => mesh.id));
-                return {renderables: [], rebuildSingle: (_scene, mesh) => ({mesh, order: 0}), _G: hasGammaAlbedo};
+                return {renderables: [], rebuildSingle: (_scene, mesh) => ({mesh, order: 0}), _w: lazyCapsWidening(loadCaps)};
             }, {_materialFamily: "pbr", key: 1});
-            const materials = [false, true].map(_gammaAlbedo => ({_buildGroup: builder, _gammaAlbedo}));
+            // Featureless materials: the composition table the native side
+            // reads holds 0 for both, so only the gamma capability differs.
+            const materials = [false, true].map(_gammaAlbedo => ({_buildGroup: builder, _gammaAlbedo, _renderFeatures: {features: 0}}));
             for (const [key, family] of [[2, "standard"], [3, "shader"], [4, "node"], [5, "node"]]) {
                 materials.push({_buildGroup: Object.assign(async () => ({renderables: [], rebuildSingle: (_scene, mesh) => ({mesh, order: 0})}), {_materialFamily: family, key})});
             }
             materials.push({...materials[4]});
-            const meshes = input.materials.map((index, id) => ({id, material: materials[index] ?? null}));
+            const meshes = input.materials.map((index, id) => ({id, material: materials[index] ?? null, _gpu: {}}));
             function add(ctx, mesh) { ctx.meshes.push(mesh); ${attachment} }
             for (const [op, index, value] of input.operations) {
                 try {
@@ -363,7 +371,7 @@ function sourceOracle(
         };`,
         sceneModule,
     );
-    return createJavaScriptFunction(code)() as (
+    return createJavaScriptFunction("_lazyPbrCaps", code)(lazyPbrCaps) as (
         input: Scenario,
     ) => Promise<unknown>;
 }
@@ -383,13 +391,18 @@ test("PBR material group timing, later additions and rebuild inputs agree with s
         ),
         doctoredContext(
             pbrModule,
-            "hasGammaAlbedo ||= !!mat._gammaAlbedo",
-            "hasGammaAlbedo &&= !!mat._gammaAlbedo",
+            "lazyCaps |= _lazyPbrCaps(m)",
+            "lazyCaps |= _lazyPbrCaps(meshes[0]!)",
         ),
     ];
+    // The pin's own capability read, executed: the lowering reads the same
+    // words from the composition table.
+    const { _lazyPbrCaps } = await importPinnedModule<{
+        _lazyPbrCaps(this: void, mesh: unknown): number;
+    }>("material/pbr/pbr-renderable.js");
     const rows = [];
     for (const [variant, context] of contexts.entries()) {
-        const oracle = sourceOracle(context);
+        const oracle = sourceOracle(context, _lazyPbrCaps);
         for (const input of scenarios)
             rows.push({ variant, input, expected: await oracle(input) });
     }
@@ -405,12 +418,14 @@ test("PBR material group timing, later additions and rebuild inputs agree with s
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
+${meshFeaturesNamespace(contexts[0]!)}
 namespace bbl {
 std::vector<std::vector<std::uint32_t>> group_events;
+${featurelessPbrMaterialFeatures}
 void enable_scene_transmission(Scene& scene) {scene.transmission_enabled = true;}
 ${lowerPbrTransmissionTransaction(contexts[0]!)}
-std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
-    bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {return run_pbr_rebuild_transaction_impl(scene, meshes, builder);}
+std::optional<PbrLazyWidening> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+    PbrLazyWidening (*builder)(Scene&, const std::vector<MeshHandle>&)) {return run_pbr_rebuild_transaction_impl(scene, meshes, builder);}
 void (*fixture_rebuild)(Scene&, bool, bool) = nullptr;
 void rebuild_scene_renderables(Scene& scene) {fixture_rebuild(scene, false, true);}
 void run_pbr_scene_hooks(Scene&, const std::vector<MeshHandle>& meshes) {
@@ -489,7 +504,7 @@ void check(const nlohmann::json& row) {
         groups.push_back(nlohmann::json::array({key, ids, value->rebuild_ready}));
     }
     const nlohmann::json actual{{"events", group_events}, {"failures", failures}, {"members", members},
-        {"ready", group && group->rebuild_ready}, {"invalidates", group && group->gamma_invalidates},
+        {"ready", group && group->rebuild_ready}, {"invalidates", group && group->widening.has_value()},
         {"queue", queued}, {"built", scene.state->material_groups_built}, {"groups", groups}};
     if (actual != row.at("expected")) throw std::runtime_error(row.dump() + "\\nactual=" + actual.dump());
 }
@@ -526,7 +541,9 @@ test("standalone shader and PBR groups link their source rebuild transaction wit
         `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
+${meshFeaturesNamespace(new LoweringContext())}
 namespace bbl {
+${featurelessPbrMaterialFeatures}
 void (*fixture_rebuild)(Scene&, bool, bool) = nullptr;
 void rebuild_scene_renderables(Scene& scene) { fixture_rebuild(scene, false, true); }
 ${source}
@@ -557,12 +574,13 @@ void check(bool include_pbr) {
     assert(scene.state->material_outputs.size() == count);
     assert(!scene.state->pbr_transmission_transaction);
     if (include_pbr) {
-        assert(!scene.state->pbr_material_group->gamma_invalidates);
+        // The rebuilt group publishes the capabilities its gamma material loaded.
+        assert(scene.state->pbr_material_group->widening == PbrLazyWidening{pbr_lazy_caps(scene, MeshHandle{1})});
         assert(scene.state->pbr_material_group->outputs.at(0)->material.value == 2);
     }
     const auto cancelled = run_pbr_rebuild_transaction(scene, {}, [](Scene& target, const std::vector<MeshHandle>&) {
         target.disposed = true;
-        return true;
+        return PbrLazyWidening{};
     });
     assert(!cancelled);
     assert(!scene.state->pbr_transmission_transaction);

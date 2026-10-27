@@ -53,7 +53,6 @@ import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-varia
 import { packagedWgsl } from "./pinned-wgsl-build.js";
 import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-uniforms.js";
 import { stringLiteral } from "./cpp-literals.js";
-import { lowerMeshAttributeFeatures } from "./lowering/mesh-attribute-features.js";
 
 /**
  * A layer writer's presence test: the record flag standing for the pin's
@@ -1326,14 +1325,6 @@ export function pinnedSharedVariantDecls(
         "src/material/mesh-features.ts",
         "MSH_RECEIVE_SHADOWS",
     );
-    const thinInstancesBit = context.pinnedNumber(
-        "src/material/mesh-features.ts",
-        "MSH_HAS_THIN_INSTANCES",
-    );
-    const instanceColorBit = context.pinnedNumber(
-        "src/material/mesh-features.ts",
-        "MSH_HAS_INSTANCE_COLOR",
-    );
     const vatBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_VAT",
@@ -1346,6 +1337,7 @@ export function pinnedSharedVariantDecls(
 #pragma once
 
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_mesh_features.hpp>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -1362,18 +1354,6 @@ namespace bbl::upstream {
 inline constexpr std::uint32_t pinned_msh_receive_shadows =
     ${receiveShadowsBit}u;
 
-// MSH_HAS_THIN_INSTANCES from the same declaration. A pool can attach after
-// mesh creation, so the PAL ORs this value onto the static per-handle word and
-// generation composes both rows of that feature lattice.
-inline constexpr std::uint32_t pinned_msh_has_thin_instances =
-    ${thinInstancesBit}u;
-
-// _computeMeshFeatures reads this only inside its thin-instance branch and
-// only when mesh.thinInstances.colors exists. The PAL therefore ORs it from
-// the same MeshRecord predicate that decides whether to bind the colour lane.
-inline constexpr std::uint32_t pinned_msh_has_instance_color =
-    ${instanceColorBit}u;
-
 // MSH_VAT and the MSH_HAS_SKELETON it replaces. _computeMeshFeatures writes
 // them as one either/or -- a baked mesh has no live skeleton left -- so the
 // PAL SWAPS rather than ORs, and generation composed the swapped row.
@@ -1382,7 +1362,6 @@ inline constexpr std::uint32_t pinned_msh_vat =
 inline constexpr std::uint32_t pinned_msh_has_skeleton =
     ${skeletonBit}u;
 
-${lowerMeshAttributeFeatures(context)}
 
 enum class PinnedBindingKind {
     texture2d,
@@ -1498,6 +1477,9 @@ export function pinnedPbrVariantsHeader(
     // bits itself, because our geometry record does not carry uv2 or vertex
     // colour presence.
     const meshFeaturesByMaterial = new Map<number, Set<number>>();
+    // Each material's own feature word, from its colour selectors: a view
+    // (no-colour, ESM) resolves to its source material's row.
+    const featuresByMaterial = new Map<number, number>();
     for (const variant of variants) {
         for (const selector of variant.selectors) {
             const set =
@@ -1505,6 +1487,18 @@ export function pinnedPbrVariantsHeader(
                 new Set<number>();
             set.add(selector.meshFeatures);
             meshFeaturesByMaterial.set(selector.materialIndex, set);
+            if (selector.materialView) continue;
+            const known = featuresByMaterial.get(selector.materialIndex);
+            if (known !== undefined && known !== selector.materialFeatures) {
+                throw new Error(
+                    `PBR material '${selector.materialName}' composes two ` +
+                        "material feature words.",
+                );
+            }
+            featuresByMaterial.set(
+                selector.materialIndex,
+                selector.materialFeatures,
+            );
         }
     }
     const materialCount =
@@ -1519,6 +1513,15 @@ export function pinnedPbrVariantsHeader(
             return set?.size === 1
                 ? `    ${[...set][0]},`
                 : "    std::numeric_limits<std::size_t>::max(),";
+        },
+    );
+    const materialFeatureRows = Array.from(
+        { length: materialCount },
+        (_unused, index) => {
+            const features = featuresByMaterial.get(index);
+            return features === undefined
+                ? "    std::numeric_limits<std::uint32_t>::max(),"
+                : `    ${features}u,`;
         },
     );
     for (const variant of variants) {
@@ -2056,6 +2059,13 @@ ${cpp.table("std::uint32_t", "pbr_scene_material_indices", scenePbrMaterialIndic
  * caller has to supply the bits itself.
  */
 ${cpp.table("std::size_t", "pbr_variant_mesh_features", meshFeatureRows.length, `${meshFeatureRows.join("\n")}`)}
+
+/**
+ * Each material row's \`_computePbrMaterialFeatures\` word, which the group
+ * build's \`_lazyPbrCaps\` reads; the maximum where no colour variant
+ * composes the row.
+ */
+${cpp.table("std::uint32_t", "pbr_variant_material_features", materialFeatureRows.length, `${materialFeatureRows.join("\n")}`)}
 
 /**
  * The mesh attribute bits per runtime mesh handle.

@@ -56,6 +56,11 @@ const store = sharedUpstreamStore();
 const skeletonModule = "src/shader/fragments/skeleton-fragment.ts";
 const morphModule = "src/shader/fragments/morph-fragment-core.ts";
 const templateModule = "src/material/pbr/pbr-template.ts";
+const tangentNormalModule =
+    "src/material/pbr/fragments/pbr-normal-tangent-wgsl.ts";
+/** The tangent-space normal module the PBR template loads lazily (`_tangentNormal`). */
+const tangentNormal = (): Promise<unknown> =>
+    importPinnedModule("material/pbr/fragments/pbr-normal-tangent-wgsl.js");
 const instanceModule = "src/shader/fragments/thin-instance-fragment.ts";
 const flags = [
     [false, false, false],
@@ -309,7 +314,7 @@ test("the reusable PBR vertex template matches the executed pin before transport
     const pinned = await importPinnedModule<{
         createPbrTemplate(
             this: void,
-            config: { _normalMode: "tangent"; _hasMorph: boolean },
+            config: { _tangentNormal: unknown; _hasMorph: boolean },
         ): { _vertexTemplate: string };
     }>("material/pbr/pbr-template.js");
     for (const morph of [false, true]) {
@@ -318,7 +323,7 @@ test("the reusable PBR vertex template matches the executed pin before transport
             morph,
         );
         const executed = pinned.createPbrTemplate({
-            _normalMode: "tangent",
+            _tangentNormal: await tangentNormal(),
             _hasMorph: morph,
         });
         assert.deepEqual(
@@ -720,7 +725,7 @@ test("the executed pin and specialized stages agree on weighted positions and ma
             meshWorld: Value[],
         ): Promise<Value> => {
             const composed = await composePinnedPbrShader(
-                { _normalMode: "tangent", _hasMorph: hasMorph },
+                { _tangentNormal: await tangentNormal(), _hasMorph: hasMorph },
                 fragments,
             );
             const helper = composed.vertexWgsl.includes(
@@ -831,7 +836,7 @@ test("pin arithmetic changes flow through skinning, morphing, tangent frames and
             /0\.625/,
         ],
         [
-            templateModule,
+            tangentNormalModule,
             "cross(N_local,T_local)",
             "cross(T_local,N_local)",
             /cross\(normalize\(worldTangent\), normalize\(worldNormal\)\)/,
@@ -917,7 +922,7 @@ test("unrepresentable pin drift refuses rather than retaining a transcript or em
             /template outputs/,
         ],
         [
-            templateModule,
+            tangentNormalModule,
             "cross(N_local,T_local)",
             "newTangentHelper(N_local,T_local)",
             /unmapped function 'newTangentHelper'/,
@@ -951,16 +956,21 @@ test("unrepresentable pin drift refuses rather than retaining a transcript or em
 
 test("pinned local renaming and WGSL formatting do not select shader behavior", () => {
     const baseline = nativeModule(materialVertexWgsl()).module;
-    const renamed = new EditedContext(templateModule, (source) =>
-        source
-            .replaceAll("N_local", "localNormalAlias")
-            .replaceAll("worldPos4", "positionAlias")
-            .replaceAll("B_local", "localBitangentAlias"),
-    );
-    assert.deepEqual(
-        nativeModule(materialVertexWgsl(false, false, false, renamed)).module,
-        baseline,
-    );
+    for (const renamed of [
+        new EditedContext(templateModule, (source) =>
+            source.replaceAll("worldPos4", "positionAlias"),
+        ),
+        new EditedContext(tangentNormalModule, (source) =>
+            source
+                .replaceAll("N_local", "localNormalAlias")
+                .replaceAll("B_local", "localBitangentAlias"),
+        ),
+    ])
+        assert.deepEqual(
+            nativeModule(materialVertexWgsl(false, false, false, renamed))
+                .module,
+            baseline,
+        );
     const projected = pinnedMaterialVertex(new LoweringContext(store), {
         deformation: true,
         instancing: true,

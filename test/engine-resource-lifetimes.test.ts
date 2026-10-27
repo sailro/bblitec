@@ -827,9 +827,9 @@ test("render-target texture disposal releases the attachments once and later bui
     assert.deepEqual(events, ["release1"]);
     assert.throws(
         () => surfaces.onRenderTargetTextureResize(fixed, () => {}),
-        /#841/,
+        /#845/,
     );
-    assert.throws(() => fixed.rt._syncEager(engine), /#842/);
+    assert.throws(() => fixed.rt._syncEager(engine), /#846/);
     // A surface target whose replacement still awaits delivery.
     const surface = surfaces.createSurfaceRenderTargetTexture(engine, {
         format: "rgba8unorm",
@@ -848,9 +848,9 @@ test("render-target texture disposal releases the attachments once and later bui
     assert.deepEqual(events, ["release1", "a", "release3", "release2"]);
     assert.throws(
         () => surfaces.onRenderTargetTextureResize(surface, () => {}),
-        /#841/,
+        /#845/,
     );
-    assert.throws(() => surface.rt._syncEager(engine), /#838/);
+    assert.throws(() => surface.rt._syncEager(engine), /#842/);
 
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -888,7 +888,7 @@ static pal::GpuCompletion check(pal::EventLoop& loop, std::string& events) {
     dispose_render_target_texture(engine, fixed);
     // The backend releases the attachments at its next target build.
     if (engine.render_targets[fixed.rt.value].retired && engine.render_targets_version == version + 1) add("release1");
-    assert(refusal([&] { (void)on_render_target_texture_resize(engine, fixed, [] {}); }) == "#841");
+    assert(refusal([&] { (void)on_render_target_texture_resize(engine, fixed, [] {}); }) == "#845");
     const auto surface = create_render_target_texture(engine, {}, true);
     const auto life = engine.render_targets[surface.rt.value].lifecycle;
     (void)on_render_target_texture_resize(engine, surface, [&] { add("a"); throw std::runtime_error("retry"); });
@@ -897,9 +897,9 @@ static pal::GpuCompletion check(pal::EventLoop& loop, std::string& events) {
     dispose_render_target_texture(engine, surface);
     if (engine.render_targets[surface.rt.value].retired && engine.render_targets_version == version + 2) add("release3");
     co_await wait_for_gpu_resource_retirements(gpu);
-    assert(refusal([&] { (void)on_render_target_texture_resize(engine, surface, [] {}); }) == "#841");
-    assert(refusal([&] { life->synchronize(); }) == "#838");
-    assert(refusal([&] { life->prepare_resize(); }) == "#838");
+    assert(refusal([&] { (void)on_render_target_texture_resize(engine, surface, [] {}); }) == "#845");
+    assert(refusal([&] { life->synchronize(); }) == "#842");
+    assert(refusal([&] { life->prepare_resize(); }) == "#842");
     loop.close(); co_return js::PromiseVoid{};
 }
 int main() { const js::RealmScope realm; pal::EventLoop loop; std::string events; loop.run([&] { check(loop, events); }); std::cout << events; }

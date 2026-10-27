@@ -19,6 +19,7 @@ import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
 import ts from "typescript";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
+import { pinnedLabPublicFile } from "./pinned-lab-materializers.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -826,17 +827,11 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
         // Pinned lab/public assets back every scene source: corpus
         // scenes and project-owned gates share the demo asset roots.
         {
-            const publicPath = resolve(
+            const publicPath = pinnedLabPublicFile(
                 root,
-                "corpus/babylon-lite/lab/public",
                 pinnedLabPublicAssetPath(relative),
             );
-            const publicRoot = resolve(root, "corpus/babylon-lite/lab/public");
-            if (
-                publicPath.startsWith(`${publicRoot}${sep}`) &&
-                existsSync(publicPath) &&
-                statSync(publicPath).isFile()
-            ) {
+            if (publicPath) {
                 response.writeHead(200, {
                     "Content-Type": mimeType(publicPath),
                 });

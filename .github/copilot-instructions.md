@@ -18,6 +18,8 @@ Persistent user requirement:
 - The target is Babylon Lite, not legacy Babylon.js.
 - Reuse pinned functions/composers and shared AST/typed lowering. Generate Babylon behavior; keep platform/library
   adaptation in PAL.
+- No duplication: one owner per lowered pinned function, table, rule and native helper. Find and reuse the owner, or
+  extract one, before adding code. A duplication found in review is fixed in that change, never deferred or skipped.
 - Derive activation from API reach and loader predicates; never from scene names, source text or fallback transcriptions.
 - Keep source/Tint pins unless an upgrade is requested.
 - Corpus inputs, references and thresholds are evidence; adoption/recapture keeps source provenance.

@@ -160,16 +160,19 @@ ${canvasDatasetSource}
                     "engine._device.queue.submit",
                 ),
         );
-        const flush = statements[submit + 1];
+        const flush = statements[submit + 2];
         if (submit < 0 || !flush)
             return this.context.contractError(
                 frame,
                 "Expected a post-submit retirement flush.",
             );
+        // `submitted` feeds only the finally's `_finishOptionalFrame` hook,
+        // which the pin installs for mesh LoD alone; no lowered feature
+        // installs it, so the native frame has no such boundary.
         this.context.assertStatementShapes(
             frame.tryBlock,
-            [flush],
-            "engine._flushGpuRetirements?.(engine);",
+            [statements[submit + 1]!, flush],
+            "submitted = true; engine._flushGpuRetirements?.(engine);",
             "Post-submit retirement scheduling",
         );
         const body = lowerPinnedBody(file, [flush], {

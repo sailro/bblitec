@@ -76,6 +76,7 @@ import {
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource } from "../compiler/syntax.js";
+import { transformNodeDefaults } from "../pinned-mesh-defaults.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -945,27 +946,18 @@ export class GizmoLowerer {
                 "Expected a named pinned display transform node.",
             );
         }
-        const factory = this.context.functionDeclaration(
-            "src/scene/transform-node.ts",
-            "createTransformNode",
-        ).declaration;
-        if (
-            factory.parameters.length !== 11 ||
-            call.arguments.length > factory.parameters.length
-        ) {
+        const defaults = [...transformNodeDefaults().values()];
+        if (call.arguments.length > defaults.length + 1) {
             this.context.contractError(
                 call,
                 "Expected the pinned transform-node TRS parameters.",
             );
         }
-        const values = factory.parameters.slice(1).map((parameter, index) => {
-            const value = call.arguments[index + 1] ?? parameter.initializer;
-            if (!value)
-                this.context.contractError(
-                    parameter,
-                    "Missing pinned transform-node default.",
-                );
-            return lowerer.expression(value);
+        const values = defaults.map((value, index) => {
+            const argument = call.arguments[index + 1];
+            return argument
+                ? lowerer.expression(argument)
+                : this.context.doubleLiteral(value);
         });
         return (
             `${JSON.stringify(call.arguments[0].text)}, ${vec3d(values.slice(0, 3))}, ` +

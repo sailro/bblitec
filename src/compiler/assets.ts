@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
 import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
+import { pinnedLabPublicFile } from "../pinned-lab-materializers.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
@@ -524,11 +525,11 @@ export function resolveBundledAsset(
         entryFileName &&
         deployment.publicUrl === pinnedLabPublicUrl()
     ) {
-        const repository = findRepositoryRoot(dirname(resolve(entryFileName)));
-        const directory = resolve(repository, "corpus/babylon-lite/lab/public");
-        const local = resolve(directory, "." + source.split(/[?#]/, 1)[0]);
-        if (local.startsWith(`${directory}${sep}`) && existsSync(local))
-            return local;
+        const local = pinnedLabPublicFile(
+            findRepositoryRoot(dirname(resolve(entryFileName))),
+            source.split(/[?#]/, 1)[0]!,
+        );
+        if (local) return local;
     }
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));

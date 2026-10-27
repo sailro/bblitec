@@ -238,7 +238,7 @@ test("authored frame offsets reach source validation without unsigned coercion",
         const sources:SpriteAtlasFrameSource[]=[{pixels:new Uint8Array([1,2,3,4]),width:1,height:1,srcX:-1}];
         let observed=false;
         try {createSpriteAtlasFromFrames(engine,sources,{paddingPx:0,maxWidthPx:2});}
-        catch(error){if((error as Error).message!=="#742")throw error;observed=true;}
+        catch(error){if((error as Error).message!=="#746")throw error;observed=true;}
         if(!observed)throw new Error("negative source offset was accepted");} void main();`);
     const context = new LoweringContext();
     const lowered = new SpriteLowerer(context).lowerCore();

@@ -15,11 +15,16 @@
  * as the pin wrote it, and its box is the lowered `createBoxData`.
  */
 import ts from "typescript";
-import { snakeCase } from "../cpp-literals.js";
+import { moduleCppStem, snakeCase } from "../cpp-literals.js";
 import type {
     PinnedBackgroundArm,
     PinnedBackgroundArmName,
 } from "../pinned-background-modules.js";
+import {
+    backgroundFactories,
+    imageSkyboxLoader,
+    type PinnedBackgroundFactory,
+} from "../pinned-background-factories.js";
 import type { LoweringContext } from "./context.js";
 import {
     lowerPinnedFunction,
@@ -42,58 +47,17 @@ const armKinds: Readonly<Record<PinnedBackgroundArmName, string>> = {
     imageSkybox: "image_skybox",
 };
 
-/**
- * Per factory module: the function that builds the arm's geometry and the
- * one that writes its mesh block, as the factory calls them.
- */
-interface LoweredFactory {
-    modulePath: string;
-    factory: string;
-    builder: string;
-    writer: string;
-    /** The C++ names the two lower to. */
-    geometryCpp: string;
-    blockCpp: string;
-}
-
-const loweredFactories: ReadonlyMap<string, LoweredFactory> = new Map(
-    [
-        {
-            modulePath: "src/material/pbr/background-ground.ts",
-            factory: "buildGroundRenderable",
-            builder: "createGroundBuffers",
-            writer: "createBgMeshUBO",
-            geometryCpp: "pinned_ground_geometry",
-            blockCpp: "pinned_ground_mesh_block",
-        },
-        {
-            modulePath: "src/material/pbr/background-dds-skybox.ts",
-            factory: "buildDdsSkyboxRenderable",
-            builder: "createSkyboxBuffers",
-            writer: "createDdsMeshUBO",
-            geometryCpp: "pinned_dds_skybox_geometry",
-            blockCpp: "pinned_dds_skybox_mesh_block",
-        },
-        {
-            modulePath: "src/material/pbr/background-hdr-skybox.ts",
-            factory: "buildHdrSkyboxRenderable",
-            builder: "createSkyboxBuffers",
-            writer: "createSkyHdrMeshUBO",
-            geometryCpp: "pinned_hdr_skybox_geometry",
-            blockCpp: "pinned_hdr_skybox_mesh_block",
-        },
-        {
-            modulePath: "src/material/pbr/background-solid-skybox.ts",
-            factory: "buildSolidSkyboxRenderable",
-            builder: "createSkyboxBuffers",
-            writer: "createSkyMeshUBO",
-            geometryCpp: "pinned_solid_skybox_geometry",
-            blockCpp: "pinned_solid_skybox_mesh_block",
-        },
-    ].map((entry) => [entry.modulePath, entry]),
+const factoriesByModule: ReadonlyMap<string, PinnedBackgroundFactory> = new Map(
+    Object.values(backgroundFactories).map((factory) => [
+        factory.modulePath,
+        factory,
+    ]),
 );
 
-const imageSkyboxModule = "src/loader-skybox/load-skybox.ts";
+/** A lowered pinned function's C++ name: its declaring module, then its own. */
+function declaredCpp(module: string, name: string): string {
+    return `pinned_${moduleCppStem(module)}_${snakeCase(name)}`;
+}
 
 /**
  * The native value behind each scene path a factory passes on. These are
@@ -407,6 +371,58 @@ function nativeCall(
 }
 
 /**
+ * A factory's geometry builder: the function its own call of `builder`
+ * resolves to, declared in its module or a shared one it imports.
+ */
+export function factoryBuilder(
+    context: LoweringContext,
+    factory: Pick<
+        PinnedBackgroundFactory,
+        "modulePath" | "factory" | "builder"
+    >,
+): { modulePath: string; declaration: ts.FunctionDeclaration } {
+    const callee = factoryCall(
+        context,
+        context.functionDeclaration(factory.modulePath, factory.factory)
+            .declaration,
+        factory.builder,
+    ).expression;
+    if (!ts.isIdentifier(callee))
+        return context.contractError(callee, `Expected ${factory.builder}.`);
+    const { file, declaration } = context.functionOf(callee);
+    return { modulePath: file.fileName, declaration };
+}
+
+/** A factory resolved once: its declaration, its builder, and the C++ names both lowerings take. */
+interface ResolvedFactory {
+    factory: PinnedBackgroundFactory;
+    declaration: ts.FunctionDeclaration;
+    builder: { modulePath: string; declaration: ts.FunctionDeclaration };
+    writer: ts.FunctionDeclaration;
+    geometryCpp: string;
+    blockCpp: string;
+}
+
+function resolveFactory(
+    context: LoweringContext,
+    factory: PinnedBackgroundFactory,
+): ResolvedFactory {
+    const builder = factoryBuilder(context, factory);
+    return {
+        factory,
+        declaration: context.functionDeclaration(
+            factory.modulePath,
+            factory.factory,
+        ).declaration,
+        builder,
+        writer: context.functionDeclaration(factory.modulePath, factory.writer)
+            .declaration,
+        geometryCpp: declaredCpp(builder.modulePath, factory.builder),
+        blockCpp: declaredCpp(factory.modulePath, factory.writer),
+    };
+}
+
+/**
  * One geometry builder, lowered: its typed-array locals translate as the
  * pin states them, and its return -- an object or a tuple of
  * `createMappedBuffer(engine, <array>, BU.<usage>)` -- becomes the arrays
@@ -414,21 +430,18 @@ function nativeCall(
  */
 function lowerGeometryBuilder(
     context: LoweringContext,
-    factory: LoweredFactory,
+    { factory, builder, geometryCpp }: ResolvedFactory,
     arm: PinnedBackgroundArm,
 ): string {
-    const { declaration } = context.functionDeclaration(
-        factory.modulePath,
-        factory.builder,
-    );
+    const { declaration } = builder;
     const { parameters } = loweredParameters(context, declaration);
     return lowerPinnedFunction(
         context,
-        factory.modulePath,
+        builder.modulePath,
         factory.builder,
         parameters,
         {
-            cppName: factory.geometryCpp,
+            cppName: geometryCpp,
             inline: true,
             returns: {
                 type: "PinnedBackgroundGeometry",
@@ -508,13 +521,9 @@ function lowerGeometryBuilder(
  */
 function lowerMeshBlockWriter(
     context: LoweringContext,
-    factory: LoweredFactory,
+    { factory, writer: declaration, blockCpp }: ResolvedFactory,
     arm: PinnedBackgroundArm,
 ): string {
-    const { declaration } = context.functionDeclaration(
-        factory.modulePath,
-        factory.writer,
-    );
     const storage = context.findNodes(
         declaration,
         (node): node is ts.VariableDeclaration =>
@@ -559,7 +568,7 @@ function lowerMeshBlockWriter(
         factory.writer,
         parameters,
         {
-            cppName: factory.blockCpp,
+            cppName: blockCpp,
             inline: true,
             memberBindings,
             localStorage: [
@@ -596,19 +605,23 @@ function imageSkyboxGeometry(
     context: LoweringContext,
     arm: PinnedBackgroundArm,
 ): string {
-    const loader = context.functionDeclaration(imageSkyboxModule, "loadSkybox");
-    const call = factoryCall(context, loader.declaration, "createBoxData");
+    const loader = context.functionDeclaration(
+        imageSkyboxLoader.modulePath,
+        imageSkyboxLoader.factory,
+    );
+    const call = factoryCall(
+        context,
+        loader.declaration,
+        imageSkyboxLoader.builder,
+    );
     context.assertExpressionShape(
         call,
-        "createBoxData(size)",
+        `${imageSkyboxLoader.builder}(size)`,
         "Pinned loadSkybox box",
     );
     // createBoxData(number) spans that one number on all three axes; the
     // native `create_box_data` is the options arm's width/height/depth.
-    const box = context.functionDeclaration(
-        "src/mesh/create-box.ts",
-        "createBoxData",
-    );
+    const box = factoryBuilder(context, imageSkyboxLoader);
     const numberArm = context.findNodes(
         box.declaration,
         (node): node is ts.BinaryExpression =>
@@ -637,7 +650,7 @@ function imageSkyboxGeometry(
             );
         }
     }
-    return `// ${context.provenance(imageSkyboxModule, "loadSkybox", "src/mesh/create-box.ts#createBoxData")}
+    return `// ${context.provenance(imageSkyboxLoader.modulePath, imageSkyboxLoader.factory, `${box.modulePath}#${imageSkyboxLoader.builder}`)}
 inline PinnedBackgroundGeometry pinned_image_skybox_geometry(double size) {
     const MeshData box = create_box_data(size, size, size);
     return PinnedBackgroundGeometry{{${arm.draw.vertexSlots
@@ -726,12 +739,15 @@ export function pinnedBackgroundsHeader(
     },`);
     }
 
-    // One lowered builder and writer per factory module; two arms of one
-    // module (the dithered and undithered ground) share both, and must
-    // draw the builder's results through the same slots.
+    // One lowered writer per factory module and one lowered builder per
+    // builder: two arms of one module (the dithered and undithered ground)
+    // share both, and two factories may share a builder; arms sharing one
+    // must draw its results through the same slots.
     const lowered: string[] = [];
     const cases: string[] = [];
+    const resolved = new Map<string, ResolvedFactory>();
     const byModule = new Map<string, PinnedBackgroundArm>();
+    const byBuilder = new Map<string, PinnedBackgroundArm>();
     const hasSkybox = arms.some(
         (arm) => arm.name !== "imageSkybox" && !arm.name.startsWith("ground"),
     );
@@ -747,13 +763,14 @@ export function pinnedBackgroundsHeader(
             }
             lowered.push(imageSkyboxGeometry(context, arm));
             const loader = context.functionDeclaration(
-                imageSkyboxModule,
-                "loadSkybox",
+                imageSkyboxLoader.modulePath,
+                imageSkyboxLoader.factory,
             ).declaration;
             const size = nativeArgument(
                 context,
                 loader,
-                factoryCall(context, loader, "createBoxData").arguments[0]!,
+                factoryCall(context, loader, imageSkyboxLoader.builder)
+                    .arguments[0]!,
                 new Map(),
             );
             cases.push(`    case ${kind}: {
@@ -767,12 +784,18 @@ export function pinnedBackgroundsHeader(
     }`);
             continue;
         }
-        const factory = loweredFactories.get(arm.modulePath);
+        const factory = factoriesByModule.get(arm.modulePath);
         if (!factory) {
             throw new Error(
                 `Pinned ${arm.modulePath} has no lowered background builder.`,
             );
         }
+        const resolution =
+            resolved.get(factory.modulePath) ??
+            resolved
+                .set(factory.modulePath, resolveFactory(context, factory))
+                .get(factory.modulePath)!;
+        const { geometryCpp, blockCpp } = resolution;
         const sibling = byModule.get(arm.modulePath);
         if (sibling) {
             if (
@@ -785,39 +808,42 @@ export function pinnedBackgroundsHeader(
             }
         } else {
             byModule.set(arm.modulePath, arm);
-            lowered.push(
-                lowerGeometryBuilder(context, factory, arm),
-                lowerMeshBlockWriter(context, factory, arm),
+            lowered.push(lowerMeshBlockWriter(context, resolution, arm));
+        }
+        // A builder two factories share (the cubemap skyboxes'
+        // createSkyboxBuffers) lowers once, so both must draw its buffers
+        // through the same slots.
+        const builderArm = byBuilder.get(geometryCpp);
+        if (!builderArm) {
+            byBuilder.set(geometryCpp, arm);
+            lowered.push(lowerGeometryBuilder(context, resolution, arm));
+        } else if (
+            JSON.stringify(builderArm.draw.vertexSlots) !==
+                JSON.stringify(arm.draw.vertexSlots) ||
+            builderArm.draw.index !== arm.draw.index
+        ) {
+            throw new Error(
+                `Pinned ${factory.builder} is drawn through different slots by ${builderArm.symbolName} and ${factory.factory}.`,
             );
         }
-        const factoryDeclaration = context.functionDeclaration(
-            factory.modulePath,
-            factory.factory,
-        ).declaration;
+        const factoryDeclaration = resolution.declaration;
         const tuples = tupleArguments(arm.name);
         if (skyHalfSize !== undefined) tuples.set("skyHalfSize", skyHalfSize);
         const geometry = nativeCall(
             context,
             factoryDeclaration,
             factoryCall(context, factoryDeclaration, factory.builder),
-            loweredParameters(
-                context,
-                context.functionDeclaration(factory.modulePath, factory.builder)
-                    .declaration,
-            ).parameters,
-            factory.geometryCpp,
+            loweredParameters(context, resolution.builder.declaration)
+                .parameters,
+            geometryCpp,
             tuples,
         );
         const block = nativeCall(
             context,
             factoryDeclaration,
             factoryCall(context, factoryDeclaration, factory.writer),
-            loweredParameters(
-                context,
-                context.functionDeclaration(factory.modulePath, factory.writer)
-                    .declaration,
-            ).parameters,
-            factory.blockCpp,
+            loweredParameters(context, resolution.writer).parameters,
+            blockCpp,
             tuples,
         );
         cases.push(`    case ${kind}: {

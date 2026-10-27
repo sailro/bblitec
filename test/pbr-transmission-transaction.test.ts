@@ -169,13 +169,13 @@ ${contexts
     .map(
         (context, index) => `namespace variant_${index} {
 ${lowerPbrSceneHookRegistry(context)}
-bool build(Scene& scene, const std::vector<MeshHandle>& meshes) {
+PbrLazyWidening build(Scene& scene, const std::vector<MeshHandle>& meshes) {
     events.push_back("begin:" + flag(bool(scene.state->pbr_transmission_transaction)));
     register_pbr_transmission(scene, *scene.engine, meshes);
     events.push_back("body:" + flag(scene.transmission_enabled));
     if (mode == "throw") throw std::runtime_error("builder failure");
     if (mode == "dispose") scene.disposed = true;
-    return false;
+    return PbrLazyWidening{};
 }
 void run(Scene& scene) {
     if (mode == "direct") build(scene, scene.meshes);

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { bumpVisibilityEpochCall } from "./subtree-visibility.js";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -226,7 +227,7 @@ function thinScope(
     };
     const calls = new Map<string, (args: readonly string[]) => string>([
         ["Number.isInteger", (args) => `js::number_is_integer(${args[0]})`],
-        ["bumpVisibilityEpoch", () => "(++engine.draw_list_epoch)"],
+        bumpVisibilityEpochCall(),
         [
             "syncThinInstanceGpuData",
             (args) => `sync_thin_instance_gpu_data(${args.join(", ")}, device)`,

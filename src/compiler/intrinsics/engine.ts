@@ -349,11 +349,14 @@ export function compileEngineIntrinsic(
             };
         }
 
-        case "resizeEngine": {
-            // The pin's render loop runs this at the head of every frame;
-            // native frame loops already refresh every surface's extent from
-            // its window. A cap write (application realm only) installs the
-            // lowered `resizeSurface`, which this call also runs.
+        case "resizeEngine":
+        case "resizeSurface": {
+            // The pin's render loop runs `resizeEngine` at the head of every
+            // frame; native frame loops already refresh every surface's
+            // extent from its window. A cap write (application realm only)
+            // installs the lowered `resizeSurface`, which this call also
+            // runs. An engine is its own primary surface, the one the
+            // installed resize sizes; other surfaces refuse by kind.
             assertPinnedResizeEngine();
             context.expectArgumentCount(call, 1, 1);
             const engine = context.compileValue(argumentAt(call, 0));

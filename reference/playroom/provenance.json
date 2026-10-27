@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.36.0",
-    "sourceVersion": "5241e29f5a88ff23534a11d3114ac8ea983c5961"
+    "version": "1.37.0",
+    "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986"
   },
   "reference": {
     "source": "reference/playroom/babylon-lite-golden.png",
@@ -48,7 +48,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/effects.ts",
-      "sha256": "49672c58ebc06b34ff98b9548a6f3388d30a2971ff6a7f6fb487098f1ac0279c"
+      "sha256": "294c3004e9140ab61f9da34893898ace6a71bd23a893b44d04a4375e6f7ab7aa"
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/game.ts",
@@ -68,7 +68,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/physics.ts",
-      "sha256": "29ef16c9c3bae50a42615533b72bf24db3a18a4d2ff64efad46a53d0fdd1a3c5"
+      "sha256": "b47d41bf981aa5872ad090e844a138e3fafbb9f524957207ddd065f26c1b8dc7"
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/puzzles.ts",
@@ -88,7 +88,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/world.ts",
-      "sha256": "457c01e543eead951cee1da93be10cc3f8b93c5de17f67180a704bb89125e851"
+      "sha256": "6ed47bc4587d0d99f275f737a56de3cebff0baabbbbbc93e83096df38773a9bb"
     },
     {
       "path": "corpus/babylon-lite/lab/public/playroom/README.md",
@@ -438,7 +438,7 @@
     "uiOrientation": "landscape",
     "loadingSize": "Estimated demo assets: 26 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.36.0",
+    "engine": "Babylon Lite v1.37.0",
     "loadingDetail": "Preparing scene…",
     "gamePhase": "ready",
     "throwCount": "1",
@@ -452,7 +452,7 @@
     "ready": "true"
   },
   "browser": {
-    "version": "155.0.8059.85",
+    "version": "156.0.8078.48",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -495,6 +495,6 @@
       ]
     }
   },
-  "capturedAt": "2026-10-25T19:24:04.877Z",
+  "capturedAt": "2026-10-27T11:42:27.525Z",
   "canvasSha256": "48408eee75ba8fd01a3537d4e7ce0560899559a8703cfe57e84689f72a69fdd0"
 }

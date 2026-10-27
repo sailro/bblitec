@@ -19,35 +19,35 @@ const cases = {
                        owner: Map<Mesh | string | null | undefined, number>): void {
             if (owner.get(key) !== value) throw new Error("callback key identity");
             if (key !== null && key !== undefined && typeof key !== "string")
-                key.visible = false;
+                key.receiveShadows = true;
             calls++;
         }
         const visitors: Array<typeof visit> = [visit];
         const visitor = visitors[0]!;
         map.forEach(visitor);
-        if (calls !== 5 || left.visible !== false || right.visible !== false)
+        if (calls !== 5 || left.receiveShadows !== true || right.receiveShadows !== true)
             throw new Error("callback member owner");
     `,
     entry: `
         const map = new Map<Mesh, number>([[left, 1], [right, 2]]);
         for (const pair of map) {
             const key = pair[0];
-            key.visible = false;
+            key.receiveShadows = true;
         }
-        if (left.visible !== false || right.visible !== false)
+        if (left.receiveShadows !== true || right.receiveShadows !== true)
             throw new Error("entry member owner");
     `,
     rebound: `
         let calls = 0;
         function hide(key: Mesh | string | null | undefined, replacement: Mesh): void {
-            function replace(): boolean { key = replacement; calls++; return false; }
+            function replace(): boolean { key = replacement; calls++; return true; }
             if (key !== null && key !== undefined && typeof key !== "string")
-                key.visible = replace();
+                key.receiveShadows = replace();
             if (key !== replacement) throw new Error("right side rebind");
         }
         const hiders: Array<typeof hide> = [hide];
         hiders[0]!(left, right);
-        if (calls !== 1 || left.visible !== false || right.visible !== true)
+        if (calls !== 1 || left.receiveShadows !== true || right.receiveShadows !== false)
             throw new Error("member owner snapshot before right side");
     `,
 };

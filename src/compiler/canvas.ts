@@ -317,33 +317,43 @@ export function compileCanvasValue(
         ) {
             const owner = context.compileValue(member.expression);
             const event = node.arguments[0];
-            if (
-                owner.kind !== "worker-media-query" ||
-                node.arguments.length !== 2 ||
-                !event ||
-                !ts.isStringLiteralLike(event) ||
-                event.text !== "change"
-            ) {
-                return context.fail(
-                    node,
-                    "MediaQueryList requires an admitted change listener.",
+            const admitted =
+                node.arguments.length === 2 &&
+                event !== undefined &&
+                ts.isStringLiteralLike(event) &&
+                event.text === "change";
+            const listen = (present: Value): Value | undefined => {
+                if (!admitted || present.kind !== "worker-media-query")
+                    return undefined;
+                const callback = argumentAt(node, 1);
+                if (member.name === "removeEventListener")
+                    return {
+                        kind: "void",
+                        cpp: `${present.cpp}->remove_change_listener(${context.callbacks.platformEventCallbackIdentity(context.compileValue(callback), callback)})`,
+                    };
+                const compiled = context.callbacks.compilePlatformCallback(
+                    callback,
+                    undefined,
+                    [],
                 );
-            }
-            const callback = argumentAt(node, 1);
-            if (member.name === "removeEventListener")
                 return {
                     kind: "void",
-                    cpp: `${owner.cpp}->remove_change_listener(${context.callbacks.platformEventCallbackIdentity(context.compileValue(callback), callback)})`,
+                    cpp: `${present.cpp}->add_change_listener(${compiled.identity}, ${compiled.cpp})`,
                 };
-            const compiled = context.callbacks.compilePlatformCallback(
-                callback,
-                undefined,
-                [],
-            );
-            return {
-                kind: "void",
-                cpp: `${owner.cpp}->add_change_listener(${compiled.identity}, ${compiled.cpp})`,
             };
+            // A nullable query listens through the chain's presence test.
+            return (
+                context.dataLowerer.chainReceiverCall(
+                    owner,
+                    member.access,
+                    node,
+                    listen,
+                ) ??
+                context.fail(
+                    node,
+                    "MediaQueryList requires an admitted change listener.",
+                )
+            );
         }
         if (
             member !== undefined &&

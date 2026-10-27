@@ -334,6 +334,19 @@ export function snakeCase(name: string): string {
         .toLowerCase();
 }
 
+/**
+ * A pinned module's file stem as a C++ name part
+ * (`src/material/pbr/background-dds-skybox.ts` -> `background_dds_skybox`); a
+ * leading underscore marking an internal module drops.
+ */
+export function moduleCppStem(modulePath: string): string {
+    return modulePath
+        .slice(modulePath.lastIndexOf("/") + 1)
+        .replace(/\.ts$/, "")
+        .replace(/^_+/, "")
+        .replaceAll("-", "_");
+}
+
 export function cppIdentifier(name: string): string {
     const cleaned = sanitizeCppIdentifier(name);
     const prefixed = /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;
