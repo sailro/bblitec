@@ -3141,8 +3141,12 @@ private:
     const std::unordered_map<Rml::Element*, DomEventTarget>& event_targets;
 };
 
-/** CSS serializations of the computed values getComputedStyle reads. */
-UiComputedStyle ui_serialized_computed_style(Rml::Element& element) {
+/**
+ * CSS serializations of the computed values getComputedStyle reads; an
+ * element an open select's top layer raised reads its authored z-index.
+ */
+UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
+                                             const UiSelectTopLayer& top_layer) {
     static constexpr std::array<std::string_view, 16> displays{"none",
                                                                "block",
                                                                "inline",
@@ -3169,7 +3173,7 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element) {
     style.opacity = number;
     style.visibility =
         computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
-    const auto z_index = computed.z_index();
+    const auto z_index = top_layer.authored_z_index(element).value_or(computed.z_index());
     style.z_index = z_index.type == Rml::Style::NumberAuto::Auto
                         ? "auto"
                         : std::to_string(static_cast<int>(z_index.value));
@@ -7609,7 +7613,8 @@ struct UiRmlRuntime {
             // Computed values change with animations, so a requested style follows every update.
             if (record.computed_style_requested)
                 record.computed_style =
-                    element ? ui_serialized_computed_style(*element) : UiComputedStyle{};
+                    element ? ui_serialized_computed_style(*element, select_top_layer)
+                            : UiComputedStyle{};
             if (!all_elements && !record.client_rect_requested)
                 continue;
             if (!element) {
@@ -7737,6 +7742,7 @@ struct UiRmlRuntime {
     UiScrollbarProperties scrollbar_properties{};
     UiStyleSelectors style_selectors;
     UiBackgroundStyles background_styles;
+    UiSelectTopLayer select_top_layer;
     double canvas_render_ms = 0;
 };
 
@@ -8029,6 +8035,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         }
     }
     if (runtime.sync_control_states())
+        runtime.context->Update();
+    if (runtime.select_top_layer.sync(*runtime.context))
         runtime.context->Update();
     if (focus_changed || hover_changed || motion_changed || dimensions_changed || density_changed ||
         generated_changed || containers_changed) {

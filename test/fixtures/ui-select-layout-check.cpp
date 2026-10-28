@@ -78,6 +78,105 @@ int main() try {
         assert(std::abs(raw->GetBox().GetSize(Rml::BoxArea::Border).x - 80) < .1f);
         assert(runtime.projected_elements.at(select.value).element == raw);
     }
+    {
+        // An open select's list is Chromium's top layer: a later panel with
+        // the same z-index neither covers it nor takes the pointer over it,
+        // and the panels' z-index reads as authored.
+        Engine engine;
+        const auto panel = [&](const char* style) {
+            const auto element = ui_create_element(engine, "div");
+            ui_set_attribute(engine, element, "style", style);
+            ui_append_to_root(engine, element);
+            return element;
+        };
+        const auto controls = panel("position:absolute;left:20px;top:20px;width:200px;height:60px;"
+                                    "z-index:9000;overflow-y:auto;background-color:#202020;");
+        const auto legend = panel("position:absolute;left:20px;top:84px;width:200px;height:200px;"
+                                  "z-index:9000;background-color:#404040;pointer-events:auto;");
+        const auto select = ui_create_element(engine, "select");
+        ui_set_attribute(engine, select, "style", "display:block;width:180px;");
+        for (const char* value : {"a", "b", "c", "d", "e", "f"}) {
+            auto option = ui_create_element(engine, "option");
+            ui_set_text(engine, option, value);
+            ui_set_form_value(engine, option, value);
+            ui_append_child(engine, select, option);
+        }
+        ui_append_child(engine, controls, select);
+        static_cast<void>(ui_computed_style(engine, controls, "z-index"));
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
+        auto* raw = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(
+            runtime.projected_elements.at(select.value).element);
+        auto* legend_element = runtime.projected_elements.at(legend.value).element;
+        const auto render = [&] {
+            pal::update_ui_rml_runtime(runtime, 640, 480);
+            static_cast<void>(pal::record_ui_rml_frame(runtime, 640, 480));
+        };
+        const auto click = [&](float x, float y) {
+            runtime.context->ProcessMouseMove(static_cast<int>(x), static_cast<int>(y), 0);
+            runtime.context->ProcessMouseButtonDown(0, 0);
+            runtime.context->ProcessMouseButtonUp(0, 0);
+            render();
+        };
+        // The demo's change handler rewrites the legend, as its debug view does.
+        ui_on_event(engine, select, "change", [&](const PlatformMouseEvent&) {
+            ui_set_text(engine, legend, "legend for " + ui_get_form_value(engine, select));
+        });
+        render();
+        const auto origin = raw->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const auto size = raw->GetBox().GetSize(Rml::BoxArea::Border);
+        // A first selection rewrites the legend, then the list opens again.
+        click(origin.x + size.x * .5f, origin.y + size.y * .5f);
+        assert(raw->IsSelectBoxVisible());
+        const auto second = raw->GetOption(1)->GetAbsoluteOffset(Rml::BoxArea::Border) +
+                            raw->GetOption(1)->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
+        click(second.x, second.y);
+        assert(!raw->IsSelectBoxVisible() && ui_get_form_value(engine, select) == "b");
+        render();
+        click(origin.x + size.x * .5f, origin.y + size.y * .5f);
+        assert(raw->IsSelectBoxVisible());
+        // The last option lies over the legend.
+        auto* last = raw->GetOption(5);
+        const auto at = last->GetAbsoluteOffset(Rml::BoxArea::Border) +
+                        last->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
+        if (at.y <= 84)
+            throw std::runtime_error("The fixture's last option does not reach the legend");
+        const auto in_box = [&](Rml::Element* element) {
+            for (; element; element = element->GetParentNode())
+                if (element->GetTagName() == "selectbox")
+                    return true;
+            return false;
+        };
+        if (!in_box(runtime.context->GetElementAtPoint(at)))
+            throw std::runtime_error("A later panel takes the pointer over an open select's list");
+        assert(ui_computed_style(engine, controls, "z-index") == "9000");
+        // The pointer crosses the options to the last, a frame per move, as a
+        // user's does: each hover re-projects the tree.
+        for (int index = 0; index <= 5; ++index) {
+            const auto over = raw->GetOption(index)->GetAbsoluteOffset(Rml::BoxArea::Border) +
+                              raw->GetOption(index)->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
+            runtime.context->ProcessMouseMove(static_cast<int>(over.x), static_cast<int>(over.y), 0);
+            render();
+            if (!in_box(runtime.context->GetElementAtPoint(at)))
+                throw std::runtime_error("A hovered option hands the list to a later panel");
+        }
+        // A user's press lasts frames: the pressed option takes the focus
+        // before the release selects it.
+        runtime.context->ProcessMouseMove(static_cast<int>(at.x), static_cast<int>(at.y), 0);
+        render();
+        runtime.context->ProcessMouseButtonDown(0, 0);
+        render();
+        render();
+        if (!in_box(runtime.context->GetElementAtPoint(at)))
+            throw std::runtime_error("A pressed option hands the list to a later panel");
+        runtime.context->ProcessMouseButtonUp(0, 0);
+        render();
+        assert(!raw->IsSelectBoxVisible() && ui_get_form_value(engine, select) == "f");
+        if (auto* hit = runtime.context->GetElementAtPoint(at); hit != legend_element) {
+            std::fprintf(stderr, "closed hit: %s\n", hit ? hit->GetAddress().c_str() : "none");
+            throw std::runtime_error("A closed select's list keeps the pointer");
+        }
+        assert(ui_computed_style(engine, controls, "z-index") == "9000");
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
 } catch (const std::exception& error) {
