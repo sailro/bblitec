@@ -94,13 +94,13 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
     // The library's own functions, over the stored engine and the scene's state.
     assert.match(
         cpp,
-        /bbl::load_gaussian_splat_stream\(bbl::StoredEngine\([^]*stream_options_\d+\)/,
+        /bbl::load_gaussian_splat_stream\(bbl::StoredEngine\([^]*library_options_\d+\)/,
     );
-    assert.match(cpp, /stream_options_\d+\.max_splats = 1000/);
+    assert.match(cpp, /library_options_\d+\.max_splats = 1000/);
     assert.match(
         cpp,
         // The application's own AbortSignal object is the library's.
-        /stream_options_\d+\.signal = \(v_\w+\)\.signal\(\);/,
+        /library_options_\d+\.signal = \(v_\w+\)\.signal\(\);/,
     );
     assert.match(cpp, /bbl::attach_gaussian_splat_stream\([^;]*\.state, /);
     assert.match(cpp, /bbl::dispose_gaussian_splat_stream\([^;]*\.state, /);
@@ -109,11 +109,11 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
     // Stats are the record's getters; `error` is null for an empty error.
     assert.match(cpp, /->get_phase\(\)/);
     assert.match(cpp, /->get_first_frame_ms\(\)/);
-    assert.match(cpp, /bbl::splat_stream::stats_error\([^;]*->get_error\(\)\)/);
+    assert.match(cpp, /bbl::library::nullable_error\([^;]*->get_error\(\)\)/);
     // Writes: plain fields, and the Euler proxy's setter.
     assert.match(cpp, /\)->screen_error = /);
     assert.match(cpp, /\)->max_splats = /);
-    assert.match(cpp, /bbl::splat_stream::node_euler_write\(\*[^,]+, 2, /);
+    assert.match(cpp, /bbl::library::node_euler_write\(\*[^,]+, 2, /);
     assert.match(cpp, /->first_frame_ready/);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -158,7 +158,7 @@ test("stream members without a native form refuse", () => {
     refuses(
         "await stream.firstFrameReady;",
         "await stream.firstFrameReady;\n    canvas.dataset.children = String(stream.children.length);",
-        /GaussianSplatStream\.children is not a public member the native stream reads/,
+        /GaussianSplatStream\.children of type .+ has no native read/,
     );
 });
 

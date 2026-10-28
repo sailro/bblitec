@@ -44,7 +44,11 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             `void stages() {\n${stages}\n}\nvoid sprites() {\n${sprites}\n}`,
         );
         if (backend === "Sdl") {
-            const meshStart = encode.indexOf("draw_list(draw_lists.opaque);");
+            // From the external bindings' draw, before the opaque bucket.
+            const meshStart = encode.lastIndexOf(
+                "#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES",
+                encode.indexOf("draw_opaque_bucket(draw_lists.opaque"),
+            );
             // Through the transparent list's unsplit arm and its brace.
             const meshEnd =
                 encode.indexOf(
@@ -71,17 +75,14 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
             );
             writeFileSync(
                 join(output, `${backend}GraphStages.hpp`),
-                `void graph_mesh_stages(bool draw_scene_billboard_stages, FixturePassBreaks* pass_breaks, std::optional<std::function<int()>> resume_pass) {
+                `void graph_mesh_stages(bool draw_scene_billboard_stages, FixturePassBreaks* pass_breaks, std::optional<std::function<int()>> resume_pass, const void* externals) {
                 ${encode.slice(meshStart, meshEnd)}
             } void graph() { ${encode.slice(graphStart, graphEnd)} }`,
             );
         } else {
-            const graphStart =
-                [
-                    ...encode.matchAll(
-                        /draw_list_into\(\s*task_pass,\s*render_task\.draw_lists\.opaque,/g,
-                    ),
-                ].at(-1)?.index ?? -1;
+            const graphStart = encode.indexOf(
+                "const auto draw_task_list = [&](const auto& list) {",
+            );
             // The pass ends after the transparent list's split hook.
             const graphEnd = encode.indexOf(
                 "wgpuRenderPassEncoderEnd(task_pass);",

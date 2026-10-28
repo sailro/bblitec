@@ -131,7 +131,7 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Transforms/clipping | Uniform nonnegative scale; `clip-path` inset()/polygon() over px/%/calc() (aliased edges) | Nonuniform scale, nonempty clip rectangles, other basic shapes, `round`, reference boxes |
 | Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way); inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
-| Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` | Runtime-generated stylesheet text, list markers, translucent accents |
+| Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` (a `var()` one checked at run time) | Runtime-generated stylesheet text, list markers, translucent accents |
 
 In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties and grid-track forms throw at
 the write; host-page sheets still need admission.

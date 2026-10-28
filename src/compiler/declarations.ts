@@ -19,7 +19,7 @@ import {
     browserDeploymentValue,
     isPrimitiveBrowserValue,
 } from "./browser-erasure.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import {
     objectIdentityCallArgument,
     retainedStaticText,
@@ -5661,7 +5661,22 @@ export class DeclarationLowerer {
             }
             return;
         }
-        if (value.kind === "physics-aggregate") {
+        // A value whose members are reads of its own (a physics aggregate,
+        // a platform object reading every bound member): each binding reads
+        // one, from a held copy.
+        const platformObject =
+            value.kind === "data" &&
+            pattern.elements.every(
+                (element) =>
+                    unlessRefused(() =>
+                        this.context.dataLowerer.platformMember(
+                            value,
+                            this.bindingProperty(element).property,
+                            element,
+                        ),
+                    ) !== undefined,
+            );
+        if (value.kind === "physics-aggregate" || platformObject) {
             const temporary =
                 this.context.allocateTemporaryCppName("destructure");
             this.context.emit({
@@ -5674,25 +5689,27 @@ export class DeclarationLowerer {
                 if (element.initializer) {
                     this.context.fail(
                         element,
-                        "Default values in physics aggregate destructuring are not supported.",
+                        `Default values in ${value.kind} destructuring are not supported.`,
                     );
                 }
                 const { name, property } = this.bindingProperty(element);
                 if (!ts.isIdentifier(name))
                     this.context.fail(
                         name,
-                        "Physics aggregate bindings require an identifier.",
+                        `${value.kind} destructuring binds identifiers.`,
                     );
+                const held = { ...value, cpp: temporary };
                 const propertyValue =
-                    readProperty(
-                        this.context,
-                        { ...value, cpp: temporary },
-                        property,
-                        element,
-                    ) ??
+                    (value.kind === "data"
+                        ? this.context.dataLowerer.platformMember(
+                              held,
+                              property,
+                              element,
+                          )
+                        : readProperty(this.context, held, property, element)) ??
                     this.context.fail(
                         element,
-                        `Unsupported physics aggregate property '${property}'.`,
+                        `Unsupported ${value.kind} property '${property}'.`,
                     );
                 const cppName = this.context.allocateTemporaryCppName(
                     `class_field_${name.text}`,

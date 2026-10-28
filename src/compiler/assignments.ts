@@ -1602,9 +1602,10 @@ export function emitPropertyAssignment(
         }
         if (property === "toneMapping") {
             // The curve is one of the pin's own `ToneMapping` records, whose
-            // WGSL the composer splices into the PBR fragment. Nothing about
-            // it survives to run time, so the assignment emits no statement
-            // and records which record composition should read.
+            // WGSL the composer splices into the PBR fragment, so the
+            // assignment records which record composition should read; the
+            // scene keeps its name for what reads the curve at run time (a
+            // lowered library's `scene_tone_mapping`).
             requireSimpleAssignment(
                 context,
                 expression,
@@ -1625,6 +1626,10 @@ export function emitPropertyAssignment(
                 value.staticString,
                 expression.right,
             );
+            context.emit({
+                kind: "expression",
+                code: `${scene.cpp}.environment.tone_mapping = ${stringLiteral(value.staticString)};`,
+            });
             return;
         }
         if (property === "toneMappingEnabled") {
@@ -4331,15 +4336,50 @@ function emitWorldMatrixProviderParent(
     });
 }
 
+/** A node read as the SceneNode union. */
+function union(value: Value): boolean {
+    return value.kind === "scene-node" || value.kind === "asset-root";
+}
+
+/**
+ * `child.parent = node` where either side is read as the SceneNode union:
+ * the union's own write, which links an imported node to the parent it was
+ * loaded under (`set_scene_node_parent`).
+ */
+function emitUnionParent(
+    context: AssignmentContext,
+    { expression, target }: TargetPropertyAssignment,
+    parent: Value,
+): void {
+    if (
+        !union(parent) &&
+        parent.kind !== "mesh" &&
+        parent.kind !== "transform-node"
+    )
+        context.fail(
+            expression.right,
+            "A SceneNode's parent is a scene node natively.",
+        );
+    context.expectSameEngine(target, parent, expression);
+    context.reachFeature("scene:node-transforms", expression);
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_scene_node_parent(${context.requireEngine(target, expression)}, bbl::SceneNodeHandle(${target.cpp}), bbl::SceneNodeHandle(${parent.cpp}));`,
+    });
+}
+
 function emitParentAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
 ): boolean {
     const { expression, target, property } = state;
-    if (
-        property === "parent" &&
-        (target.kind === "mesh" || target.kind === "transform-node")
-    ) {
+    if (property !== "parent") return false;
+    if (union(target)) {
+        requireSimpleAssignment(context, expression, "SceneNode parent");
+        emitUnionParent(context, state, context.compileValue(expression.right));
+        return true;
+    }
+    if (target.kind === "mesh" || target.kind === "transform-node") {
         // `IParentable.parent`: the write that drives the transform math.
         // Upstream it leaves `children` alone -- the traversal list is
         // `push`ed separately -- so this stores the link and nothing else,
@@ -4363,6 +4403,10 @@ function emitParentAssignment(
         // TransformNodeRecord keeps only the node lane, which is why a node
         // hung under a mesh still refuses: it is a record the port does not
         // have, not a call site it declines.
+        if (union(parent)) {
+            emitUnionParent(context, state, parent);
+            return true;
+        }
         const nullParent = parent.kind === "json-null";
         const meshParent = mesh && parent.kind === "mesh";
         if (mesh && parent.kind === "data") {

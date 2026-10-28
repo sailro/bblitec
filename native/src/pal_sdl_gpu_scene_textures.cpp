@@ -67,7 +67,8 @@ SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
 }
 
 SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture_data, bool srgb,
-                               std::array<std::uint8_t, 4> fallback) {
+                               std::array<std::uint8_t, 4> fallback,
+                               std::array<std::uint32_t, 2>* size) {
     // A compressed slot carries its own format and its own chain, so the
     // encoding flag has nothing to select: the container states which of
     // the two views its blocks decode through.
@@ -78,9 +79,13 @@ SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture
                                                     SDL_GPU_TEXTURETYPE_2D,
                                                     SDL_GPU_TEXTUREUSAGE_SAMPLER);
             });
+        if (size)
+            *size = {compressed.width, compressed.height};
         return upload_compressed_texture(device, compressed);
     }
     const DecodedImage image = decode_uploadable_image(texture_data, fallback);
+    if (size)
+        *size = {static_cast<std::uint32_t>(image.width), static_cast<std::uint32_t>(image.height)};
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
     texture_info.format =

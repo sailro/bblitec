@@ -128,9 +128,6 @@ struct BorrowedDrawList {
     int command;
     operator int() const { return command; }
 };
-struct FixtureBillboardPass {
-    int frame_scene = 0;
-};
 // The transparent bucket's merge (pal_transparent_order.hpp) orders the
 // stage's one transparent list before its one billboard system.
 enum class TransparentDrawKind { mesh, billboard, external };
@@ -138,6 +135,22 @@ struct TransparentDraw {
     std::size_t index;
     TransparentDrawKind kind;
 };
+struct FixtureBillboardPass {
+    int frame_scene = 0;
+};
+// The transparent bucket's dispatch by family (pal_transparent_order.hpp).
+template <class Order, class List, class DrawMeshes, class DrawBillboard, class DrawExternal>
+void draw_transparent_bucket(Order& order, const List& meshes, DrawMeshes&& draw_meshes,
+                             DrawBillboard&& draw_billboard, DrawExternal&& draw_external) {
+    for (const auto& item : order.sorted()) {
+        if (item.kind == TransparentDrawKind::mesh)
+            draw_meshes(BorrowedDrawList{meshes.commands[item.index]});
+        else if (item.kind == TransparentDrawKind::billboard)
+            draw_billboard(item.index);
+        else
+            draw_external(item.index);
+    }
+}
 template <class View> struct TransparentOrder {
     std::vector<TransparentDraw> draws;
     TransparentOrder(const auto&, const View&) {}
@@ -213,6 +226,8 @@ struct SdlStages : Stages {
     int scene_sprite_pass = 0;
     std::vector<int> sprite_passes{10, 20, 30};
     std::vector<SDL_GPUTexture*> sprite_render_textures;
+    // The scene's external renderables, which this build lowers none of.
+    static void draw_external(std::size_t) {}
 #include "SdlStages.hpp"
 #include "color-target.hpp"
 };
@@ -238,6 +253,7 @@ struct DawnStages : Stages {
     WGPUTextureView surface_view = nullptr;
     WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
     WGPUTexture capture_source = nullptr;
+    static void draw_external(std::size_t) {}
 #include "DawnStages.hpp"
 };
 struct Graph {
@@ -302,23 +318,32 @@ struct SdlGraph : Graph {
     } pass_blocks;
     int draw_context = 0, draw_camera = 0, engine = 0;
     std::optional<TaskHandle> pass_task;
-    static int write_billboard_scene_block(int, int, int, const int*, int, int) { return 0; }
-    static int write_billboard_scene_block(int, int, int, int, int, int) { return 0; }
+    // The retained block, as `write_billboard_scene_block` returns it.
+    static const int& write_billboard_scene_block(int, int, int, const int*, int, int) {
+        static const int block = 0;
+        return block;
+    }
+    static const int& write_billboard_scene_block(int, int, int, int, int, int) {
+        static const int block = 0;
+        return block;
+    }
     static void draw_task_billboards(int, BillboardDepthMode mode, int) {
         Graph::draw_task_billboards(mode);
     }
     FixturePassBreaks pass_breaks;
     std::function<int()> resume_pass = [] { return 0; };
+    // The task's external renderables, which this build lowers none of.
+    const void* task_externals = nullptr;
     template <class... Args> void draw_scene(Args... args) {
         const auto parameters = std::tuple{args...};
         constexpr std::size_t last = sizeof...(Args) - 1;
-        const auto profile = std::get<last - 2>(parameters);
+        const auto profile = std::get<last - 3>(parameters);
         assert(profile.color == target.color_format);
         assert(profile.depth ==
                (task_depth_pointer ? state.depth_format : SDL_GPU_TEXTUREFORMAT_INVALID));
         assert(profile.samples == target_record.samples);
-        graph_mesh_stages(std::get<last - 3>(parameters), std::get<last - 1>(parameters),
-                          std::get<last>(parameters));
+        graph_mesh_stages(std::get<last - 4>(parameters), std::get<last - 2>(parameters),
+                          std::get<last - 1>(parameters), std::get<last>(parameters));
     }
 #include "SdlGraphStages.hpp"
 };
@@ -349,6 +374,7 @@ struct DawnGraph : Graph {
     bool pass_has_depth = true;
     int engine = 0;
     int* pass_camera = nullptr;
+    const void* task_externals = nullptr;
     MeshHandle handle{0};
     struct {
         Lists draw_lists;

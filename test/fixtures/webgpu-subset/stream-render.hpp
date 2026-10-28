@@ -53,7 +53,7 @@ inline js::Promise<js::PromiseVoid> check_render(Library& library,
     bbl::bind_engine_scene_group(engine);
     const auto state = bbl::create_splat_stream_gpu_state(library.stored(), 64, MAX_GPU_BYTES);
     bbl::set_splat_stream_gpu_intervals(state, source_intervals(source), 1);
-    std::vector<std::shared_ptr<bbl::splat_stream::DrawBinding>> bindings;
+    std::vector<std::shared_ptr<bbl::library::DrawBinding>> bindings;
     js::Nullable<js::Promise<bool>> nonempty;
     const std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     const auto renderable = bbl::build_splat_stream_gpu_renderable(
@@ -62,7 +62,7 @@ inline js::Promise<js::PromiseVoid> check_render(Library& library,
     // Each binding the renderable's bind returns, as the scene pass holds it.
     const auto bind = renderable->bind_callback;
     renderable->bind_callback = [bind, &bindings](bbl::StoredEngine owner,
-                                                  bbl::SplatStreamTargetSignature signature) {
+                                                  bbl::LibraryTargetSignature signature) {
         auto binding = bind(owner, signature);
         bindings.push_back(binding);
         return binding;
@@ -93,7 +93,7 @@ inline js::Promise<js::PromiseVoid> check_render(Library& library,
                         "the frame encoder is current while flushing only");
             },
             [&](const bbl::GpuEncoderHandle& render) {
-                require(pass.draw(render, engine.webgpu_scene_group, 0) == 1, "one draw");
+                require(pass.draw(render, engine, 0) == 1, "one draw");
             });
         run_retirements();
         return image;

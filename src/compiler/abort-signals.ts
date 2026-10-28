@@ -194,6 +194,9 @@ export function compileAbortMethod(
         context.expectArgumentCount(call, 0, 0);
         return { kind: "void", cpp: `(${receiver.cpp}).throw_if_aborted()` };
     }
+    // `signal?.addEventListener(...)`: the listener calls on the present signal.
+    if (method === "addEventListener" || method === "removeEventListener")
+        return abortListener(context, call, owner, method);
     return context.fail(call, `AbortSignal.${method} is not lowered.`);
 }
 
@@ -251,6 +254,16 @@ export function compileAbortListenerCall(
             callee.expression,
             "AbortSignal listeners require a represented AbortSignal.",
         );
+    return abortListener(context, call, owner, callee.name);
+}
+
+/** `signal.addEventListener` or `removeEventListener` on a present signal. */
+function abortListener(
+    context: WebPlatformCallContext,
+    call: ts.CallExpression,
+    owner: Value,
+    method: "addEventListener" | "removeEventListener",
+): Value {
     const receiver = context.bindings.pinValueToTemporary(
         owner,
         "abort_receiver",
@@ -268,7 +281,7 @@ export function compileAbortListenerCall(
             "AbortSignal 'abort' listeners that take the event are not lowered.",
         );
     context.callbacks.hoistForwardCallbackBindings(callback);
-    if (callee.name === "removeEventListener") {
+    if (method === "removeEventListener") {
         const identity = context.callbacks.platformEventCallbackIdentity(
             context.compileValue(callback),
             callback,

@@ -6,6 +6,7 @@ import {
     members,
     recordOf as record,
     optionalOf as optional,
+    matrixValues,
     recordScalars,
 } from "./record-shapes.js";
 /**
@@ -31,7 +32,6 @@ import type {
 import { gpuRecords } from "./gpu-schema.js";
 
 const { number, string, void: none } = recordScalars;
-const typedF32: RecordShape = { kind: "typed", element: "f32" };
 
 export const textGpuRecords: readonly RecordSpec[] = [
     ...gpuRecords,
@@ -221,8 +221,7 @@ export const textGpuValues: readonly (readonly [string, RecordShape])[] = [
 export const textGpuUnresolved: readonly (readonly [string, RecordShape])[] = [
     // A single-precision engine's matrices (the HPM engine is refused
     // by the text surface).
-    ["Mat4", typedF32],
-    ["Mat4Storage", typedF32],
+    ...matrixValues,
     ["DrawUpdateContext", record("DrawUpdateContext")],
 ];
 

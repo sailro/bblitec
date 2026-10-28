@@ -6,6 +6,9 @@
     "nlohmann-json",
     { "name": "boost-charconv", "platform": "osx | ios" }
   ],
+  "overrides": [
+    { "name": "meshoptimizer", "version": "0.20" }
+  ],
   "features": {
     "sdl": {
       "description": "SDL3 from vcpkg, for builds without a trimmed SDL artifact (BBLITE_SDL_DIR).",
@@ -58,6 +61,10 @@
           ]
         }
       ]
+    },
+    "meshopt": {
+      "description": "meshoptimizer's decoder for platform:meshopt, at the version the pinned meshopt_decoder.js is built from (the override below), so a decoded stream matches the browser's bytes. MIT-licensed, linked only where a program decodes meshopt streams at run time.",
+      "dependencies": ["meshoptimizer"]
     },
     "navigation": {
       "description": "Recast/Detour navigation for scenes reaching navigation:recast — the overlay port pins isaac-mason's fork at the commit the pinned @recast-navigation/wasm builds, so navmesh, query and crowd behaviour matches the browser reference. Zlib-licensed, linked only where the scene's own source creates a navigation plugin.",

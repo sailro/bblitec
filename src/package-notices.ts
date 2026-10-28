@@ -120,6 +120,8 @@ export function linkedPortNotices(request: NoticeRequest): PortNotice[] {
         ports.push({ name: "curl.txt", port: "curl" });
     if (has("platform:compression"))
         ports.push({ name: "zlib.txt", port: "zlib" });
+    if (has("platform:meshopt"))
+        ports.push({ name: "meshoptimizer.txt", port: "meshoptimizer" });
     return ports;
 }
 

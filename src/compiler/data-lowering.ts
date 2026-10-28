@@ -610,6 +610,8 @@ interface DataLoweringContext extends Pick<
     | "deferredCapabilities"
     | "classLowerer"
     | "compileValue"
+    | "callbacks"
+    | "compileStringLiteral"
     | "emitDiscardedValue"
     | "emitExpressionAsStatement"
     | "compileNumber"
@@ -5355,6 +5357,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return undefinedValue();
     }
 
+    /**
+     * A member of a platform object (a response, a stream and its reads, a
+     * signal, an adapter) by name, read or destructured.
+     */
+    public platformMember(
+        owner: Value,
+        property: string,
+        site: ts.Node,
+    ): Value | undefined {
+        return (
+            httpResponseProperty(this, owner, property) ??
+            webPlatformProperty(this, owner, property, site) ??
+            gpuAdapterProperty(this, owner, property)
+        );
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,
@@ -5370,12 +5388,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             access,
         );
         if (exported) return exported;
-        const http = httpResponseProperty(this, owner, property);
-        if (http) return http;
-        const platform = webPlatformProperty(this, owner, property, access);
+        const platform = this.platformMember(owner, property, access);
         if (platform) return platform;
-        const gpu = gpuAdapterProperty(this, owner, property);
-        if (gpu) return gpu;
         if (
             owner.dataType?.kind === "storage" &&
             STORAGE_METHODS.has(property)
@@ -14623,8 +14637,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const engine = this.context.requireEngine(narrowed, ownerNode);
             return `bbl::scene_node_has_thin_instance_property(${engine}, ${narrowed.cpp})`;
         }
+        // LightBase's discriminator: a native node is never a light.
         if (operator === "in" && key.staticString === "lightType") {
-            if (narrowed.kind === "asset-root") return "false";
+            if (nativeNode) return "false";
             if (narrowed.kind === "light") return "true";
         }
         if (narrowed.kind === "record") {

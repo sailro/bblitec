@@ -5328,6 +5328,54 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "mesh-lod",
+        name: "MeshLoD Statue Streaming",
+        source: "corpus/babylon-lite/lab/lite/src/demos/mesh-lod.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - MeshLoD Statue Streaming",
+        // The lab page around the demo: its HUD, its loading overlay and
+        // error banner, which its own classic scripts drive.
+        page: {
+            path: "corpus/babylon-lite/lab/lite/demo-mesh-lod.html",
+            root: "corpus/babylon-lite/lab",
+            entry: "corpus/babylon-lite/lab/lite/src/demos/mesh-lod.ts",
+        },
+        parity: {
+            neutralityPartition: {
+                width: 1280,
+                height: 720,
+                // The diagnostics panel's GPU timing, a live measurement.
+                regions: [
+                    {
+                        name: "GPU timing",
+                        x: 1150,
+                        y: 536,
+                        width: 100,
+                        height: 16,
+                    },
+                ],
+            },
+            // The statue's pages stream through the demo's simulated network
+            // after it signals ready, so both captures wait for them.
+            referenceSettle: {
+                key: "ready",
+                values: ["true"],
+                settleMilliseconds: 8000,
+            },
+            // The canvas matches the settled browser frame (0.000 on both
+            // backends); the full-page residual is the HUD (2.964 / 4.809
+            // measured): glyph rasterization, the live GPU timing, and the
+            // panels' 2px accent top border, which RmlUi loses because it
+            // expands the rule's earlier `border` shorthand over var() after
+            // the later `border-top` declaration.
+            maxFullMad: 3,
+            maxForegroundMad: 4.85,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-timer-callback-cells",
         name: "Regression - Timer Callback Cells",
         source: "examples/regression-timer-callback-cells.ts",

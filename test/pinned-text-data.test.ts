@@ -24,6 +24,7 @@ import {
 } from "../src/pinned-text-data.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { textRecordModel } from "../src/lowering/text-records.js";
+import { TYPED_ARRAY_CLASSES } from "../src/typed-array-classes.js";
 import type {
     Transported,
     TransportedGraph,
@@ -51,7 +52,7 @@ function typedBytes(
             value !== undefined &&
             "typed" in value,
     );
-    const width = value.typed === "u8" ? 1 : 4;
+    const width = TYPED_ARRAY_CLASSES[value.typed].BYTES_PER_ELEMENT;
     return buffers[value.buffer]!.subarray(
         value.byteOffset,
         value.byteOffset + value.length * width,

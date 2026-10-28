@@ -1,3 +1,4 @@
+import { compileLoweredLibraryIntrinsic } from "./lowered-library.js";
 import { compileComputeUniformArenaIntrinsic } from "./compute-uniform-arena.js";
 import {
     compileSplatStreamIntrinsic,
@@ -231,6 +232,7 @@ type IntrinsicCompiler = (
 const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileProceduralSkyIntrinsic,
     compileSplatStreamIntrinsic,
+    compileLoweredLibraryIntrinsic,
     compileStorageReadbackIntrinsic,
     compileComputeDispatchIntrinsic,
     compileComputeShaderIntrinsic,

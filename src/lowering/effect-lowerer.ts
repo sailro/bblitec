@@ -32,26 +32,6 @@ interface FullscreenEffectContract {
     label: string;
 }
 
-function returnedExpression(
-    context: LoweringContext,
-    modulePath: string,
-    symbol: string,
-    index = 0,
-): ts.Expression {
-    const owner = context.functionDeclaration(modulePath, symbol).declaration;
-    const returned = context.findNodes(
-        owner,
-        (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
-    )[index]?.expression;
-    if (!returned) {
-        context.contractError(
-            owner,
-            `Pinned ${symbol} no longer returns ${index + 1} expression(s).`,
-        );
-    }
-    return returned;
-}
-
 /** Contract shared by the pin's classic and uniform fullscreen effects. */
 function assertFullscreenEffectContract(
     context: LoweringContext,
@@ -108,7 +88,7 @@ function assertFullscreenEffectContract(
         `${contract.label} shader module template`,
     );
     context.assertExpressionShape(
-        returnedExpression(context, contract.modulePath, "align4"),
+        context.returnedExpression(contract.modulePath, "align4"),
         "(value + 3) & ~3",
         `${contract.label} uniform alignment`,
     );
@@ -511,8 +491,7 @@ static EffectTextureSlot& find_effect_texture_slot(
             "getBilinearSampler",
         );
         this.context.assertExpressionShape(
-            returnedExpression(
-                this.context,
+            this.context.returnedExpression(
                 "src/resource/samplers.ts",
                 "getBilinearSampler",
             ),
@@ -544,8 +523,7 @@ TextureSamplerState effect_texture_sampler() {
             taskSymbol: "createEffectRenderTask",
             label: "effect",
         });
-        const layoutEntry = returnedExpression(
-            this.context,
+        const layoutEntry = this.context.returnedExpression(
             effectModule,
             "bindingLayoutEntry",
             1,
@@ -576,8 +554,7 @@ TextureSamplerState effect_texture_sampler() {
             'layout.viewDimension ?? "2d"',
             "effect texture view dimension default",
         );
-        const samplerEntry = returnedExpression(
-            this.context,
+        const samplerEntry = this.context.returnedExpression(
             effectModule,
             "bindingLayoutEntry",
             2,
@@ -602,12 +579,12 @@ TextureSamplerState effect_texture_sampler() {
         // that started matching on something else would silently bind a
         // sampler to a different texture.
         this.context.assertExpressionShape(
-            returnedExpression(this.context, effectModule, "matchesBinding"),
+            this.context.returnedExpression(effectModule, "matchesBinding"),
             "layout.binding === bindingNameOrIndex",
             "effect binding index match",
         );
         this.context.assertExpressionShape(
-            returnedExpression(this.context, effectModule, "matchesBinding", 1),
+            this.context.returnedExpression(effectModule, "matchesBinding", 1),
             "layout.name === bindingNameOrIndex || " +
                 "String(layout.binding) === bindingNameOrIndex",
             "effect binding name match",

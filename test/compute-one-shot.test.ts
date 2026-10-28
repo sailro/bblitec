@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerComputeOneShot } from "../src/lowering/compute-one-shot-lowerer.js";
+import { lowerFramePostSubmitSource } from "../src/lowering/frame-post-submit-lowerer.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -14,10 +15,13 @@ test("one-shot source preserves armed identity, submission generations, GPU comp
         t.skip("Native fixture compiler unavailable.");
         return;
     }
+    // The one-shot unit and the post-submit hook registry it shares.
+    const context = new LoweringContext();
     runGeneratedProgram(
         tools,
         "compute-one-shot-check",
-        `${lowerComputeOneShot(new LoweringContext()).source}
+        `${lowerFramePostSubmitSource(context).source}
+${lowerComputeOneShot(context).source}
 #include <cassert>
 struct Device final:bbl::pal::OffscreenDevice {
  std::vector<std::function<void(std::exception_ptr)>> pending;

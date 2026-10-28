@@ -367,6 +367,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/compute/compute-one-shot.ts",
         consumers: CMAKE,
     },
+    "engine:frame-post-submit": {
+        provenance: "src/engine/frame-post-submit.ts",
+        consumers: CMAKE,
+    },
     "compute:task": {
         provenance: "src/compute/compute-task.ts",
         consumers: CMAKE,
@@ -636,6 +640,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-splat-stream/splat-stream-material.ts + " +
             "src/collision/splat-voxel-collision.ts",
         consumers: ["features.cmake", "deployed shaders"],
+        applicationRealm: true,
+    },
+    "loader:mesh-lod": {
+        provenance:
+            "src/mesh-lod/mesh-lod.ts#loadMeshLoD + src/mesh-lod/mesh-lod-runtime.ts + " +
+            "src/mesh-lod/mesh-lod-range-source.ts + src/mesh-lod/mesh-lod-scheduler.ts + " +
+            "the synchronous core (mesh-lod-records.ts)",
+        consumers: ["features.cmake"],
         applicationRealm: true,
     },
     "loader:splat-sh": {
@@ -1395,7 +1407,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "setSoundVolume/disposeSound and src/audio/sound-buffer.ts " +
             "createSoundBufferAsync with the sound buffer, sub-graph, " +
             "ramped parameters, signals and fetch they reach, lowered whole",
-        consumers: CMAKE,
+        consumers: INVENTORY,
         applicationRealm: true,
     },
     "audio:streaming-sound": {
@@ -1703,6 +1715,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "platform:compression": {
         provenance:
             "the Compression Streams CompressionStream and DecompressionStream transforms through zlib",
+        consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "platform:meshopt": {
+        provenance:
+            "meshopt stream decoding at run time through meshoptimizer's decoder, at the version of the pinned meshopt_decoder.js",
+        consumers: CMAKE,
+        applicationRealm: true,
+    },
+    "platform:web-platform": {
+        provenance:
+            "the web platform seam lowered libraries and runtime fetch requests call: fetch with streamed bodies, image decoding, timers and tasks over the native services",
         consumers: CMAKE,
         applicationRealm: true,
     },

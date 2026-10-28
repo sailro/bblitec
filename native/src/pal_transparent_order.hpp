@@ -15,7 +15,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace bbl::pal {
@@ -76,16 +78,18 @@ public:
      * every transparent binding.
      */
     void add_externals(const ExternalRenderablePass& pass, const Scene& scene) {
-        if (pass.empty())
-            return;
-        if (!scene.splat_meshes.empty() || !scene.state->text_renderables.empty() ||
-            !scene.depth_hosted_sprite_layers.empty())
-            throw std::runtime_error(
-                "External renderables sort with the scene pass's transparent meshes and "
-                "billboards; text, Gaussian splat clouds and depth-hosted sprite layers draw "
-                "outside that order.");
+        const bool drawn_outside = !scene.splat_meshes.empty() ||
+                                   !scene.state->text_renderables.empty() ||
+                                   !scene.depth_hosted_sprite_layers.empty();
         for (std::size_t index = 0; index < pass.size(); ++index) {
             const auto& renderable = pass.renderable(index);
+            if (!renderable.transparent())
+                continue;
+            if (drawn_outside)
+                throw std::runtime_error(
+                    "Transparent external renderables sort with the scene pass's transparent "
+                    "meshes and billboards; text, Gaussian splat clouds and depth-hosted sprite "
+                    "layers draw outside that order.");
             const auto center = renderable.world_center();
             add(index, TransparentDrawKind::external, center ? &*center : nullptr,
                 renderable.order());
@@ -135,6 +139,92 @@ private:
     std::vector<TransparentDraw> draws_;
     unsigned families_ = 0;
 };
+
+/**
+ * A pass's transparent bucket in `order`'s order, each binding drawn by its
+ * family: a run of one mesh command, a billboard pass or an external
+ * binding by its index.
+ */
+template <class Order, class DrawList, class DrawMeshes, class DrawBillboard, class DrawExternal>
+void draw_transparent_bucket(Order& order, const DrawList& meshes, DrawMeshes&& draw_meshes,
+                             DrawBillboard&& draw_billboard, DrawExternal&& draw_external) {
+    for (const auto& item : order.sorted()) {
+        switch (item.kind) {
+        case TransparentDrawKind::mesh:
+            draw_meshes(BorrowedDrawList{meshes.commands[item.index]});
+            break;
+        case TransparentDrawKind::billboard:
+            draw_billboard(item.index);
+            break;
+        case TransparentDrawKind::external:
+            draw_external(item.index);
+            break;
+        }
+    }
+}
+
+#if BBLITE_EXTERNAL_RENDERABLES
+/** One opaque external binding: its index, `renderable.order` and `_renderables` position. */
+struct OpaqueExternalDraw {
+    std::size_t index;
+    double order;
+    std::uint64_t publication;
+};
+
+/**
+ * A pass's opaque bucket as `_buildBindings` sorts it (render-task-base.ts):
+ * the pin's `compareBindingOrder` over its `_renderables` walk, stably. The
+ * mesh list is in that order already (`order_draw_lists`, with direct draws
+ * last, as the pin replays `_directBindings` after its bundle); the pass's
+ * opaque external bindings merge into it by order, and an equal order by
+ * `_renderables` position (`GpuExternalRenderable::publication` beside the
+ * mesh's `source_identity`), which a binding numbered without one cannot
+ * take. Meshes between two external bindings draw as one run.
+ */
+template <class DrawList, class DrawMeshes, class DrawExternal>
+void draw_opaque_bucket(const DrawList& meshes, const ExternalRenderablePass* externals,
+                        DrawMeshes&& draw_meshes, DrawExternal&& draw_external) {
+    std::vector<OpaqueExternalDraw> pending;
+    if (externals)
+        for (std::size_t index = 0; index < externals->size(); ++index)
+            if (const auto& renderable = externals->renderable(index); !renderable.transparent())
+                pending.push_back({index, renderable.order(), renderable.publication});
+    if (pending.empty()) {
+        draw_meshes(meshes);
+        return;
+    }
+    // The pass binds its externals in their `_renderables` order.
+    std::stable_sort(pending.begin(), pending.end(), [](const auto& left, const auto& right) {
+        return upstream::compare_binding_order(left, right) < 0;
+    });
+    const auto before = [](const OpaqueExternalDraw& external, const auto& item) {
+        if (const double compared = upstream::compare_binding_order(external, item); compared != 0)
+            return compared < 0;
+        if (external.publication == 0 || item.source_identity == 0)
+            throw std::runtime_error("An opaque external renderable and a mesh of equal order "
+                                     "need their source binding order.");
+        return external.publication < item.source_identity;
+    };
+    using Command = typename std::decay_t<decltype(meshes.commands)>::value_type;
+    const std::span<const Command> commands(meshes.commands);
+    std::size_t start = 0;
+    const auto draw_run = [&](std::size_t end) {
+        if (end > start)
+            draw_meshes(BorrowedDrawList<Command>(commands.subspan(start, end - start)));
+        start = end;
+    };
+    auto next = pending.begin();
+    for (std::size_t index = 0; index < commands.size() && next != pending.end(); ++index)
+        for (const auto& item = commands[index].item;
+             next != pending.end() && (item.direct || before(*next, item)); ++next) {
+            draw_run(index);
+            draw_external(next->index);
+        }
+    draw_run(commands.size());
+    for (; next != pending.end(); ++next)
+        draw_external(next->index);
+}
+#endif
 
 } // namespace bbl::pal
 #endif

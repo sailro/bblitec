@@ -1,6 +1,10 @@
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
-import { type LoweringContext, unwrapExpression } from "./context.js";
+import {
+    type LoweredSource,
+    type LoweringContext,
+    unwrapExpression,
+} from "./context.js";
 import {
     lowerPinnedBody,
     type PinnedBodyScope,
@@ -28,8 +32,24 @@ const hookSchema = pinnedRecordSchema("FramePostSubmitHook", {
     encoder: "encoder",
 });
 
+/**
+ * frame-post-submit.ts, the engine's one post-submit hook registry its
+ * compute work and lowered libraries share (`engine:frame-post-submit`),
+ * declared by pal_frame_post_submit.hpp.
+ */
+export function lowerFramePostSubmitSource(
+    context: LoweringContext,
+): LoweredSource {
+    return {
+        modulePath: path,
+        symbolName: "addFramePostSubmitHook",
+        header: "",
+        source: `#include <bblite/pal_frame_post_submit.hpp>\nnamespace bbl {\n${lowerFramePostSubmit(context)}\n}\n`,
+    };
+}
+
 /** Source hook scheduling with native callback, weak-index and microtask transport. */
-export function lowerFramePostSubmit(context: LoweringContext): string {
+function lowerFramePostSubmit(context: LoweringContext): string {
     const scope = (file: ts.SourceFile): PinnedBodyScope => {
         const bindings = new Map<string, PinnedBinding>();
         for (const name of [
@@ -244,9 +264,9 @@ export function lowerFramePostSubmit(context: LoweringContext): string {
     };
     const signatures = {
         releaseState:
-            "static void release_frame_post_submit_state(const std::shared_ptr<Engine>& engine,const std::shared_ptr<FramePostSubmitState>& state)",
+            "void release_frame_post_submit_state(const std::shared_ptr<Engine>& engine,const std::shared_ptr<FramePostSubmitState>& state)",
         addFramePostSubmitHook:
-            "static js::Callback<void()> add_frame_post_submit_hook(const std::shared_ptr<Engine>& engine,const std::string& scope,js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> hook,js::Callback<void()> cancel={})",
+            "js::Callback<void()> add_frame_post_submit_hook(const std::shared_ptr<Engine>& engine,const std::string& scope,js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> hook,js::Callback<void()> cancel)",
     };
     return Object.entries(signatures)
         .map(([name, signature]) => {

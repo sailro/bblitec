@@ -1027,6 +1027,26 @@ export class LoweringContext {
         return variableInitializer(scope, variableName);
     }
 
+    /** The expression a pinned function's `index`th return statement returns. */
+    public returnedExpression(
+        modulePath: string,
+        symbol: string,
+        index = 0,
+    ): ts.Expression {
+        const owner = this.functionDeclaration(modulePath, symbol).declaration;
+        const returned = this.findNodes(
+            owner,
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
+        )[index]?.expression;
+        if (!returned) {
+            this.contractError(
+                owner,
+                `Pinned ${symbol} no longer returns ${index + 1} expression(s).`,
+            );
+        }
+        return returned;
+    }
+
     public returnObject(
         declaration: ts.FunctionDeclaration,
     ): ts.ObjectLiteralExpression {

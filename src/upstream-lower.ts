@@ -34,9 +34,21 @@ import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
 import {
     pinnedRawShaderImports,
     runtimeWgslModules,
+} from "./lowering/library-shaders.js";
+import {
+    SPLAT_STREAM_LIBRARY,
     SPLAT_STREAM_SHADER_MODULES,
-} from "./lowering/splat-stream-shaders.js";
-import { splatStreamLibraryHeader } from "./lowering/splat-stream-library.js";
+} from "./lowering/splat-stream-library.js";
+import {
+    MESH_LOD_LIBRARY,
+    MESH_LOD_SHADER_MODULES,
+} from "./lowering/mesh-lod-library.js";
+import { pinnedMaxLights } from "./lowering/pinned-max-lights.js";
+import {
+    LIBRARY_PRELUDE_HEADER,
+    libraryPreludeHeader,
+    loweredLibraryHeader,
+} from "./lowering/library-runtime.js";
 import {
     audioLibraryRoots,
     staticSoundLibraryHeader,
@@ -85,12 +97,13 @@ import { lowerManagedResources } from "./lowering/managed-resource-lowerer.js";
 import { lowerComputeUniformArena } from "./lowering/compute-uniform-arena-lowerer.js";
 import { lowerComputeUniformWriter } from "./lowering/compute-uniform-writer-lowerer.js";
 import { lowerComputeBindingDecl } from "./lowering/compute-binding-decl-lowerer.js";
-import type { CompiledComputeProgram } from "./compiler/types.js";
+import type { CompiledComputeProgram, Feature } from "./compiler/types.js";
 import { lowerComputeShader } from "./lowering/compute-shader-lowerer.js";
 import { lowerComputeBindings } from "./lowering/compute-bindings-lowerer.js";
 import { lowerComputeBufferBinding } from "./lowering/compute-buffer-binding-lowerer.js";
 import { lowerComputeBindingResolvers } from "./lowering/compute-binding-resolvers.js";
 import { lowerComputeOneShot } from "./lowering/compute-one-shot-lowerer.js";
+import { lowerFramePostSubmitSource } from "./lowering/frame-post-submit-lowerer.js";
 import { lowerComputeDispatch } from "./lowering/compute-dispatch-lowerer.js";
 import { lowerUniformBuffer } from "./lowering/uniform-buffer-lowerer.js";
 import { lowerConfigurableCameraControls } from "./lowering/configurable-camera-controls.js";
@@ -243,17 +256,11 @@ import type {
     ComposedPostProcess,
 } from "./pinned-post-process.js";
 
-/**
- * The pin's own MAX_LIGHTS, so the lights buffer is sized by it. The pin
- * declares it `let` because `setMaxLights` grows it at run time; its
- * initial value is the capacity this port freezes, and activation refuses
- * the growth.
- */
-function pinnedMaxLights(context: LoweringContext): number {
-    return context.pinnedNumber("src/light/types.ts", "MAX_LIGHTS", {
-        frozen: true,
-    });
-}
+/** The features whose programs lower a pinned library over the shared runtime. */
+const LOWERED_LIBRARY_FEATURES: readonly Feature[] = [
+    "loader:splat-stream",
+    "loader:mesh-lod",
+];
 
 /** The pin's frozen MAX_LIGHTS, read for the activation inventory's
  *  max-lights refusal row so it records the constant's value beside
@@ -399,6 +406,11 @@ export interface UpstreamEmitOptions {
     assetLightNodes?: { count: number; asset: string };
     shaderPrograms: CompiledShaderProgram[];
     computePrograms?: readonly CompiledComputeProgram[];
+    /**
+     * Every WGSL text a MeshLoD program's renderables compose at run time
+     * (`meshLoDShaderVariants`), required with `loader:mesh-lod`.
+     */
+    meshLoDShaders?: readonly string[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     /**
      * The post-process passes a scene reached, in reach order. Each carries
@@ -1296,6 +1308,9 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/compute_one_shot.cpp", () =>
             lowerComputeOneShot(context),
         );
+        emitReached("upstream/src/frame_post_submit.cpp", () =>
+            lowerFramePostSubmitSource(context),
+        );
         emitReached("upstream/src/uniform_buffer.cpp", () =>
             lowerUniformBuffer(context),
         );
@@ -1519,6 +1534,17 @@ ${lowerThinInstanceSync(context)}
                     });
                 }
         }
+        // The camera and scene-node functions every lowered library's
+        // records call, once per program.
+        if (
+            LOWERED_LIBRARY_FEATURES.some((feature) =>
+                features.includes(feature),
+            )
+        )
+            this.tree.write(
+                `upstream/include/${LIBRARY_PRELUDE_HEADER}`,
+                libraryPreludeHeader(context),
+            );
         // The splat stream's run-time WGSL: SDL_GPU loads each stage by the
         // stem the module text and entry point name.
         if (features.includes("loader:splat-stream")) {
@@ -1528,7 +1554,27 @@ ${lowerThinInstanceSync(context)}
                 composedShaders.push({ ...module, family: "pinnedModule" });
             this.tree.write(
                 "upstream/include/bblite/upstream_splat_stream.hpp",
-                splatStreamLibraryHeader(context),
+                loweredLibraryHeader(context, SPLAT_STREAM_LIBRARY),
+            );
+        }
+        // MeshLoD's run-time WGSL: its GPU selection's module and every
+        // text its renderables compose.
+        if (features.includes("loader:mesh-lod")) {
+            if (!options.meshLoDShaders)
+                throw new Error(
+                    "A MeshLoD program's composed WGSL is derived before emission (meshLoDShaderVariants).",
+                );
+            for (const module of runtimeWgslModules([
+                ...pinnedRawShaderImports(context, MESH_LOD_SHADER_MODULES),
+                ...options.meshLoDShaders.map((code) => ({
+                    code,
+                    source: "composeMeshLoDWgsl",
+                })),
+            ]))
+                composedShaders.push({ ...module, family: "pinnedModule" });
+            this.tree.write(
+                "upstream/include/bblite/upstream_mesh_lod.hpp",
+                loweredLibraryHeader(context, MESH_LOD_LIBRARY),
             );
         }
         // The pin's audio family over the Web Audio PAL: the functions the
@@ -4119,46 +4165,49 @@ ${shadow.blurFragmentWgsl}`,
     }
 }
 
+/** What a program that composes nothing beyond its features emits with (fixtures). */
+export const DEFAULT_UPSTREAM_EMIT_OPTIONS: UpstreamEmitOptions = {
+    idDiagnostics: false,
+    shaderPrograms: [],
+    spriteCustomShaders: [],
+    effects: [],
+    pureSpriteVertex: true,
+    plainSpriteLayer: true,
+    plainBillboardSystem: true,
+    geometryOutputTasks: [],
+    postProcessTasks: [],
+    postProcessShaders: [],
+    postProcessComposites: [],
+    gpuDeformation: false,
+    morphStorage: false,
+    nonTrianglePrimitives: false,
+    gaussianSplats: false,
+    compressedImages: false,
+    nodeVisibility: false,
+    gltfNodeVisibility: false,
+    animationPointer: false,
+    animationPointerMaterials: false,
+    transmission: false,
+    selectedMaterialVariant: "",
+    standardLightLists: false,
+    standardDiffuseUv2: false,
+    textureTransform: false,
+    imageBasedLighting: false,
+    gpuInstancing: false,
+    gpuInstanceColors: false,
+    punctualLights: false,
+    clearcoat: false,
+    sheen: false,
+    iridescence: false,
+    specularGlossiness: false,
+    dispersion: false,
+    occlusionUv2: false,
+};
+
 export function emitUpstreamGenerated(
     outputRoot: string,
     features: string[],
-    options: UpstreamEmitOptions = {
-        idDiagnostics: false,
-        shaderPrograms: [],
-        spriteCustomShaders: [],
-        effects: [],
-        pureSpriteVertex: true,
-        plainSpriteLayer: true,
-        plainBillboardSystem: true,
-        geometryOutputTasks: [],
-        postProcessTasks: [],
-        postProcessShaders: [],
-        postProcessComposites: [],
-        gpuDeformation: false,
-        morphStorage: false,
-        nonTrianglePrimitives: false,
-        gaussianSplats: false,
-        compressedImages: false,
-        nodeVisibility: false,
-        gltfNodeVisibility: false,
-        animationPointer: false,
-        animationPointerMaterials: false,
-        transmission: false,
-        selectedMaterialVariant: "",
-        standardLightLists: false,
-        standardDiffuseUv2: false,
-        textureTransform: false,
-        imageBasedLighting: false,
-        gpuInstancing: false,
-        gpuInstanceColors: false,
-        punctualLights: false,
-        clearcoat: false,
-        sheen: false,
-        iridescence: false,
-        specularGlossiness: false,
-        dispersion: false,
-        occlusionUv2: false,
-    },
+    options: UpstreamEmitOptions = DEFAULT_UPSTREAM_EMIT_OPTIONS,
     tree = new GeneratedTree(outputRoot),
 ): string[] {
     return new GeneratedSourceWriter(tree, sharedUpstreamStore()).emit(

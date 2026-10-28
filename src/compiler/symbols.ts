@@ -190,14 +190,15 @@ export function declaredIn(
 }
 
 /**
- * `typeof` of a global only the ECMAScript library declares. Every realm has
- * the language's intrinsics, so the answer is the declared value's kind:
- * a callable or constructible value is a function, a number a number, a
- * namespace or any other value an object.
+ * `typeof` of a global only the `origins` library files declare (the
+ * ECMAScript library by default, whose intrinsics every realm has): the
+ * declared value's kind. A callable or constructible value is a function, a
+ * number a number, a namespace or any other value an object.
  */
-export function ecmascriptGlobalTypeof(
+export function declaredGlobalTypeof(
     checker: ts.TypeChecker,
     expression: ts.Expression,
+    origins: readonly DeclarationOrigin[] = ["default-lib"],
 ): "function" | "number" | "object" | undefined {
     const node = unwrapExpression(expression);
     if (!ts.isIdentifier(node)) return undefined;
@@ -206,7 +207,7 @@ export function ecmascriptGlobalTypeof(
     if (
         declarations.length === 0 ||
         declarations.some(
-            (declaration) => declarationOrigin(declaration) !== "default-lib",
+            (declaration) => !origins.includes(declarationOrigin(declaration)),
         ) ||
         (symbol!.flags &
             (ts.SymbolFlags.Value | ts.SymbolFlags.ValueModule)) ===

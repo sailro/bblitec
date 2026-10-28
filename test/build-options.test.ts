@@ -88,6 +88,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
             "http",
             "jpeg",
             "locale",
+            "meshopt",
             "navigation",
             "navigation-crowd",
             "navigation-tile-cache",

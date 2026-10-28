@@ -54,6 +54,32 @@ export function deploymentUrl(options: DeploymentOptions): URL {
 }
 
 /**
+ * A module's own URL in the native package: its public root. Native
+ * packaging resolves a module-relative asset as the logical public-root path,
+ * not the browser bundle URL, so a URL a module builds against its own URL
+ * (`new URL(path, import.meta.url)`) is read against this root.
+ */
+export const nativeModuleUrl = "https://bblite.invalid/";
+
+/**
+ * `new URL(path, import.meta.url)` as the package resolves it: the
+ * root-relative path beneath the module's public root (after the module
+ * helper's own path `replacements`), or the absolute URL `path` already is.
+ */
+export function moduleRelativeUrl(
+    path: string,
+    replacements: readonly (readonly [string | RegExp, string])[] = [],
+): string {
+    const url = new URL(path, nativeModuleUrl);
+    for (const [search, replacement] of replacements) {
+        url.pathname = url.pathname.replace(search, replacement);
+    }
+    return url.origin === new URL(nativeModuleUrl).origin
+        ? `${url.pathname}${url.search}${url.hash}`
+        : url.href;
+}
+
+/**
  * The absolute URL a fetch of `source` from the deployment requests:
  * resolved against it, fragment removed (a fetch never sends one). A
  * packaged response answers as, and is found by, this URL.

@@ -42,6 +42,7 @@ import {
     promiseOf,
     reads,
     recordOf as record,
+    matrixValues,
     recordScalars,
     spelled,
 } from "./record-shapes.js";
@@ -169,7 +170,6 @@ export function audioLibraryRoots(called: readonly string[] = []): string[] {
 }
 
 const { number, string, void: none } = recordScalars;
-const typedF32: RecordShape = { kind: "typed", element: "f32" };
 const engineRead = (shape: RecordShape, native: string): MemberSpec =>
     reads(shape, (owner) => `${native}(${owner}.context)`);
 
@@ -724,7 +724,7 @@ const FAMILY_PARTS: readonly FamilyPart[] = [
         records: spatialRecords,
         engineMembers: engineSpatialMembers,
         // A world matrix is single precision, as the engine keeps it.
-        values: [["Mat4", typedF32]],
+        values: matrixValues,
     },
     {
         roots: MEDIA_STREAM_ROOTS,

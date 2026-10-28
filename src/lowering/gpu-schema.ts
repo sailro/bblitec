@@ -20,6 +20,16 @@ import type {
 import { copyExternalImageToTexture } from "./web-platform-schema.js";
 const { number, boolean, string, void: none } = recordScalars;
 const buffer: RecordShape = { kind: "buffer" };
+/** A queue write's `AllowSharedBufferSource`: an ArrayBuffer or a typed array. */
+const bufferSource: RecordShape = {
+    kind: "variant",
+    members: [
+        buffer,
+        { kind: "typed", element: "f32array" },
+        { kind: "typed", element: "u32array" },
+        { kind: "typed", element: "u8array" },
+    ],
+};
 const method = (shape: RecordShape, native: string): MemberSpec => ({
     shape,
     access: (owner) => `${owner}->${native}`,
@@ -359,6 +369,15 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
                 ),
             ],
             [
+                "createSampler",
+                // `createSampler()` takes WebGPU's defaults.
+                spelled(
+                    fn([record("GPUSamplerDescriptor")], gpuObject),
+                    (owner, args) =>
+                        `${owner}->create_sampler(${or(args, 0, "bbl::GpuSamplerDescriptor{}")})`,
+                ),
+            ],
+            [
                 "createShaderModule",
                 method(
                     fn([record("GPUShaderModuleDescriptor")], gpuObject),
@@ -406,15 +425,7 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
                         [
                             record("GPUBuffer"),
                             number,
-                            {
-                                kind: "variant",
-                                members: [
-                                    buffer,
-                                    { kind: "typed", element: "f32" },
-                                    { kind: "typed", element: "u32" },
-                                    { kind: "typed", element: "u8" },
-                                ],
-                            },
+                            bufferSource,
                             number,
                             number,
                         ],
@@ -426,17 +437,18 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
             ],
             [
                 "writeTexture",
-                method(
+                spelled(
                     fn(
                         [
                             record("GPUTexelCopyTextureInfo"),
-                            buffer,
+                            bufferSource,
                             record("GPUTexelCopyBufferLayout"),
                             record("GPUExtent3DDict"),
                         ],
                         none,
                     ),
-                    "write_texture",
+                    (owner, args) =>
+                        `bbl::gpu_queue_write_texture(*${owner}, ${args.join(", ")})`,
                 ),
             ],
             [
@@ -537,8 +549,9 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
             ],
             [
                 "dispatchWorkgroups",
+                // One to three counts, each the overload's own.
                 spelled(
-                    fn([number, optional(number), optional(number)], none),
+                    fn([number, number, number], none),
                     (owner, args) =>
                         `${owner}->dispatch_workgroups(${args.join(", ")})`,
                 ),
@@ -553,6 +566,19 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
             ["end", method(fn([], none), "end")],
         ]),
     },
+    descriptor("GPUSamplerDescriptor", "GpuSamplerDescriptor", [
+        ["label", field(optional(string))],
+        ["addressModeU", field(optional(string))],
+        ["addressModeV", field(optional(string))],
+        ["addressModeW", field(optional(string))],
+        ["magFilter", field(optional(string))],
+        ["minFilter", field(optional(string))],
+        ["mipmapFilter", field(optional(string))],
+        ["lodMinClamp", field(optional(number))],
+        ["lodMaxClamp", field(optional(number))],
+        ["compare", field(optional(string))],
+        ["maxAnisotropy", field(optional(number))],
+    ]),
     descriptor("GPUSupportedLimits", "GpuSupportedLimits", [
         ["maxBufferSize", field(number)],
         ["maxStorageBufferBindingSize", field(number)],
@@ -572,7 +598,11 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
         ["binding", field(number)],
         ["visibility", field(number)],
         ["buffer", field(optional(record("GPUBufferBindingLayout")))],
+        ["sampler", field(optional(record("GPUSamplerBindingLayout")))],
         ["texture", field(optional(record("GPUTextureBindingLayout")))],
+    ]),
+    descriptor("GPUSamplerBindingLayout", "GpuSamplerBindingLayout", [
+        ["type", field(optional(string))],
     ]),
     descriptor("GPUBufferBindingLayout", "GpuBufferBindingLayout", [
         ["type", field(optional(string))],
@@ -597,20 +627,21 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
         ["layout", field(gpuObject)],
         ["compute", field(record("GPUProgrammableStage"))],
     ]),
-    {
-        pinned: ["GPUProgrammableStage", "GPUVertexState"],
-        cpp: "GpuProgrammableStage",
-        reference: false,
-        native: true,
-        members: members([
-            ["module", field(gpuObject)],
-            ["entryPoint", field(optional(string))],
-        ]),
-    },
+    descriptor("GPUProgrammableStage", "GpuProgrammableStage", [
+        ["module", field(gpuObject)],
+        ["entryPoint", field(optional(string))],
+    ]),
+    // The subset's vertex stages fetch from storage; a vertex buffer list
+    // the backends refuse unless empty.
+    descriptor("GPUVertexState", "GpuVertexState", [
+        ["module", field(gpuObject)],
+        ["entryPoint", field(optional(string))],
+        ["buffers", field(optional(array({ kind: "object" })))],
+    ]),
     descriptor("GPURenderPipelineDescriptor", "GpuRenderPipelineDescriptor", [
         ["label", field(optional(string))],
         ["layout", field(gpuObject)],
-        ["vertex", field(record("GPUProgrammableStage"))],
+        ["vertex", field(record("GPUVertexState"))],
         ["fragment", field(optional(record("GPUFragmentState")))],
         ["primitive", field(optional(record("GPUPrimitiveState")))],
         ["depthStencil", field(optional(record("GPUDepthStencilState")))],
@@ -638,6 +669,7 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
     descriptor("GPUPrimitiveState", "GpuPrimitiveState", [
         ["topology", field(optional(string))],
         ["cullMode", field(optional(string))],
+        ["frontFace", field(optional(string))],
     ]),
     descriptor("GPUDepthStencilState", "GpuDepthStencilState", [
         ["format", field(string)],
@@ -655,6 +687,7 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
 /** WebGPU objects the subset holds without reading a member of them. */
 export const gpuSubsetValues: readonly (readonly [string, RecordShape])[] = [
     ["GPUTextureView", gpuObject],
+    ["GPUSampler", gpuObject],
     ["GPUBindGroup", gpuObject],
     ["GPUBindGroupLayout", gpuObject],
     ["GPUShaderModule", gpuObject],

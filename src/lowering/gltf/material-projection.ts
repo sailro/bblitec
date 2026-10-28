@@ -707,6 +707,7 @@ ${
         : ""
 }
     ${materialProperty("emissive_factor")}
+    material.has_emissive_color = !props.get("_emissiveColor").nullish();
     if (props.get("alphaBlend").truthy()) material.alpha_mode = MaterialAlphaMode::blend;
     else if (!props.get("_alphaCutOff").nullish()) material.alpha_mode = MaterialAlphaMode::mask;
     ${materialProperty("alpha_cutoff")}

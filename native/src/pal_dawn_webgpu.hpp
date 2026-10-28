@@ -27,6 +27,7 @@ using DawnWebGpuLease = DawnLease<DawnWebGpuOwner, Handle, Release, Destroy>;
 using DawnWebGpuBufferLease = DawnWebGpuLease<WGPUBuffer, wgpuBufferRelease, wgpuBufferDestroy>;
 using DawnWebGpuTextureLease = DawnWebGpuLease<WGPUTexture, wgpuTextureRelease, wgpuTextureDestroy>;
 using DawnWebGpuViewLease = DawnWebGpuLease<WGPUTextureView, wgpuTextureViewRelease>;
+using DawnWebGpuSamplerLease = DawnWebGpuLease<WGPUSampler, wgpuSamplerRelease>;
 using DawnWebGpuLayoutLease = DawnWebGpuLease<WGPUBindGroupLayout, wgpuBindGroupLayoutRelease>;
 using DawnWebGpuGroupLease = DawnWebGpuLease<WGPUBindGroup, wgpuBindGroupRelease>;
 using DawnWebGpuModuleLease = DawnWebGpuLease<WGPUShaderModule, wgpuShaderModuleRelease>;
@@ -169,6 +170,11 @@ struct DawnWebGpuBuffer final : GpuObject,
 struct DawnWebGpuView final : GpuObject {
     std::shared_ptr<DawnWebGpuViewLease> lease;
     std::shared_ptr<DawnWebGpuTextureLease> texture;
+};
+
+/** `GPUSampler`. */
+struct DawnWebGpuSampler final : GpuObject {
+    std::shared_ptr<DawnWebGpuSamplerLease> lease;
 };
 
 /** `GPUTexture`: rgba8unorm, as the subset creates them. */
@@ -449,7 +455,11 @@ struct DawnWebGpuDevice : GpuDevice {
             entry.visibility = static_cast<WGPUShaderStage>(source.visibility);
             if (source.texture) {
                 entry.texture.sampleType = WGPUTextureSampleType_Float;
-                entry.texture.viewDimension = WGPUTextureViewDimension_2D;
+                entry.texture.viewDimension =
+                    source.cube ? WGPUTextureViewDimension_Cube : WGPUTextureViewDimension_2D;
+            } else if (source.sampler) {
+                entry.sampler.type = source.filtering ? WGPUSamplerBindingType_Filtering
+                                                      : WGPUSamplerBindingType_NonFiltering;
             } else {
                 entry.buffer.type = source.buffer == WebGpuBufferBinding::uniform
                                         ? WGPUBufferBindingType_Uniform
@@ -521,7 +531,36 @@ struct DawnWebGpuDevice : GpuDevice {
         return pipeline;
     }
 
+    GpuHandle create_sampler(const GpuSamplerDescriptor& descriptor) override {
+        const auto sampler = webgpu_sampler(descriptor);
+        const auto filter = [](bool linear) {
+            return linear ? WGPUFilterMode_Linear : WGPUFilterMode_Nearest;
+        };
+        const auto address = [](WebGpuSampler::Address mode) {
+            return mode == WebGpuSampler::Address::repeat          ? WGPUAddressMode_Repeat
+                   : mode == WebGpuSampler::Address::mirror_repeat ? WGPUAddressMode_MirrorRepeat
+                                                                   : WGPUAddressMode_ClampToEdge;
+        };
+        WGPUSamplerDescriptor info = WGPU_SAMPLER_DESCRIPTOR_INIT;
+        info.label = dawn_webgpu_label(descriptor.label);
+        info.magFilter = filter(sampler.mag_linear);
+        info.minFilter = filter(sampler.min_linear);
+        info.mipmapFilter =
+            sampler.mipmap_linear ? WGPUMipmapFilterMode_Linear : WGPUMipmapFilterMode_Nearest;
+        info.addressModeU = address(sampler.address_u);
+        info.addressModeV = address(sampler.address_v);
+        info.addressModeW = address(sampler.address_w);
+        info.lodMinClamp = sampler.lod_min_clamp;
+        info.lodMaxClamp = sampler.lod_max_clamp;
+        info.maxAnisotropy = sampler.max_anisotropy;
+        auto result = std::make_shared<DawnWebGpuSampler>();
+        result->lease = owner->adopt<DawnWebGpuSamplerLease>(
+            wgpuDeviceCreateSampler(owner->live_device(), &info), "sampler");
+        return result;
+    }
+
     GpuHandle create_render_pipeline(const GpuRenderPipelineDescriptor& descriptor) override {
+        require_webgpu_vertex_state(descriptor.vertex);
         WGPURenderPipelineDescriptor info = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
         info.label = dawn_webgpu_label(descriptor.label);
         info.layout = webgpu_object<DawnWebGpuPipelineLayout>(descriptor.layout, "pipeline layout")
@@ -536,6 +575,8 @@ struct DawnWebGpuDevice : GpuDevice {
                 webgpu_refuse("render pipelines draw triangle lists.");
             info.primitive.cullMode =
                 dawn_webgpu_cull(descriptor.primitive->cull_mode.value_or(std::string("none")));
+            info.primitive.frontFace =
+                webgpu_front_face_ccw(*descriptor.primitive) ? WGPUFrontFace_CCW : WGPUFrontFace_CW;
         }
         info.primitive.topology = WGPUPrimitiveTopology_TriangleList;
         WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
@@ -594,8 +635,11 @@ struct DawnWebGpuDevice : GpuDevice {
                 entry.offset = gpu_size(binding->offset.value_or(0));
                 entry.size = binding->size ? gpu_size(*binding->size) : WGPU_WHOLE_SIZE;
                 group->resources.push_back(binding->buffer);
+            } else if (const auto& handle = std::get<GpuHandle>(source.resource);
+                       const auto sampler = std::dynamic_pointer_cast<DawnWebGpuSampler>(handle)) {
+                entry.sampler = sampler->lease->get();
+                group->resources.push_back(handle);
             } else {
-                const auto& handle = std::get<GpuHandle>(source.resource);
                 entry.textureView =
                     webgpu_object<DawnWebGpuView>(handle, "texture view")->lease->get();
                 group->resources.push_back(handle);

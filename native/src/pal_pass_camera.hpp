@@ -74,6 +74,14 @@ inline CameraRecord* task_pass_camera(Engine& engine, const FrameTaskRecord& tas
                                         handle_find(engine.cameras, task.source_scene->camera));
 }
 
+/** The handle of the camera `task_pass_camera` names, absent with it. */
+inline std::optional<CameraHandle> task_pass_camera_handle(Engine& engine,
+                                                           const FrameTaskRecord& task) {
+    if (!task_pass_camera(engine, task))
+        return std::nullopt;
+    return task.render.has_camera ? task.render.camera : task.source_scene->camera;
+}
+
 /** The colour a render task clears to, read live at the pass. */
 inline Color4 task_pass_clear_color(const FrameTaskRecord& task) {
     return upstream::render_task_clear_color(task.render.clear_color,

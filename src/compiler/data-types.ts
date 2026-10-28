@@ -252,6 +252,10 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     EnvironmentTextures: "gpu-environment",
     ProceduralSkyEnvironment: "procedural-sky-environment",
     GaussianSplatStream: "gaussian-splat-stream",
+    MeshLoDAsset: "mesh-lod-asset",
+    MeshLoDInstance: "mesh-lod-instance",
+    MeshLoDMetadata: "mesh-lod-metadata",
+    MeshLoDDiagnostics: "mesh-lod-diagnostics",
     GaussianSplatStreamStats: "splat-stream-stats",
     SplatVoxelCollision: "splat-voxel-collision",
     NodeInputHandle: "node-input",
@@ -603,6 +607,13 @@ function pinnedHandle(
         : undefined;
 }
 
+/** The handle kind a lowered library's record of this pinned name is held as. */
+export function pinnedRecordHandleKind(name: string): HandleKind | undefined {
+    return Object.hasOwn(pinnedHandleTypes, name)
+        ? pinnedHandleTypes[name]
+        : undefined;
+}
+
 export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
     return [type.aliasSymbol, type.symbol].some(
         (symbol) =>
@@ -650,6 +661,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
         | "byte-transform-stream"
         | "abort-controller"
         | "abort-signal"
+        | "request-init"
         | "url"
         | "image-bitmap"
         | "idle-deadline"
@@ -677,6 +689,7 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["DecompressionStream", "dom", "byte-transform-stream"],
     ["AbortController", "dom", "abort-controller"],
     ["AbortSignal", "dom", "abort-signal"],
+    ["RequestInit", "dom", "request-init"],
     ["URL", "dom", "url"],
     ["ImageBitmap", "dom", "image-bitmap"],
     ["IdleDeadline", "dom", "idle-deadline"],
@@ -701,10 +714,14 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
  */
 const BYTE_STREAM_KINDS: ReadonlyMap<
     string,
-    "byte-stream" | "byte-stream-reader" | "byte-read-result"
+    | "byte-stream"
+    | "byte-stream-reader"
+    | "byte-stream-controller"
+    | "byte-read-result"
 > = new Map([
     ["ReadableStream", "byte-stream"],
     ["ReadableStreamDefaultReader", "byte-stream-reader"],
+    ["ReadableStreamDefaultController", "byte-stream-controller"],
     ["ReadableStreamReadValueResult", "byte-read-result"],
     ["ReadableStreamReadDoneResult", "byte-read-result"],
 ]);
@@ -715,6 +732,7 @@ const RESPONSE_KINDS: readonly DataType["kind"][] = [
     "http-headers",
     "byte-stream",
     "byte-stream-reader",
+    "byte-stream-controller",
     "byte-read-result",
     "byte-transform-stream",
 ];
@@ -725,6 +743,7 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     string,
 ])[] = [
     [["abort-controller", "abort-signal"], "js_abort"],
+    [["request-init"], "web_platform"],
     [["url"], "js_url"],
     [["image-bitmap"], "pal_image_bitmap"],
     [["idle-deadline"], "pal_idle_callbacks"],
@@ -4056,7 +4075,12 @@ export class DataTypeRegistry {
     private byteStreamKind(
         type: ts.Type,
         node: ts.Node,
-    ): "byte-stream" | "byte-stream-reader" | "byte-read-result" | undefined {
+    ):
+        | "byte-stream"
+        | "byte-stream-reader"
+        | "byte-stream-controller"
+        | "byte-read-result"
+        | undefined {
         const kind = BYTE_STREAM_KINDS.get(type.symbol?.name ?? "");
         if (
             !kind ||

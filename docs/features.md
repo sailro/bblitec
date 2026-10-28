@@ -105,10 +105,12 @@ Rules:
   unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries, member and `push`
   writes and array callback parameters.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
-  `body` reader. Known asset fetches use packaged responses. Request objects, teeing and Headers iteration refuse.
+  `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
+  (signal, headers). Request objects, teeing and Headers iteration refuse.
 - Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
-  `DecompressionStream` (gzip, deflate, deflate-raw; zlib linked only where constructed); `new Response(stream)` reads
-  them. Pipe options, `pipeTo`, other transforms, writable sides, Response init and non-stream Response bodies refuse.
+  `DecompressionStream` (gzip, deflate, deflate-raw; zlib linked only where constructed); `new ReadableStream({ pull,
+  cancel })` is a program source; `new Response(stream, { status, statusText, headers })` reads them. Pipe options,
+  `pipeTo`, other transforms, writable sides, start/strategy sources and non-stream Response bodies refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
@@ -117,6 +119,10 @@ Rules:
   linear/sRGB format. Unsupported native formats refuse.
 - `loadGaussianSplatStream` runs the lowered pinned streaming library on the WebGPU-subset device; options are the pin's
   numeric budgets and `signal`. `splatsData`/`updateData` admit equal-count replacement.
+- MeshLoD (`loadMeshLoD`, instances, scene, setters, diagnostics) runs the lowered pinned library on the WebGPU-subset
+  device: packaged `.mlod` sources (or absolute HTTP(S) URLs) read by range, meshopt pages, GPU selection, the pin's PBR
+  over `PbrMaterialProps`.
+  Options include `request.fetch` (`typeof fetch`). In-memory sources refuse.
 - Environments: HDR (pinned GGX prefilter), DDS, `.env`, baked BRDF LUT, static local probes, procedural sky. Live probe
   rebuilding refuses.
 - Closed Chromium producers bake canvas pixels/atlases; CSG2 bakes unchanged identity-transform boxes/spheres.

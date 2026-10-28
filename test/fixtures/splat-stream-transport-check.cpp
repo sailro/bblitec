@@ -184,11 +184,13 @@ bool response_ok(const Response& response) {
 }
 double response_status(const Response& response) { return response->status; }
 std::string response_url(const Response& response) { return response->url; }
-js::Nullable<std::string> response_header(const Response& response, const std::string& name) {
-    const JsonValue value = response->headers.get(name);
-    if (!value.is_string())
-        return std::nullopt;
-    return value.string_value();
+pal::HttpHeaders response_headers(const Response& response) {
+    auto list = std::make_shared<pal::HttpHeaderList>();
+    if (response->headers.is_object())
+        for (const auto& key : response->headers.own_keys())
+            if (const JsonValue value = response->headers.get(key); value.is_string())
+                list->entries.emplace_back(pal::http_header_name(key), value.string_value());
+    return pal::HttpHeaders(std::move(list));
 }
 ReadableStream response_body(const Response& response) { return response->body; }
 js::Promise<js::PromiseVoid> readable_stream_cancel(const ReadableStream& stream) {

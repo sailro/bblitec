@@ -1062,9 +1062,9 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
 }
 
 [[nodiscard]] inline JsonValue json_value(const Error& value) {
+    // An authored error's view reads the own properties its owner represents.
     if (value.object())
-        throw std::runtime_error(
-            "Authored Error reflection requires represented property descriptors.");
+        return JsonValue::from_native(value);
     try {
         std::rethrow_exception(value);
     } catch (const ThrownString& value) {
@@ -1203,8 +1203,7 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
         if (key == "message")
             return json_value(error_message(value));
         if (value.object() && key != "stack")
-            throw std::runtime_error(
-                "Authored Error reflection requires represented property descriptors.");
+            return authored().get(key);
         if (key == "cause" && error_has_own(value, key))
             return json_value(error_cause(value));
         if (key == "errors" && error_has_own(value, key))
@@ -1213,15 +1212,20 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
     }
     bbl::js::Array<std::string> own_keys() const override {
         if (value.object())
-            throw std::runtime_error(
-                "Authored Error reflection requires represented property descriptors.");
+            return authored().own_keys();
         return {};
     }
     bool has_own(std::string_view key) const override {
         if (value.object())
+            return authored().has_own(key);
+        return error_has_own(value, key);
+    }
+    /** An authored error's own properties, which its owner must represent. */
+    const JsonNativeObject& authored() const {
+        if (!value.object()->properties)
             throw std::runtime_error(
                 "Authored Error reflection requires represented property descriptors.");
-        return error_has_own(value, key);
+        return *value.object()->properties;
     }
     bool has_property(std::string_view key) const override {
         return key == "name" || key == "message" || has_own(key);

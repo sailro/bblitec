@@ -124,10 +124,12 @@ test("keeps staged corpus files byte-identical to the pin", () => {
             files.map(({ source }) => source),
         ),
     ]);
+    // Staged: a pinned source, or a staged demo's public asset, awaiting
+    // the scene or application row it moves to.
     for (const file of manifest.staged ?? []) {
         assert.match(
             file.upstreamPath,
-            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/demos\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html)$/,
+            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/demos\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html|lab\/public\/(?:[\w-]+\/)+[\w.-]+)$/,
         );
         assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
         // A staged row that registers moves to `scenes`; a copy left

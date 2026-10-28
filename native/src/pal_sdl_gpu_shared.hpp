@@ -169,6 +169,12 @@ struct PinnedStageSlots {
     std::vector<std::string> uniforms;
     /** Texture names in binding order; each one's sampler is bound with it. */
     std::vector<std::string> textures;
+    /**
+     * The sampler each texture slot binds with, at the texture's index, as
+     * the stage reads it (runtime WGSL stages); empty where no sampler is
+     * read through that slot.
+     */
+    std::vector<std::string> samplers;
     /** Storage buffer names in storage-slot order -- the morph arms'. */
     std::vector<std::string> storage;
     /** Integer texture loads, after sampled textures and before buffers. */
@@ -230,6 +236,7 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         // own slot indices follow the sampled textures in the SRV space.
         std::vector<std::string>* target = reg[0] == 'b'   ? &slots.uniforms
                                            : reg[0] == 't' ? &slots.textures
+                                           : reg[0] == 's' ? &slots.samplers
                                            : reg[0] == 'r' ? &slots.storage
                                            : reg[0] == 'i' ? &slots.storage_textures
                                                            : nullptr;
@@ -274,8 +281,8 @@ inline int stage_uniform_slot(const PinnedStageSlots& slots, const char* block_n
  *
  * The storage twin above says why the resolver is the parameter, and this is
  * the same walk over the other list: SDL_GPU binds a texture and its sampler
- * as one pair at a dense index, so the sampler names never reach the sidecar
- * and the resolver answers for the pair.
+ * as one pair at a dense index, so the resolver answers for the pair (a
+ * runtime WGSL stage's by the sampler its sidecar pairs at that index).
  */
 template <typename Resolve>
 inline void resolve_stage_textures(const PinnedStageSlots& slots, const char* what,

@@ -14,6 +14,10 @@ export type HandleKind =
     | "gpu-environment"
     | "procedural-sky-environment"
     | "gaussian-splat-stream"
+    | "mesh-lod-asset"
+    | "mesh-lod-instance"
+    | "mesh-lod-metadata"
+    | "mesh-lod-diagnostics"
     | "splat-stream-stats"
     | "splat-voxel-collision"
     | "node-input"
@@ -96,16 +100,7 @@ export type HandleKind =
     | "navigation-obstacle";
 type AudioHandleKind =
     "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
-export type TypedArrayKind =
-    | "u8array"
-    | "i8array"
-    | "f64array"
-    | "f32array"
-    | "u16array"
-    | "i16array"
-    | "u32array"
-    | "i32array"
-    | "u8clampedarray";
+export type { TypedArrayKind } from "../../typed-array-classes.js";
 /** DOM interfaces with no native instance (`bblite/pal_media_stream.hpp`). */
 export const UNINHABITED_DOM_OBJECTS = ["MediaRecorder", "BlobEvent"] as const;
 
@@ -135,6 +130,10 @@ interface DataKinds {
     "byte-transform-stream": { kind: "byte-transform-stream" };
     "abort-controller": { kind: "abort-controller" };
     "abort-signal": { kind: "abort-signal" };
+    /** A program source's `ReadableStreamDefaultController` (`pal::BodyStreamController`). */
+    "byte-stream-controller": { kind: "byte-stream-controller" };
+    /** A fetch's `RequestInit` as the web platform seam carries it (`web_platform::RequestInit`). */
+    "request-init": { kind: "request-init" };
     /** A WHATWG URL object. */
     url: { kind: "url" };
     /** A decoded ImageBitmap. */

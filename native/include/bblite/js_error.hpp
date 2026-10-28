@@ -94,6 +94,8 @@ inline std::shared_ptr<const bool> error_identity(const std::exception_ptr& erro
     }
 }
 
+struct JsonNativeObject;
+
 /** A typed authored class retains its ordinary managed record through exceptions. */
 class ErrorObject {
 public:
@@ -103,6 +105,8 @@ public:
     virtual const void* identity() const = 0;
     virtual void gc_trace(const TraceVisitor&) const = 0;
     std::string base;
+    /** The record's own properties as a dynamic read sees them, where its owner represents them. */
+    std::shared_ptr<JsonNativeObject> properties;
 };
 
 class ObjectError final : public std::exception {
@@ -114,13 +118,18 @@ public:
 
 template <typename T> class TypedErrorObject final : public ErrorObject {
 public:
-    TypedErrorObject(T value, std::string baseName) : value(std::move(value)) {
+    TypedErrorObject(T value, std::string baseName, std::shared_ptr<JsonNativeObject> ownProperties)
+        : value(std::move(value)) {
         base = std::move(baseName);
+        properties = std::move(ownProperties);
     }
     const std::string& message() const override { return value->message; }
     const std::string& name() const override { return value->name; }
     const void* identity() const override { return value.operator->(); }
-    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+    void gc_trace(const TraceVisitor& visitor) const override {
+        visitor(value);
+        visitor(properties);
+    }
     T value;
 };
 
@@ -173,8 +182,11 @@ private:
     std::shared_ptr<ErrorObject> object_;
 };
 
-template <typename T> Error make_object_error(T value, std::string base) {
-    return Error(make_gc_shared<TypedErrorObject<T>>(std::move(value), std::move(base)));
+template <typename T>
+Error make_object_error(T value, std::string base,
+                        std::shared_ptr<JsonNativeObject> properties = {}) {
+    return Error(make_gc_shared<TypedErrorObject<T>>(std::move(value), std::move(base),
+                                                     std::move(properties)));
 }
 
 template <typename T> T error_object(const Error& error) {

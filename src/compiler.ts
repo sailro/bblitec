@@ -107,6 +107,7 @@ import {
 } from "./compiler/text-surface.js";
 import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
 import { emitSplatStreamAssignment } from "./compiler/splat-stream-surface.js";
+import { emitLibraryNodeParent } from "./compiler/lowered-record-surface.js";
 import { surfaceResizeFunction } from "./compiler/surface-pixel-ratio.js";
 import { retainedOptions } from "./compiler/intrinsics/retained-options.js";
 import { compileNodeInputMutation } from "./compiler/node-input-surface.js";
@@ -154,11 +155,13 @@ import {
 import {
     BrowserErasure,
     browserEnvironmentValue,
+    constInitializer,
 } from "./compiler/browser-erasure.js";
 import {
     deploymentEnvironment,
     deploymentPublicUrl,
     deploymentUrl,
+    moduleRelativeUrl,
 } from "./compiler/deployment.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
@@ -2120,6 +2123,8 @@ class Compiler implements LoweringServices {
             case "storage-buffer":
             case "scene":
             case "gaussian-splat-stream":
+            case "mesh-lod-asset":
+            case "mesh-lod-instance":
             case "splat-voxel-collision":
             case "static-sound":
             case "audio-bus":
@@ -2404,6 +2409,7 @@ class Compiler implements LoweringServices {
             return;
         }
         if (this.compileCameraMutation(expression)) return;
+        if (emitLibraryNodeParent(this, expression)) return;
         if (emitSplatStreamAssignment(this, expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression))
@@ -2803,6 +2809,22 @@ class Compiler implements LoweringServices {
         site: ts.Expression,
     ): void {
         this.ui.emitUiDatasetProperty(element, property, value, site);
+    }
+
+    public emitUiElementProperty(
+        element: Value,
+        receiver: ts.Expression,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void {
+        this.ui.emitUiElementStore(
+            element,
+            receiver,
+            property,
+            { value, site },
+            site,
+        );
     }
 
     public emitUiStyleValue(
@@ -4162,16 +4184,10 @@ class Compiler implements LoweringServices {
         if (ts.isTemplateExpression(argumentAt(resolved, 0))) {
             return undefined;
         }
-        const path = this.evaluator.compileStringLiteral(
-            argumentAt(resolved, 0),
+        return moduleRelativeUrl(
+            this.evaluator.compileStringLiteral(argumentAt(resolved, 0)),
+            replacements,
         );
-        const url = new URL(path, "https://bblite.invalid/");
-        for (const [search, replacement] of replacements) {
-            url.pathname = url.pathname.replace(search, replacement);
-        }
-        return url.origin === "https://bblite.invalid"
-            ? `${url.pathname}${url.search}${url.hash}`
-            : url.href;
     }
 
     /** Runtime final segment of the same pure module-relative URL helper. */
@@ -4217,14 +4233,7 @@ class Compiler implements LoweringServices {
         }
         const span = path.templateSpans[0]!.expression;
         const suffix = this.compileValue(span);
-        const url = new URL(path.head.text, "https://bblite.invalid/");
-        for (const [search, replacement] of replacements) {
-            url.pathname = url.pathname.replace(search, replacement);
-        }
-        const prefix =
-            url.origin === "https://bblite.invalid"
-                ? `${url.pathname}${url.search}${url.hash}`
-                : url.href;
+        const prefix = moduleRelativeUrl(path.head.text, replacements);
         // Any other substitution converts as in every template literal.
         const text = isStringValue(suffix)
             ? suffix.staticString
@@ -4892,6 +4901,12 @@ class Compiler implements LoweringServices {
             if (key === undefined) return undefined;
             keys.unshift(key);
             root = this.unwrap(root.expression);
+        }
+        // A local `const` naming a module constant reads that constant.
+        while (ts.isIdentifier(root) && !this.moduleConstantDeclaration(root)) {
+            const aliased = constInitializer(this, root);
+            if (!aliased || !ts.isIdentifier(aliased)) break;
+            root = aliased;
         }
         const constant = ts.isIdentifier(root)
             ? this.moduleConstantDeclaration(root)

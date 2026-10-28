@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { lowerFramePostSubmit } from "./frame-post-submit-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import {
     type LoweringContext,
@@ -473,7 +472,7 @@ export function lowerComputeOneShot(context: LoweringContext): LoweredSource {
         modulePath: path,
         symbolName: "createComputeOneShot",
         header: "",
-        source: `#include <bblite/pal_compute_one_shot.hpp>\nnamespace bbl {\n${lowerFramePostSubmit(context)}\n${Object.values(
+        source: `#include <bblite/pal_compute_one_shot.hpp>\n#include <bblite/pal_frame_post_submit.hpp>\nnamespace bbl {\n${Object.values(
             signatures,
         )
             .map((signature) => signature + ";")

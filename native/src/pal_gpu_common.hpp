@@ -39,10 +39,14 @@ private:
     Result (*call_)(void*, Args...);
 };
 
+/** A pass's external renderables (pal_external_renderables.hpp), named in every build. */
+class ExternalRenderablePass;
+
 /** A non-owning draw list for one command in an ordered pass. */
 template <class Command> struct BorrowedDrawList {
     std::span<const Command> commands;
     explicit BorrowedDrawList(const Command& command) : commands(&command, 1) {}
+    explicit BorrowedDrawList(std::span<const Command> run) : commands(run) {}
 };
 
 #if BBLITE_DEVICE_RECOVERY

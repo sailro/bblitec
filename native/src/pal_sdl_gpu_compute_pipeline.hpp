@@ -28,10 +28,20 @@ struct SdlComputeShaderModule final : ComputeShaderModule {
         : artifact(std::move(value)) {}
     std::string artifact;
 };
+/**
+ * The read-only storage binding a stage reads `@builtin(num_workgroups)` from
+ * on SDL_GPU: generation moves the builtin there (shader-bindings.ts
+ * `sdlWorkgroupCountsSource`), since D3D12 places it outside SDL_GPU's
+ * compute bindings, and each dispatch binds its own counts.
+ */
+inline constexpr std::string_view sdl_workgroup_counts_binding = "bbl_num_workgroups";
+
 struct SdlComputeSlot {
     char kind = 0;
     std::uint32_t index = 0, group = 0, binding = 0;
     int sampler_group = -1, sampler_binding = -1;
+    /** The dispatch's own workgroup counts (`sdl_workgroup_counts_binding`), bound by no group. */
+    bool workgroup_counts = false;
 };
 struct SdlComputePipeline final : ComputePipeline {
     SDL_GPUDevice* device = nullptr;
@@ -58,6 +68,53 @@ const Native& sdl_compute_resource(const std::shared_ptr<Base>& value) {
         throw std::runtime_error("Compute resource belongs to a different backend.");
     return *native;
 }
+/**
+ * A dispatch's workgroup counts for a stage that reads them
+ * (`SdlComputeSlot::workgroup_counts`): a buffer written in a copy pass before
+ * the dispatch's compute pass, uploaded from `direct` or copied from the 12
+ * argument bytes at `offset` in `indirect`. The caller keeps it until the
+ * compute pass that binds it is encoded.
+ */
+inline OwnedSdlBuffer encode_sdl_workgroup_counts(SDL_GPUDevice* device,
+                                                  SDL_GPUCommandBuffer* command,
+                                                  const std::array<std::uint32_t, 3>& direct,
+                                                  SDL_GPUBuffer* indirect, std::uint32_t offset) {
+    constexpr Uint32 bytes = 12;
+    SDL_GPUBufferCreateInfo info{};
+    info.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
+    info.size = 16;
+    OwnedSdlBuffer counts{SDL_CreateGPUBuffer(device, &info), {device}};
+    if (!counts)
+        gpu_error("SDL_CreateGPUBuffer workgroup counts");
+    OwnedSdlTransfer staged{nullptr, {device}};
+    if (!indirect) {
+        SDL_GPUTransferBufferCreateInfo transfer{};
+        transfer.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        transfer.size = bytes;
+        staged.reset(SDL_CreateGPUTransferBuffer(device, &transfer));
+        if (!staged)
+            gpu_error("SDL_CreateGPUTransferBuffer workgroup counts");
+        void* mapped = SDL_MapGPUTransferBuffer(device, staged.get(), false);
+        if (!mapped)
+            gpu_error("SDL_MapGPUTransferBuffer workgroup counts");
+        std::memcpy(mapped, direct.data(), bytes);
+        SDL_UnmapGPUTransferBuffer(device, staged.get());
+    }
+    SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+    if (!pass)
+        gpu_error("SDL_BeginGPUCopyPass workgroup counts");
+    if (indirect) {
+        const SDL_GPUBufferLocation from{indirect, offset};
+        const SDL_GPUBufferLocation to{counts.get(), 0};
+        SDL_CopyGPUBufferToBuffer(pass, &from, &to, bytes, false);
+    } else {
+        const SDL_GPUTransferBufferLocation from{staged.get(), 0};
+        const SDL_GPUBufferRegion to{counts.get(), 0, bytes};
+        SDL_UploadToGPUBuffer(pass, &from, &to, false);
+    }
+    return counts;
+}
+
 /** A compute stage compiled at generation: `<artifact>` and its `.slots` sidecar. */
 inline std::shared_ptr<SdlComputePipeline>
 load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact,
@@ -101,6 +158,9 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
         if (!(row >> name >> slot.group >> slot.binding >> slot.sampler_group >>
               slot.sampler_binding))
             throw std::runtime_error("Compute binding metadata is incomplete.");
+        slot.workgroup_counts = name == sdl_workgroup_counts_binding;
+        if (slot.workgroup_counts && slot.kind != 'r')
+            throw std::runtime_error("Workgroup counts bind as a read-only storage buffer.");
         const std::string kinds = "tirjwb";
         const auto category = kinds.find(slot.kind);
         if (category != std::string::npos)
@@ -213,7 +273,18 @@ inline void encode_sdl_gpu_compute(SDL_GPUCommandBuffer* command, const ComputeD
     readonly_buffers.assign(pipeline.counts[2], nullptr);
     writable_textures.assign(pipeline.counts[3], {});
     writable_buffers.assign(pipeline.counts[4], {});
+    std::vector<OwnedSdlBuffer> workgroup_counts;
     for (const auto& slot : pipeline.slots) {
+        if (slot.workgroup_counts) {
+            workgroup_counts.push_back(encode_sdl_workgroup_counts(
+                pipeline.device, command, source.workgroups,
+                source.indirect
+                    ? sdl_compute_resource<SdlStorageBuffer>(source.indirect->allocation).buffer
+                    : nullptr,
+                source.indirect ? static_cast<std::uint32_t>(source.indirect->offset) : 0));
+            readonly_buffers.at(slot.index) = workgroup_counts.back().get();
+            continue;
+        }
         const auto value = resource(slot.group, slot.binding);
         if (slot.kind == 'b') {
             const auto& buffer = std::get<ComputeBufferResource>(value);

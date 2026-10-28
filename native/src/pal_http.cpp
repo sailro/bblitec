@@ -16,13 +16,6 @@ namespace {
 constexpr std::size_t maximum_request_body = 32u * 1024u * 1024u;
 constexpr std::size_t read_size = 64u * 1024u;
 
-bool token_character(unsigned char character) {
-    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-           (character >= '0' && character <= '9') ||
-           std::string_view("!#$%&'*+-.^_`|~").find(static_cast<char>(character)) !=
-               std::string_view::npos;
-}
-
 void validate_request(const std::string& url, const HttpRequest& request) {
     if ((!url.starts_with("http://") && !url.starts_with("https://")) ||
         url.find('\0') != std::string::npos)
@@ -31,23 +24,21 @@ void validate_request(const std::string& url, const HttpRequest& request) {
     const auto authority_end = url.find_first_of("/?#", authority_start);
     if (url.substr(authority_start, authority_end - authority_start).find('@') != std::string::npos)
         throw std::runtime_error("fetch URLs cannot contain credentials.");
-    if (request.method.empty() ||
-        !std::all_of(request.method.begin(), request.method.end(), token_character))
+    if (!http_header_name_valid(request.method))
         throw std::runtime_error("Invalid HTTP method.");
     if ((request.method == "GET" || request.method == "HEAD") && request.body.has_value())
         throw std::runtime_error("GET and HEAD requests cannot have a body.");
     if (request.body && request.body->size() > maximum_request_body)
         throw std::runtime_error("HTTP request body exceeds 32 MiB.");
-    for (const auto& [name, value] : request.headers) {
-        if (name.empty() || !std::all_of(name.begin(), name.end(), token_character) ||
-            std::any_of(value.begin(), value.end(), [](unsigned char character) {
-                return character == '\r' || character == '\n' || character == 0;
-            }))
+    for (const auto& [name, value] : request.headers)
+        if (!http_header_name_valid(name) || !http_header_value(value))
             throw std::runtime_error("Invalid HTTP header.");
-    }
 }
 
-/** Method normalization and the request's default Content-Type, as fetch applies them. */
+/**
+ * Method normalization, the forbidden header fields a browser's request
+ * drops, and the request's default Content-Type, as fetch applies them.
+ */
 void prepare_request(const std::string& url, HttpRequest& request) {
     std::string normalized = request.method;
     std::transform(
@@ -58,6 +49,8 @@ void prepare_request(const std::string& url, HttpRequest& request) {
         request.method = normalized;
     if (normalized == "CONNECT" || normalized == "TRACE" || normalized == "TRACK")
         throw std::runtime_error("This HTTP method is forbidden by fetch.");
+    std::erase_if(request.headers,
+                  [](const auto& header) { return http_forbidden_request_header(header.first); });
     validate_request(url, request);
     const bool content_type =
         std::any_of(request.headers.begin(), request.headers.end(), [](const auto& header) {
@@ -72,15 +65,10 @@ void append_header_line(HttpHeaderList& list, std::string_view line) {
     const auto colon = line.find(':');
     if (colon == std::string_view::npos || colon == 0)
         return;
-    const auto trim = [](std::string_view text) {
-        while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-            text.remove_prefix(1);
-        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r'))
-            text.remove_suffix(1);
-        return text;
-    };
-    list.entries.emplace_back(http_header_name(trim(line.substr(0, colon))),
-                              std::string(trim(line.substr(colon + 1))));
+    const auto name = http_header_value(line.substr(0, colon));
+    const auto value = http_header_value(line.substr(colon + 1));
+    if (name && value)
+        list.entries.emplace_back(http_header_name(*name), *value);
 }
 
 #ifdef _WIN32

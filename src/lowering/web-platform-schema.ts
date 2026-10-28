@@ -47,32 +47,20 @@ import {
     field,
     functionOf as fn,
     members,
+    nativeObject as object,
     optionalOf as optional,
     promiseOf as promise,
     reads,
     recordOf as record,
     recordScalars,
     spelled,
+    typedF32,
+    typedU8 as bytes,
 } from "./record-shapes.js";
 
 const PLATFORM = "bbl::web_platform";
 const { number, boolean, string, void: none } = recordScalars;
 const error: RecordShape = { kind: "error" };
-const bytes: RecordShape = { kind: "typed", element: "u8" };
-
-/** A runtime object the pin holds by identity, its members spelled over it. */
-const object = (
-    pinned: readonly string[],
-    cpp: string,
-    entries: readonly (readonly [string, MemberSpec])[],
-): RecordSpec => ({
-    pinned,
-    cpp,
-    handle: cpp,
-    reference: true,
-    native: true,
-    members: members(entries),
-});
 /** A member read through a seam function of the receiver. */
 const seamRead = (shape: RecordShape, native: string): MemberSpec =>
     reads(shape, (owner) => `${PLATFORM}::${native}(${owner})`);
@@ -197,6 +185,13 @@ export const webPlatformRecords: readonly RecordSpec[] = [
                 (owner) => `bbl::js::blob_text(${owner})`,
             ),
         ],
+        [
+            "arrayBuffer",
+            spelled(
+                fn([], promise({ kind: "buffer" })),
+                (owner) => `bbl::js::blob_array_buffer(${owner})`,
+            ),
+        ],
     ]),
     descriptor("BlobPropertyBag", "web_platform::BlobPropertyBag", [
         ["type", field(optional(string))],
@@ -237,6 +232,9 @@ export const webPlatformRecords: readonly RecordSpec[] = [
     // The fetch seam's objects.
     descriptor("RequestInit", "web_platform::RequestInit", [
         ["signal", field(optional(record("AbortSignal")))],
+        // A Headers object; a header record or pair list is not lowered.
+        ["headers", field(optional(record("Headers")))],
+        ["credentials", field(optional(string))],
     ]),
     {
         pinned: ["Response"],
@@ -256,31 +254,53 @@ export const webPlatformRecords: readonly RecordSpec[] = [
                 ),
             ],
             ["url", seamRead(string, "response_url")],
-            // The headers are the response's own.
-            ["headers", reads(record("Headers"), (owner) => owner)],
+            // The response's own Headers object (immutable guard).
+            ["headers", seamRead(record("Headers"), "response_headers")],
             [
                 "body",
                 seamRead(optional(record("ReadableStream")), "response_body"),
             ],
         ]),
     },
-    {
-        pinned: ["Headers"],
-        cpp: "web_platform::ResponseState",
-        handle: "web_platform::Response",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "get",
-                spelled(
-                    fn([string], optional(string)),
-                    (owner, [name]) =>
-                        `${PLATFORM}::response_header(${owner}, ${name})`,
-                ),
-            ],
-        ]),
-    },
+    // A response's headers or a program's `new Headers(init)`: one object
+    // type, its guard deciding whether it changes.
+    object(["Headers"], "pal::HttpHeaders", [
+        [
+            "get",
+            spelled(
+                fn([string], optional(string)),
+                (owner, [name]) => `${owner}.get(${name})`,
+            ),
+        ],
+        [
+            "has",
+            spelled(
+                fn([string], boolean),
+                (owner, [name]) => `${owner}.has(${name})`,
+            ),
+        ],
+        [
+            "set",
+            spelled(
+                fn([string, string], none),
+                (owner, [name, value]) => `${owner}.set(${name}, ${value})`,
+            ),
+        ],
+        [
+            "append",
+            spelled(
+                fn([string, string], none),
+                (owner, [name, value]) => `${owner}.append(${name}, ${value})`,
+            ),
+        ],
+        [
+            "delete",
+            spelled(
+                fn([string], none),
+                (owner, [name]) => `${owner}.remove(${name})`,
+            ),
+        ],
+    ]),
     {
         pinned: ["ReadableStream"],
         cpp: "web_platform::ReadableStreamState",
@@ -408,6 +428,15 @@ export const webPlatformConstructors: ReadonlyMap<string, CallAdapter> =
             },
         ],
         ["TextDecoder", textDecoderConstructor()],
+        [
+            // `new Headers(init?)`: the init as the program holds it (a
+            // Headers object, a pair list or a header record).
+            "Headers",
+            {
+                cpp: (argument, call) =>
+                    `${PLATFORM}::make_headers(${(call.arguments?.length ?? 0) > 0 ? argument(0) : ""})`,
+            },
+        ],
     ]);
 
 /** The seam's globals: timers, tasks, fetch and image decoding. */
@@ -588,7 +617,7 @@ function elementEvent(type: string | undefined): string {
 /** `buffer.copyFromChannel` / `copyToChannel(samples, channel, offset?)`. */
 const channelCopy = (direction: "FromChannel" | "ToChannel"): MemberSpec =>
     spelled(
-        fn([{ kind: "typed", element: "f32" }, number, number], none),
+        fn([typedF32, number, number], none),
         (owner, [samples, channel, offset]) =>
             `${AUDIO}::audio_buffer_copy(${owner}, ${samples}, ${jsToUint32Call(channel!)}, ${offset === undefined ? "0u" : jsToUint32Call(offset)}, ${AUDIO}::AudioBufferCopy::${direction})`,
     );
@@ -659,7 +688,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
                         spelled(
                             fn([{ kind: "typed", element }], none),
                             (owner, [out]) =>
-                                `${AUDIO}::audio_analyser_${element === "u8" ? "byte" : "float"}_data(${owner}, ${AUDIO}::AnalyserData::${data}, ${out})`,
+                                `${AUDIO}::audio_analyser_${element === "u8array" ? "byte" : "float"}_data(${owner}, ${AUDIO}::AnalyserData::${data}, ${out})`,
                         ),
                     ] as const,
             ),
@@ -803,10 +832,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             [
                 "setValueCurveAtTime",
                 spelled(
-                    fn(
-                        [{ kind: "typed", element: "f32" }, number, number],
-                        none,
-                    ),
+                    fn([typedF32, number, number], none),
                     (owner, [values, start, duration]) =>
                         `${AUDIO}::audio_param_set_value_curve(${owner}, ${values}, ${start}, ${duration})`,
                 ),
@@ -918,7 +944,7 @@ export const webAudioRecords: readonly RecordSpec[] = [
             [
                 "getChannelData",
                 spelled(
-                    fn([number], { kind: "typed", element: "f32" }),
+                    fn([number], typedF32),
                     (owner, [channel]) =>
                         `${AUDIO}::audio_buffer_channel(${owner}, static_cast<std::uint32_t>(${channel}))`,
                 ),
@@ -1365,7 +1391,6 @@ export const webAudioInstanceOf: ReadonlyMap<
 
 /** The Web Audio classes a pinned library tests for (`typeof AudioBuffer`). */
 export const webAudioClasses: ReadonlyMap<string, RecordShape> = new Map([
-    ["AudioBuffer", record("AudioBuffer")],
     ["MediaStreamAudioSourceNode", record("AudioNode")],
     ["Audio", record("HTMLAudioElement")],
 ]);

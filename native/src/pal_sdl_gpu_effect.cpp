@@ -13,7 +13,7 @@
 #include <bblite/features/has_effect_renderer.hpp>
 
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 
 #include <cstdint>

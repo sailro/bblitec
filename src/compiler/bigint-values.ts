@@ -187,6 +187,11 @@ export function compileBigIntValue(
     return undefined;
 }
 
+/** `BigInt(number)`: the integer, a RangeError for any other number. */
+export function bigintFromNumberCpp(number: string): string {
+    return `bbl::js::BigInt::from_number(${number})`;
+}
+
 /** `BigInt(value)`, `BigInt.asIntN(bits, value)` and `BigInt.asUintN(bits, value)`. */
 function compileBigIntCall(
     context: BigIntContext,
@@ -230,10 +235,7 @@ function compileBigIntCall(
     const value = context.compileValue(argument);
     if (value.dataType?.kind === "bigint") return value;
     if (value.kind === "number" || value.dataType?.kind === "number")
-        return context.dataValue(
-            `bbl::js::BigInt::from_number(${value.cpp})`,
-            bigintType,
-        );
+        return context.dataValue(bigintFromNumberCpp(value.cpp), bigintType);
     if (value.kind === "boolean" || value.dataType?.kind === "boolean")
         return context.dataValue(
             `bbl::js::BigInt(std::int64_t{(${value.cpp}) ? 1 : 0})`,

@@ -132,6 +132,12 @@ export interface HostPageProgram {
     path: string;
     /** The site root "/" names; the page's own directory by default. */
     root?: string;
+    /**
+     * The module the page's one `src` module script loads in place of its
+     * URL (a lab bundle built from this source), as its reference capture
+     * serves it.
+     */
+    entry?: string;
     loader?: PageLoaderModule;
     startup?: PageStartupScript[];
 }
@@ -1497,6 +1503,10 @@ export type ValueKind =
     | "gpu-environment"
     | "procedural-sky-environment"
     | "gaussian-splat-stream"
+    | "mesh-lod-asset"
+    | "mesh-lod-instance"
+    | "mesh-lod-metadata"
+    | "mesh-lod-diagnostics"
     | "splat-stream-stats"
     | "splat-voxel-collision"
     | "static-fetch-response"
@@ -2998,6 +3008,8 @@ export type Feature =
     | "platform:http"
     | "platform:packaged-fetch"
     | "platform:compression"
+    | "platform:meshopt"
+    | "platform:web-platform"
     | "platform:idle-callbacks"
     | "platform:media-stream"
     | "image:runtime-decode"
@@ -3039,6 +3051,7 @@ export type Feature =
     | "compute:dispatch"
     | "compute:bindings"
     | "compute:one-shot"
+    | "engine:frame-post-submit"
     | "compute:task"
     | "compute:task-execution"
     | "compute:frame-graph"
@@ -3091,6 +3104,7 @@ export type Feature =
     | "loader:splat-sog"
     | "loader:splat-spz"
     | "loader:splat-stream"
+    | "loader:mesh-lod"
     | "material:pbr"
     | "material:source-texture-read"
     | "material:clearcoat"

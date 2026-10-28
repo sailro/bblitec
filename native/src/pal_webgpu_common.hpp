@@ -9,6 +9,7 @@
 #include "pal_gpu_lease_retirement.hpp"
 #include "pal_webgpu_usage.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -75,12 +76,24 @@ inline WebGpuBufferBinding webgpu_buffer_binding(const GpuBufferBindingLayout& l
     webgpu_refuse("buffer binding type '" + type + "' is not admitted.");
 }
 
-/** A sampled texture binding: this subset admits float 2D single-sampled textures only. */
-inline void require_webgpu_texture_binding(const GpuTextureBindingLayout& layout) {
+/**
+ * A sampled texture binding: this subset admits float single-sampled 2D or
+ * cube textures; whether it is a cube.
+ */
+inline bool webgpu_texture_binding_cube(const GpuTextureBindingLayout& layout) {
+    const auto dimension = layout.view_dimension.value_or(std::string("2d"));
     if (layout.sample_type.value_or(std::string("float")) != "float" ||
-        layout.view_dimension.value_or(std::string("2d")) != "2d" ||
-        layout.multisampled.value_or(false))
-        webgpu_refuse("texture bindings are float 2D single-sampled textures.");
+        (dimension != "2d" && dimension != "cube") || layout.multisampled.value_or(false))
+        webgpu_refuse("texture bindings are float single-sampled 2D or cube textures.");
+    return dimension == "cube";
+}
+
+/** A sampler binding: filtering or not; comparison samplers are not in the subset. */
+inline bool webgpu_sampler_binding_filtering(const GpuSamplerBindingLayout& layout) {
+    const auto type = layout.type.value_or(std::string("filtering"));
+    if (type != "filtering" && type != "non-filtering")
+        webgpu_refuse("sampler binding type '" + type + "' is not admitted.");
+    return type == "filtering";
 }
 
 /** One layout entry, resolved against WebGPU's defaults. */
@@ -88,9 +101,71 @@ struct WebGpuLayoutEntry {
     std::uint32_t binding = 0;
     std::uint32_t visibility = 0;
     bool texture = false;
+    /** A sampled texture's cube view dimension. */
+    bool cube = false;
+    bool sampler = false;
+    bool filtering = true;
     WebGpuBufferBinding buffer = WebGpuBufferBinding::uniform;
     bool dynamic_offset = false;
 };
+
+/** `GPUSamplerDescriptor` with WebGPU's defaults: nearest filters, clamp-to-edge, LOD 0..32. */
+struct WebGpuSampler {
+    bool mag_linear = false, min_linear = false, mipmap_linear = false;
+    enum class Address { clamp_to_edge, repeat, mirror_repeat };
+    Address address_u = Address::clamp_to_edge, address_v = Address::clamp_to_edge,
+            address_w = Address::clamp_to_edge;
+    float lod_min_clamp = 0.0f, lod_max_clamp = 32.0f;
+    std::uint16_t max_anisotropy = 1;
+};
+inline WebGpuSampler webgpu_sampler(const GpuSamplerDescriptor& descriptor) {
+    const auto linear = [](const bbl::js::Nullable<std::string>& filter) {
+        const auto name = filter.value_or(std::string("nearest"));
+        if (name != "nearest" && name != "linear")
+            webgpu_refuse("filter mode '" + name + "' is not admitted.");
+        return name == "linear";
+    };
+    const auto address = [](const bbl::js::Nullable<std::string>& mode) {
+        const auto name = mode.value_or(std::string("clamp-to-edge"));
+        if (name == "clamp-to-edge")
+            return WebGpuSampler::Address::clamp_to_edge;
+        if (name == "repeat")
+            return WebGpuSampler::Address::repeat;
+        if (name == "mirror-repeat")
+            return WebGpuSampler::Address::mirror_repeat;
+        webgpu_refuse("address mode '" + name + "' is not admitted.");
+    };
+    if (descriptor.compare)
+        webgpu_refuse("comparison samplers are not in the subset.");
+    WebGpuSampler sampler;
+    sampler.mag_linear = linear(descriptor.mag_filter);
+    sampler.min_linear = linear(descriptor.min_filter);
+    sampler.mipmap_linear = linear(descriptor.mipmap_filter);
+    sampler.address_u = address(descriptor.address_mode_u);
+    sampler.address_v = address(descriptor.address_mode_v);
+    sampler.address_w = address(descriptor.address_mode_w);
+    sampler.lod_min_clamp = static_cast<float>(descriptor.lod_min_clamp.value_or(0.0));
+    sampler.lod_max_clamp = static_cast<float>(descriptor.lod_max_clamp.value_or(32.0));
+    const double anisotropy = descriptor.max_anisotropy.value_or(1.0);
+    if (!(anisotropy >= 1.0 && anisotropy <= 65535.0) || std::trunc(anisotropy) != anisotropy)
+        webgpu_refuse("maxAnisotropy is an integer of at least 1.");
+    sampler.max_anisotropy = static_cast<std::uint16_t>(anisotropy);
+    return sampler;
+}
+
+/** A render pipeline's vertex stage: it fetches from storage, so no vertex buffers. */
+inline void require_webgpu_vertex_state(const GpuVertexState& vertex) {
+    if (vertex.buffers && !vertex.buffers->empty())
+        webgpu_refuse("the subset's render pipelines take no vertex buffers.");
+}
+
+/** `GPUFrontFace`: whether counter-clockwise triangles face front (WebGPU's default). */
+inline bool webgpu_front_face_ccw(const GpuPrimitiveState& primitive) {
+    const auto name = primitive.front_face.value_or(std::string("ccw"));
+    if (name != "ccw" && name != "cw")
+        webgpu_refuse("front face '" + name + "' is not admitted.");
+    return name == "ccw";
+}
 inline std::vector<WebGpuLayoutEntry>
 webgpu_layout_entries(const GpuBindGroupLayoutDescriptor& descriptor) {
     std::vector<WebGpuLayoutEntry> result;
@@ -98,8 +173,11 @@ webgpu_layout_entries(const GpuBindGroupLayoutDescriptor& descriptor) {
         WebGpuLayoutEntry entry;
         entry.binding = webgpu_flags(source.binding);
         entry.visibility = webgpu_flags(source.visibility);
-        if (source.buffer.has_value() == source.texture.has_value())
-            webgpu_refuse("a layout entry declares exactly one buffer or texture.");
+        if (static_cast<int>(source.buffer.has_value()) +
+                static_cast<int>(source.sampler.has_value()) +
+                static_cast<int>(source.texture.has_value()) !=
+            1)
+            webgpu_refuse("a layout entry declares exactly one buffer, sampler or texture.");
         for (const auto& other : result)
             if (other.binding == entry.binding)
                 webgpu_refuse("a layout declares binding " + std::to_string(entry.binding) +
@@ -110,8 +188,11 @@ webgpu_layout_entries(const GpuBindGroupLayoutDescriptor& descriptor) {
             if (entry.buffer == WebGpuBufferBinding::storage &&
                 (entry.visibility & webgpu_shader_stage::vertex))
                 webgpu_refuse("a vertex stage cannot see a writable storage buffer.");
+        } else if (source.sampler) {
+            entry.sampler = true;
+            entry.filtering = webgpu_sampler_binding_filtering(*source.sampler);
         } else {
-            require_webgpu_texture_binding(*source.texture);
+            entry.cube = webgpu_texture_binding_cube(*source.texture);
             entry.texture = true;
         }
         result.push_back(entry);

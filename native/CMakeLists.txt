@@ -683,6 +683,11 @@ if("platform:compression" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(bblite_features INTERFACE ZLIB::ZLIB)
 endif()
 
+if("platform:meshopt" IN_LIST BBLITE_RUNTIME_FEATURES)
+    find_package(meshoptimizer CONFIG REQUIRED)
+    target_link_libraries(bblite_features INTERFACE meshoptimizer::meshoptimizer)
+endif()
+
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # The exact RmlUi revision projected by our backend-neutral recorder
     # is pinned in upstream/rmlui.json and installed once by

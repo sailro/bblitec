@@ -907,7 +907,7 @@ test("a call's target is read through symbols.ts", () => {
             "src/compiler/data-lowering.ts",
             "src/compiler/deferred-capabilities.ts",
             "src/compiler/intrinsics/physics.ts",
-            "src/compiler/intrinsics/splat-stream.ts",
+            "src/compiler/intrinsics/retained-options.ts",
             "src/compiler/symbols.ts",
             "src/compiler/type-arguments.ts",
             "src/compiler/undefined-values.ts",

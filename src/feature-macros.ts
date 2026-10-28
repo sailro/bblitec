@@ -147,6 +147,12 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_BILLBOARDS", anyOf: ["sprite:billboard"] },
     { macro: "BBLITE_HAS_SPLATS", anyOf: ["loader:splat"] },
     { macro: "BBLITE_ENGINE_WEBGPU", anyOf: ["engine:webgpu-device"] },
+    // A frame opens its encoder for frame-scoped post-submit hooks and the
+    // engine's optional frame end.
+    { macro: "BBLITE_FRAME_POST_SUBMIT", anyOf: ["engine:frame-post-submit"] },
+    // A lowered library binds material textures and the scene environment
+    // through the engine's WebGPU device.
+    { macro: "BBLITE_LIBRARY_TEXTURES", anyOf: ["loader:mesh-lod"] },
     {
         macro: "BBLITE_EXTERNAL_RENDERABLES",
         anyOf: ["renderer:external-renderables"],

@@ -328,11 +328,14 @@ interface WgslAliasDeclaration extends WgslSpan {
     type: WgslTypeReference;
 }
 
+/** A function parameter and its source offsets. */
+interface WgslParameterSyntax extends WgslMemberSyntax, WgslSpan {}
+
 interface WgslFunctionDeclaration extends WgslSpan {
     kind: "fn";
     attributes: WgslAttribute[];
     name: string;
-    parameters: WgslMemberSyntax[];
+    parameters: WgslParameterSyntax[];
     returnAttributes: WgslAttribute[];
     returnType?: WgslTypeReference;
     statements: ShaderStatement[];
@@ -983,15 +986,18 @@ class WgslParser {
         this.expect("fn");
         const name = this.expectIdentifier();
         this.expect("(");
-        const parameters: WgslMemberSyntax[] = [];
+        const parameters: WgslParameterSyntax[] = [];
         while (this.peek().text !== ")") {
+            const parameterStart = this.peek().start;
             const parameterAttributes = this.parseAttributes();
             const parameterName = this.expectIdentifier();
             this.expect(":");
+            const type = this.parseType();
             parameters.push({
                 attributes: parameterAttributes,
                 name: parameterName,
-                type: this.parseType(),
+                type,
+                ...this.span(parameterStart),
             });
             if (!this.accept(",")) break;
         }

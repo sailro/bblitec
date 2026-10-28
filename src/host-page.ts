@@ -185,7 +185,7 @@ function pageEntry(
     if (src !== undefined) {
         if (!isWhitespace(inline))
             fail("module script has both a src attribute and inline text.");
-        return { entry: modulePath(src) };
+        return { entry: page.entry ? resolve(page.entry) : modulePath(src) };
     }
     // Line numbers in the inline script follow the page's own lines.
     const fileName = `${resolve(page.path)}.inline-module.ts`;

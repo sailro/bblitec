@@ -8,9 +8,11 @@
 #include <bblite/js_abort.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_event_loop.hpp>
+#include <bblite/pal_packaged_responses.hpp>
 #include <bblite/web_platform.hpp>
 #include <webp/encode.h>
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -90,6 +92,78 @@ std::string described(const js::Error& error) {
            js::error_message(error);
 }
 
+/** Headers objects: each init form, the list operations and the guards' TypeErrors. */
+void headers(std::vector<std::string>& lines) {
+    auto made =
+        web::make_headers(js::Array<js::Array<std::string>>{{"X-One", " a "}, {"x-two", "b"}});
+    made.append("X-One", "c");
+    made.set("x-two", "d");
+    lines.push_back("headers " + made.get("x-one").value_or("none") + "|" +
+                    made.get("X-TWO").value_or("none") + "|" + std::to_string(made.has("x-two")));
+    made.remove("X-ONE");
+    js::Map<std::string, std::string> record;
+    record.set("Range", "bytes=0-1");
+    const auto copied = web::make_headers(web::make_headers(record));
+    lines.push_back("copied " + made.get("x-one").value_or("none") + "|" +
+                    copied.get("range").value_or("none") + "|" +
+                    std::to_string(web::make_headers().has("range")));
+    const auto refused = [&](const std::string& label, auto action) {
+        try {
+            action();
+            lines.push_back(label + " none");
+        } catch (...) {
+            lines.push_back(label + " " + js::error_name(std::current_exception()));
+        }
+    };
+    refused("bad-name", [&] { made.set("bad name", "x"); });
+    refused("bad-value", [&] { made.set("x", "a\nb"); });
+    refused("bad-pair", [&] {
+        static_cast<void>(web::make_headers(js::Array<js::Array<std::string>>{{"x"}}));
+    });
+}
+
+/** The packaged file's path the program registered. */
+std::string packaged_path;
+
+/**
+ * A request's headers reach the server (a forbidden one dropped), and a packaged file answers
+ * each `Range` as the reference server's static files do.
+ */
+js::Promise<js::PromiseVoid> ranges(std::string base, std::vector<std::string>& lines) {
+    auto sent = web::make_headers();
+    sent.set("Range", "bytes=1-2");
+    sent.set("X-Test", "yes");
+    sent.set("Cookie", "dropped");
+    const auto echoed = co_await web::fetch(base + "/echo", web::RequestInit{{}, sent, "include"});
+    const auto echo = co_await web::response_array_buffer(echoed);
+    lines.push_back("echo " + std::string(echo.data(), echo.data() + echo.byte_length()));
+    static const std::string key = base + "/packaged.bin";
+    static const std::array<pal::PackagedFetchEntry, 1> entries{
+        pal::PackagedFetchEntry{key, key, "packaged.bin"}};
+    pal::register_packaged_responses(
+        base, [](const std::string&) { return packaged_path; }, entries);
+    for (const std::string header :
+         {"", "bytes=0-9", "bytes=90-", "bytes=-5", "bytes=95-200", "bytes=100-", "bytes=-0",
+          "bytes=5-2", "bytes=0-1,4-5", "items=0-1", "bytes=-"}) {
+        web::RequestInit init;
+        if (!header.empty()) {
+            init.headers = web::make_headers();
+            init.headers->set("Range", header);
+        }
+        const auto response = co_await web::fetch(base + "/packaged.bin", init);
+        const auto body =
+            js::TypedArray<std::uint8_t>(co_await web::response_array_buffer(response));
+        std::string bytes;
+        for (std::size_t index = 0; index < body.size(); ++index)
+            bytes += (index ? "," : "") + std::to_string(body.load(index));
+        lines.push_back("range [" + header + "] " +
+                        std::to_string(static_cast<int>(web::response_status(response))) + " " +
+                        web::response_headers(response).get("Content-Range").value_or("none") +
+                        " [" + bytes + "]");
+    }
+    co_return js::PromiseVoid{};
+}
+
 js::Promise<js::PromiseVoid> fetches(std::string base, std::vector<std::string>& lines) {
     // A streamed body read chunk by chunk, each its own Uint8Array, into one Blob.
     const auto response = co_await web::fetch(js::Url("/stream", base), web::RequestInit{});
@@ -110,8 +184,8 @@ js::Promise<js::PromiseVoid> fetches(std::string base, std::vector<std::string>&
     lines.push_back("stream " + std::to_string(web::response_ok(response)) + " " +
                     std::to_string(static_cast<int>(web::response_status(response))) + " " +
                     web::response_url(response) + " " +
-                    web::response_header(response, "X-Chunks").value_or("none") + " " +
-                    web::response_header(response, "missing").value_or("none") + " " + text);
+                    web::response_headers(response).get("X-Chunks").value_or("none") + " " +
+                    web::response_headers(response).get("missing").value_or("none") + " " + text);
 
     const auto missing = co_await web::fetch(base + "/missing", web::RequestInit{});
     lines.push_back("missing " + std::to_string(web::response_ok(missing)) + " " +
@@ -316,6 +390,8 @@ js::Promise<js::PromiseVoid> run(std::string base, std::vector<std::string>& lin
     aborts(lines);
     co_await timers(lines);
     co_await fetches(base, lines);
+    headers(lines);
+    co_await ranges(base, lines);
     co_await images(lines);
     co_return js::PromiseVoid{};
 }
@@ -323,7 +399,8 @@ js::Promise<js::PromiseVoid> run(std::string base, std::vector<std::string>& lin
 } // namespace
 
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 3);
+    packaged_path = argv[2];
     std::vector<std::string> lines;
     std::string failure;
     {

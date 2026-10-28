@@ -1,3 +1,4 @@
+import { isUiTreeRead } from "./properties.js";
 import {
     contextCanvas,
     isStringValue,
@@ -158,6 +159,16 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { knownCondition } from "./values/model.js";
+
+/**
+ * What a store into a retained element writes: an assignment's right side
+ * (`site`), or a value already evaluated (an `Object.assign` source's own
+ * property) reported at that source, as `uiStringCpp` takes them.
+ */
+export interface UiAssigned {
+    readonly site: ts.Expression;
+    readonly value?: Value;
+}
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -378,6 +389,8 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
         ["className", { attribute: "class", readable: true }],
         ["lang", { attribute: "lang", readable: true }],
         ["title", { attribute: "title", readable: true }],
+        // ARIA reflection: the `role` content attribute.
+        ["role", { attribute: "role", readable: true }],
         ["type", { attribute: "type", readable: false }],
         ...["min", "max", "step", "pattern"].map(
             (name): [string, UiReflectedAttribute] => [
@@ -1109,11 +1122,29 @@ export class UiProjection {
             const inner = type?.kind === "optional" ? type.inner : type;
             return inner?.kind === "handle" && inner.handle === "ui-element";
         };
+        // A tree read of a retained element is one, whatever DOM interface
+        // (`ParentNode`, `ChildNode`) the checker gives it; decided without
+        // compiling the receiver, which the read below compiles once.
+        const elementReceiver = (node: ts.Expression): boolean => {
+            const value = this.context.unwrap(node);
+            return (
+                this.uiElementValue(node) !== undefined ||
+                holdsElement(node) ||
+                (ts.isPropertyAccessExpression(value) &&
+                    isUiTreeRead(value.name.text) &&
+                    elementReceiver(value.expression))
+            );
+        };
+        const treeRead =
+            ts.isPropertyAccessExpression(owner) &&
+            isUiTreeRead(owner.name.text) &&
+            elementReceiver(owner.expression);
         if (
-            !(
+            !treeRead &&
+            (!(
                 ts.isCallExpression(owner) || ts.isConditionalExpression(owner)
             ) ||
-            !holdsElement(expression)
+                !holdsElement(expression))
         )
             return undefined;
         // A conditional selects between its arms' handles, evaluated once.
@@ -1508,8 +1539,53 @@ export class UiProjection {
         );
     }
 
-    public uiBooleanCpp(expression: ts.Expression, purpose: string): string {
-        const value = this.context.compileValue(expression);
+    /** A stored number, from its expression or its evaluated value. */
+    private assignedNumber({ site, value }: UiAssigned): string {
+        return value
+            ? this.context.dataLowerer.compileKnownValueForSink(
+                  value,
+                  { kind: "number" },
+                  site,
+              )
+            : this.context.compileNumber(site, "double");
+    }
+
+    private assignedValue({ site, value }: UiAssigned): Value {
+        return value ?? this.context.compileValue(site);
+    }
+
+    /** A stored text the lowering requires at generation. */
+    private assignedStaticString({ site, value }: UiAssigned): string {
+        if (!value) return this.context.compileStringLiteral(site);
+        return (
+            value.staticString ??
+            this.context.fail(
+                site,
+                "Expected a static string for a retained element property.",
+                "static-value-required",
+            )
+        );
+    }
+
+    /** The assigned expression, for a store whose lowering reads its syntax. */
+    private assignedExpression(
+        { site, value }: UiAssigned,
+        property: string,
+    ): ts.Expression {
+        return value
+            ? this.context.fail(
+                  site,
+                  `Retained element property '${property}' is lowered from an assignment's own expression, not an Object.assign source.`,
+              )
+            : site;
+    }
+
+    public uiBooleanCpp(
+        expression: ts.Expression,
+        purpose: string,
+        knownValue?: Value,
+    ): string {
+        const value = knownValue ?? this.context.compileValue(expression);
         if (
             value.kind === "boolean" ||
             (value.kind === "data" && value.dataType?.kind === "boolean")
@@ -1618,17 +1694,23 @@ export class UiProjection {
         writable(element).classAlternatives = [...unique.values()];
     }
 
+    /**
+     * A class or id write: its candidate texts from `expression`, or the
+     * `knownValue` already evaluated (`null` when that value is not static).
+     */
     public recordUiStaticAttribute(
         value: Value,
         name: string,
         expression: ts.Expression,
-        knownValue?: string,
+        knownValue?: string | null,
     ): void {
         const element = this.uiStaticElement(value);
         const candidates =
             knownValue === undefined
                 ? this.uiStringCandidates(expression)
-                : [knownValue];
+                : knownValue === null
+                  ? undefined
+                  : [knownValue];
         if (!element || !candidates) {
             this.uiUnknownAttributeMutations.push({
                 attribute: name as "class" | "id",
@@ -2079,7 +2161,7 @@ export class UiProjection {
     private static readonly UI_ACCENT_COLOR = (() => {
         const channel = String.raw`\s*(?:25[0-5]|2[0-4]\d|1?\d?\d)\s*`;
         return new RegExp(
-            String.raw`^(?:auto|#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(${channel},${channel},${channel}\)|rgba\(${channel},${channel},${channel},\s*1(?:\.0*)?\s*\)|black|silver|gr[ae]y|white|maroon|red|orange|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua)$`,
+            String.raw`^(?:auto|#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(${channel},${channel},${channel}\)|rgba\(${channel},${channel},${channel},\s*1(?:\.0*)?\s*\)|var\(--[a-z0-9_-]+\)|black|silver|gr[ae]y|white|maroon|red|orange|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua)$`,
         );
     })();
 
@@ -2433,9 +2515,11 @@ export class UiProjection {
                     );
                 return;
             }
+            // A colour over var() is RmlUi's custom property substitution,
+            // whose result the PAL checks as it projects it.
             if (
                 /^border-(?:top|right|bottom|left)$/.test(property) &&
-                !/^(?:none|0|(?:0|\d+(?:\.\d+)?(?:px|em|rem))\s+solid\s+(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+))$/.test(
+                !/^(?:none|0|(?:0|\d+(?:\.\d+)?(?:px|em|rem))\s+solid\s+(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|var\(--[a-z0-9_-]+\)|[a-z]+))$/.test(
                     literalValue,
                 )
             ) {
@@ -5304,12 +5388,11 @@ export class UiProjection {
         element: Value,
         property: string,
         receiver: ts.Expression,
-        assignment: ts.BinaryExpression,
+        right: ts.Expression,
+        site: ts.Node,
     ): void {
         const type = property.slice(2);
-        const handlerType = this.context.checker.getTypeAtLocation(
-            assignment.right,
-        );
+        const handlerType = this.context.checker.getTypeAtLocation(right);
         const nullish = presentMembers(handlerType).length === 0;
         if (
             !nullish &&
@@ -5317,14 +5400,14 @@ export class UiProjection {
                 .length === 0
         )
             this.context.fail(
-                assignment.right,
+                right,
                 `Native UI event handler property '${property}' requires a function or null.`,
             );
-        const handler = nullish ? undefined : assignment.right;
+        const handler = nullish ? undefined : right;
         if (handler)
             this.context.callbacks.hoistForwardCallbackBindings(handler);
         if (element.uiFileInput && (type === "change" || type === "input"))
-            this.context.reachFeature("browser:file", assignment);
+            this.context.reachFeature("browser:file", site);
         const family =
             elementDomHandlerFamily(type) ??
             (resourceLoadEvent(this.context, element, receiver, type)
@@ -5332,7 +5415,7 @@ export class UiProjection {
                 : undefined);
         if (!family)
             this.context.fail(
-                assignment.left,
+                site,
                 `Native UI event handler property '${property}' is not lowered: '${type}' has no native element listener.`,
             );
         emitDomEventHandler(
@@ -5397,14 +5480,15 @@ export class UiProjection {
         element: Value,
         engine: string,
         property: string,
-        expression: ts.BinaryExpression,
+        assigned: UiAssigned,
         receiver: ts.Expression,
+        site: ts.Node,
     ): boolean {
         const attribute = this.uiIdlAttribute(
             element,
             property,
             receiver,
-            expression.left,
+            site,
         );
         if (!attribute) return false;
         const target = `${engine}, ${element.cpp}`;
@@ -5415,28 +5499,25 @@ export class UiProjection {
         switch (attribute.kind) {
             case "script-async":
                 return emit(
-                    `bbl::ui_set_script_async(${target}, ${this.uiBooleanCpp(expression.right, "UI script async")})`,
+                    `bbl::ui_set_script_async(${target}, ${this.uiBooleanCpp(assigned.site, "UI script async", assigned.value)})`,
                 );
             case "script-src":
                 // Only an application realm's task queue dispatches its error.
                 if (!this.context.options.workers)
                     throw new ApplicationRealmRequired();
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "src", ${this.uiStringCpp(expression.right, "UI script src")})`,
+                    `bbl::ui_set_attribute(${target}, "src", ${this.uiStringCpp(assigned.site, "UI script src", assigned.value)})`,
                 );
             case "max-length":
                 return emit(
-                    `bbl::ui_set_max_length(${target}, ${this.context.compileNumber(expression.right, "double")})`,
+                    `bbl::ui_set_max_length(${target}, ${this.assignedNumber(assigned)})`,
                 );
             case "draggable": {
                 // Only `false`, which matches a native UI that starts no
                 // element drags; `true` would need drag-and-drop.
-                if (
-                    this.context.unwrap(expression.right).kind !==
-                    ts.SyntaxKind.FalseKeyword
-                )
+                if (this.assignedValue(assigned).staticBoolean !== false)
                     return this.context.fail(
-                        expression.right,
+                        assigned.site,
                         "Element drag-and-drop is not lowered natively: only draggable = false is.",
                     );
                 return emit(
@@ -5445,15 +5526,15 @@ export class UiProjection {
             }
             case "spellcheck":
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "spellcheck", std::string((${this.uiBooleanCpp(expression.right, "UI spellcheck")}) ? "true" : "false"))`,
+                    `bbl::ui_set_attribute(${target}, "spellcheck", std::string((${this.uiBooleanCpp(assigned.site, "UI spellcheck", assigned.value)}) ? "true" : "false"))`,
                 );
             case "input-mode":
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "inputmode", ${this.uiStringCpp(expression.right, "UI inputMode")})`,
+                    `bbl::ui_set_attribute(${target}, "inputmode", ${this.uiStringCpp(assigned.site, "UI inputMode", assigned.value)})`,
                 );
             case "scroll":
                 return emit(
-                    `bbl::ui_set_scroll_offset(${target}, ${attribute.left}, ${this.context.compileNumber(expression.right, "double")})`,
+                    `bbl::ui_set_scroll_offset(${target}, ${attribute.left}, ${this.assignedNumber(assigned)})`,
                 );
         }
     }
@@ -5558,7 +5639,7 @@ export class UiProjection {
         element: Value,
         engine: string,
         name: string,
-        value: ts.Expression,
+        assigned: UiAssigned,
         site: ts.Node,
         syntax: "property" | "attribute",
     ): string | undefined {
@@ -5574,9 +5655,8 @@ export class UiProjection {
                 );
             }
             if (name === "type") {
-                const inputType = this.context
-                    .compileStringLiteral(value)
-                    .toLowerCase();
+                const inputType =
+                    this.assignedStaticString(assigned).toLowerCase();
                 if (inputType !== "file") {
                     if (
                         [
@@ -5591,7 +5671,7 @@ export class UiProjection {
                         return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "type", ${this.context.cppString(inputType)})`;
                     }
                     this.context.fail(
-                        value,
+                        assigned.site,
                         `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
@@ -5608,8 +5688,8 @@ export class UiProjection {
                 }
                 const accept = validateFileAccept(
                     this.context,
-                    this.context.compileStringLiteral(value),
-                    value,
+                    this.assignedStaticString(assigned),
+                    assigned.site,
                 );
                 this.context.reachFeature("browser:file", site);
                 return (
@@ -5620,7 +5700,7 @@ export class UiProjection {
         }
         if (element.uiTag !== "a") return undefined;
         if (name === "href") {
-            const url = this.context.compileValue(value);
+            const url = this.assignedValue(assigned);
             // A document URL is the link's `href` attribute; activating the
             // link navigates as `location.assign` does (docs/ui.md).
             if (
@@ -5640,7 +5720,7 @@ export class UiProjection {
                     site,
                     "A native link anchor's href cannot become an object URL.",
                 );
-            this.context.expectKind(url, "object-url", value);
+            this.context.expectKind(url, "object-url", assigned.site);
             this.context.expectSameEngine(element, url, site);
             this.context.reachFeature("browser:file", site);
             return `bbl::ui_set_download_url(${engine}, ${element.cpp}, ${url.cpp})`;
@@ -5655,7 +5735,7 @@ export class UiProjection {
             this.context.reachFeature("browser:file", site);
             return (
                 `bbl::ui_set_download_name(${engine}, ${element.cpp}, ` +
-                `${this.uiStringCpp(value, "anchor download")})`
+                `${this.uiStringCpp(assigned.site, "anchor download", assigned.value)})`
             );
         }
         return undefined;
@@ -5814,391 +5894,14 @@ export class UiProjection {
                 });
                 return true;
             }
-            const engine = this.context.requireEngine(
-                directElement,
-                expression.left,
-            );
-            if (property === "checked") {
-                if (directElement.uiTag && directElement.uiTag !== "input")
-                    this.context.fail(
-                        expression.left,
-                        "UI checked requires an input element.",
-                    );
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_checked(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI checked")});`,
-                });
-                return true;
-            }
-            if (property === "tabIndex") {
-                if (
-                    directElement.uiCanvas ||
-                    directElement.uiTag === "canvas" ||
-                    this.context.isCanvasElement(expression.left.expression)
-                )
-                    this.context.fail(
-                        expression.left,
-                        "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.",
-                    );
-                const receiver = pinDetached(
-                    this.context,
-                    directElement,
-                    "tab_index_receiver",
-                    expression.left.expression,
-                );
-                const order = this.context.compileValue(expression.right);
-                if (
-                    order.staticNumber !== undefined &&
-                    order.staticNumber > 0 &&
-                    order.staticNumber < 2 ** 31
-                )
-                    this.context.fail(
-                        expression.right,
-                        "Positive tabIndex values are not supported: native sequential focus navigation follows tree order.",
-                    );
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_tab_index(${this.context.requireEngine(receiver, expression.left)}, ${receiver.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, expression.right)});`,
-                });
-                return true;
-            }
-            if (property === "selected") {
-                if (directElement.uiTag && directElement.uiTag !== "option")
-                    this.context.fail(
-                        expression.left,
-                        "UI selected requires an option element.",
-                    );
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_selected(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI selected")});`,
-                });
-                return true;
-            }
-            const booleanAttribute = this.booleanAttribute(
-                directElement,
-                property,
-                expression.left,
-            );
-            if (booleanAttribute) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(expression.right, `UI ${booleanAttribute}`)});`,
-                });
-                return true;
-            }
-            if (
-                property === "value" &&
-                this.declaresUiTags(
-                    directElement,
-                    expression.left.expression,
-                    UI_FORM_VALUE_TAGS,
-                ) &&
-                !directElement.uiFileInput
-            ) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`,
-                });
-                return true;
-            }
-            const browserFile = this.compileUiBrowserFileAttribute(
-                directElement,
-                engine,
-                property,
-                expression.right,
-                expression,
-                "property",
-            );
-            if (browserFile) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `${browserFile};`,
-                });
-                return true;
-            }
-            if (/^on[a-z]+$/.test(property)) {
-                this.emitUiEventHandlerProperty(
-                    directElement,
-                    property,
-                    expression.left.expression,
-                    expression,
-                );
-                return true;
-            }
-            if (
-                directElement.uiCanvas &&
-                !directElement.uiCanvasContext &&
-                (property === "width" || property === "height")
-            ) {
-                // The probe and the emission still compile the RHS twice:
-                // collapsing them to one `castNumber(size, "double")` is
-                // semantically clean, but the duplicate resolution burns
-                // anonymous-record counter numbers, and removing it
-                // renumbers quake's record types (Record22 -> Record18).
-                // Byte identity of generated/ wins until a renumbering
-                // window is open.
-                const staticSize = this.context.compileValue(
-                    expression.right,
-                ).staticNumber;
-                if (
-                    staticSize !== undefined &&
-                    directElement.uiCanvasId !== undefined
-                ) {
-                    const sizes = this.uiCanvasStaticSizes.get(
-                        directElement.uiCanvasId,
-                    ) ?? { pairs: new EmissionSet<string>() };
-                    writable(sizes)[property] = staticSize;
-                    if (
-                        sizes.width !== undefined &&
-                        sizes.height !== undefined
-                    ) {
-                        sizes.pairs.add(`${sizes.width}x${sizes.height}`);
-                    }
-                    this.uiCanvasStaticSizes.set(
-                        directElement.uiCanvasId,
-                        sizes,
-                    );
-                }
-                this.context.emit({
-                    kind: "expression",
-                    code:
-                        `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
-                        `${this.context.compileNumber(expression.right, "double")});`,
-                });
-                return true;
-            }
-            if (directElement.uiCanvasContext) {
-                if (property === "fillStyle" || property === "strokeStyle") {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
-                            `${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    });
-                    return true;
-                }
-                if (property === "lineWidth") {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_line_width(${engine}, ${directElement.cpp}, ` +
-                            `${this.context.compileNumber(expression.right, "double")});`,
-                    });
-                    return true;
-                }
-                if (property === "lineJoin" || property === "lineCap") {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
-                            `${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    });
-                    return true;
-                }
-                if (property === "imageSmoothingEnabled") {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_image_smoothing(${engine}, ${directElement.cpp}, ` +
-                            `${this.context.compileBoolean(expression.right)});`,
-                    });
-                    return true;
-                }
-                if (
-                    property === "font" ||
-                    property === "textBaseline" ||
-                    property === "shadowColor"
-                ) {
-                    const runtimeProperty =
-                        property === "textBaseline"
-                            ? "text_baseline"
-                            : property === "shadowColor"
-                              ? "shadow_color"
-                              : "font";
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    });
-                    return true;
-                }
-                if (property === "shadowBlur") {
-                    this.context.emit({
-                        kind: "expression",
-                        code:
-                            `bbl::ui_canvas_set_shadow_blur(${engine}, ${directElement.cpp}, ` +
-                            `${this.context.compileNumber(expression.right, "double")});`,
-                    });
-                    return true;
-                }
-            }
-            if (
-                ["textContent", "innerText", "innerHTML", "text"].includes(
-                    property,
-                ) &&
-                this.declaresUiTags(directElement, expression.left.expression, [
-                    "script",
-                ])
-            )
-                this.context.fail(
-                    expression.left,
-                    "Inline script text does not run natively: there is no JavaScript engine.",
-                );
-            if (property === "textContent" || property === "innerText") {
-                this.recordUiStaticReplaceChildren(directElement);
-                let textCpp: string;
-                if (
-                    this.uiCreatedElementTag(expression.left.expression) ===
-                    "style"
-                ) {
-                    const source = this.uiSheetSource(expression.right);
-                    if (
-                        this.emitDeferredUiStyle(
-                            directElement,
-                            expression.right,
-                            source === expression.right ? expression : source,
-                            this.deferredUiStyleCapabilities(
-                                expression.right,
-                                true,
-                            ),
-                            `HTMLStyleElement.${property}: string`,
-                        )
-                    )
-                        return true;
-                    const sheet = this.context.compileStringLiteral(
-                        expression.right,
-                    );
-                    textCpp = this.context.cppString(sheet);
-                    for (const code of this.uiStyleSheetRuleStatements(
-                        engine,
-                        directElement.cpp,
-                        sheet,
-                        source,
-                        directElement.uiStaticId,
-                    ))
-                        this.context.emit({ kind: "expression", code });
-                } else {
-                    textCpp = this.uiStringCpp(
-                        expression.right,
-                        `UI ${property}`,
-                    );
-                }
-                this.context.emit({
-                    kind: "expression",
-                    code:
-                        `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
-                        `${textCpp});`,
-                });
-                return true;
-            }
-            if (property === "innerHTML") {
-                const receiver = pinDetached(
-                    this.context,
-                    directElement,
-                    "markup_receiver",
-                    expression.left.expression,
-                );
-                const authored = this.uiAuthoredMarkup(expression.right);
-                if (authored) {
-                    this.emitUiAuthoredMarkup(
-                        receiver,
-                        engine,
-                        authored,
-                        expression.right,
-                    );
-                    return true;
-                }
-                const markup = this.context.probeEmission(() => {
-                    this.recordUiStaticReplaceChildren(receiver);
-                    return this.compileUiMarkupString(
-                        expression.right,
-                        receiver.uiStaticId,
-                    );
-                });
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_inner_rml(${engine}, ${receiver.cpp}, ${markup});`,
-                });
-                return true;
-            }
-            if (
-                this.emitUiIdlAttributeWrite(
-                    directElement,
-                    engine,
-                    property,
-                    expression,
-                    expression.left.expression,
-                )
-            )
-                return true;
-            const attribute = this.reflectedUiAttribute(
-                directElement,
-                property,
-                expression.left.expression,
-                expression.left,
-            )?.attribute;
-            if (attribute) {
-                if (attribute === "class" || attribute === "id") {
-                    this.recordUiStaticAttribute(
-                        directElement,
-                        attribute,
-                        expression.right,
-                    );
-                }
-                this.context.emit({
-                    kind: "expression",
-                    code:
-                        `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
-                        `${this.context.cppString(attribute)}, ` +
-                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
-                });
-                return true;
-            }
-            const tag = this.declaredUiTag(
+            this.emitUiElementStore(
                 directElement,
                 expression.left.expression,
-            );
-            if (property === "src" && tag === "img") {
-                // Every source the write can select is packaged; the
-                // selection itself runs as written.
-                const sources = this.uiImageSourceCandidates(expression.right);
-                if (!sources) {
-                    this.context.emit({
-                        kind: "expression",
-                        code: `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ${this.runtimeUiImageSource(expression.right)});`,
-                    });
-                    return true;
-                }
-                for (const source of sources) this.registerImageSource(source);
-                const fixed = this.tryUiStaticString(expression.right);
-                this.context.emit({
-                    kind: "expression",
-                    code:
-                        `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, "src", ` +
-                        `${
-                            fixed !== undefined
-                                ? this.context.cppString(
-                                      this.lowerUiAttributeLiteral(
-                                          "src",
-                                          fixed,
-                                          expression.right,
-                                      ),
-                                  )
-                                : this.uiStringCpp(
-                                      expression.right,
-                                      "UI img src",
-                                  )
-                        });`,
-                });
-                return true;
-            }
-            this.context.fail(
+                property,
+                { site: expression.right },
                 expression.left,
-                `Retained element property '${property}' assignment is not lowered natively.`,
             );
+            return true;
         }
         const style = this.context.unwrap(expression.left.expression);
         if (
@@ -6254,6 +5957,390 @@ export class UiProjection {
             expression.left.name,
         );
         return true;
+    }
+
+    /**
+     * `element.property = assigned`: one store into a retained element, from
+     * an assignment or from an `Object.assign` source's own property, which
+     * runs the same setter. `receiver` is the element's expression.
+     */
+    public emitUiElementStore(
+        element: Value,
+        receiver: ts.Expression,
+        property: string,
+        assigned: UiAssigned,
+        site: ts.Node,
+    ): void {
+        const engine = this.context.requireEngine(
+            element,
+            site,
+        );
+        if (property === "checked") {
+            if (element.uiTag && element.uiTag !== "input")
+                this.context.fail(
+                    site,
+                    "UI checked requires an input element.",
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_checked(${engine}, ${element.cpp}, ${this.uiBooleanCpp(assigned.site, "UI checked", assigned.value)});`,
+            });
+            return;
+        }
+        if (property === "tabIndex") {
+            if (
+                element.uiCanvas ||
+                element.uiTag === "canvas" ||
+                this.context.isCanvasElement(receiver)
+            )
+                this.context.fail(
+                    site,
+                    "A native canvas keeps tabIndex 0: keyboard focus targets the SDL surface.",
+                );
+            const pinned = pinDetached(
+                this.context,
+                element,
+                "tab_index_receiver",
+                receiver,
+            );
+            const order = this.assignedValue(assigned);
+            if (
+                order.staticNumber !== undefined &&
+                order.staticNumber > 0 &&
+                order.staticNumber < 2 ** 31
+            )
+                this.context.fail(
+                    assigned.site,
+                    "Positive tabIndex values are not supported: native sequential focus navigation follows tree order.",
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_tab_index(${this.context.requireEngine(pinned, site)}, ${pinned.cpp}, ${this.context.dataLowerer.compileKnownValueForSink(order, { kind: "number" }, assigned.site)});`,
+            });
+            return;
+        }
+        if (property === "selected") {
+            if (element.uiTag && element.uiTag !== "option")
+                this.context.fail(
+                    site,
+                    "UI selected requires an option element.",
+                );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_selected(${engine}, ${element.cpp}, ${this.uiBooleanCpp(assigned.site, "UI selected", assigned.value)});`,
+            });
+            return;
+        }
+        const booleanAttribute = this.booleanAttribute(
+            element,
+            property,
+            site,
+        );
+        if (booleanAttribute) {
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(assigned.site, `UI ${booleanAttribute}`, assigned.value)});`,
+            });
+            return;
+        }
+        if (
+            property === "value" &&
+            this.declaresUiTags(
+                element,
+                receiver,
+                UI_FORM_VALUE_TAGS,
+            ) &&
+            !element.uiFileInput
+        ) {
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_form_value(${engine}, ${element.cpp}, ${this.uiStringCpp(assigned.site, "Form value", assigned.value)});`,
+            });
+            return;
+        }
+        const browserFile = this.compileUiBrowserFileAttribute(
+            element,
+            engine,
+            property,
+            assigned,
+            site,
+            "property",
+        );
+        if (browserFile) {
+            this.context.emit({
+                kind: "expression",
+                code: `${browserFile};`,
+            });
+            return;
+        }
+        if (/^on[a-z]+$/.test(property)) {
+            this.emitUiEventHandlerProperty(
+                element,
+                property,
+                receiver,
+                this.assignedExpression(assigned, property),
+                site,
+            );
+            return;
+        }
+        if (
+            element.uiCanvas &&
+            !element.uiCanvasContext &&
+            (property === "width" || property === "height")
+        ) {
+            // The probe and the emission still compile the RHS twice:
+            // collapsing them to one `castNumber(size, "double")` is
+            // semantically clean, but the duplicate resolution burns
+            // anonymous-record counter numbers, and removing it
+            // renumbers quake's record types (Record22 -> Record18).
+            // Byte identity of generated/ wins until a renumbering
+            // window is open.
+            const staticSize = this.assignedValue(assigned).staticNumber;
+            if (
+                staticSize !== undefined &&
+                element.uiCanvasId !== undefined
+            ) {
+                const sizes = this.uiCanvasStaticSizes.get(
+                    element.uiCanvasId,
+                ) ?? { pairs: new EmissionSet<string>() };
+                writable(sizes)[property] = staticSize;
+                if (
+                    sizes.width !== undefined &&
+                    sizes.height !== undefined
+                ) {
+                    sizes.pairs.add(`${sizes.width}x${sizes.height}`);
+                }
+                this.uiCanvasStaticSizes.set(
+                    element.uiCanvasId,
+                    sizes,
+                );
+            }
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::ui_canvas_set_${property}(${engine}, ${element.cpp}, ` +
+                    `${this.assignedNumber(assigned)});`,
+            });
+            return;
+        }
+        if (element.uiCanvasContext) {
+            if (property === "fillStyle" || property === "strokeStyle") {
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
+                        `${engine}, ${element.cpp}, ` +
+                        `${this.uiStringCpp(assigned.site, `Canvas2D ${property}`, assigned.value)});`,
+                });
+                return;
+            }
+            if (property === "lineWidth") {
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_line_width(${engine}, ${element.cpp}, ` +
+                        `${this.assignedNumber(assigned)});`,
+                });
+                return;
+            }
+            if (property === "lineJoin" || property === "lineCap") {
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
+                        `${engine}, ${element.cpp}, ` +
+                        `${this.uiStringCpp(assigned.site, `Canvas2D ${property}`, assigned.value)});`,
+                });
+                return;
+            }
+            if (property === "imageSmoothingEnabled") {
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_image_smoothing(${engine}, ${element.cpp}, ` +
+                        `${this.uiBooleanCpp(assigned.site, "Canvas2D imageSmoothingEnabled", assigned.value)});`,
+                });
+                return;
+            }
+            if (
+                property === "font" ||
+                property === "textBaseline" ||
+                property === "shadowColor"
+            ) {
+                const runtimeProperty =
+                    property === "textBaseline"
+                        ? "text_baseline"
+                        : property === "shadowColor"
+                          ? "shadow_color"
+                          : "font";
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${element.cpp}, ` +
+                        `${this.uiStringCpp(assigned.site, `Canvas2D ${property}`, assigned.value)});`,
+                });
+                return;
+            }
+            if (property === "shadowBlur") {
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_shadow_blur(${engine}, ${element.cpp}, ` +
+                        `${this.assignedNumber(assigned)});`,
+                });
+                return;
+            }
+        }
+        if (
+            ["textContent", "innerText", "innerHTML", "text"].includes(
+                property,
+            ) &&
+            this.declaresUiTags(element, receiver, [
+                "script",
+            ])
+        )
+            this.context.fail(
+                site,
+                "Inline script text does not run natively: there is no JavaScript engine.",
+            );
+        if (property === "textContent" || property === "innerText") {
+            this.recordUiStaticReplaceChildren(element);
+            let textCpp: string;
+            if (
+                this.uiCreatedElementTag(receiver) ===
+                "style"
+            ) {
+                const right = this.assignedExpression(assigned, property);
+                const source = this.uiSheetSource(right);
+                if (
+                    this.emitDeferredUiStyle(
+                        element,
+                        right,
+                        source === right ? site : source,
+                        this.deferredUiStyleCapabilities(right, true),
+                        `HTMLStyleElement.${property}: string`,
+                    )
+                )
+                    return;
+                const sheet = this.context.compileStringLiteral(right);
+                textCpp = this.context.cppString(sheet);
+                for (const code of this.uiStyleSheetRuleStatements(
+                    engine,
+                    element.cpp,
+                    sheet,
+                    source,
+                    element.uiStaticId,
+                ))
+                    this.context.emit({ kind: "expression", code });
+            } else {
+                textCpp = this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value);
+            }
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::ui_set_text(${engine}, ${element.cpp}, ` +
+                    `${textCpp});`,
+            });
+            return;
+        }
+        if (property === "innerHTML") {
+            const right = this.assignedExpression(assigned, property);
+            const pinned = pinDetached(
+                this.context,
+                element,
+                "markup_receiver",
+                receiver,
+            );
+            const authored = this.uiAuthoredMarkup(right);
+            if (authored) {
+                this.emitUiAuthoredMarkup(pinned, engine, authored, right);
+                return;
+            }
+            const markup = this.context.probeEmission(() => {
+                this.recordUiStaticReplaceChildren(pinned);
+                return this.compileUiMarkupString(right, pinned.uiStaticId);
+            });
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_inner_rml(${engine}, ${pinned.cpp}, ${markup});`,
+            });
+            return;
+        }
+        if (
+            this.emitUiIdlAttributeWrite(
+                element,
+                engine,
+                property,
+                assigned,
+                receiver,
+                site,
+            )
+        )
+            return;
+        const attribute = this.reflectedUiAttribute(
+            element,
+            property,
+            receiver,
+            site,
+        )?.attribute;
+        if (attribute) {
+            if (attribute === "class" || attribute === "id") {
+                this.recordUiStaticAttribute(
+                    element,
+                    attribute,
+                    assigned.site,
+                    assigned.value && (assigned.value.staticString ?? null),
+                );
+            }
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
+                    `${this.context.cppString(attribute)}, ` +
+                    `${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)});`,
+            });
+            return;
+        }
+        const tag = this.declaredUiTag(
+            element,
+            receiver,
+        );
+        if (property === "src" && tag === "img") {
+            // Every source the write can select is packaged; the
+            // selection itself runs as written.
+            const right = this.assignedExpression(assigned, property);
+            const sources = this.uiImageSourceCandidates(right);
+            if (!sources) {
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ${this.runtimeUiImageSource(right)});`,
+                });
+                return;
+            }
+            for (const source of sources) this.registerImageSource(source);
+            const fixed = this.tryUiStaticString(right);
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ` +
+                    `${
+                        fixed !== undefined
+                            ? this.context.cppString(
+                                  this.lowerUiAttributeLiteral(
+                                      "src",
+                                      fixed,
+                                      right,
+                                  ),
+                              )
+                            : this.uiStringCpp(assigned.site, "UI img src", assigned.value)
+                    });`,
+            });
+            return;
+        }
+        this.context.fail(
+            site,
+            `Retained element property '${property}' assignment is not lowered natively.`,
+        );
     }
 
     public emitUiStyleProperty(

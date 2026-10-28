@@ -23,8 +23,10 @@ import {
 } from "./dom-listeners.js";
 import { pinCpp } from "./evaluation-order.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { packagedUrlAssets, type StaticFetchContext } from "./static-fetch.js";
-import { deploymentUrl, packagedResponseUrl } from "./deployment.js";
+import {
+    type PackagedResponseContext,
+    registeredPackagedUrl,
+} from "./static-fetch.js";
 import {
     webAudioMemberAssign,
     webAudioMemberCall,
@@ -163,7 +165,6 @@ export function audioTypeof(
     expression: ts.Expression,
 ): "function" | "undefined" | undefined {
     const property = context.unwrap(expression);
-    if (context.libraryGlobal(property) === "AudioContext") return "function";
     if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
     if (receiver?.kind !== "audio-context") return undefined;
@@ -210,10 +211,6 @@ export function audioPrototypeValue(
     };
 }
 
-/** What resolving a packaged audio URL needs beyond the static fetch. */
-export type PackagedAudioContext = StaticFetchContext &
-    Pick<LoweringServices, "emit" | "dataTypes" | "allocateTemporaryCppName">;
-
 /**
  * A URL argument selecting packaged audio a linked decoder reads: each file it
  * may select is packaged and its decoder reached. The candidates are one
@@ -223,67 +220,37 @@ export type PackagedAudioContext = StaticFetchContext &
  * temporary, as a C++ `std::string` expression.
  */
 export function packagedAudioUrl(
-    context: PackagedAudioContext,
+    context: PackagedResponseContext,
     site: ts.Node,
     argument: ts.Expression,
     refusal: string,
     spell: (url: string) => string = (url) => url,
     label = "audio_url",
 ): string {
-    const decodable = (source: string): boolean => {
+    const codecOf = (source: string) => {
         try {
-            return (
-                audioCodecForBytes(
-                    readAssetBytesSync(source, context.options.fileName),
-                ) !== undefined
+            return audioCodecForBytes(
+                readAssetBytesSync(source, context.options.fileName),
             );
         } catch {
-            return false;
+            return undefined;
         }
     };
-    const packaged = packagedUrlAssets(context, argument, "binary", decodable);
-    if (!packaged || packaged.assets.length === 0)
-        return context.fail(argument, refusal);
-    for (const asset of packaged.assets) {
-        const codec = audioCodecForBytes(
-            readAssetBytesSync(asset.file, context.options.fileName),
-        )!;
-        context.reachFeature(`audio:decode-${codec}`, site);
-    }
-    const table = context.dataTypes.registerSharedConstantArray(
-        "packaged_audio_responses",
-        "bbl::pal::PackagedFetchEntry",
-        packaged.assets.map(({ logicalSource, output }) => {
-            const requested = spell(logicalSource);
-            return `bbl::pal::PackagedFetchEntry{${context.cppString(requested)}, ${context.cppString(packagedResponseUrl(context.options, requested))}, ${context.cppString(output)}}`;
-        }),
-        false,
-        site,
-    );
-    const url = context.bindings.pinValueToTemporary(
-        {
-            kind: "string",
-            cpp: context.dataLowerer.compileKnownValueForSink(
-                packaged.selected,
-                { kind: "string" },
-                argument,
-            ),
-        },
+    const { url, assets } = registeredPackagedUrl(context, site, argument, {
+        accepts: (source) => codecOf(source) !== undefined,
+        refusal,
+        spell,
         label,
-        argument,
-    );
-    const registered = context.allocateTemporaryCppName(
-        "packaged_audio_registered",
-    );
-    context.emit(
-        `[[maybe_unused]] static thread_local const bool ${registered} = bbl::pal::register_packaged_responses(${context.cppString(deploymentUrl(context.options).href)}, &bbl::asset_path, ${table});`,
-    );
-    return `std::string(${url.cpp})`;
+        stem: "packaged_audio",
+    });
+    for (const asset of assets)
+        context.reachFeature(`audio:decode-${codecOf(asset.file)!}`, site);
+    return url;
 }
 
 /** `new Audio([url])`: an element over a packaged source (`pal_audio_element.hpp`). */
 function compileAudioElementConstructor(
-    context: PackagedAudioContext & Pick<LoweringServices, "audioSessionCpp">,
+    context: PackagedResponseContext & Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value {
     if (!context.options.workers) throw new ApplicationRealmRequired();
@@ -310,7 +277,7 @@ function compileAudioElementConstructor(
 }
 
 export function compileAudioConstructor(
-    context: PackagedAudioContext & Pick<LoweringServices, "audioSessionCpp">,
+    context: PackagedResponseContext & Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value | undefined {
     if (context.libraryGlobal(expression.expression) === "Audio")

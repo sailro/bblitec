@@ -195,6 +195,14 @@ export interface LoweringServices {
         value: Value,
         site: ts.Expression,
     ): void;
+    /** `element.property = value` for a value already evaluated at `site`. */
+    emitUiElementProperty(
+        element: Value,
+        receiver: ts.Expression,
+        property: string,
+        value: Value,
+        site: ts.Expression,
+    ): void;
     emitUiStyleValue(
         element: Value,
         property: string,

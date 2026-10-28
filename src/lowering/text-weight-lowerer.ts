@@ -11,7 +11,7 @@ export class TextWeightLowerer {
     header(): string {
         // The root is what the pin's lazy loader returns; the compiler
         // binds `loadFontWeightOffset()` to the same function.
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "weight",
             ["records", "layout", "update"],
@@ -19,6 +19,7 @@ export class TextWeightLowerer {
         return `#pragma once
 #include <bblite/upstream_text_update.hpp>
 #include <iostream>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}

@@ -2115,6 +2115,17 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
     mark_ui_changed(engine, record);
 }
 
+UiElementHandle ui_remove_child(Engine& engine, UiElementHandle parent, UiElementHandle child) {
+    const auto current = ui_tree_element(engine, child, UiTreeRead::Parent);
+    if (!current || *current != parent)
+        std::rethrow_exception(js::dom_exception_error(
+            "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of "
+            "this node.",
+            "NotFoundError"));
+    ui_remove(engine, child);
+    return child;
+}
+
 void ui_remove(Engine& engine, UiElementHandle element) {
     if (engine.ui_document_roots.active() &&
         (element == engine.ui_document_roots.html || element == engine.ui_document_roots.head ||

@@ -183,6 +183,30 @@ export const unsupportedCombinations: readonly UnsupportedCombination[] = [
             "Node geometry views require retained local vertex attributes; " +
             "the Babylon loader does not provide that source contract.",
     },
+    {
+        // The lowered library's solid fallback textures record into the
+        // capture (`engine._dlr`), which holds no lowered library's texture.
+        unit: "engine:device-recovery",
+        reached: (inputs) =>
+            inputs.features.includes("loader:mesh-lod") &&
+            inputs.features.includes("engine:device-recovery"),
+        reason:
+            "A MeshLoD scene reaches device-lost recovery, which captures " +
+            "no lowered library's textures. Drop the recovery opt-in, or " +
+            "the MeshLoD calls.",
+    },
+    {
+        // validateMeshLoDMaterial refuses a material with plugins; the
+        // native PBR record keeps no per-material plugin list to check.
+        unit: "material:plugins",
+        reached: (inputs) =>
+            inputs.features.includes("loader:mesh-lod") &&
+            inputs.features.includes("material:plugins"),
+        reason:
+            "A MeshLoD scene reaches PBR material plugins, which the " +
+            "native material record does not expose to the MeshLoD " +
+            "material check. Drop the plugins, or the MeshLoD calls.",
+    },
 ];
 
 /** Refuse the first unsupported combination the scene reaches, if any. */

@@ -119,7 +119,23 @@ const SCALAR_KINDS: readonly ValueKind[] = [...PRIMITIVE_KINDS, "void"];
 
 /** Scalars copy into callees; composites and unresolved types may alias. */
 export function typeCanCarryReference(type: ts.Type): boolean {
-    return !holdsOnly(type, SCALAR_KINDS);
+    return !holdsOnlyScalars(type);
+}
+
+/**
+ * Whether every value of a type is a scalar: a type parameter holds its
+ * constraint's values, and a `keyof` type property keys.
+ */
+function holdsOnlyScalars(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.Index) !== 0) return true;
+    const parameter = type.isTypeParameter() ? type : undefined;
+    if (parameter) {
+        const constraint = parameter.getConstraint();
+        return constraint !== undefined && holdsOnlyScalars(constraint);
+    }
+    return type.isUnion()
+        ? type.types.every(holdsOnlyScalars)
+        : holdsOnly(type, SCALAR_KINDS);
 }
 
 const ABSENT = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;

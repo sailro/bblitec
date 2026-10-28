@@ -55,10 +55,12 @@ export const scalarKinds: DataKindOperations<
     | "http-headers"
     | "byte-stream"
     | "byte-stream-reader"
+    | "byte-stream-controller"
     | "byte-read-result"
     | "byte-transform-stream"
     | "abort-controller"
     | "abort-signal"
+    | "request-init"
     | "url"
     | "image-bitmap"
     | "gpu"
@@ -131,6 +133,10 @@ export const scalarKinds: DataKindOperations<
     "http-headers": opaqueLeaf("bbl::pal::HttpHeaders", "http-headers"),
     "byte-stream": opaqueLeaf("bbl::pal::BodyStream", "byte-stream"),
     "byte-stream-reader": opaqueLeaf("bbl::pal::BodyReader", "byte-reader"),
+    "byte-stream-controller": opaqueLeaf(
+        "bbl::pal::BodyStreamController",
+        "byte-controller",
+    ),
     // A fresh `{ done, value }` record each read; nothing aliases it.
     "byte-read-result": reseatingLeaf("bbl::pal::BodyReadResult", "byte-read"),
     "byte-transform-stream": opaqueLeaf(
@@ -142,6 +148,13 @@ export const scalarKinds: DataKindOperations<
         "abort-controller",
     ),
     "abort-signal": opaqueLeaf("bbl::js::AbortSignal", "abort-signal"),
+    // A dictionary: each copy is its own, holding the seam's signal and headers.
+    "request-init": reseatingLeaf(
+        "bbl::web_platform::RequestInit",
+        "request-init",
+        false,
+        true,
+    ),
     url: opaqueLeaf("bbl::js::Url", "url"),
     "image-bitmap": opaqueLeaf("bbl::pal::ImageBitmap", "image-bitmap"),
     gpu: {

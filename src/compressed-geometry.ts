@@ -133,6 +133,77 @@ async function pinnedArtifact(name: string): Promise<Buffer> {
 
 const dracoModules = new Map<string, Promise<unknown>>();
 
+/** The `MeshoptDecoder` object `meshopt_decoder.js` defines, ready. */
+export interface MeshoptDecoderValue {
+    readonly ready: unknown;
+    decodeGltfBuffer(
+        target: Uint8Array,
+        count: number,
+        size: number,
+        source: Uint8Array,
+        mode: string,
+        filter?: string,
+    ): void;
+}
+
+/**
+ * A meshopt decoder script run without a DOM: its glue in a context with
+ * the globals it touches and nothing else, its WebAssembly instantiated.
+ */
+async function instantiateMeshoptDecoder(
+    glue: Uint8Array,
+): Promise<MeshoptDecoderValue> {
+    const sandbox: Record<string, unknown> = {
+        console,
+        WebAssembly,
+        Blob,
+        URL,
+    };
+    sandbox.self = sandbox;
+    sandbox.globalThis = sandbox;
+    createContext(sandbox);
+    runInContext(Buffer.from(glue).toString("utf8"), sandbox, {
+        filename: "meshopt_decoder.js",
+    });
+    const value = sandbox.MeshoptDecoder;
+    if (
+        typeof value !== "object" ||
+        value === null ||
+        !("decodeGltfBuffer" in value) ||
+        typeof value.decodeGltfBuffer !== "function" ||
+        !("ready" in value)
+    )
+        throw new Error(
+            "The configured meshopt decoder did not define MeshoptDecoder.",
+        );
+    await value.ready;
+    const decode = value.decodeGltfBuffer;
+    return {
+        ready: value.ready,
+        decodeGltfBuffer: (...args) => {
+            Reflect.apply(decode, value, args);
+        },
+    };
+}
+
+/** The meshoptimizer release the pin's `meshopt_decoder.js` is built from. */
+export async function pinnedMeshoptVersion(): Promise<string> {
+    const glue = (await pinnedArtifact("meshopt_decoder.js")).toString("utf8");
+    const version = /Built from meshoptimizer (\d+(?:\.\d+)+)/.exec(glue)?.[1];
+    if (!version)
+        throw new Error(
+            "The pinned meshopt_decoder.js names no meshoptimizer release.",
+        );
+    return version;
+}
+
+/** The pin's own `meshopt_decoder.js`, ready, as the browser runs it. */
+export async function pinnedMeshoptDecoder(): Promise<MeshoptDecoderValue> {
+    return instantiateMeshoptDecoder(
+        await pinnedArtifact("meshopt_decoder.js"),
+    );
+}
+
 const meshoptFeatures = new Map<string, Promise<PinnedPreParseFeature>>();
 let defaultMeshoptFeature: Promise<PinnedPreParseFeature> | undefined;
 
@@ -157,30 +228,7 @@ async function loadMeshoptFeature(
     const previous = meshoptFeatures.get(key);
     if (previous) return previous;
     const loading = (async () => {
-        const sandbox: Record<string, unknown> = {
-            console,
-            WebAssembly,
-            Blob,
-            URL,
-        };
-        sandbox.self = sandbox;
-        sandbox.globalThis = sandbox;
-        createContext(sandbox);
-        runInContext(Buffer.from(glue).toString("utf8"), sandbox, {
-            filename: "meshopt_decoder.js",
-        });
-        const value = sandbox.MeshoptDecoder;
-        if (
-            typeof value !== "object" ||
-            value === null ||
-            !("decodeGltfBuffer" in value) ||
-            typeof value.decodeGltfBuffer !== "function" ||
-            !("ready" in value)
-        )
-            throw new Error(
-                "The configured meshopt decoder did not define MeshoptDecoder.",
-            );
-        await value.ready;
+        const value = await instantiateMeshoptDecoder(glue);
         const shim = javascriptModuleUrl(
             "// decoder " +
                 key +

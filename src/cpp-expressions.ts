@@ -11,3 +11,10 @@ export function cppCondition(text: string): string {
     }
     return text.slice(1, -1);
 }
+
+/** `number.toString(radix?)`: JavaScript's shortest round-trip text, or its digits in `radix`. */
+export function numberToStringCpp(number: string, radix?: string): string {
+    return radix === undefined
+        ? `bbl::js::number_to_string(${number})`
+        : `bbl::js::number_to_string_radix(${number}, ${radix})`;
+}

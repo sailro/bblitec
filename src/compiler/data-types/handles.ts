@@ -13,6 +13,10 @@ const handleCppTypes: Record<HandleKind, string> = {
     "procedural-sky-environment":
         "std::shared_ptr<bbl::ProceduralSkyEnvironment>",
     "gaussian-splat-stream": "std::shared_ptr<bbl::GaussianSplatStream>",
+    "mesh-lod-asset": "std::shared_ptr<bbl::MeshLoDAsset>",
+    "mesh-lod-instance": "std::shared_ptr<bbl::MeshLoDInstance>",
+    "mesh-lod-metadata": "bbl::MeshLoDMetadata",
+    "mesh-lod-diagnostics": "std::shared_ptr<bbl::MeshLoDDiagnostics>",
     "splat-stream-stats": "std::shared_ptr<bbl::GaussianSplatStreamStats>",
     "splat-voxel-collision": "std::shared_ptr<bbl::SplatVoxelCollision>",
     "node-input": "bbl::NodeInputHandle",

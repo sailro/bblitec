@@ -134,6 +134,8 @@ struct TaskColorPassShape {
     bool temporal = false;
     /** Compiler-owned scene stages, whose billboards interleave the transparent list. */
     bool billboard_stages = false;
+    /** External renderables, which interleave the transparent list too. */
+    bool external_renderables = false;
 };
 
 /**
@@ -163,6 +165,9 @@ public:
         if (shape.billboard_stages)
             throw std::runtime_error(
                 "Render-task transmission with billboard scene stages is not lowered.");
+        if (shape.external_renderables)
+            throw std::runtime_error(
+                "Render-task transmission with external renderables is not lowered.");
         enabled_ = true;
         limit_ = static_cast<std::uint32_t>(
             upstream::task_transmission_copy_count(task.transmission->copy_count));

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { applyTextEdits, type TextEdit } from "./text-edits.js";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 /**
@@ -28,7 +29,7 @@ export function rewriteModuleSpecifiers(
         ts.ScriptTarget.Latest,
         true,
     );
-    const edits: Array<{ start: number; end: number; text: string }> = [];
+    const edits: TextEdit[] = [];
     for (const specifier of moduleSpecifiers(file)) {
         const replacement = rewrite(specifier);
         if (replacement === undefined) continue;
@@ -55,12 +56,5 @@ export function rewriteModuleSpecifiers(
             text: replacement.expression,
         });
     }
-    let rewritten = source;
-    for (const edit of edits.sort((left, right) => right.start - left.start)) {
-        rewritten =
-            rewritten.slice(0, edit.start) +
-            edit.text +
-            rewritten.slice(edit.end);
-    }
-    return rewritten;
+    return applyTextEdits(source, edits);
 }

@@ -8,8 +8,8 @@ import { LoweringContext } from "../src/lowering/context.js";
 import {
     pinnedRawShaderImports,
     runtimeWgslModules,
-    SPLAT_STREAM_SHADER_MODULES,
-} from "../src/lowering/splat-stream-shaders.js";
+} from "../src/lowering/library-shaders.js";
+import { SPLAT_STREAM_SHADER_MODULES } from "../src/lowering/splat-stream-library.js";
 import { wgslStageStem } from "../src/wgsl-artifacts.js";
 import {
     optionalNativeFixtureTools,

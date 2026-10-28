@@ -64,12 +64,14 @@ import {
     sourceEntry,
 } from "../compiler/syntax.js";
 import {
+    calledDeclaration,
     declarationInDefaultLibrary,
     declaredInDefaultLibrary,
     libraryGlobal,
     declaredSymbol,
     resolvedSymbol,
     libraryName,
+    aliasTarget,
 } from "../compiler/symbols.js";
 import { createHash } from "node:crypto";
 import {
@@ -98,16 +100,27 @@ import {
 import {
     ASSIGNMENT_OPERATORS,
     compoundAssignmentStore,
+    compoundAssignmentValue,
+    PINNED_RELATIONAL_OPERATORS,
 } from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
-import { cppCondition } from "../cpp-expressions.js";
-import type { CheckedPinnedProgram } from "../pinned-program.js";
+import { pinnedRawShaderImport } from "./library-shaders.js";
+import {
+    pinnedDefaultValue,
+    type PinnedDefaultValue,
+} from "./pinned-option-defaults.js";
+import { cppCondition, numberToStringCpp } from "../cpp-expressions.js";
+import {
+    type CheckedPinnedProgram,
+    pinnedAliasedCallee,
+} from "../pinned-program.js";
 
 import {
     RecordRepresentation,
     optionalOf,
     stripOptional,
     primitiveRecordShape,
+    isNumberSequence,
     isRecordScalar,
     typedElementCpp,
     type RecordShape,
@@ -120,6 +133,8 @@ import {
     unionMembers,
     nullability,
 } from "../compiler/type-facts.js";
+import { bigintFromNumberCpp } from "../compiler/bigint-values.js";
+import { TYPED_ARRAY_KINDS } from "../compiler/data-types/typed-arrays.js";
 export type { RecordShape } from "./record-shapes.js";
 
 /** One member the port spells itself. */
@@ -136,6 +151,28 @@ export interface MemberSpec {
     readonly call?: (owner: string, args: readonly string[]) => string;
     /** A store that is not a field write (a platform object's setter). */
     readonly assign?: (owner: string, value: string) => string;
+    /**
+     * A member kept outside the owner's struct, typed by its shape (a
+     * lowered library's scene member): its read and store, told the
+     * member's native type.
+     */
+    readonly slot?: {
+        readonly read: (owner: string, type: string) => string;
+        readonly store: (owner: string, value: string, type: string) => string;
+    };
+    /**
+     * The element a function member's trailing arguments are collected as,
+     * one array after its declared parameters, when a call passes any
+     * (`list.splice(start, count, ...items)`).
+     */
+    readonly rest?: RecordShape;
+    /**
+     * A member the native record holds seeded with the pin's default for an
+     * absent one (`metallic_factor`): read only as `member ?? fallback`,
+     * whose fallback must be that default (`matches`), or asserted present
+     * (`member!`).
+     */
+    readonly seeded?: (fallback: PinnedDefaultValue) => boolean;
 }
 
 /** One pinned record type and its native struct. */
@@ -198,10 +235,15 @@ export interface CallAdapter {
      * its builder as the function the platform calls).
      */
     readonly parameters?: readonly (RecordShape | undefined)[];
+    /**
+     * The native shape the platform returns, where the pinned return type
+     * is not its representation (a presence the pin reads as `!== undefined`).
+     */
+    readonly result?: RecordShape;
 }
 
 /** A pinned module variable the platform owns, read as a native value. */
-interface ModuleValue {
+export interface ModuleValue {
     readonly shape: RecordShape;
     readonly cpp: string;
 }
@@ -255,8 +297,10 @@ export interface RecordSchema {
      */
     readonly instanceOf?: ReadonlyMap<string, (error: string) => string>;
     /**
-     * Platform classes the native platform provides, keyed by the library
-     * global (`AudioBuffer`), with the shape their instances lower to:
+     * Platform classes the native platform provides under another record,
+     * keyed by the library global (`Audio`), with the shape their instances
+     * lower to (a typed array, or a native record of the class's own name,
+     * needs no entry):
      * `typeof AudioBuffer` is `"function"`, and `value instanceof
      * AudioBuffer` tests whether a union holds that shape.
      */
@@ -280,6 +324,10 @@ interface ResolvedMember {
     readonly shape: RecordShape;
     readonly access: (owner: string) => string;
     readonly call?: (owner: string, args: readonly string[]) => string;
+    /** Where a call's trailing arguments are collected (`MemberSpec.rest`). */
+    readonly rest?: RecordShape;
+    /** `MemberSpec.seeded`. */
+    readonly seeded?: (fallback: PinnedDefaultValue) => boolean;
     /** A getter's read, for a member the pin implements with accessors. */
     readonly get?: (owner: string) => string;
     /** A setter's store, for a member the pin implements with accessors. */
@@ -468,6 +516,39 @@ const NONSEQUENCED_BINARY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
 ]);
 
 /**
+ * An object type no declaration names: an object literal's own type, a type
+ * literal, or a mapped type such as `Partial<Pick<...>>`.
+ */
+function anonymousObjectType(type: ts.Type): boolean {
+    const symbolName = type.getSymbol()?.name;
+    return (
+        ((type as ts.ObjectType).objectFlags &
+            (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Mapped)) !==
+            0 ||
+        symbolName === "__object" ||
+        symbolName === "__type"
+    );
+}
+
+/** Utility types whose instance views (a subset of) their first argument's members. */
+const RECORD_VIEW_UTILITIES: ReadonlySet<string> = new Set([
+    "Omit",
+    "Pick",
+    "Partial",
+    "Readonly",
+]);
+
+/** Shapes with falsy values besides absence (`0`, `""`, `false`, `0n`). */
+const PRIMITIVE_FALSY_KINDS: ReadonlySet<RecordShape["kind"]> = new Set([
+    "number",
+    "string",
+    "boolean",
+    "bigint",
+    "json",
+    "variant",
+]);
+
+/**
  * How a form evaluates its operands natively: `unordered` as a call's
  * arguments (C++ leaves their order unspecified), `ordered` as statements
  * or a chain already in source order, which only an `await` must leave
@@ -504,6 +585,14 @@ function isExported(node: ts.Node): boolean {
 function modulePathOf(file: ts.SourceFile): string {
     return file.fileName.replaceAll("\\", "/");
 }
+
+/** The array methods whose result is a new array. */
+const COPYING_ARRAY_METHODS: ReadonlySet<string> = new Set([
+    "map",
+    "filter",
+    "slice",
+    "concat",
+]);
 
 /**
  * The record model of one set of pinned modules: shapes, native structs,
@@ -909,8 +998,17 @@ export class PinnedRecordModel {
                 site,
                 `Pinned type '${this.checker.typeToString(type)}' is unresolved; the record model needs every value typed.`,
             );
+        // `typeof import(m)`: the linked module's namespace.
+        const namespace = type.getSymbol()?.valueDeclaration;
+        if (namespace && ts.isSourceFile(namespace))
+            return { kind: "module", path: modulePathOf(namespace) };
         const kind = valueKindOf(type);
-        if (kind === "number" || kind === "boolean" || kind === "string")
+        if (
+            kind === "number" ||
+            kind === "boolean" ||
+            kind === "string" ||
+            kind === "bigint"
+        )
             return { kind };
         if (kind === "undefined" || kind === "void") return { kind: "void" };
         if (flags & ts.TypeFlags.NonPrimitive) return { kind: "object" };
@@ -942,8 +1040,11 @@ export class PinnedRecordModel {
             const argumentsOf = (): readonly ts.Type[] =>
                 this.checker.getTypeArguments(type as ts.TypeReference);
             const library = declaredInDefaultLibrary(symbol);
-            if (library && name === "Float64Array")
-                return { kind: "typed", element: "f64" };
+            const typed =
+                library && name !== undefined
+                    ? TYPED_ARRAY_KINDS.get(name)
+                    : undefined;
+            if (typed !== undefined) return { kind: "typed", element: typed };
             if (library && name === "DataView") return { kind: "dataview" };
             if (library && name === "RegExp") return regExpShape;
             // A match's captures: an unmatched group is undefined.
@@ -1006,12 +1107,6 @@ export class PinnedRecordModel {
                     value: this.shapeOf(argumentsOf()[1]!, site),
                 };
             if (name === "WeakSet") return { kind: "weakset" };
-            if (name === "Float32Array")
-                return { kind: "typed", element: "f32" };
-            if (name === "Uint32Array")
-                return { kind: "typed", element: "u32" };
-            if (name === "Int32Array") return { kind: "typed", element: "i32" };
-            if (name === "Uint8Array") return { kind: "typed", element: "u8" };
             // `ArrayBufferLike` names both; this runtime has one kind of buffer.
             if (name === "ArrayBuffer" || name === "SharedArrayBuffer")
                 return { kind: "buffer" };
@@ -1077,6 +1172,8 @@ export class PinnedRecordModel {
             // A fresh literal of an anonymous record's members (`rq ?? { x:
             // 0, y: 0, z: 0, w: 1 }` under an options quaternion) is that
             // record, as TypeScript's structural typing already says.
+            const view = this.assertedView(type);
+            if (view !== undefined) return { kind: "record", name: view };
             const structural = this.structuralRecordOf(type, site);
             if (structural !== undefined)
                 return { kind: "record", name: structural };
@@ -1084,15 +1181,24 @@ export class PinnedRecordModel {
             if (literal !== undefined) return { kind: "record", name: literal };
         }
         // `State & { ledger?: Ledger }`: a record seen with optional views of
-        // members it already has is that record.
+        // members it already has is that record; so is a narrowing utility
+        // view of it (`Omit<GPUSamplerDescriptor, "compare"> & { compare?:
+        // never }`).
         if (type.isIntersection()) {
-            const records = type.types.filter((member) => {
+            const viewed = (member: ts.Type): ts.Type | undefined => {
                 const name = member.aliasSymbol?.name ?? member.symbol?.name;
-                return name !== undefined && this.records.has(name);
-            });
+                if (name !== undefined && this.records.has(name)) return member;
+                const argument = member.aliasTypeArguments?.[0];
+                return member.aliasSymbol &&
+                    RECORD_VIEW_UTILITIES.has(member.aliasSymbol.name) &&
+                    argument
+                    ? viewed(argument)
+                    : undefined;
+            };
+            const records = type.types.filter((member) => viewed(member));
             if (records.length === 1) {
                 const base = records[0]!;
-                const shape = this.shapeOf(base, site);
+                const shape = this.shapeOf(viewed(base)!, site);
                 if (
                     shape.kind === "record" &&
                     type.types.every(
@@ -1132,17 +1238,9 @@ export class PinnedRecordModel {
      * stays the schema's to declare.
      */
     private literalRecord(type: ts.Type, site: ts.Node): string | undefined {
-        const objectFlags = (type as ts.ObjectType).objectFlags;
-        const symbolName = type.getSymbol()?.name;
-        const anonymous =
-            (objectFlags &
-                (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Mapped)) !==
-                0 ||
-            symbolName === "__object" ||
-            symbolName === "__type";
         const properties = this.checker.getPropertiesOfType(type);
         if (
-            !anonymous ||
+            !anonymousObjectType(type) ||
             properties.length === 0 ||
             callSignatures(this.checker, type, "exact").length > 0 ||
             type.getConstructSignatures().length > 0
@@ -1241,6 +1339,64 @@ export class PinnedRecordModel {
 
     public include(header: string): void {
         this.includes.add(header);
+    }
+
+    /**
+     * `batch._packet as { dispose?: () => void }`: a type literal an
+     * assertion states (alone or with `| undefined`) views the record its
+     * operand holds, which has every member it names; the value stays that
+     * record.
+     */
+    public assertedView(type: ts.Type): string | undefined {
+        const declaration = type.getSymbol()?.declarations?.[0];
+        if (!declaration || !ts.isTypeLiteralNode(declaration))
+            return undefined;
+        let position: ts.Node = declaration;
+        while (
+            ts.isUnionTypeNode(position.parent) ||
+            ts.isParenthesizedTypeNode(position.parent)
+        )
+            position = position.parent;
+        const assertion = position.parent;
+        if (
+            !(
+                ts.isAsExpression(assertion) ||
+                ts.isTypeAssertionExpression(assertion)
+            ) ||
+            assertion.type !== position
+        )
+            return undefined;
+        const owner = this.heldRecord(assertion.expression);
+        if (owner === undefined) return undefined;
+        const members = this.record(owner).members();
+        return this.checker
+            .getPropertiesOfType(type)
+            .every((property) => members.has(property.name))
+            ? owner
+            : undefined;
+    }
+
+    /** The record an expression holds by its type or its owner's member. */
+    private heldRecord(expression: ts.Expression): string | undefined {
+        const node = unwrapExpression(expression);
+        if (ts.isPropertyAccessExpression(node)) {
+            const owner = this.heldRecord(node.expression);
+            const member =
+                owner !== undefined
+                    ? this.record(owner).members().get(node.name.text)
+                    : undefined;
+            if (member) {
+                const shape = stripOptional(member.shape);
+                return shape.kind === "record" ? shape.name : undefined;
+            }
+        }
+        const type = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(node),
+        );
+        const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
+        return name !== undefined && this.isRecordName(name)
+            ? this.recordKey(name)
+            : undefined;
     }
 
     /**
@@ -1630,21 +1786,29 @@ export class PinnedRecordModel {
             // A member the pin's literals implement with accessors is a
             // getter/setter pair; the struct stores the two functions.
             const accessor = spec.accessors?.has(name) === true;
+            const slot = override?.slot;
+            const assign = slot
+                ? (owner: string, value: string) =>
+                      slot.store(owner, value, this.cppType(shape))
+                : override?.assign;
             members.set(name, {
                 name,
                 field,
                 shape,
-                access:
-                    override?.access ??
-                    ((owner) =>
-                        accessor
-                            ? this.fail(
-                                  this.recordSource(spec).site,
-                                  `Pinned accessor member '${name}' has no stored value.`,
-                              )
-                            : `${pointer(owner)}${field}`),
+                access: slot
+                    ? (owner) => slot.read(owner, this.cppType(shape))
+                    : (override?.access ??
+                      ((owner) =>
+                          accessor
+                              ? this.fail(
+                                    this.recordSource(spec).site,
+                                    `Pinned accessor member '${name}' has no stored value.`,
+                                )
+                              : `${pointer(owner)}${field}`)),
                 ...(override?.call ? { call: override.call } : {}),
-                ...(override?.assign ? { set: override.assign } : {}),
+                ...(override?.rest ? { rest: override.rest } : {}),
+                ...(override?.seeded ? { seeded: override.seeded } : {}),
+                ...(assign ? { set: assign } : {}),
                 ...(accessor
                     ? {
                           get: (owner: string) =>
@@ -1666,6 +1830,10 @@ export class PinnedRecordModel {
         if (ts.isClassDeclaration(site))
             return this.classMembers(spec, site, type);
         const variants = unionMembers(type);
+        // An error interface stores Error's `name` and `message`; its stack
+        // and cause are the runtime's unless it declares its own.
+        const errorInterface =
+            ts.isInterfaceDeclaration(site) && this.interfaceExtendsError(site);
         const collected = new Map<
             string,
             { shapes: RecordShape[]; everywhere: boolean }
@@ -1684,6 +1852,14 @@ export class PinnedRecordModel {
                     continue;
                 }
                 if (spec.omit?.has(name)) continue;
+                if (
+                    errorInterface &&
+                    (name === "stack" || name === "cause") &&
+                    (property.declarations ?? []).every((candidate) =>
+                        declarationInDefaultLibrary(candidate),
+                    )
+                )
+                    continue;
                 names.add(name);
                 const override = spec.members?.get(name);
                 const shape =
@@ -1929,12 +2105,36 @@ export class PinnedRecordModel {
         return members;
     }
 
-    /** Whether a record is an authored `class X extends Error`. */
+    /**
+     * Whether a record is an authored error: a `class X extends Error`, or an
+     * `interface X extends Error` the pin builds from `new Error(message)`.
+     */
     public errorClass(name: string): boolean {
         const spec = this.record(name).spec;
         if (spec.native || this.literalTypes.has(spec.pinned[0]!)) return false;
         const { site } = this.recordSource(spec);
-        return ts.isClassDeclaration(site) && this.extendsError(site);
+        return ts.isClassDeclaration(site)
+            ? this.extendsError(site)
+            : ts.isInterfaceDeclaration(site) &&
+                  this.interfaceExtendsError(site);
+    }
+
+    /** Whether an interface extends the library's `Error` (among its bases). */
+    private interfaceExtendsError(
+        declaration: ts.InterfaceDeclaration,
+    ): boolean {
+        return (
+            declaration.heritageClauses?.some((clause) =>
+                clause.types.some(
+                    ({ expression }) =>
+                        ts.isIdentifier(expression) &&
+                        expression.text === "Error" &&
+                        declaredInDefaultLibrary(
+                            resolvedSymbol(this.checker, expression),
+                        ),
+                ),
+            ) === true
+        );
     }
 
     /**
@@ -2141,16 +2341,14 @@ export class PinnedRecordModel {
                 case "tuple":
                     return { kind: "tuple", length: shape.elements.length };
                 case "typed":
-                    if (shape.element === "f64")
-                        throw new Error(
-                            "A Float64Array does not cross the generation transport.",
-                        );
                     return { kind: "typed", element: shape.element };
                 case "json":
                 case "dataview":
                 case "arraylike":
                 case "error":
                 case "promise":
+                case "bigint":
+                case "module":
                     throw new Error(
                         `A pinned ${shape.kind} value does not cross the generation transport.`,
                     );
@@ -2287,9 +2485,35 @@ export class PinnedRecordModel {
         return `[&] {\n${[...creations, ...lines, ...fills].join("\n")}\n    return ${root};\n}()`;
     }
 
-    /** Struct definitions for every emitted record, forward declared first. */
+    /**
+     * Struct definitions for every emitted record, forward declared first,
+     * each after the value records it holds by value (in `names` order
+     * where that already holds).
+     */
     public structs(names: readonly string[]): string {
-        const emitted = names.map((name) => this.record(name));
+        const keys = new Set(names.map((name) => this.recordKey(name)));
+        const emitted: ReturnType<typeof this.record>[] = [];
+        const placed = new Set<string>();
+        const held = (shape: RecordShape): string[] =>
+            shape.kind === "record"
+                ? this.record(shape.name).spec.reference
+                    ? []
+                    : [this.recordKey(shape.name)]
+                : shape.kind === "optional"
+                  ? held(shape.value)
+                  : shape.kind === "variant"
+                    ? shape.members.flatMap(held)
+                    : [];
+        const place = (key: string): void => {
+            if (placed.has(key)) return;
+            placed.add(key);
+            const record = this.record(key);
+            for (const member of record.members().values())
+                for (const dependency of held(member.shape))
+                    if (keys.has(dependency)) place(dependency);
+            emitted.push(record);
+        };
+        for (const name of names) place(this.recordKey(name));
         const lines: string[] = [];
         for (const record of emitted)
             if (!record.spec.native) lines.push(`struct ${record.spec.cpp};`);
@@ -2361,9 +2585,52 @@ export class PinnedRecordModel {
                     ...traced.map((field) => `        visitor(${field});`),
                     "    }",
                 );
+            if (this.errorClass(spec.pinned[0]!))
+                lines.push(...this.errorReflection(record.members()));
             lines.push("};");
         }
         return lines.join("\n");
+    }
+
+    /**
+     * An Error record's own properties as a dynamic read sees them (a type
+     * guard over a caught value reads `code`): each stored member, present
+     * or not, as the dynamic value it holds. A member no dynamic value
+     * represents refuses when it is read.
+     */
+    private errorReflection(
+        members: ReadonlyMap<string, ResolvedMember>,
+    ): string[] {
+        this.include("bblite/pinned_json.hpp");
+        const reads: string[] = [];
+        const keys: string[] = [];
+        for (const member of members.values()) {
+            if (member.storage !== "field") continue;
+            const key = stringLiteral(member.name);
+            const dynamic = jsonReflection(member.field, member.shape);
+            reads.push(
+                dynamic === undefined
+                    ? `        if (key == ${key}) throw std::runtime_error("Error member ${member.name} has no dynamic reading.");`
+                    : `        if (key == ${key}) return ${dynamic};`,
+            );
+            const present = presence(member.field, member.shape);
+            keys.push(
+                present === undefined
+                    ? `        keys.push_back(${key});`
+                    : `        if (${present}) keys.push_back(${key});`,
+            );
+        }
+        return [
+            "    bbl::js::JsonValue json_property(std::string_view key) const {",
+            ...reads,
+            "        return {};",
+            "    }",
+            "    bbl::js::Array<std::string> json_keys() const {",
+            "        bbl::js::Array<std::string> keys;",
+            ...keys,
+            "        return keys;",
+            "    }",
+        ];
     }
 
     private readonly tracedRecords = new Map<string, boolean>();
@@ -2444,14 +2711,20 @@ export class PinnedRecordModel {
 
     /** The declaration a reference names, through import aliases. */
     public declarationOf(node: ts.Node): ts.Declaration | undefined {
-        const symbol = resolvedSymbol(this.checker, node);
-        const declaration =
-            symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-        if (declaration) return declaration;
-        // An asset module the program does not resolve (`import TEXT from
-        // "./x.wgsl?raw"`): the import clause itself.
+        // An asset a bundler query imports (`import TEXT from
+        // "./x.wgsl?raw"`), which the bundler's ambient module only types:
+        // the import clause itself.
         const own = declaredSymbol(this.checker, node)?.declarations?.[0];
-        return own && ts.isImportClause(own) ? own : undefined;
+        if (
+            own &&
+            ts.isImportClause(own) &&
+            ts.isImportDeclaration(own.parent) &&
+            ts.isStringLiteral(own.parent.moduleSpecifier) &&
+            own.parent.moduleSpecifier.text.includes("?")
+        )
+            return own;
+        const symbol = resolvedSymbol(this.checker, node);
+        return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
     }
 
     /** `module#name` of a module-level declaration. */
@@ -2973,6 +3246,52 @@ function memberInitializer(shape: RecordShape): string {
           : "{}";
 }
 
+/**
+ * A stored value as the dynamic value a reflective read sees: a primitive,
+ * a union of them, an error, a dynamic value itself, or an optional of one
+ * (`undefined` while absent); undefined for a shape none represents.
+ */
+function jsonReflection(cpp: string, shape: RecordShape): string | undefined {
+    const primitive = (member: RecordShape): boolean =>
+        member.kind === "number" ||
+        member.kind === "string" ||
+        member.kind === "boolean";
+    switch (shape.kind) {
+        case "number":
+        case "string":
+        case "boolean":
+            return `bbl::js::json_value(${cpp})`;
+        case "json":
+            return cpp;
+        case "error":
+            return `bbl::pinned::json_error(${cpp})`;
+        case "variant":
+            return shape.members.every(primitive)
+                ? `std::visit([](const auto& held) { return bbl::js::json_value(held); }, ${cpp})`
+                : undefined;
+        case "optional": {
+            // An absent value of a stored kind: a reference's own null is
+            // not an absence this reads.
+            const present =
+                shape.value.kind === "json" || shape.value.kind === "error"
+                    ? undefined
+                    : jsonReflection(`(*${cpp})`, shape.value);
+            return present === undefined
+                ? undefined
+                : `(${cpp} ? ${present} : bbl::js::JsonValue{})`;
+        }
+        default:
+            return undefined;
+    }
+}
+
+/** A stored value's presence test, or undefined where it is always present. */
+function presence(cpp: string, shape: RecordShape): string | undefined {
+    if (shape.kind === "optional") return `${cpp}.has_value()`;
+    if (shape.kind === "json") return `!${cpp}.is_undefined()`;
+    return undefined;
+}
+
 interface Local {
     readonly storage: RecordShape;
     /**
@@ -3044,6 +3363,11 @@ interface Frame {
 interface Place {
     /** The readable C++ lvalue, when the place is one. */
     readonly cpp?: string;
+    /**
+     * A read-combine-store of a place written through a helper, its owner
+     * and key evaluated once; `combine` spells the new value from the old.
+     */
+    readonly update?: (combine: (current: string) => string) => string;
     readonly storage: RecordShape;
     /** The store, for a place written through a helper. */
     readonly store: (value: string) => string;
@@ -3057,6 +3381,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly locals = new Map<ts.Symbol, Local>();
     private readonly names: Set<string>[] = [new Set()];
     private readonly declared = new Set<string>();
+    /** `for...in` bindings over frozen objects, each its unrolled iteration's key. */
+    private readonly staticKeys = new Map<ts.Symbol, string>();
     private readonly substitutions = new Map<ts.Node, string>();
     /** Operands a form being lowered evaluates ahead of itself (`sequenced`). */
     private readonly slots = new Map<ts.Node, OrderedSlot>();
@@ -4036,7 +4362,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private blockScope(
         declaration: ts.Node,
         site: ts.Node,
-    ): ts.Block | ts.ForStatement {
+    ): ts.Block | ts.ForStatement | ts.ForOfStatement {
         if (ts.isVariableDeclaration(declaration)) {
             const list = declaration.parent;
             const owner = list.parent;
@@ -4044,7 +4370,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ts.isVariableDeclarationList(list) &&
                 isBlockScopedVariable(list)
             ) {
-                if (ts.isForStatement(owner) && owner.initializer === list)
+                if (
+                    (ts.isForStatement(owner) || ts.isForOfStatement(owner)) &&
+                    owner.initializer === list
+                )
                     return owner;
                 if (ts.isVariableStatement(owner) && ts.isBlock(owner.parent))
                     return owner.parent;
@@ -4197,6 +4526,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (isGeneratorFunction(node))
             return this.refuse(node, "Pinned generator closure.");
         const async = isAsyncFunction(node);
+        // An async closure where callers take `T | Promise<T>` (a scene's
+        // deferred builder) is its promise, widened.
+        const promised =
+            async && to.result.kind === "variant"
+                ? to.result.members.find((member) => member.kind === "promise")
+                : undefined;
+        if (promised) {
+            const from: RecordShape = { ...to, result: promised };
+            return this.coerce(
+                this.closure(node, from, indent, literal),
+                from,
+                to,
+                node,
+            );
+        }
         if (async && to.result.kind !== "promise")
             return this.refuse(
                 node,
@@ -4406,6 +4750,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         indent,
                         value === argument,
                     ),
+                );
+            // `([pageId, priority]) => ...` over a tuple: each number bound.
+            else if (local.kind === "tuple" && value === argument)
+                prolog.push(
+                    ...this.tuplePattern(parameter.name, value, indent),
                 );
             else
                 return this.refuse(
@@ -4878,6 +5227,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         ) {
             const owner = node.expression;
             if (this.jsonSource(owner)) return true;
+            // A record member the record stores dynamically (`unknown`).
+            if (ts.isPropertyAccessExpression(node)) {
+                const record = this.recordOwner(owner);
+                if (
+                    record !== undefined &&
+                    this.model.record(record).members().get(node.name.text)
+                        ?.shape.kind === "json"
+                )
+                    return true;
+            }
             // A dynamic value another expression produced (a call's).
             const type = this.typeAt(owner);
             if (type.flags & ts.TypeFlags.Unknown) return true;
@@ -4893,13 +5252,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /**
      * A dynamic value's shape where the checker narrowed it: a primitive a
-     * `typeof` test or an assertion proved, a number tuple an assertion
-     * named; anything else stays dynamic.
+     * `typeof` test or an assertion proved (a literal union of one kind
+     * included), a number tuple an assertion named; anything else stays
+     * dynamic.
      */
     private jsonNarrowed(type: ts.Type, site: ts.Node): RecordShape {
-        const kind = valueKindOf(type);
-        if (kind === "number" || kind === "string" || kind === "boolean")
-            return { kind };
+        const primitive = primitiveRecordShape(unionMembers(type));
+        if (primitive) return primitive;
         if (
             this.checker.isTupleType(type) &&
             this.checker
@@ -4935,10 +5294,27 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (this.entry.owner)
                 return { kind: "record", name: this.entry.owner };
         }
+        // A platform call returning a shape of its own.
+        if (ts.isCallExpression(node)) {
+            const adapted = this.adapterOf(node)?.result;
+            if (adapted) return adapted;
+        }
+        // An assignment storing absence (`a = b = null`): the target's.
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            this.typeAt(node).flags &
+                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)
+        )
+            return this.shapeAt(node.left);
         if (ts.isIdentifier(node)) {
             const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local?.storage.kind === "record") return local.storage;
+            // A read the checker narrowed to `never` (a value no declared
+            // case admits) still holds what its storage holds at run time.
+            if (local && this.typeAt(node).flags & ts.TypeFlags.Never)
+                return local.storage;
             // A structural iterable specialized to the collection a call
             // passes (`specialization`) is that collection, narrowed present
             // where the checker narrowed it.
@@ -4964,12 +5340,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             // the checker types `unknown`): the storage, narrowed present.
             const storage = local?.storage;
             const present = storage ? stripOptional(storage) : undefined;
-            // A caught error narrowed to several classes stays the error.
+            // A caught error narrowed to several classes, or to `Error`
+            // itself (`cause instanceof Error`), stays the error.
             const narrowedType = this.typeAt(node);
             if (
                 present?.kind === "error" &&
-                narrowedType.isUnion() &&
-                !isNullable(narrowedType)
+                !isNullable(narrowedType) &&
+                (narrowedType.isUnion() ||
+                    libraryName(narrowedType) === "Error")
             )
                 return present;
             if (
@@ -4991,32 +5369,86 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 : undefined;
             if (platform) return platform.shape;
         }
+        // `a ?? b` whose present operand and fallback agree: theirs (a
+        // keyed read per unrolled `for...in` key, which the checker types
+        // over every key).
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            const fallback = this.shapeAt(node.right);
+            if (this.same(stripOptional(this.shapeAt(node.left)), fallback))
+                return fallback;
+        }
+        // A read keyed by a member name known while lowering: that member's.
+        if (ts.isElementAccessExpression(node)) {
+            const key = this.staticKey(node.argumentExpression);
+            const frozen =
+                key !== undefined
+                    ? this.frozenMember(node.expression, key)
+                    : undefined;
+            if (frozen !== undefined) return this.shapeAt(frozen);
+            const owner =
+                key !== undefined
+                    ? this.recordOwner(node.expression)
+                    : undefined;
+            if (owner !== undefined && key !== undefined) {
+                const member = this.model.member(owner, key, node);
+                return isNullable(this.typeAt(node))
+                    ? optionalOf(member.shape)
+                    : member.shape;
+            }
+        }
         // A numeric element read is a number whether or not it may be
         // absent: a missing element reads NaN, as `undefined` converts.
         if (ts.isElementAccessExpression(node)) {
             const owner = stripOptional(this.shapeAt(node.expression));
             if (
-                owner.kind === "typed" ||
-                owner.kind === "tuple" ||
                 owner.kind === "arraylike" ||
-                (owner.kind === "array" && owner.element.kind === "number")
+                isNumberSequence(owner) ||
+                (owner.kind === "variant" &&
+                    owner.members.every(isNumberSequence))
             )
                 return { kind: "number" };
         }
         // A call or element read inside an optional chain runs once its
-        // head is present: what it returns, not the chain's `undefined`.
+        // head is present: what it returns, not the chain's `undefined` (a
+        // call's own absence, `map.get(key)`'s, stays).
         if (
             (ts.isCallExpression(node) || ts.isElementAccessExpression(node)) &&
             ts.isOptionalChain(node) &&
             this.inChain(node)
-        )
-            return stripOptional(this.model.shapeOf(this.typeAt(node), node));
+        ) {
+            // The checker folds the chain's `undefined` into the call's
+            // type; the callee's declared return says whether it has its own.
+            const declaration = ts.isCallExpression(node)
+                ? calledDeclaration(this.checker, node)
+                : undefined;
+            const declared =
+                declaration &&
+                this.checker.getSignatureFromDeclaration(declaration);
+            const shape = this.model.shapeOf(this.typeAt(node), node);
+            return declared &&
+                isNullable(this.checker.getReturnTypeOfSignature(declared))
+                ? shape
+                : stripOptional(shape);
+        }
         const type = this.typeAt(node);
         // A record's member is the shape its record declares, whether the
         // checker spells the member's type by name or anonymously (a
         // layer's `{ x, y }`); the checker still says whether it is present.
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.recordOwner(node.expression);
+            // A member the checker narrowed to only `null` or `never` (a
+            // re-test after an `await` that may have filled it) still holds
+            // what the member stores.
+            if (
+                owner !== undefined &&
+                (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Never)) !== 0
+            )
+                return optionalOf(
+                    this.model.member(owner, node.name.text, node).shape,
+                );
             if (owner !== undefined) {
                 const record = this.model.record(owner);
                 if (record.spec.members?.has(node.name.text)) {
@@ -5075,6 +5507,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (member) return stripOptional(member.shape);
         }
         const type = this.checker.getNonNullableType(this.typeAt(node));
+        const view = this.model.assertedView(type);
+        if (view !== undefined) return { kind: "record", name: view };
         const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
         return name !== undefined && this.model.isRecordName(name)
             ? { kind: "record", name: this.model.recordKey(name) }
@@ -5125,6 +5559,22 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (owner.kind === "typed") return { kind: "number" };
             if (owner.kind === "array") return owner.element;
             return undefined;
+        }
+        // `values.slice()` / `values.filter(test)`: a copy of the list's own
+        // shape (`Array.isArray` narrows a readonly array to `any[]`); a
+        // `map` builds its mapper's.
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text !== "map" &&
+            COPYING_ARRAY_METHODS.has(node.expression.name.text)
+        ) {
+            const owner = stripOptional(
+                this.shapeAt(node.expression.expression),
+            );
+            return owner.kind === "array" || owner.kind === "typed"
+                ? owner
+                : undefined;
         }
         if (
             ts.isBinaryExpression(node) &&
@@ -5190,11 +5640,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 if (shape.kind === "function") return shape.result;
             }
         }
+        // `(cache = new Map())`: an erased value stored into a typed place
+        // is what the place stores.
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )
-            return this.shapeAt(node.right);
+            return this.containsAny(this.typeAt(node.right))
+                ? stripOptional(this.place(node.left).storage)
+                : this.shapeAt(node.right);
         // Arithmetic over an erased value is a number, and `+` with a
         // string operand is a string, as JavaScript's operators decide.
         if (
@@ -5349,12 +5803,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const errorClass = (shape: RecordShape): boolean =>
             shape.kind === "record" && this.model.errorClass(shape.name);
         if (to.kind === "error" && errorClass(from)) {
-            this.model.include("bblite/pinned_values.hpp");
+            this.model.include("bblite/pinned_json.hpp");
             return `bbl::pinned::class_error(${value})`;
         }
-        if (from.kind === "error" && to.kind === "record" && errorClass(to)) {
+        if (
+            (from.kind === "error" || from.kind === "json") &&
+            to.kind === "record" &&
+            errorClass(to)
+        ) {
             this.model.include("bblite/pinned_values.hpp");
-            return `bbl::pinned::error_instance<bbl::${this.model.record(to.name).spec.cpp}>(${value})`;
+            if (from.kind === "json")
+                this.model.include("bblite/pinned_json.hpp");
+            const error =
+                from.kind === "json" ? `bbl::js::json_error(${value})` : value;
+            return `bbl::pinned::error_instance<bbl::${this.model.record(to.name).spec.cpp}>(${error})`;
         }
         if (from.kind === "error" && to.kind === "json") {
             this.model.include("bblite/pinned_json.hpp");
@@ -5509,6 +5971,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     : "bbl::js::json_value(result)";
             return `${this.cpp(to)}::view(${value}, []([[maybe_unused]] const auto& result) { return ${result}; })`;
         }
+        // A typed array asserted a number array (`worldMatrix as unknown as
+        // readonly number[]`): its numbers, read where the pin only reads.
+        if (
+            from.kind === "typed" &&
+            to.kind === "array" &&
+            to.element.kind === "number"
+        )
+            return `bbl::js::Array<double>(${value}.begin(), ${value}.end())`;
+        // A tuple is the number array it is, by identity.
+        if (
+            from.kind === "tuple" &&
+            to.kind === "array" &&
+            to.element.kind === "number"
+        )
+            return `bbl::js::Array<double>(${value}.retained_storage())`;
         if (
             to.kind === "arraylike" &&
             (from.kind === "typed" ||
@@ -5638,11 +6115,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
         // `list.map(...)` / `list.reduce(...)` build what the sink holds:
         // the callback returns the sink's element (an object literal's
-        // record), the accumulator is the sink's.
+        // record), the accumulator is the sink's; so does a fresh list's
+        // `sort`, which returns it.
         if (
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
-            ["map", "reduce"].includes(unwrapped.expression.name.text) &&
+            (["map", "reduce"].includes(unwrapped.expression.name.text) ||
+                (unwrapped.expression.name.text === "sort" &&
+                    this.freshArray(unwrapped.expression.expression))) &&
             !ts.isOptionalChain(unwrapped)
         ) {
             const target = stripOptional(to);
@@ -5661,8 +6141,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     unwrapped,
                 );
         }
-        if (ts.isConditionalExpression(unwrapped))
-            return `(${this.truthy(unwrapped.condition)} ? ${this.convert(unwrapped.whenTrue, to)} : ${this.convert(unwrapped.whenFalse, to)})`;
+        if (ts.isConditionalExpression(unwrapped)) {
+            // A value record where its absence is held too (`fragment: c ?
+            // {...} : undefined`): its literal arm is the optional's present
+            // value, so both arms are the optional.
+            const record = stripOptional(to);
+            const arm = (expression: ts.Expression) =>
+                to.kind === "optional" &&
+                record.kind === "record" &&
+                !this.model.record(record.name).spec.reference &&
+                ts.isObjectLiteralExpression(unwrapTypePreserving(expression))
+                    ? `${this.cpp(to)}(${this.convert(expression, to)})`
+                    : this.convert(expression, to);
+            return `(${this.truthy(unwrapped.condition)} ? ${arm(unwrapped.whenTrue)} : ${arm(unwrapped.whenFalse)})`;
+        }
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
@@ -5777,6 +6269,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return cppPrimary(
                     this.objectLiteral(inner, this.shapeAt(expression)),
                 );
+            const errorRecord = this.shapeAt(expression);
+            if (
+                ts.isNewExpression(inner) &&
+                this.libraryName(inner.expression) === "Error" &&
+                errorRecord.kind === "record" &&
+                this.model.errorClass(errorRecord.name)
+            )
+                return cppPrimary(this.errorRecord(inner, errorRecord.name));
             if (ts.isArrayLiteralExpression(inner))
                 return cppPrimary(
                     this.arrayLiteral(inner, this.shapeAt(expression)),
@@ -5796,6 +6296,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             // derives from the slot's record.
             const slot = stripOptional(this.shapeAt(inner));
             const asserted = stripOptional(this.shapeAt(expression));
+            // `cause as MeshLoDError` over a caught error: the authored
+            // record it holds (null where it holds another error).
+            if (
+                slot.kind === "error" &&
+                asserted.kind === "record" &&
+                this.model.errorClass(asserted.name)
+            )
+                return cppPrimary(
+                    this.coerce(this.value(inner), slot, asserted, expression),
+                );
             if (
                 slot.kind === "record" &&
                 asserted.kind === "record" &&
@@ -5807,11 +6317,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return cppPrimary(
                     `std::static_pointer_cast<bbl::${this.model.record(asserted.name).spec.cpp}>(${this.value(inner)})`,
                 );
+            // `worldMatrix as unknown as readonly number[]`: its numbers.
+            if (
+                slot.kind === "typed" &&
+                asserted.kind === "array" &&
+                asserted.element.kind === "number"
+            )
+                return cppPrimary(
+                    this.coerce(this.value(inner), slot, asserted, expression),
+                );
             return this.renderExpression(inner);
         }
         if (ts.isParenthesizedExpression(expression)) {
             const typed = this.typed(expression.expression);
             if (typed !== undefined) return cppPrimary(`(${typed})`);
+            // `(cause as MeshLoDError)?.message`: the assertion's own reading.
+            if (isTypeAssertion(expression.expression))
+                return this.renderExpression(expression.expression);
         }
         return super.renderExpression(expression);
     }
@@ -5984,16 +6506,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /**
-     * A member of a module constant frozen by `as const` (`SoundState.Stopped`
-     * over `const SoundState = { Stopped: 1, ... } as const`) whose value is
-     * a literal: that literal, read without building the object.
+     * A module constant frozen by `as const` (`const SoundState = { Stopped:
+     * 1, ... } as const`): its object literal, whose keys and values are
+     * fixed.
      */
-    private frozenMember(
-        node: ts.PropertyAccessExpression,
-    ): ts.Expression | undefined {
-        const owner = unwrapTypePreserving(node.expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const declaration = this.model.declarationOf(owner);
+    private frozenObject(
+        owner: ts.Expression,
+    ): ts.ObjectLiteralExpression | undefined {
+        const unwrapped = unwrapTypePreserving(owner);
+        if (!ts.isIdentifier(unwrapped)) return undefined;
+        const declaration = this.model.declarationOf(unwrapped);
         if (
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
@@ -6010,8 +6532,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         )
             return undefined;
         initializer = unwrapTypePreserving(initializer.expression);
-        if (!ts.isObjectLiteralExpression(initializer)) return undefined;
-        const member = objectProperty(initializer, node.name.text);
+        return ts.isObjectLiteralExpression(initializer)
+            ? initializer
+            : undefined;
+    }
+
+    /**
+     * A member of a module constant frozen by `as const` (`SoundState.Stopped`)
+     * whose value is a literal or names a constant (`minFilter:
+     * defaultFilter`): that value, read without building the object. `key`
+     * names the member, statically for a keyed read.
+     */
+    private frozenMember(
+        owner: ts.Expression,
+        key: string,
+    ): ts.Expression | undefined {
+        const object = this.frozenObject(owner);
+        const member = object && objectProperty(object, key);
         if (!member) return undefined;
         const value = unwrapTypePreserving(member);
         const literal = (expression: ts.Expression): boolean =>
@@ -6022,8 +6559,105 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             (ts.isPrefixUnaryExpression(expression) &&
                 expression.operator === ts.SyntaxKind.MinusToken &&
                 ts.isNumericLiteral(expression.operand));
+        const constant = (expression: ts.Expression): boolean => {
+            if (!ts.isIdentifier(expression)) return false;
+            const declaration = this.model.declarationOf(expression);
+            return (
+                declaration !== undefined &&
+                ts.isVariableDeclaration(declaration) &&
+                variableKind(declaration.parent) === "const"
+            );
+        };
         // objectProperty already declines a member a later spread may replace.
-        return literal(value) ? value : undefined;
+        return literal(value) || constant(value) ? value : undefined;
+    }
+
+    /**
+     * A member key known while lowering: a string literal, a `for...in`
+     * binding over a frozen object (`staticKeys`, one key per unrolled
+     * iteration), or a `const` naming one (`property as keyof T`).
+     */
+    private staticKey(expression: ts.Expression): string | undefined {
+        const node = unwrapExpression(expression);
+        if (ts.isStringLiteralLike(node)) return node.text;
+        if (!ts.isIdentifier(node)) return undefined;
+        const symbol = declaredSymbol(this.checker, node);
+        const known = symbol && this.staticKeys.get(symbol);
+        if (known !== undefined) return known;
+        const declaration = symbol?.valueDeclaration;
+        return declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            variableKind(declaration.parent) === "const" &&
+            declaration.initializer
+            ? this.staticKey(declaration.initializer)
+            : undefined;
+    }
+
+    /**
+     * `for (const key in FROZEN)` over a module constant frozen by `as
+     * const`: its keys are fixed, so the loop unrolls, one block per key in
+     * the literal's order, the binding that key.
+     */
+    private forInLines(statement: ts.ForInStatement, indent: string): string[] {
+        const list = statement.initializer;
+        const object = this.frozenObject(statement.expression);
+        const declaration =
+            ts.isVariableDeclarationList(list) && list.declarations.length === 1
+                ? list.declarations[0]!
+                : undefined;
+        if (!object || !declaration || !ts.isIdentifier(declaration.name))
+            return this.refuse(
+                statement,
+                "Pinned for-in over a value other than an `as const` module object.",
+            );
+        let early = false;
+        const visit = (node: ts.Node): void => {
+            if (ts.isBreakStatement(node) || ts.isContinueStatement(node))
+                early = true;
+            else ts.forEachChild(node, visit);
+        };
+        visit(statement.statement);
+        if (early)
+            return this.refuse(
+                statement,
+                "Pinned for-in leaves an iteration early.",
+            );
+        const name = declaration.name;
+        const symbol = declaredSymbol(this.checker, name)!;
+        return object.properties.flatMap((property) => {
+            const key =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? propertyKey(property.name)
+                    : undefined;
+            // Integer-like keys enumerate first, out of literal order.
+            if (key === undefined || /^\d+$/.test(key))
+                return this.refuse(
+                    property,
+                    "Pinned for-in key is not a named literal property.",
+                );
+            this.staticKeys.set(symbol, key);
+            try {
+                return [
+                    `${indent}{`,
+                    ...this.withBindings(() => [
+                        `${indent}    const std::string ${this.declare(name, { kind: "string" })} = ${stringLiteral(key)};`,
+                        ...(ts.isBlock(statement.statement)
+                            ? this.statements(
+                                  statement.statement.statements,
+                                  `${indent}    `,
+                              )
+                            : this.statement(
+                                  statement.statement,
+                                  `${indent}    `,
+                              )),
+                    ]),
+                    `${indent}}`,
+                ];
+            } finally {
+                this.staticKeys.delete(symbol);
+            }
+        });
     }
 
     /** The C++ spelling of a pinned local or parameter an adapter names. */
@@ -6039,8 +6673,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return this.localCpp(found[0]![1]);
     }
 
-    /** A module variable the platform owns (`schema.moduleValues`). */
+    /**
+     * A module variable the platform owns (`schema.moduleValues`), or a
+     * WGSL file's text a module imports (`?raw`), byte for byte: SDL_GPU
+     * finds the stages compiled from it by the text's hash.
+     */
     private moduleValue(declaration: ts.Declaration): ModuleValue | undefined {
+        if (
+            ts.isImportClause(declaration) &&
+            ts.isImportDeclaration(declaration.parent)
+        ) {
+            const raw = pinnedRawShaderImport(
+                modulePathOf(declaration.getSourceFile()),
+                declaration.parent,
+            );
+            if (raw)
+                return {
+                    shape: { kind: "string" },
+                    cpp: `std::string(${stringLiteral(raw.code)})`,
+                };
+        }
         const key = this.model.keyOf(declaration);
         return key !== undefined &&
             (ts.isVariableDeclaration(declaration) ||
@@ -6166,10 +6818,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 node,
                 [...this.targetOperands(node.left), node.right],
                 () => {
+                    // The value is the assignment's own type, which the
+                    // stored value narrows to (`return (cache = table)`).
                     const place = this.place(node.left);
                     const type = this.cpp(place.storage);
+                    const result = this.shapeAt(node);
                     const assigned = this.temporary("assigned");
-                    return `[&]() -> ${type} { ${type} ${assigned} = ${this.convert(node.right, place.storage)}; ${place.store(assigned)}; return ${assigned}; }()`;
+                    return `[&]() -> ${this.cpp(result)} { ${type} ${assigned} = ${this.convert(node.right, place.storage)}; ${place.store(assigned)}; return ${this.coerce(assigned, place.storage, result, node)}; }()`;
                 },
             );
         if (kind === ts.SyntaxKind.QuestionQuestionToken)
@@ -6187,7 +6842,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const test = this.model.representations.truthy(left, leftShape);
             const keep = kind === ts.SyntaxKind.BarBarToken ? test : `!${test}`;
             const type = this.cpp(result);
-            return `[&]() -> ${type} { auto ${left} = ${this.value(node.left)}; if (${keep}) return ${this.coerce(left, leftShape, result, node.left)}; return ${this.convert(node.right, result)}; }()`;
+            // `texture && test`: an object's only falsy value is its absence.
+            const kept =
+                kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+                !PRIMITIVE_FALSY_KINDS.has(stripOptional(leftShape).kind)
+                    ? this.model.absent(result, node)
+                    : this.coerce(left, leftShape, result, node.left);
+            return `[&]() -> ${type} { auto ${left} = ${this.value(node.left)}; if (${keep}) return ${kept}; return ${this.convert(node.right, result)}; }()`;
         }
         if (
             kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -6201,6 +6862,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (kind === ts.SyntaxKind.InstanceOfKeyword)
             return this.instanceOf(node);
         if (kind === ts.SyntaxKind.InKeyword) return this.memberTest(node);
+        // An ordering over a BigInt: exact, against a BigInt or a number.
+        const ordering = PINNED_RELATIONAL_OPERATORS.get(kind);
+        if (
+            ordering &&
+            [node.left, node.right].some(
+                (side) => this.shapeAt(side).kind === "bigint",
+            )
+        )
+            return this.sequenced(
+                node,
+                [node.left, node.right],
+                () =>
+                    `(${this.value(node.left)} ${ordering} ${this.value(node.right)})`,
+            );
         if (
             kind === ts.SyntaxKind.PlusToken &&
             this.shapeAt(node).kind === "string"
@@ -6313,7 +6988,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      */
     private classShape(library: string): RecordShape | undefined {
         if (library === "ArrayBuffer") return { kind: "buffer" };
-        return this.model.schema.platformClasses?.get(library);
+        const typed = TYPED_ARRAY_KINDS.get(library);
+        if (typed !== undefined) return { kind: "typed", element: typed };
+        const named = this.model.schema.platformClasses?.get(library);
+        if (named) return named;
+        // A platform class the schema represents by its own name (`Blob`).
+        return this.model.isRecordName(library) &&
+            this.model.record(library).spec.native
+            ? { kind: "record", name: library }
+            : undefined;
     }
 
     /**
@@ -6504,6 +7187,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /** `left ?? right` as a value of shape `to`. */
     private nullish(node: ts.BinaryExpression, to: RecordShape): string {
+        // A seeded member's fallback is the default its record holds.
+        const seeded = this.seededMember(node.left);
+        if (seeded) {
+            const fallback = pinnedDefaultValue(
+                this.model.context,
+                node.right,
+                this.source,
+            );
+            if (fallback === undefined || !seeded(fallback))
+                return this.refuse(
+                    node,
+                    "Pinned fallback differs from the default the native record holds for an absent member.",
+                );
+            return this.convert(node.left, to);
+        }
         const leftShape = this.shapeAt(node.left);
         // A left side that is never absent is the whole value.
         if (
@@ -6516,6 +7214,32 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return `bbl::pinned::nullish<${result}>(${left}, [&]() -> ${result} { return ${this.convert(node.right, to)}; })`;
     }
 
+    /** Whether a seeded member's read is a `??`'s left side or asserted present (`member!`). */
+    private readsSeeded(node: ts.Expression): boolean {
+        let child: ts.Node = node;
+        while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+        const parent = child.parent;
+        return (
+            ts.isNonNullExpression(parent) ||
+            (ts.isBinaryExpression(parent) &&
+                parent.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                parent.left === child)
+        );
+    }
+
+    /** The check a record member read holds for its seeded default (`MemberSpec.seeded`). */
+    private seededMember(
+        node: ts.Expression,
+    ): ((fallback: PinnedDefaultValue) => boolean) | undefined {
+        const read = unwrapExpression(node);
+        if (!ts.isPropertyAccessExpression(read)) return undefined;
+        const owner = this.recordOwner(read.expression);
+        return owner === undefined
+            ? undefined
+            : this.model.record(owner).members().get(read.name.text)?.seeded;
+    }
+
     /** The left side of a `??`, as an optional or nullable native value. */
     private optionalValue(node: ts.Expression): string {
         return this.value(node);
@@ -6526,6 +7250,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (place.cpp === undefined)
             return this.refuse(node, "Pinned `??=` over a computed place.");
         const stored = stripOptional(place.storage);
+        // `x ??= await load()`: the fallback awaits only while `x` is
+        // absent, so it stays in the coroutine rather than a lambda.
+        if (this.containsAwait(node.right))
+            return `((bbl::pinned::truthy_object(${place.cpp}) ? static_cast<void>(0) : static_cast<void>(${place.store(this.convert(node.right, place.storage))})), ${this.model.representations.present(place.cpp, place.storage)})`;
         return `bbl::pinned::nullish_assign(${place.cpp}, [&]() -> ${this.cpp(stored)} { return ${this.convert(node.right, stored)}; })`;
     }
 
@@ -6564,13 +7292,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (typeof member === "number") return doubleCpp(member);
         if (typeof member === "string")
             return `std::string(${stringLiteral(member)})`;
-        const frozen = this.frozenMember(node);
+        const frozen = this.frozenMember(node.expression, name);
         if (frozen !== undefined)
             return this.convert(frozen, this.shapeAt(node));
         const numericConstant = numberConstant(node, (expression) =>
             libraryGlobal(this.checker, expression),
         );
         if (numericConstant !== undefined) return doubleCpp(numericConstant);
+        const first = this.firstIterated(node);
+        if (first !== undefined) return first;
         const shape = this.ownerShape(owner);
         const value = (): string => this.presentValue(owner);
         switch (shape.kind) {
@@ -6580,6 +7310,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     return this.refuse(
                         node,
                         `Pinned member '${name}' has no getter.`,
+                    );
+                if (member.seeded && !this.readsSeeded(node))
+                    return this.refuse(
+                        node,
+                        `Pinned member '${name}' reads the native record's seeded default where the pin reads absence.`,
                     );
                 return this.narrowed(
                     member.get ? member.get(value()) : member.access(value()),
@@ -6644,6 +7379,18 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     { kind: "json" },
                     node,
                 );
+            case "module": {
+                // `fog.PBR_FOG_HELPER`: the constant the module exports.
+                const declaration = this.moduleExported(owner, name);
+                if (
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    variableKind(declaration.parent) === "const" &&
+                    declaration.initializer
+                )
+                    return `(static_cast<void>(${value()}), ${this.convert(declaration.initializer, this.shapeAt(node))})`;
+                break;
+            }
             default:
                 break;
         }
@@ -6670,6 +7417,45 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return constants.get(`${holder.name.text}.${node.name.text}`);
     }
 
+    /**
+     * `set.values().next().value`: the set's first element in insertion
+     * order, absent while it is empty, through a fresh iterator nothing
+     * else holds.
+     */
+    private firstIterated(
+        node: ts.PropertyAccessExpression,
+    ): string | undefined {
+        const pulled = unwrapTypePreserving(node.expression);
+        if (
+            node.name.text !== "value" ||
+            !ts.isCallExpression(pulled) ||
+            pulled.arguments.length !== 0 ||
+            !ts.isPropertyAccessExpression(pulled.expression) ||
+            pulled.expression.name.text !== "next"
+        )
+            return undefined;
+        const view = unwrapTypePreserving(pulled.expression.expression);
+        if (
+            !ts.isCallExpression(view) ||
+            view.arguments.length !== 0 ||
+            !ts.isPropertyAccessExpression(view.expression) ||
+            !["values", "keys"].includes(view.expression.name.text)
+        )
+            return undefined;
+        const set = view.expression.expression;
+        const shape = this.ownerShape(set);
+        if (shape.kind !== "set")
+            return this.refuse(
+                node,
+                "Pinned first iterated value of a non-set.",
+            );
+        return this.narrowed(
+            `bbl::js::set_iterator<${this.cpp(shape.element)}, false>(${this.presentValue(set)}).next().value`,
+            optionalOf(shape.element),
+            node,
+        );
+    }
+
     /** An owner's value with any optional it carries proven present. */
     private presentValue(owner: ts.Expression): string {
         const substituted = this.substitutions.get(owner);
@@ -6685,6 +7471,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): string {
         if (!chained && ts.isOptionalChain(node) && !this.inChain(node))
             return this.optionalChain(node);
+        const key = this.staticKey(node.argumentExpression);
+        const frozen =
+            key !== undefined
+                ? this.frozenMember(node.expression, key)
+                : undefined;
+        if (frozen !== undefined)
+            return this.convert(frozen, this.shapeAt(node));
         const shape = this.ownerShape(node.expression);
         const owner = this.presentValue(node.expression);
         const index = this.value(node.argumentExpression);
@@ -6747,6 +7540,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     optionalOf(shape.value),
                     node,
                 );
+            case "variant":
+                // A union of number sequences (`Uint32Array | number[]`):
+                // the element of whichever it holds.
+                if (shape.members.every(isNumberSequence))
+                    return `std::visit([&](const auto& values) { return bbl::js::number_at(values, ${index}); }, ${owner})`;
+                return this.refuse(
+                    node,
+                    "Pinned element read of a union holding a non-sequence.",
+                );
             default:
                 return this.refuse(node, "Pinned element read of a non-array.");
         }
@@ -6761,6 +7563,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         node: ts.ElementAccessExpression,
         record: string,
     ): ResolvedMember[] {
+        const known = this.staticKey(node.argumentExpression);
+        if (known !== undefined)
+            return [this.model.member(record, known, node)];
         const type = this.typeAt(node.argumentExpression);
         const literals = unionMembers(type).map((part) =>
             part.isStringLiteral()
@@ -6826,6 +7631,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         );
     }
 
+    /** Whether a callee is a member its owner's type always declares, never absent. */
+    private declaredMethod(callee: ts.Expression): boolean {
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const symbol = resolvedSymbol(this.checker, callee.name);
+        return (
+            symbol !== undefined &&
+            (symbol.flags & ts.SymbolFlags.Optional) === 0 &&
+            !isNullable(this.checker.getTypeOfSymbolAtLocation(symbol, callee))
+        );
+    }
+
     /** `a?.b.c(...)`: `a` once, tested, then the chain over it. */
     private optionalChain(node: ts.Expression): string {
         let head: ts.Expression | undefined;
@@ -6835,8 +7651,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isElementAccessExpression(current) ||
             ts.isCallExpression(current)
         ) {
-            // The outermost `?.`: a chain in its head is lowered as its own chain.
-            if (current.questionDotToken) {
+            // The outermost `?.`: a chain in its head is lowered as its own
+            // chain. A `?.()` of a method its owner always declares
+            // (`buffer.destroy?.()`) calls it whenever the owner is reached.
+            if (
+                current.questionDotToken &&
+                !(
+                    ts.isCallExpression(current) &&
+                    this.declaredMethod(current.expression)
+                )
+            ) {
                 head = current.expression;
                 break;
             }
@@ -6845,6 +7669,25 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (!head)
             return this.refuse(node, "Pinned optional chain has no `?.`.");
         const headShape = this.shapeAt(head);
+        // A `?.` over a value its type never makes absent
+        // (`device.limits?.maxBufferSize`) is a plain read.
+        if (
+            headShape.kind !== "optional" &&
+            headShape.kind !== "json" &&
+            !isNullable(this.checker.getTypeAtLocation(head))
+        ) {
+            this.substitutions.set(
+                head,
+                ts.isOptionalChain(head)
+                    ? this.optionalChain(head)
+                    : this.value(head),
+            );
+            try {
+                return this.chainRest(node);
+            } finally {
+                this.substitutions.delete(head);
+            }
+        }
         // An effectful head (`list.find(f)?.id`) is evaluated once.
         if (!this.pure(head)) {
             const held = this.temporary("chain");
@@ -7254,17 +8097,36 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /** A call, its operands already in order (`callValue`). */
     private unorderedCall(node: ts.CallExpression, to?: RecordShape): string {
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword)
+            return this.importCall(node);
         const callee = unwrapTypePreserving(node.expression);
         if (ts.isIdentifier(callee)) {
             const library = this.libraryFunction(node, callee);
             if (library !== undefined) return library;
+            // A call through a module `const` aliasing a library function
+            // (`const f32 = Math.fround`) is the library call.
+            const aliased = pinnedAliasedCallee(callee);
+            const owner = ts.isPropertyAccessExpression(aliased)
+                ? this.libraryName(aliased.expression)
+                : undefined;
+            if (owner !== undefined && ts.isPropertyAccessExpression(aliased)) {
+                const lowered = this.libraryMethod(
+                    node,
+                    owner,
+                    aliased.name.text,
+                    to,
+                );
+                if (lowered !== undefined) return lowered;
+            }
         }
         const declaration =
             ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
-                ? this.model.declarationOf(
-                      ts.isPropertyAccessExpression(callee)
-                          ? callee.name
-                          : callee,
+                ? this.implementation(
+                      this.model.declarationOf(
+                          ts.isPropertyAccessExpression(callee)
+                              ? callee.name
+                              : callee,
+                      ),
                   )
                 : undefined;
         const adapter = this.adapterOf(node);
@@ -7330,17 +8192,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isFunctionDeclaration(declaration) &&
             ts.isSourceFile(declaration.parent) &&
             declaration.body
-        ) {
-            const instance = this.genericInstance(node, declaration);
-            const entry = this.model.lowered(
-                declaration,
-                this.model.withTypeBindings(instance?.bindings, () =>
-                    this.specialization(node, declaration),
-                ),
-                instance,
-            );
-            return `${this.model.qualified(entry)}(${this.arguments(node, entry)})`;
-        }
+        )
+            return this.declaredCall(node, declaration);
         // A computed function value (`(_allocate ?? _defaultAllocate)()`).
         if (!ts.isPropertyAccessExpression(callee))
             return this.functionValueCall(
@@ -7351,6 +8204,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return this.refuse(
             node,
             `Pinned call '${callee.getText(this.source)}' has no native lowering.`,
+        );
+    }
+
+    /** An overloaded function's implementation, for the overload a call resolves to. */
+    private implementation(
+        declaration: ts.Declaration | undefined,
+    ): ts.Declaration | undefined {
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            declaration.body ||
+            !declaration.name
+        )
+            return declaration;
+        return (
+            declaredSymbol(this.checker, declaration.name)?.declarations?.find(
+                (candidate) =>
+                    ts.isFunctionDeclaration(candidate) &&
+                    candidate.body !== undefined,
+            ) ?? declaration
         );
     }
 
@@ -7511,12 +8384,28 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.hasOwn(node);
         const regularExpression = unwrapTypePreserving(receiverNode);
         if (ts.isRegularExpressionLiteral(regularExpression)) {
-            if (name !== "test" || node.arguments.length !== 1)
+            const flags = regularExpression.text.slice(
+                regularExpression.text.lastIndexOf("/") + 1,
+            );
+            const subject = node.arguments[0];
+            if (node.arguments.length !== 1 || !subject)
                 return this.refuse(
                     node,
                     `Pinned regular expression method '${name}'.`,
                 );
-            return `${this.regularExpression(regularExpression)}.test(${this.convert(node.arguments[0]!, { kind: "string" })})`;
+            if (name === "test")
+                return `${this.regularExpression(regularExpression)}.test(${this.convert(subject, { kind: "string" })})`;
+            // A non-global, non-sticky `exec` is the subject's `match`: the
+            // first match's captures, or null.
+            if (name === "exec" && !/[gy]/.test(flags))
+                return this.regExpMatch(
+                    this.regularExpression(regularExpression),
+                    this.convert(subject, { kind: "string" }),
+                );
+            return this.refuse(
+                node,
+                `Pinned regular expression method '${name}'.`,
+            );
         }
         const shape = this.ownerShape(receiverNode);
         const iterated = this.iterationMethod(node, name, shape, to);
@@ -7524,8 +8413,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const receiver = (): string =>
             this.substitutions.get(receiverNode) ??
             this.presentValue(receiverNode);
-        const args = (shapes?: readonly RecordShape[]): string[] =>
-            node.arguments.flatMap((argument, index) => {
+        const args = (
+            shapes?: readonly RecordShape[],
+            count = node.arguments.length,
+        ): string[] =>
+            node.arguments.slice(0, count).flatMap((argument, index) => {
                 const parameter = shapes?.[index];
                 if (parameter?.kind === "void")
                     return this.voidArgument(argument);
@@ -7625,19 +8517,26 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     case "copyWithin":
                         return `bbl::js::array_copy_within(${receiver()}, ${args().join(", ")})`;
                     case "fill":
-                        if (node.arguments.length !== 1)
+                        // `fill(value[, start[, end]])`.
+                        if (
+                            node.arguments.length < 1 ||
+                            node.arguments.length > 3
+                        )
                             return this.refuse(
                                 node,
-                                "Pinned typed fill of a range.",
+                                "Pinned typed fill without a value.",
                             );
-                        return `bbl::pinned::typed_fill(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return `bbl::pinned::typed_fill(${receiver()}, ${args(node.arguments.map(() => ({ kind: "number" as const }))).join(", ")})`;
                     default:
                         break;
                 }
                 break;
             case "dataview": {
                 // `view.getUint32(offset, littleEndian)` and its kin.
-                const read = /^get(Uint|Int|Float)(8|16|32|64)$/.exec(name);
+                const read =
+                    /^get(Uint|Int|Float|BigUint|BigInt)(8|16|32|64)$/.exec(
+                        name,
+                    );
                 if (!read || node.arguments.length < 1) break;
                 const [, kind, bits] = read;
                 const method = `get_${kind!.toLowerCase()}${bits!}`;
@@ -7646,6 +8545,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     bits === "8"
                         ? ""
                         : `, ${node.arguments[1] ? this.truthy(node.arguments[1]) : "false"}`;
+                if (kind!.startsWith("Big")) {
+                    this.model.include("bblite/js_bigint.hpp");
+                    return `bbl::js::dataview_${method}(${receiver()}, ${offset}${little})`;
+                }
                 return `static_cast<double>(${receiver()}.${method}(${offset}${little}))`;
             }
             case "map":
@@ -7704,19 +8607,49 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 const method = stripOptional(member.shape);
                 if (method.kind === "function") {
                     const parameters = method.parameters;
-                    if (node.arguments.length > parameters.length)
+                    const spread = node.arguments.at(-1);
+                    if (spread && ts.isSpreadElement(spread) && !member.rest)
+                        return this.tupleSpreadCall(
+                            node,
+                            spread,
+                            parameters,
+                            (values) =>
+                                member.call
+                                    ? member.call(receiver(), values)
+                                    : `${member.access(receiver())}(${values.join(", ")})`,
+                            args(parameters, node.arguments.length - 1),
+                        );
+                    const trailing = node.arguments.slice(parameters.length);
+                    if (trailing.length > 0 && !member.rest)
                         return this.refuse(
                             node,
                             "Pinned method call passes extra arguments.",
                         );
+                    const values = [
+                        ...args(parameters, parameters.length),
+                        ...(member.rest && trailing.length > 0
+                            ? [this.builtArray(trailing, member.rest)]
+                            : []),
+                    ];
                     return member.call
-                        ? member.call(receiver(), args(parameters))
-                        : `${member.access(receiver())}(${args(parameters).join(", ")})`;
+                        ? member.call(receiver(), values)
+                        : `${member.access(receiver())}(${values.join(", ")})`;
                 }
                 break;
             }
             case "string":
                 return this.stringMethod(node, name, receiverNode);
+            case "module":
+                // `runtime._load(...)` over `await import(m)`: the export's
+                // own call, the namespace read for its effects.
+                return `(static_cast<void>(${receiver()}), ${this.declaredCall(node, this.moduleExport(receiverNode, name, node))})`;
+            case "number":
+                if (name !== "toString" || node.arguments.length > 1) break;
+                return numberToStringCpp(
+                    receiver(),
+                    node.arguments[0] &&
+                        this.convert(node.arguments[0], { kind: "number" }),
+                );
             case "promise":
                 return this.promiseMethod(node, name, shape, receiver());
             case "weakset":
@@ -7839,18 +8772,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const items =
             shape.kind === "array" || shape.kind === "set"
                 ? shape.element
-                : shape.kind === "typed" || shape.kind === "tuple"
+                : shape.kind === "typed" ||
+                    shape.kind === "tuple" ||
+                    shape.kind === "arraylike"
                   ? number
                   : this.refuse(
                         source,
                         `Pinned Array.from of ${this.cpp(shape)}.`,
                     );
         // A typed array may be a view over another buffer, which only its
-        // element reads (`array_from_typed`) reach.
+        // element reads (`array_from_typed`) reach; an `ArrayLike<number>`
+        // is read by index.
         const values =
             shape.kind === "typed"
                 ? `bbl::pinned::array_from_typed<${this.cpp(items)}>(${this.presentValue(unwrapped)})`
-                : `bbl::js::array_from_iterable<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
+                : shape.kind === "arraylike"
+                  ? `bbl::pinned::array_from_arraylike(${this.presentValue(unwrapped)})`
+                  : `bbl::js::array_from_iterable<${this.cpp(items)}>(${this.presentValue(unwrapped)})`;
         return finish(
             mapper
                 ? `bbl::pinned::array_map<${this.cpp(element)}>(${values}, ${this.callbackArgument(mapper, [items, number], element)})`
@@ -7911,13 +8849,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return `[&] { const auto ${items} = ${this.presentValue(seed.expression.expression)}; const auto ${mapped} = ${lambda}; ${this.cpp(shape)} ${map}{}; for (std::size_t index = 0; index < ${items}.size(); ++index) { auto entry = ${mapped}(${items}[index], static_cast<double>(index)); ${map}.set(entry.first, ${isRecordScalar(shape.value) ? "entry.second" : "std::move(entry.second)"}); } return ${map}; }()`;
     }
 
-    /** The weak key a WeakMap or WeakSet files an object under. */
+    /** A WeakMap or WeakSet key: `bbl::pinned::weak_key` of the value. */
     private weakKey(argument: ts.Expression): string {
-        if (this.shapeAt(argument).kind === "json") {
-            this.model.include("bblite/pinned_json.hpp");
-            return `bbl::pinned::weak_key(${this.value(argument)})`;
-        }
-        return `std::weak_ptr<const void>(${this.value(argument)})`;
+        this.model.include(
+            this.shapeAt(argument).kind === "json"
+                ? "bblite/pinned_json.hpp"
+                : "bblite/pinned_values.hpp",
+        );
+        return `bbl::pinned::weak_key(${this.value(argument)})`;
     }
 
     /** The library global a receiver names (`Math`, `JSON`), not a pinned binding. */
@@ -7941,10 +8880,24 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): string | undefined {
         const [first, second] = node.arguments;
         const spread = node.arguments.some(ts.isSpreadElement);
+        if (TYPED_ARRAY_KINDS.has(library)) {
+            // `Float32Array.from(numbers)`: a copy, each element converted
+            // as a store converts it.
+            const shape = stripOptional(to ?? this.shapeAt(node));
+            if (
+                name !== "from" ||
+                !first ||
+                node.arguments.length !== 1 ||
+                shape.kind !== "typed"
+            )
+                return this.refuse(node, `Pinned ${library}.${name}.`);
+            this.model.include("bblite/pinned_values.hpp");
+            return `bbl::pinned::typed_copy<${typedElementCpp(shape.element)}>(${this.value(first)})`;
+        }
         switch (library) {
             case "Math": {
                 if (spread) {
-                    const numbers = this.spreadArguments(node);
+                    const numbers = this.builtArray(node.arguments, { kind: "number" });
                     const range = MATH_MEMBERS.get(name)?.rangeCpp;
                     if (range) return range(numbers);
                     return this.refuse(
@@ -7999,27 +8952,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "String":
                 if (name === "fromCharCode")
                     return spread
-                        ? `bbl::js::string_from_char_codes(${this.spreadArguments(node)})`
+                        ? `bbl::js::string_from_char_codes(${this.builtArray(node.arguments, { kind: "number" })})`
                         : `bbl::js::string_from_char_codes({${node.arguments.map((argument) => this.convert(argument, { kind: "number" })).join(", ")}})`;
                 return this.refuse(node, `Pinned String.${name}.`);
-            case "Float32Array":
-            case "Float64Array":
-            case "Uint32Array":
-            case "Int32Array":
-            case "Uint8Array": {
-                // `Float32Array.from(numbers)`: a copy, each element
-                // converted as a store converts it.
-                const shape = stripOptional(to ?? this.shapeAt(node));
-                if (
-                    name !== "from" ||
-                    !first ||
-                    node.arguments.length !== 1 ||
-                    shape.kind !== "typed"
-                )
-                    return this.refuse(node, `Pinned ${library}.${name}.`);
-                this.model.include("bblite/pinned_values.hpp");
-                return `bbl::pinned::typed_copy<${typedElementCpp[shape.element]}>(${this.value(first)})`;
-            }
             case "Array":
                 if (name === "from") return this.arrayFrom(node, to);
                 if (
@@ -8103,17 +9038,51 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /**
-     * A call's arguments with spreads, as the number list they pass: read
-     * once, in order, when the call evaluates them.
+     * `pass.dispatchWorkgroups(...(step.workgroups ?? [0, 1, 1]))`: a
+     * trailing spread of a fixed-length tuple, evaluated once, each element
+     * the next parameter's argument.
      */
-    private spreadArguments(node: ts.CallExpression): string {
-        this.model.include("bblite/pinned_values.hpp");
-        const parts = node.arguments.map((argument) =>
-            ts.isSpreadElement(argument)
-                ? this.spreadPart(argument.expression, { kind: "number" })
-                : `.add(${this.convert(argument, { kind: "number" })})`,
+    private tupleSpreadCall(
+        node: ts.CallExpression,
+        spread: ts.SpreadElement,
+        parameters: readonly RecordShape[],
+        call: (values: readonly string[]) => string,
+        leading: readonly string[],
+    ): string {
+        const tuple = stripOptional(this.shapeAt(spread.expression));
+        if (
+            tuple.kind !== "tuple" ||
+            leading.length + tuple.elements.length > parameters.length
+        )
+            return this.refuse(
+                node,
+                "Pinned spread argument other than a tuple the parameters take.",
+            );
+        const held = this.temporary("spread");
+        const elements = tuple.elements.map((element, index) =>
+            this.coerce(
+                `${held}[${index}]`,
+                element,
+                parameters[leading.length + index]!,
+                spread,
+            ),
         );
-        return `bbl::pinned::ArrayBuilder<double>{}${parts.join("")}.array()`;
+        return `[&](const ${this.cpp(tuple)}& ${held}) { return ${call([...leading, ...elements])}; }(${this.convert(spread.expression, tuple)})`;
+    }
+
+    /** Arguments and spreads collected in order into one fresh array (or tuple). */
+    private builtArray(
+        items: readonly ts.Expression[],
+        element: RecordShape,
+        result = "array",
+    ): string {
+        this.model.include("bblite/pinned_values.hpp");
+        const parts = items.map((item) =>
+            ts.isSpreadElement(item)
+                ? this.spreadPart(item.expression, element)
+                : `.add(${this.convert(item, element)})`,
+        );
+        return `bbl::pinned::ArrayBuilder<${this.cpp(element)}>{}${parts.join("")}.${result}()`;
     }
 
     /** One `...source` of an array literal or argument list, as a builder step. */
@@ -8148,6 +9117,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return `.spread(${this.presentValue(unwrapped.expression.expression)})`;
         }
         const shape = stripOptional(this.shapeAt(unwrapped));
+        // `...map` of numbers: its entries as `[key, value]` pairs.
+        if (
+            shape.kind === "map" &&
+            shape.key.kind === "number" &&
+            shape.value.kind === "number" &&
+            element.kind === "tuple" &&
+            element.elements.length === 2
+        )
+            return `.spread_entries(${this.presentValue(unwrapped)})`;
         if (
             shape.kind === "array" ||
             shape.kind === "set" ||
@@ -8180,6 +9158,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (name === undefined) return undefined;
         const [first] = node.arguments;
         switch (name) {
+            case "BigInt":
+                if (
+                    !first ||
+                    node.arguments.length !== 1 ||
+                    this.shapeAt(first).kind !== "number"
+                )
+                    break;
+                this.model.include("bblite/js_bigint.hpp");
+                return bigintFromNumberCpp(this.value(first));
             case "decodeURIComponent":
                 if (!first || node.arguments.length !== 1) break;
                 this.model.include("bblite/js_search_params.hpp");
@@ -8187,8 +9174,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "Number": {
                 if (!first || node.arguments.length !== 1) break;
                 const shape = this.shapeAt(first);
-                if (shape.kind === "json") {
-                    this.model.include("bblite/pinned_json.hpp");
+                if (shape.kind === "json" || shape.kind === "bigint") {
+                    if (shape.kind === "json")
+                        this.model.include("bblite/pinned_json.hpp");
                     return `${this.value(first)}.to_number()`;
                 }
                 if (
@@ -8221,14 +9209,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             }
             case "String": {
                 if (!first || node.arguments.length !== 1) break;
-                const shape = this.shapeAt(first);
-                if (shape.kind === "string") return this.value(first);
-                if (shape.kind === "number")
-                    return `bbl::js::number_to_string(${this.value(first)})`;
-                if (shape.kind === "json") {
-                    this.model.include("bblite/pinned_json.hpp");
-                    return `${this.value(first)}.to_string()`;
-                }
+                const text = this.stringOf(
+                    this.value(first),
+                    this.shapeAt(first),
+                    node,
+                );
+                if (text !== undefined) return text;
                 break;
             }
             default:
@@ -8333,6 +9319,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     )
                 )
                     return undefined;
+                // A fresh list sorted where it is stored (`entries.map(f)
+                // .sort(cmp)` returned as `T[]`) is built as the sink holds it.
+                const sink = to && stripOptional(to);
+                if (
+                    sink?.kind === "array" &&
+                    !this.same(sink, shape) &&
+                    this.freshArray(receiverNode)
+                )
+                    return `bbl::pinned::sort_array(${this.convert(receiverNode, sink)}, ${callback([sink.element, sink.element], number)})`;
                 return `bbl::pinned::sort_array(${receiver()}, ${callback([element, element], number)})`;
             }
             case "includes":
@@ -8344,28 +9339,89 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     `bbl::js::array_shift_or_absent(${receiver()})`,
                     element,
                 );
-            case "join": {
-                const separator = first
-                    ? this.convert(first, { kind: "string" })
-                    : 'std::string(",")';
-                if (element.kind === "string")
-                    return `bbl::js::array_join(${receiver()}, ${separator})`;
-                if (element.kind === "number")
-                    return `bbl::js::array_join(${receiver()}, ${separator}, [](double value) { return bbl::js::number_to_string(value); })`;
-                // An undefined element (an unmatched capture) joins as "".
-                if (
-                    element.kind === "optional" &&
-                    element.value.kind === "string"
-                )
-                    return `bbl::js::array_join(${receiver()}, ${separator}, [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; })`;
-                return this.refuse(
+            case "join":
+                return this.joined(
+                    receiver(),
+                    element,
+                    first
+                        ? this.convert(first, { kind: "string" })
+                        : 'std::string(",")',
                     node,
-                    `Pinned join of ${this.cpp(element)}.`,
                 );
+            default:
+                return undefined;
+        }
+    }
+
+    /** An array the expression creates: a literal, `Array.from`, or a copying method's result. */
+    private freshArray(node: ts.Expression): boolean {
+        const unwrapped = unwrapTypePreserving(node);
+        return (
+            ts.isArrayLiteralExpression(unwrapped) ||
+            isArrayFromCall(unwrapped, this.model.checker) ||
+            (ts.isCallExpression(unwrapped) &&
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                COPYING_ARRAY_METHODS.has(unwrapped.expression.name.text))
+        );
+    }
+
+    /**
+     * `String(value)`, ToString of a stored value: a primitive's text, a
+     * dynamic value's, an array's `join(",")`, and `"undefined"` for an
+     * absent optional; undefined for a shape it does not cover.
+     */
+    private stringOf(
+        value: string,
+        shape: RecordShape,
+        site: ts.Node,
+    ): string | undefined {
+        switch (shape.kind) {
+            case "string":
+                return value;
+            case "number":
+                return numberToStringCpp(value);
+            case "boolean":
+                return `std::string(${value} ? "true" : "false")`;
+            case "json":
+                this.model.include("bblite/pinned_json.hpp");
+                return `${value}.to_string()`;
+            // A caught value: an Error's `name: message`, a thrown string.
+            case "error":
+                this.model.include("bblite/pinned_json.hpp");
+                return `bbl::js::json_value(${value}).to_string()`;
+            case "array":
+                return this.joined(
+                    value,
+                    shape.element,
+                    'std::string(",")',
+                    site,
+                );
+            case "optional": {
+                const present = this.stringOf("(*held)", shape.value, site);
+                return present === undefined
+                    ? undefined
+                    : `[&](const auto& held) { return held ? ${present} : std::string("undefined"); }(${value})`;
             }
             default:
                 return undefined;
         }
+    }
+
+    /** `values.join(separator)` over an array of `element`. */
+    private joined(
+        values: string,
+        element: RecordShape,
+        separator: string,
+        site: ts.Node,
+    ): string {
+        if (element.kind === "string")
+            return `bbl::js::array_join(${values}, ${separator})`;
+        if (element.kind === "number")
+            return `bbl::js::array_join(${values}, ${separator}, [](double value) { return bbl::js::number_to_string(value); })`;
+        // An undefined element (an unmatched capture) joins as "".
+        if (element.kind === "optional" && element.value.kind === "string")
+            return `bbl::js::array_join(${values}, ${separator}, [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; })`;
+        return this.refuse(site, `Pinned join of ${this.cpp(element)}.`);
     }
 
     /** What a callback argument returns, as its checked signature says. */
@@ -8477,7 +9533,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             this.cpp(regExpShape)
                       ? this.value(pattern)
                       : this.refuse(first!, "Pinned match takes a RegExp.");
-                return `[&](const std::string& subject) { return (${expression}).match<${this.cpp(regExpCaptureShape)}>(subject); }(${receiver()})`;
+                return this.regExpMatch(expression, receiver());
             }
             case "trim":
                 arity(0);
@@ -8514,6 +9570,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             : "string_index_of";
                 return `bbl::js::${helper}(${receiver()}, ${this.convert(first!, string)}${second ? `, ${this.convert(second, { kind: "number" })}` : ""})`;
             }
+            case "padStart":
+            case "padEnd":
+                // The fill defaults to one space.
+                if (node.arguments.length < 1 || node.arguments.length > 2)
+                    this.refuse(node, `Pinned string ${name} arity.`);
+                return `bbl::js::string_pad_${name === "padStart" ? "start" : "end"}(${receiver()}, ${this.convert(first!, { kind: "number" })}, ${second ? this.convert(second, string) : `std::string(${stringLiteral(" ")})`})`;
             case "toLowerCase":
             case "toUpperCase":
                 arity(0);
@@ -8560,6 +9622,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             default:
                 return this.refuse(node, `Pinned string method '${name}'.`);
         }
+    }
+
+    /** `subject.match(expression)` over the runtime's RegExp: its captures, or null. */
+    private regExpMatch(expression: string, subject: string): string {
+        return `[&](const std::string& subject) { return (${expression}).match<${this.cpp(regExpCaptureShape)}>(subject); }(${subject})`;
     }
 
     /**
@@ -8722,19 +9789,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return `${this.cpp(shape)}(bbl::pinned::array_length(${this.value(created.arguments[0]!)}), ${this.convert(node.arguments[0]!, shape.element)})`;
     }
 
-    /** `Object.assign(target, { ... })` onto a record. */
+    /**
+     * `Object.assign(target, source)` onto a record: the source's members
+     * written as a `{ ...source }` spread writes them.
+     */
     private objectAssign(node: ts.CallExpression): string {
         const [target, source] = node.arguments;
         if (!target || !source || node.arguments.length !== 2)
             return this.refuse(
                 node,
-                "Pinned Object.assign takes a target and one literal.",
-            );
-        const literal = unwrapTypePreserving(source);
-        if (!ts.isObjectLiteralExpression(literal))
-            return this.refuse(
-                source,
-                "Pinned Object.assign needs an object literal.",
+                "Pinned Object.assign takes a target and one source.",
             );
         const shape = this.ownerShape(target);
         if (
@@ -8746,8 +9810,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 "Pinned Object.assign onto a non-reference record.",
             );
         const name = this.temporary("assigned");
-        const writes = this.propertyWrites(literal, shape.name, name);
-        return `[&] { auto ${name} = ${this.value(target)}; ${writes.filter((write) => write.length > 0).join(" ")} return ${name}; }()`;
+        return `[&] { auto ${name} = ${this.value(target)}; ${this.spreadWrites(source, shape.name, name)} return ${name}; }()`;
     }
 
     private propertyWrites(
@@ -8811,11 +9874,37 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     { owner, shape: { kind: "record", name: record } },
                 )};`;
             }
-            if (member.storage === "accessor")
-                return this.refuse(
-                    property,
-                    `Pinned member '${name}' is implemented with accessors elsewhere.`,
-                );
+            if (member.storage === "accessor") {
+                // A plain value of a read-only member another literal reads
+                // through a getter: the getter of that value, held once.
+                const literal = property.parent;
+                const declared = (
+                    ts.isObjectLiteralExpression(literal)
+                        ? this.checker.getContextualType(literal)
+                        : undefined
+                )
+                    ?.getProperty(name)
+                    ?.declarations?.find(ts.isPropertySignature);
+                const value = ts.isShorthandPropertyAssignment(property)
+                    ? property.name
+                    : ts.isPropertyAssignment(property)
+                      ? property.initializer
+                      : undefined;
+                if (
+                    !value ||
+                    !declared ||
+                    !(
+                        ts.getCombinedModifierFlags(declared) &
+                        ts.ModifierFlags.Readonly
+                    )
+                )
+                    return this.refuse(
+                        property,
+                        `Pinned member '${name}' is implemented with accessors elsewhere.`,
+                    );
+                const pointer = spec.reference ? "->" : ".";
+                return `${owner}${pointer}get_${member.field} = bbl::js::make_closure(std::tuple{${this.convert(value, member.shape)}}, [](auto& environment) { return std::get<0>(environment); });`;
+            }
             if (ts.isMethodDeclaration(property))
                 return `${member.access(owner)} = ${this.closure(property, member.shape, indent, { owner, shape: { kind: "record", name: record } })};`;
             const initializer = ts.isShorthandPropertyAssignment(property)
@@ -8901,7 +9990,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             ts.isNumericLiteral(unwrapped) ||
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
             unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
-            unwrapped.kind === ts.SyntaxKind.NullKeyword
+            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+            // Creating a closure evaluates nothing, as a method does not.
+            ts.isArrowFunction(unwrapped) ||
+            ts.isFunctionExpression(unwrapped)
         )
             return true;
         // `undefined as unknown as T`: a placeholder the pin fills later.
@@ -9044,6 +10136,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 element: { kind: "number" },
             })})`;
         }
+        // A union destination holds the literal as the list it is.
+        if (shape.kind === "variant") {
+            const own = stripOptional(this.shapeAt(node));
+            if (own.kind === "array" || own.kind === "tuple")
+                return this.coerce(
+                    this.orderedArrayLiteral(node, own),
+                    own,
+                    to,
+                    node,
+                );
+        }
         // `[...a, b, ...map.values()]`: a fresh array of the parts, in order.
         if (node.elements.some(ts.isSpreadElement)) {
             if (shape.kind !== "array" && shape.kind !== "tuple")
@@ -9053,13 +10156,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
             const element: RecordShape =
                 shape.kind === "array" ? shape.element : { kind: "number" };
-            this.model.include("bblite/pinned_values.hpp");
-            const parts = node.elements.map((item) =>
-                ts.isSpreadElement(item)
-                    ? this.spreadPart(item.expression, element)
-                    : `.add(${this.convert(item, element)})`,
+            const built = this.builtArray(
+                node.elements,
+                element,
+                shape.kind === "tuple"
+                    ? `tuple<${shape.elements.length}>`
+                    : "array",
             );
-            const built = `bbl::pinned::ArrayBuilder<${this.cpp(element)}>{}${parts.join("")}.${shape.kind === "tuple" ? `tuple<${shape.elements.length}>` : "array"}()`;
             return to.kind === "optional" &&
                 !this.model.representations.nullable(shape)
                 ? `${this.cpp(to)}(${built})`
@@ -9082,6 +10185,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return to.kind === "optional" ? `${this.cpp(to)}(${value})` : value;
     }
 
+    /**
+     * `new Error(message) as <error interface>`: the record the interface
+     * describes, named and messaged as Error constructs itself.
+     */
+    private errorRecord(node: ts.NewExpression, record: string): string {
+        const [argument, ...rest] = node.arguments ?? [];
+        if (rest.length > 0)
+            return this.refuse(node, "Pinned new Error takes one message.");
+        const message = argument
+            ? this.convert(argument, { kind: "string" })
+            : 'std::string("")';
+        const name = this.temporary("error");
+        return `[&] { auto ${name} = bbl::js::make_gc_shared<bbl::${this.model.record(record).spec.cpp}>(); ${name}->name = "Error"; ${name}->message = ${message}; return ${name}; }()`;
+    }
+
     /** `new Map()`, `new Float32Array(n)` and their kin, typed by `to`. */
     private construct(
         node: ts.NewExpression,
@@ -9093,6 +10211,44 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ts.isSpreadElement(argument) ? argument.expression : argument,
             ),
             () => this.unorderedConstruct(node, to),
+        );
+    }
+
+    /** `new Float32Array(...)` and its kin, as the typed array `shape`. */
+    private typedConstruction(
+        node: ts.NewExpression,
+        name: string,
+        shape: Extract<RecordShape, { kind: "typed" }>,
+        args: readonly ts.Expression[],
+    ): string {
+        if (args.length < 1) return this.refuse(node, `Pinned new ${name}.`);
+        const argument = args[0]!;
+        const argumentShape = this.shapeAt(argument);
+        // `new Uint8Array(buffer, byteOffset, length)`: a view.
+        if (argumentShape.kind === "buffer")
+            return args.length === 1
+                ? `${this.cpp(shape)}(${this.value(argument)})`
+                : `${this.cpp(shape)}(${this.value(argument)}, ${this.convert(args[1]!, { kind: "number" })}${args[2] ? `, ${this.convert(args[2], { kind: "number" })}` : ""})`;
+        if (args.length !== 1) return this.refuse(node, `Pinned new ${name}.`);
+        const literal = unwrapTypePreserving(argument);
+        if (ts.isArrayLiteralExpression(literal))
+            return `${this.cpp(shape)}{${literal.elements
+                .map(
+                    (element) =>
+                        `static_cast<${typedElementCpp(shape.element)}>(${this.convert(element, { kind: "number" })})`,
+                )
+                .join(", ")}}`;
+        if (argumentShape.kind === "number")
+            return `${this.cpp(shape)}(bbl::pinned::array_length(${this.value(argument)}))`;
+        // `new Float32Array(numbers)` / `new Uint8Array(view)`: a
+        // copy, each element converted as a store converts it.
+        if (isNumberSequence(argumentShape)) {
+            this.model.include("bblite/pinned_values.hpp");
+            return `bbl::pinned::typed_copy<${typedElementCpp(shape.element)}>(${this.value(argument)})`;
+        }
+        return this.refuse(
+            node,
+            `Pinned new ${name} from ${this.cpp(argumentShape)}.`,
         );
     }
 
@@ -9192,6 +10348,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? declaration.initializer.text
                 : node.expression.text;
         const shape = stripOptional(to);
+        if (TYPED_ARRAY_KINDS.has(name)) {
+            // A typed array is its own kind; a union destination holds it.
+            const built =
+                shape.kind === "typed"
+                    ? shape
+                    : stripOptional(this.shapeAt(node));
+            if (built.kind !== "typed")
+                return this.refuse(node, `Pinned new ${name}.`);
+            const value = this.typedConstruction(node, name, built, args);
+            return built === shape
+                ? value
+                : this.coerce(value, built, to, node);
+        }
         switch (name) {
             case "WeakSet":
                 if (shape.kind !== "weakset" || args.length !== 0)
@@ -9250,7 +10419,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         (source.kind === "array" || source.kind === "set") &&
                         this.same(source.element, shape.element)
                     )
-                        return `[&] { ${this.cpp(shape)} ${set}; for (const auto& value : ${this.presentValue(seed)}) ${set}.add(value); return ${set}; }()`;
+                        return `[&] { ${this.cpp(shape)} ${set}; const auto& values = ${this.presentValue(seed)}; for (const auto& value : values) ${set}.add(value); return ${set}; }()`;
                 }
                 return this.refuse(node, `Pinned seeded ${name}.`);
             case "Array":
@@ -9260,48 +10429,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         "Pinned new Array needs a length.",
                     );
                 return `${this.cpp(shape)}(bbl::pinned::array_length(${this.value(args[0]!)}))`;
-            case "Float32Array":
-            case "Float64Array":
-            case "Uint32Array":
-            case "Int32Array":
-            case "Uint8Array": {
-                if (shape.kind !== "typed" || args.length < 1)
-                    return this.refuse(node, `Pinned new ${name}.`);
-                const argument = args[0]!;
-                const argumentShape = this.shapeAt(argument);
-                // `new Uint8Array(buffer, byteOffset, length)`: a view.
-                if (argumentShape.kind === "buffer")
-                    return args.length === 1
-                        ? `${this.cpp(shape)}(${this.value(argument)})`
-                        : `${this.cpp(shape)}(${this.value(argument)}, ${this.convert(args[1]!, { kind: "number" })}${args[2] ? `, ${this.convert(args[2], { kind: "number" })}` : ""})`;
-                if (args.length !== 1)
-                    return this.refuse(node, `Pinned new ${name}.`);
-                const literal = unwrapTypePreserving(argument);
-                if (ts.isArrayLiteralExpression(literal))
-                    return `${this.cpp(shape)}{${literal.elements
-                        .map(
-                            (element) =>
-                                `static_cast<${typedElementCpp[shape.element]}>(${this.convert(element, { kind: "number" })})`,
-                        )
-                        .join(", ")}}`;
-                if (argumentShape.kind === "number")
-                    return `${this.cpp(shape)}(bbl::pinned::array_length(${this.value(argument)}))`;
-                // `new Float32Array(numbers)` / `new Uint8Array(view)`: a
-                // copy, each element converted as a store converts it.
-                if (
-                    argumentShape.kind === "typed" ||
-                    (argumentShape.kind === "array" &&
-                        argumentShape.element.kind === "number") ||
-                    argumentShape.kind === "tuple"
-                ) {
-                    this.model.include("bblite/pinned_values.hpp");
-                    return `bbl::pinned::typed_copy<${typedElementCpp[shape.element]}>(${this.value(argument)})`;
-                }
-                return this.refuse(
-                    node,
-                    `Pinned new ${name} from ${this.cpp(argumentShape)}.`,
-                );
-            }
             case "Promise": {
                 // `new Promise<T>((resolve, reject) => ...)`: the executor
                 // runs now, an inline lambda over the resolving functions.
@@ -9389,9 +10516,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     // ── Places ──────────────────────────────────────────────────────────
 
-    /** Where an assignment stores. */
+    /** Where an assignment stores: an `as` or `!` names the same storage. */
     private place(target: ts.Expression): Place {
-        const node = unwrapTypePreserving(target);
+        const node = unwrapExpression(target);
         if (ts.isIdentifier(node)) {
             const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
@@ -9439,12 +10566,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 );
             const member = this.model.member(shape.name, node.name.text, node);
             const owner = this.presentValue(node.expression);
-            // A setter stores through its function; no lvalue to update.
+            // A setter stores through its function; no lvalue to update,
+            // but its read and store combine, the owner held once.
             if (member.set) {
                 const set = member.set;
                 return {
                     storage: member.shape,
                     store: (value) => set(owner, value),
+                    update: (combine) => {
+                        const held = this.temporary("owner");
+                        return `[&](const auto& ${held}) { ${set(held, combine(member.access(held)))}; }(${owner})`;
+                    },
                 };
             }
             if (member.storage !== "field")
@@ -9474,6 +10606,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     storage: { kind: "number" },
                     store: (value) =>
                         `bbl::js::typed_array_write(${owner}, ${index}, ${value})`,
+                    update: (combine) => {
+                        const held = this.temporary("typed");
+                        const key = this.temporary("key");
+                        return `[&] { auto&& ${held} = ${owner}; const double ${key} = ${index}; bbl::js::typed_array_write(${held}, ${key}, ${combine(`bbl::pinned::typed_get(${held}, ${key})`)}); }()`;
+                    },
                 };
             if (shape.kind === "tuple") {
                 this.model.include("bblite/pinned_values.hpp");
@@ -9519,8 +10656,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     /** A numeric lvalue an increment or compound assignment updates. */
-    private numericPlace(target: ts.Expression): string {
-        const place = this.place(target);
+    private numericPlace(
+        target: ts.Expression,
+        place = this.place(target),
+    ): string {
         if (place.cpp === undefined || place.storage.kind !== "number")
             return this.refuse(
                 target,
@@ -9617,6 +10756,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const captured = this.capturedFor(statement, indent);
             if (captured) return captured;
         }
+        if (ts.isForInStatement(statement))
+            return this.forInLines(statement, indent);
         if (ts.isThrowStatement(statement)) {
             const thrown = this.throwStatement(statement, indent);
             if (thrown) return thrown;
@@ -9779,11 +10920,45 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             );
         return (
             this.model.unresolvedShape(declared, declaration) ??
-            (this.containsAny(declared) && declaration.initializer
-                ? this.structuralShape(declaration.initializer)
+            (this.containsAny(declared)
+                ? declaration.initializer
+                    ? this.structuralShape(declaration.initializer)
+                    : this.assignedShape(declaration)
                 : undefined) ??
             this.model.shapeOf(declared, declaration)
         );
+    }
+
+    /**
+     * `let decoded;` (an evolving `any`): what its assignments store, where
+     * they all store one shape.
+     */
+    private assignedShape(
+        declaration: ts.VariableDeclaration,
+    ): RecordShape | undefined {
+        if (declaration.type || !ts.isIdentifier(declaration.name))
+            return undefined;
+        const symbol = declaredSymbol(this.checker, declaration.name);
+        const shapes: RecordShape[] = [];
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ) {
+                const target = unwrapExpression(node.left);
+                if (
+                    ts.isIdentifier(target) &&
+                    declaredSymbol(this.checker, target) === symbol
+                )
+                    shapes.push(this.shapeAt(node.right));
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.parent.parent.parent);
+        const [first] = shapes;
+        return first && shapes.every((shape) => this.same(shape, first))
+            ? first
+            : undefined;
     }
 
     /** `const [a, b] = tuple`: the tuple once, then each element. */
@@ -9805,9 +10980,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 "Pinned array destructuring of a non-tuple.",
             );
         const source = this.temporary("destructured");
-        const lines = [
+        return [
             `${indent}const ${this.cpp(shape)} ${source} = ${this.convert(initializer, shape)};`,
+            ...this.tuplePattern(pattern, source, indent),
         ];
+    }
+
+    /** `[a, , b]` bound from the number tuple `source`, a name read in place. */
+    private tuplePattern(
+        pattern: ts.ArrayBindingPattern,
+        source: string,
+        indent: string,
+    ): string[] {
+        const lines: string[] = [];
         for (const [index, element] of pattern.elements.entries()) {
             if (ts.isOmittedExpression(element)) continue;
             if (
@@ -9915,8 +11100,112 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             isPinnedErrorCall(this.source, expression)
         )
             return super.statement(statement, indent);
+        if (
+            ts.isBinaryExpression(expression) &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isObjectLiteralExpression(expression.left)
+        )
+            return this.namespaceAssignment(
+                expression.left,
+                expression.right,
+                indent,
+            );
         const effect = this.effect(expression);
         return effect === null ? [] : [`${indent}${effect};`];
+    }
+
+    /**
+     * `({ a, b: c } = await import(m))`: each target stores the export of
+     * the linked module it names, the namespace evaluated first.
+     */
+    private namespaceAssignment(
+        pattern: ts.ObjectLiteralExpression,
+        value: ts.Expression,
+        indent: string,
+    ): string[] {
+        if (this.shapeAt(value).kind !== "module")
+            return this.refuse(
+                value,
+                "Pinned destructuring assignment from a value other than a module namespace.",
+            );
+        const lines = [`${indent}static_cast<void>(${this.value(value)});`];
+        for (const property of pattern.properties) {
+            const [name, target] = ts.isShorthandPropertyAssignment(property)
+                ? [property.name, property.name]
+                : ts.isPropertyAssignment(property) &&
+                    ts.isIdentifier(property.name)
+                  ? [property.name, property.initializer]
+                  : [undefined, undefined];
+            if (!name || !target)
+                return this.refuse(property, "Pinned destructuring element.");
+            const declaration = this.moduleExport(value, name.text, property);
+            const place = this.place(target);
+            const read = this.coerce(
+                this.functionReference(name, declaration),
+                this.model.functionShape(declaration),
+                place.storage,
+                property,
+            );
+            lines.push(`${indent}${place.store(read)};`);
+        }
+        return lines;
+    }
+
+    /** A call of a module-scope pinned function: its lowered entry. */
+    private declaredCall(
+        node: ts.CallExpression,
+        declaration: ts.FunctionDeclaration,
+    ): string {
+        const instance = this.genericInstance(node, declaration);
+        const entry = this.model.lowered(
+            declaration,
+            this.model.withTypeBindings(instance?.bindings, () =>
+                this.specialization(node, declaration),
+            ),
+            instance,
+        );
+        return `${this.model.qualified(entry)}(${this.arguments(node, entry)})`;
+    }
+
+    /**
+     * `import(m)` of a linked module: its namespace, settled at once (an
+     * `await` of it still yields, as JavaScript's does).
+     */
+    private importCall(node: ts.CallExpression): string {
+        const shape = this.shapeAt(node);
+        if (shape.kind !== "promise" || shape.value.kind !== "module")
+            return this.refuse(
+                node,
+                "Pinned import() of an unresolved module.",
+            );
+        this.model.include("bblite/js_module_namespace.hpp");
+        return `bbl::js::Promise<bbl::js::ModuleNamespace>::resolved(bbl::js::ModuleNamespace{${stringLiteral(shape.value.path)}})`;
+    }
+
+    /** What a module namespace's `name` exports. */
+    private moduleExported(
+        namespace: ts.Expression,
+        name: string,
+    ): ts.Declaration | undefined {
+        const exported = this.checker
+            .getNonNullableType(this.typeAt(namespace))
+            .getProperty(name);
+        return exported && aliasTarget(this.checker, exported).valueDeclaration;
+    }
+
+    /** The function a module namespace's `name` exports. */
+    private moduleExport(
+        namespace: ts.Expression,
+        name: string,
+        site: ts.Node,
+    ): ts.FunctionDeclaration {
+        const declaration = this.moduleExported(namespace, name);
+        if (!declaration || !ts.isFunctionDeclaration(declaration))
+            return this.refuse(
+                site,
+                `Pinned module export '${name}' is not a function.`,
+            );
+        return declaration;
     }
 
     /**
@@ -9927,6 +11216,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private effect(expression: ts.Expression): string | null {
         // `() => undefined`: nothing to evaluate.
         if (this.isAbsentLiteral(expression)) return null;
+        if (ts.isParenthesizedExpression(expression))
+            return this.effect(expression.expression);
+        // `submitted ? finish() : abort()`: the selected branch's effect.
+        if (ts.isConditionalExpression(expression)) {
+            const branch = (node: ts.Expression): string =>
+                `static_cast<void>(${this.effect(node) ?? "0"})`;
+            return `(${this.truthy(expression.condition)} ? ${branch(expression.whenTrue)} : ${branch(expression.whenFalse)})`;
+        }
         // `await p;` and `void p;`: evaluated, the value dropped.
         if (ts.isAwaitExpression(expression))
             return `static_cast<void>(${this.value(expression)})`;
@@ -10034,10 +11331,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 kind !== ts.SyntaxKind.AsteriskAsteriskEqualsToken &&
                 ASSIGNMENT_OPERATORS.has(kind)
             ) {
-                const place = this.numericPlace(expression.left);
+                const place = this.place(expression.left);
+                // A typed element's update reads, combines and stores it.
+                if (place.cpp === undefined && place.update)
+                    return place.update(
+                        (current) =>
+                            compoundAssignmentValue(
+                                ASSIGNMENT_OPERATORS.get(kind)!,
+                                current,
+                                this.value(expression.right),
+                                undefined,
+                            ).cpp,
+                    );
                 return compoundAssignmentStore(
                     kind,
-                    place,
+                    this.numericPlace(expression.left, place),
                     this.value(expression.right),
                 )!;
             }
@@ -10057,8 +11365,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (
                 expression.operator === ts.SyntaxKind.PlusPlusToken ||
                 expression.operator === ts.SyntaxKind.MinusMinusToken
-            )
-                return `${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${this.numericPlace(expression.operand)}`;
+            ) {
+                const increment =
+                    expression.operator === ts.SyntaxKind.PlusPlusToken;
+                const place = this.place(expression.operand);
+                // A place written through a helper reads, steps and stores.
+                if (place.cpp === undefined && place.update)
+                    return place.update(
+                        (current) => `${current} ${increment ? "+" : "-"} 1.0`,
+                    );
+                return `${increment ? "++" : "--"}${this.numericPlace(expression.operand, place)}`;
+            }
         }
         return this.refuse(
             expression,
@@ -10491,7 +11808,60 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         statement: ts.ForOfStatement,
         binding: ts.BindingName,
     ): PinnedIteration {
-        let iterated = unwrapTypePreserving(statement.expression);
+        const entered: Environment[] = [];
+        const iteration = this.iterationOf(statement, binding, entered);
+        return entered.length === 0
+            ? iteration
+            : {
+                  ...iteration,
+                  after: () => {
+                      for (const scope of entered.reverse())
+                          this.leaveScope(scope);
+                  },
+              };
+    }
+
+    /**
+     * A `for...of` over a collection; a header binding a closure captures
+     * is one per iteration (CreatePerIterationEnvironment), held by a scope
+     * `entered` records for the loop to leave after its body.
+     */
+    private iterationOf(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+        entered: Environment[],
+        source: ts.Expression = statement.expression,
+    ): PinnedIteration {
+        let iterated = unwrapTypePreserving(source);
+        // `for (const entry of map.get(key) ?? [])`: the collection when
+        // present, an empty one of its kind otherwise.
+        if (
+            ts.isBinaryExpression(iterated) &&
+            iterated.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            const fallback = unwrapTypePreserving(iterated.right);
+            const present = iterated.left;
+            if (
+                ts.isArrayLiteralExpression(fallback) &&
+                fallback.elements.length === 0
+            ) {
+                this.model.include("bblite/pinned_values.hpp");
+                this.substitutions.set(
+                    present,
+                    `bbl::pinned::present_or_empty(${this.value(present)})`,
+                );
+                try {
+                    return this.iterationOf(
+                        statement,
+                        binding,
+                        entered,
+                        present,
+                    );
+                } finally {
+                    this.substitutions.delete(present);
+                }
+            }
+        }
         const entries = this.objectEntries(iterated, binding);
         if (entries) return entries;
         let view: "values" | "keys" | "entries" = "entries";
@@ -10556,7 +11926,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 this.isStructuralRecord(declared)
                     ? shape.element
                     : declared;
-            return `${this.cpp(storage)} ${this.declare(name, storage)} = ${this.model.representations.snapshot(value, storage)};`;
+            const element = this.model.representations.snapshot(value, storage);
+            const symbol = declaredSymbol(this.checker, name);
+            if (symbol && this.captured.has(symbol)) {
+                const { prolog, scope } = this.enterScope(
+                    statement,
+                    [{ name, storage }],
+                    "",
+                );
+                entered.push(scope);
+                return [
+                    ...prolog,
+                    `${scope.variable}->${scope.fields[0]!.field} = ${element};`,
+                ].join(" ");
+            }
+            return `${this.cpp(storage)} ${this.declare(name, storage)} = ${element};`;
         };
         if (shape.kind === "array" && ts.isObjectBindingPattern(binding)) {
             // `for (const { count, blocks } of levels)`: each member of the
@@ -10595,16 +11979,49 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             };
         }
         if (shape.kind === "array") {
+            const index = this.temporary("index");
+            const header = `std::size_t ${index} = 0; ${index} < ${range}.size(); ++${index}`;
+            // `for (const [x, y] of points)`: each number of the element's
+            // tuple into its own binding.
+            if (
+                ts.isArrayBindingPattern(binding) &&
+                stripOptional(shape.element).kind === "tuple"
+            ) {
+                const item = this.temporary("item");
+                return {
+                    prefix,
+                    header,
+                    bindings: [
+                        `const auto& ${item} = ${range}[${index}];`,
+                        ...this.tuplePattern(binding, item, ""),
+                    ],
+                };
+            }
             if (!ts.isIdentifier(binding))
                 return this.refuse(
                     binding,
                     "Pinned array iteration binds one name.",
                 );
+            return {
+                prefix,
+                header,
+                bindings: [bind(binding, `${range}[${index}]`)],
+            };
+        }
+        // The numbers of a typed array, each read once into the binding.
+        if (shape.kind === "typed") {
+            if (!ts.isIdentifier(binding))
+                return this.refuse(
+                    binding,
+                    "Pinned typed-array iteration binds one name.",
+                );
             const index = this.temporary("index");
             return {
                 prefix,
                 header: `std::size_t ${index} = 0; ${index} < ${range}.size(); ++${index}`,
-                bindings: [bind(binding, `${range}[${index}]`)],
+                bindings: [
+                    bind(binding, `static_cast<double>(${range}[${index}])`),
+                ],
             };
         }
         if (shape.kind !== "map" && shape.kind !== "set")

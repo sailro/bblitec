@@ -454,10 +454,12 @@ export const scalarsSinks: DataSinkOperations<
     | "http-headers"
     | "byte-stream"
     | "byte-stream-reader"
+    | "byte-stream-controller"
     | "byte-read-result"
     | "byte-transform-stream"
     | "abort-controller"
     | "abort-signal"
+    | "request-init"
     | "url"
     | "image-bitmap"
     | "gpu-adapter"
@@ -589,10 +591,12 @@ export const scalarsSinks: DataSinkOperations<
     "http-headers": opaqueSink,
     "byte-stream": opaqueSink,
     "byte-stream-reader": opaqueSink,
+    "byte-stream-controller": opaqueSink,
     "byte-read-result": opaqueSink,
     "byte-transform-stream": opaqueSink,
     "abort-controller": opaqueSink,
     "abort-signal": opaqueSink,
+    "request-init": opaqueSink,
     url: opaqueSink,
     "image-bitmap": opaqueSink,
     gpu: sameKindSink("gpu"),

@@ -44,6 +44,8 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
     "platform:compression": ["src/pal_compression.cpp"],
+    "platform:meshopt": ["src/pal_meshopt.cpp"],
+    "platform:web-platform": ["src/pal_web_platform.cpp"],
     "platform:idle-callbacks": [],
     "platform:media-stream": [],
     "image:runtime-decode": [],
@@ -67,6 +69,7 @@ export const featureSources: Record<Feature, string[]> = {
     "compute:dispatch": [],
     "compute:bindings": [],
     "compute:one-shot": [],
+    "engine:frame-post-submit": [],
     "compute:binding-decl": [],
     "compute:uniform-buffer": [],
     "compute:uniform-layout": [],
@@ -117,7 +120,14 @@ export const featureSources: Record<Feature, string[]> = {
     // The pin's splat-stream library, lowered whole; its renderable draws
     // through renderer:external-renderables, its fetch, decode and timers
     // through the web platform seam.
-    "loader:splat-stream": ["src/pal_web_platform.cpp"],
+    "loader:splat-stream": [],
+    // The pin's MeshLoD library, lowered whole; its range reads go through
+    // the web platform seam, its material textures and scene environment
+    // through each backend's own uploads onto the engine's WebGPU device.
+    "loader:mesh-lod": [
+        "src/pal_library_textures.cpp",
+        "src/pal_sdl_gpu_library_textures.cpp",
+    ],
     "material:pbr": [],
     "material:source-texture-read": [],
     "material:clearcoat": [],
@@ -309,7 +319,7 @@ export const featureSources: Record<Feature, string[]> = {
     "audio:pinned-engine": [],
     // The pin's static-sound family, lowered whole; it fetches its sources
     // through the web platform seam.
-    "audio:static-sound": ["src/pal_web_platform.cpp"],
+    "audio:static-sound": [],
     "audio:spatial-sound": [],
     "audio:streaming-sound": [],
     "audio:engine-media-stream": [],
@@ -406,12 +416,14 @@ export function asFeatures(names: readonly string[]): Feature[] {
  * same site, and its own implications follow in turn.
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    // The seam's fetch runs over the native HTTP transport.
+    "platform:web-platform": ["platform:http"],
     "mesh:thin-instances": ["engine:gpu-retirement"],
     // The stream fetches its sources, decodes WebP images, retires GPU
     // generations behind the queue, parses JSON and collates source URLs.
     "loader:splat-stream": [
         "engine:gpu-retirement",
-        "platform:http",
+        "platform:web-platform",
         "image:runtime-decode",
         "data:json",
         "data:locale",
@@ -420,13 +432,29 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         // Its renderable binds and draws in the scene's own pass.
         "renderer:external-renderables",
     ],
+    // MeshLoD streams `.mlod` ranges over HTTP (packaged files first),
+    // decodes meshopt pages, uploads them to an arena on the engine's
+    // WebGPU device and retires GPU resources behind the queue; its
+    // selection reads the pass camera's view and projection matrices, and
+    // its batch renderables draw in the scene's own pass.
+    "loader:mesh-lod": [
+        "engine:webgpu-device",
+        "engine:gpu-retirement",
+        "mesh:render-bundle-invalidation",
+        "engine:frame-post-submit",
+        "platform:web-platform",
+        "platform:meshopt",
+        "data:json",
+        "camera:view-projection",
+        "renderer:external-renderables",
+    ],
     // A static sound plays decoded buffers through buffer sources on the
     // pinned engine, and fetches its URLs (packaged ones first) over HTTP.
     "audio:static-sound": [
         "audio:pinned-engine",
         "audio:buffer-source",
         "audio:decoded-buffer",
-        "platform:http",
+        "platform:web-platform",
     ],
     // A streaming sound plays packaged media elements through the engine.
     "audio:streaming-sound": ["audio:pinned-engine", "audio:media-element"],
@@ -477,7 +505,7 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "compute:storage-texture",
         "compute:uniform-buffer",
     ],
-    "compute:one-shot": ["compute:task"],
+    "compute:one-shot": ["compute:task", "engine:frame-post-submit"],
     // A scene that writes SceneNode transforms loads each glTF asset with
     // its node hierarchy, which the transform-node records carry.
     "scene:node-transforms": ["mesh:transform-node"],
@@ -871,17 +899,18 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         (features.includes("loader:splat-stream")
             ? "#include <bblite/upstream_splat_stream.hpp>\n"
             : "") +
+        (features.includes("loader:mesh-lod")
+            ? "#include <bblite/upstream_mesh_lod.hpp>\n"
+            : "") +
         (features.includes("audio:media-element")
             ? "#include <bblite/pal_audio_element.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : "") +
         (features.includes("audio:pinned-engine")
             ? "#include <bblite/upstream_static_sound.hpp>\n"
             : "") +
-        (features.includes("audio:static-sound")
-            ? "#include <bblite/pal_packaged_responses.hpp>\n"
-            : "") +
+        // A fetch reads what the program packaged before HTTP (`fetch_deployed`).
         (features.includes("platform:http")
-            ? "#include <bblite/pal_http.hpp>\n"
+            ? "#include <bblite/pal_http.hpp>\n#include <bblite/pal_packaged_responses.hpp>\n"
             : projection.responseStorageReached &&
                 !features.includes("platform:packaged-fetch")
               ? "#include <bblite/pal_fetch_response.hpp>\n"

@@ -607,6 +607,18 @@ private:
     std::vector<std::uint32_t> limbs_;
 };
 
+/** `view.getBigUint64(offset, littleEndian)`. */
+[[nodiscard]] inline BigInt dataview_get_biguint64(const DataView& view, std::size_t offset,
+                                                   bool little_endian) {
+    return BigInt::from_uint64(view.get_uint64(offset, little_endian));
+}
+
+/** `view.getBigInt64(offset, littleEndian)`. */
+[[nodiscard]] inline BigInt dataview_get_bigint64(const DataView& view, std::size_t offset,
+                                                  bool little_endian) {
+    return BigInt(static_cast<std::int64_t>(view.get_uint64(offset, little_endian)));
+}
+
 /** BigInt64Array and BigUint64Array: 64-bit elements read and written as BigInts. */
 using I64Array = TypedArray<std::int64_t>;
 using U64Array = TypedArray<std::uint64_t>;

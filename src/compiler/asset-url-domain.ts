@@ -24,6 +24,10 @@ export function assetUrlDomain(
         label: "Packaged URL",
         fragments: (parts) => packagedFiles(context, expression, parts),
     })?.filter((url) => !unpackaged(url));
+    // One candidate is a generation-known URL: it packages as the same
+    // literal does, a remote one included. A runtime selection among several
+    // stays local.
+    if (domain?.length === 1) return domain;
     const base = deploymentUrl(context.options);
     const safe = domain?.every((source) => {
         if (/%2f|%5c|\\/i.test(source)) return false;

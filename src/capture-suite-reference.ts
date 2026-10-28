@@ -80,19 +80,67 @@ function mimeType(path: string): string {
     }
 }
 
+/**
+ * The inclusive byte span a `Range` header selects in a `size`-byte file, as
+ * the demos' static file server reads it (`pal::packaged_range` natively):
+ * one `bytes=first-last`, `bytes=first-` or `bytes=-suffix` range clamped to
+ * the file, `null` where none is satisfiable, undefined (the whole file) for
+ * another unit, several ranges or a malformed one.
+ */
+export function byteRange(
+    header: string,
+    size: number,
+): readonly [number, number] | null | undefined {
+    const match = /^bytes=(\d{0,15})-(\d{0,15})$/.exec(header);
+    if (!match || (!match[1] && !match[2])) return undefined;
+    const [first, last] = [match[1]!, match[2]!];
+    if (!first) {
+        const suffix = Number(last);
+        return suffix === 0 || size === 0
+            ? null
+            : [size - Math.min(suffix, size), size - 1];
+    }
+    const start = Number(first);
+    const end = last ? Number(last) : size - 1;
+    if (end < start) return undefined;
+    return start >= size ? null : [start, Math.min(end, size - 1)];
+}
+
 function serveLocalFile(
     response: ServerResponse,
     path: string,
     raw: boolean,
+    range: string | undefined,
 ): void {
-    response.writeHead(200, {
-        "Content-Type": raw ? "text/javascript; charset=utf-8" : mimeType(path),
+    if (raw) {
+        response.writeHead(200, {
+            "Content-Type": "text/javascript; charset=utf-8",
+        });
+        response.end(
+            `export default ${JSON.stringify(readFileSync(path, "utf8"))};\n`,
+        );
+        return;
+    }
+    const bytes = readFileSync(path);
+    const span =
+        range === undefined ? undefined : byteRange(range, bytes.length);
+    if (span === undefined) {
+        response.writeHead(200, { "Content-Type": mimeType(path) });
+        response.end(bytes);
+        return;
+    }
+    if (span === null) {
+        response.writeHead(416, { "Content-Range": `bytes */${bytes.length}` });
+        response.end();
+        return;
+    }
+    const [first, last] = span;
+    response.writeHead(206, {
+        "Content-Type": mimeType(path),
+        "Content-Range": `bytes ${first}-${last}/${bytes.length}`,
+        "Content-Length": String(last - first + 1),
     });
-    response.end(
-        raw
-            ? `export default ${JSON.stringify(readFileSync(path, "utf8"))};\n`
-            : readFileSync(path),
-    );
+    response.end(bytes.subarray(first, last + 1));
 }
 
 /** The path a requested browser asset has under the pinned lab/public tree. */
@@ -734,7 +782,12 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             existsSync(publicPath) &&
             statSync(publicPath).isFile()
         ) {
-            serveLocalFile(response, publicPath, url.search === "?raw");
+            serveLocalFile(
+                response,
+                publicPath,
+                url.search === "?raw",
+                request.headers.range,
+            );
             return;
         }
         for (const servedRoot of servedRoots) {
@@ -791,7 +844,12 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 existsSync(path) &&
                 statSync(path).isFile()
             ) {
-                serveLocalFile(response, path, url.search === "?raw");
+                serveLocalFile(
+                    response,
+                    path,
+                    url.search === "?raw",
+                    request.headers.range,
+                );
                 return;
             }
         }

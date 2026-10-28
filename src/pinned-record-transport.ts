@@ -9,8 +9,14 @@
  * bytes. The parent then spells the graph as the C++ that rebuilds it over
  * the emitted structs (`transportCpp`).
  *
- * This module carries no compiler dependency so the child can import it.
+ * This module carries no compiler dependency so the child can import it:
+ * its one import is the dependency-free typed-array class table.
  */
+
+import {
+    TYPED_ARRAY_CLASSES,
+    type TypedArrayKind,
+} from "./typed-array-classes.js";
 
 /** A record-model shape, minus what cannot cross a process boundary. */
 export type TransportShape =
@@ -36,7 +42,7 @@ export type TransportShape =
       }
     | {
           readonly kind: "typed";
-          readonly element: "f32" | "u32" | "i32" | "u8";
+          readonly element: TypedArrayKind;
       }
     | { readonly kind: "optional"; readonly value: TransportShape }
     | { readonly kind: "variant"; readonly members: readonly TransportShape[] }
@@ -61,7 +67,7 @@ export type Transported =
     | { readonly value: Readonly<Record<string, Transported>> }
     | { readonly container: number }
     | {
-          readonly typed: "f32" | "u32" | "i32" | "u8";
+          readonly typed: TypedArrayKind;
           readonly buffer: number;
           readonly byteOffset: number;
           readonly length: number;
@@ -88,13 +94,6 @@ export interface TransportedGraph {
     /** Each buffer's bytes, base64. */
     readonly buffers: readonly string[];
 }
-
-const typedConstructors = {
-    f32: Float32Array,
-    u32: Uint32Array,
-    i32: Int32Array,
-    u8: Uint8Array,
-} as const;
 
 /** Walk `root` by `shape`, keeping identity. Runs in the generation child. */
 export function transportGraph(
@@ -155,7 +154,7 @@ export function transportGraph(
                     }),
                 };
             case "typed": {
-                const constructor = typedConstructors[current.element];
+                const constructor = TYPED_ARRAY_CLASSES[current.element];
                 if (!(value instanceof constructor))
                     return fail(`expected a ${constructor.name}`);
                 return {

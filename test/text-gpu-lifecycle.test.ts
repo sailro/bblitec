@@ -684,6 +684,6 @@ test("a changed pinned GPU statement is a changed native statement, and unknown 
                 "_enabledTargets.delete(target)",
             ),
         ).header(),
-        /if \(enabled\) \{[^]*\.erase\(std::weak_ptr<const void>\(target\)\)/,
+        /if \(enabled\) \{[^]*\.erase\(bbl::pinned::weak_key\(target\)\)/,
     );
 });

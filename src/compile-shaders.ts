@@ -39,6 +39,7 @@ import {
     parseStageLayoutRecord,
     prepareSdlUniformAdaptation,
     sdlUniformSource,
+    sdlWorkgroupCountsSource,
     type SdlUniformAdaptation,
 } from "./shader-bindings.js";
 import {
@@ -544,11 +545,16 @@ export async function compileOfflineShaders(
                                 layoutRecord.bindings,
                                 source,
                             );
-                        const adapted = sdlUniformSource(
+                        const uniformAdapted = sdlUniformSource(
                             uniformAdaptation,
                             layoutRecord.uniformBuffers,
                             source,
                         );
+                        // The workgroup counts each dispatch binds itself,
+                        // over any uniform move.
+                        const adapted =
+                            sdlWorkgroupCountsSource(uniformAdapted ?? wgsl) ??
+                            uniformAdapted;
                         if (adapted !== undefined) {
                             writeFileSync(pendingWgsl, `${adapted}${EOL}`);
                             await compile(pendingWgsl);
@@ -557,7 +563,7 @@ export async function compileOfflineShaders(
                                     readFileSync(pendingLayout, "utf8"),
                                     source,
                                 ).uniformBuffers,
-                                `${source} (after SDL uniform adaptation)`,
+                                `${source} (after SDL adaptation)`,
                             );
                         }
                         // A render stage's sidecar opens with its entry point

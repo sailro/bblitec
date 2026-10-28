@@ -23,6 +23,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <map>
 #include <limits>
 #include <memory>
 #include <new>
@@ -1715,6 +1716,7 @@ struct TextureUvTransform {
     double u_offset = 0.0;
     double v_offset = 0.0;
     double u_ang = 0.0;
+    bool operator==(const TextureUvTransform&) const = default;
 };
 
 /** The pinned compressed upload's byte layout and block-padded copy extent. */
@@ -2379,6 +2381,8 @@ struct TransformNodeRecord {
     std::uint32_t generation = 0;
     /** The import whose `buildNodeHierarchy` made this node (`imported_hierarchy_unlinked`). */
     AssetHandle import_owner{};
+    /** Whether the program set this imported node's parent link (`set_scene_node_parent`). */
+    bool import_linked = false;
     /** Whether `reclaim_transform_nodes` reclaimed this record. */
     bool retired = false;
     std::string name;
@@ -2502,6 +2506,8 @@ struct MeshRecord {
     std::optional<std::array<float, 16>> parent_world;
     /** The import that made this mesh (`imported_hierarchy_unlinked`). */
     AssetHandle import_owner{};
+    /** Whether the program set this imported mesh's parent link (`set_scene_node_parent`). */
+    bool import_linked = false;
     /**
      * A `parent` naming no record of this port: the pin's
      * IWorldMatrixProvider, any object with `worldMatrix` and
@@ -2958,6 +2964,14 @@ struct MaterialRecord {
     // composes `dielectricF0 = reflectance * metallicF0Factor`, so the factor
     // is kept apart from the base reflectance rather than folded into it.
     bool has_metallic_reflectance = false;
+    /** `_emissiveColor` is set (`setPbrEmissive`): `emissive_factor` is its colour. */
+    bool has_emissive_color = false;
+    /**
+     * The `Texture2D` a lowered library made of each texture slot it read
+     * (`library::material_texture`, by slot): the material holds them as the
+     * pin's material holds its texture objects.
+     */
+    std::vector<std::shared_ptr<void>> library_textures;
     float metallic_f0_factor{};
     float specular_weight{};
     Color3 metallic_reflectance_color{};
@@ -3595,9 +3609,14 @@ struct AssetRecord {
     /**
      * load-gltf.ts buildNodeHierarchy fills `children` only; addToScene sets
      * the parent links. Until the root is added, an imported node's or
-     * mesh's `worldMatrix` reads its own local matrix.
+     * mesh's `worldMatrix` reads its own local matrix. A program setting
+     * each link itself (`set_scene_node_parent`) links the hierarchy with
+     * its last one; `linked_import_nodes` counts those set so far, of the
+     * `import_nodes` under the root (counted at the first).
      */
     bool hierarchy_linked = false;
+    std::size_t linked_import_nodes = 0;
+    std::size_t import_nodes = 0;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -4281,13 +4300,23 @@ struct Engine {
     std::size_t thin_instance_gpu_prune_count = 0;
     /** `engine._currentEncoder` while a renderer prepares a pass's external renderables. */
     std::shared_ptr<GpuCommandEncoder> current_encoder;
+    /** `engine._finishOptionalFrame(submitted)`, which `_renderFrame` calls once the frame ends. */
+    js::Callback<void(bool)> finish_optional_frame;
     /**
-     * `getSceneBindGroupLayout(engine)` and the group a scene pass binds at 0
-     * for its external renderables, made with `webgpu_device`
-     * (`bind_engine_scene_group`, gpu_renderable.hpp).
+     * `getSceneBindGroupLayout(engine)`, made with `webgpu_device`
+     * (`bind_engine_scene_group`, gpu_renderable.hpp), and the one group every
+     * pass binds at 0 for its external renderables when the layout has no rows;
+     * with rows each pass binds its own.
      */
     std::shared_ptr<GpuObject> webgpu_scene_layout;
     std::shared_ptr<GpuObject> webgpu_scene_group;
+    /**
+     * The scene layout's uniform buffers as (binding, `GPUShaderStage` visibility): the
+     * pin's `getSceneBindGroupLayout` rows a scene build generated for its composed
+     * shaders (`configure_engine_scene_layout`), set before `webgpu_device` exists. Empty,
+     * the layout has no binding and `webgpu_scene_group` serves every pass.
+     */
+    std::vector<std::pair<double, double>> webgpu_scene_uniform_bindings;
     std::shared_ptr<pal::EventLoop> source_gpu_loop;
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
@@ -4513,7 +4542,11 @@ struct Engine {
     // culling-enabled thin-instance pool crossing zero active rows. Matrix or
     // count changes within one membership state touch no draw-list storage.
     std::uint64_t draw_list_epoch = 0;
-    /** The last `SourceMaterialDraw::identity` this engine published. */
+    /**
+     * The last `_renderables` position this engine numbered: a material
+     * output's `SourceMaterialDraw::identity` or an external renderable's
+     * `publication`, so the two order as the pin's walk binds them.
+     */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
     /** Source materials `enableMaterialTracking` installed observable colors on. */
@@ -4686,6 +4719,7 @@ public:
             throw std::runtime_error("Stored engine context is no longer live.");
         return *pointer_;
     }
+    [[nodiscard]] Engine* operator->() const { return &**this; }
     [[nodiscard]] const std::shared_ptr<Engine>& owner() const { return owner_; }
     /** A realm engine slot holds its owner: the stored engine's, which must exist. */
     operator std::shared_ptr<Engine>() const {
@@ -4694,6 +4728,10 @@ public:
         return owner_;
     }
     [[nodiscard]] Engine* identity() const noexcept { return pointer_; }
+    /** The engine as a WeakMap key: its lifetime, which expires with it. */
+    [[nodiscard]] std::weak_ptr<const void> weak_key() const {
+        return pointer_ ? pointer_->lifetime.token() : std::weak_ptr<const int>{};
+    }
     [[nodiscard]] bool operator==(const StoredEngine& other) const noexcept {
         return pointer_ == other.pointer_;
     }
@@ -4972,9 +5010,21 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
     return handle_names_record(engine.meshes, mesh);
 }
 
-/** Whether `owner`, an import, has not had its root added to a scene (`AssetRecord::hierarchy_linked`). */
+/**
+ * Whether `owner`, an import, has not had its root added to a scene nor its
+ * links set (`AssetRecord::hierarchy_linked`). An import whose program set
+ * some of its links but not all has worlds composing over part of its
+ * chain, which no native world read represents.
+ */
 inline bool imported_hierarchy_unlinked(const Engine& engine, AssetHandle owner) {
-    return owner.value < engine.assets.size() && !engine.assets[owner.value].hierarchy_linked;
+    if (owner.value >= engine.assets.size()) return false;
+    const auto& record = engine.assets[owner.value];
+    if (record.hierarchy_linked) return false;
+    if (record.linked_import_nodes != 0)
+        throw std::runtime_error(
+            "A world matrix of an imported hierarchy with only some parent links set is not "
+            "represented natively.");
+    return true;
 }
 
 /**
@@ -5693,6 +5743,8 @@ struct EnvironmentState {
     float lod_generation_scale = 0.8f;
     float rotation_y = 0.0f;
     bool tone_mapping_enabled = false;
+    /** `imageProcessing.toneMapping`: the pinned export a program selected, empty while unset. */
+    std::string tone_mapping;
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t specular_width = 0;
     std::uint32_t specular_mip_count = 0;
@@ -5805,6 +5857,12 @@ struct SceneInternalPass {
     TaskHandle after{};
 };
 
+/** A member a lowered library keeps on a scene, traced as what it holds (library_runtime.hpp). */
+struct SceneLibraryMember {
+    virtual ~SceneLibraryMember() = default;
+    virtual void gc_trace(const js::TraceVisitor& visitor) const = 0;
+};
+
 struct SceneState {
     bool source_material_publication = false;
     SourceMaterialOutputs material_outputs;
@@ -5914,6 +5972,8 @@ struct SceneState {
     /** Device recovery's group rebuild: each result's `_w` installs again. */
     void (*recover_material_groups)(Scene&) = nullptr;
     EnvironmentState environment;
+    /** The members lowered libraries keep on the scene (`_meshLoDRegistry`), by pinned name. */
+    std::map<std::string, std::shared_ptr<SceneLibraryMember>> library_members;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
     std::uint64_t environment_identity = 0;
@@ -5948,6 +6008,7 @@ struct SceneState {
         visitor(deferred_builders);
         visitor(text_renderables);
         visitor(external_renderables);
+        visitor(library_members);
     }
 };
 
@@ -7292,6 +7353,12 @@ public:
     Iterator begin() const { return {this, 0}; }
     Sentinel end() const { return {}; }
 };
+/**
+ * `child.parent = node` over the SceneNode union: an imported node's own
+ * parent link, or a node hung under a mesh or a transform node.
+ */
+void set_scene_node_parent(Engine& engine, const SceneNodeHandle& child,
+                           const SceneNodeHandle& parent);
 inline SceneNodeChildrenView scene_node_children(Engine& engine, SceneNodeHandle node) {
     return {engine, std::move(node)};
 }
@@ -7375,6 +7442,13 @@ template <class List> void scene_list_splice(List& list, double start, double co
         throw std::out_of_range("A scene list splice is outside the list.");
     const auto first = list.begin() + static_cast<std::ptrdiff_t>(start);
     list.erase(first, first + static_cast<std::ptrdiff_t>(count));
+}
+/** `list.splice(start, count, ...inserted)`. */
+template <class List, class Inserted>
+void scene_list_splice(List& list, double start, double count, const Inserted& inserted) {
+    scene_list_splice(list, start, count);
+    list.insert(list.begin() + static_cast<std::ptrdiff_t>(start), inserted.begin(),
+                inserted.end());
 }
 void on_key_down(Engine& engine, std::size_t identity,
                  js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);

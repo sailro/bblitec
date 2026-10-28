@@ -12,7 +12,7 @@ export class TextLayoutLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public header(): string {
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "layout",
             ["records"],
@@ -22,6 +22,7 @@ export class TextLayoutLowerer {
 #include <bblite/upstream_text_records.hpp>
 #include <cmath>
 #include <limits>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}

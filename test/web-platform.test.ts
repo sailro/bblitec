@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import ts from "typescript";
 import { webPlatformConstructors } from "../src/lowering/web-platform-schema.js";
+import { byteRange } from "../src/capture-suite-reference.js";
 import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -38,6 +39,20 @@ test("the web platform seam runs fetch, image decoding and timers over the nativ
             setTimeout(() => response.end("gamma"), 40);
             return;
         }
+        if (request.url === "/echo") {
+            // The request's own headers, as the server received them.
+            response.writeHead(200, { "content-type": "text/plain" });
+            response.end(
+                [
+                    request.headers.range,
+                    request.headers["x-test"],
+                    request.headers.cookie,
+                ]
+                    .map((value) => value ?? "none")
+                    .join(" "),
+            );
+            return;
+        }
         if (request.url === "/moved") {
             response.writeHead(302, { location: "/stream" });
             response.end();
@@ -60,6 +75,10 @@ test("the web platform seam runs fetch, image decoding and timers over the nativ
     const directory = resolve("artifacts/test-web-platform");
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
+    // The packaged file the fixture registers: bytes 0..99.
+    const packaged = join(directory, "packaged.bin");
+    const packagedBytes = Uint8Array.from({ length: 100 }, (_, index) => index);
+    writeFileSync(packaged, packagedBytes);
     runNativeFixtureCompiler(tools, [
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_HAS_IMAGE_DECODER=1",
@@ -77,7 +96,7 @@ test("the web platform seam runs fetch, image decoding and timers over the nativ
         "/link",
         "winhttp.lib",
     ]);
-    const output = await promisify(execFile)(executable, [base], {
+    const output = await promisify(execFile)(executable, [base, packaged], {
         timeout: 60000,
         env: {
             ...process.env,
@@ -97,6 +116,64 @@ test("the web platform seam runs fetch, image decoding and timers over the nativ
     const kept = new TextDecoder("utf-8", { ignoreBOM: true }).decode(
         Uint8Array.of(0xef, 0xbb, 0xbf, 0x61),
     );
+    // Node's own Headers: its lists and its TypeErrors.
+    const made = new Headers([
+        ["X-One", " a "],
+        ["x-two", "b"],
+    ]);
+    made.append("X-One", "c");
+    made.set("x-two", "d");
+    const headerLines = [
+        `headers ${made.get("x-one")}|${made.get("X-TWO")}|${Number(made.has("x-two"))}`,
+    ];
+    made.delete("X-ONE");
+    const copied = new Headers(new Headers({ Range: "bytes=0-1" }));
+    headerLines.push(
+        `copied ${made.get("x-one") ?? "none"}|${copied.get("range")}|${Number(new Headers().has("range"))}`,
+    );
+    const refusal = (label: string, action: () => void): string => {
+        try {
+            action();
+            return `${label} none`;
+        } catch (error) {
+            return `${label} ${(error as Error).name}`;
+        }
+    };
+    headerLines.push(
+        refusal("bad-name", () => made.set("bad name", "x")),
+        refusal("bad-value", () => made.set("x", "a\nb")),
+        refusal(
+            "bad-pair",
+            () => new Headers([["x"]] as unknown as [string, string][]),
+        ),
+    );
+    // The reference server's static files answer each Range so.
+    const rangeLines = [
+        "",
+        "bytes=0-9",
+        "bytes=90-",
+        "bytes=-5",
+        "bytes=95-200",
+        "bytes=100-",
+        "bytes=-0",
+        "bytes=5-2",
+        "bytes=0-1,4-5",
+        "items=0-1",
+        "bytes=-",
+    ].map((header) => {
+        const span = header ? byteRange(header, 100) : undefined;
+        const [status, contentRange, body] =
+            span === undefined
+                ? [200, "none", packagedBytes]
+                : span === null
+                  ? [416, "bytes */100", new Uint8Array()]
+                  : [
+                        206,
+                        `bytes ${span[0]}-${span[1]}/100`,
+                        packagedBytes.subarray(span[0], span[1] + 1),
+                    ];
+        return `range [${header}] ${status} ${contentRange} [${[...body].join(",")}]`;
+    });
     const unsupported = (member: string, value: string): string =>
         `NotSupportedError(dom):createImageBitmap ${member} ${value} is not supported natively.`;
     const expected: (string | RegExp)[] = [
@@ -113,6 +190,10 @@ test("the web platform seam runs fetch, image decoding and timers over the nativ
         /^early AbortError\(dom\):.+$/,
         "middle 10 RangeError:stop",
         "aborted TypeError:gone",
+        ...headerLines,
+        // A forbidden request header is dropped.
+        "echo bytes=1-2 yes none",
+        ...rangeLines,
         "bitmap 1 3x2",
         "copy 1 0 12 2 3x2",
         "flip refused",

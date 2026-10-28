@@ -168,6 +168,43 @@ SceneNodeHandle clone_scene_node(Engine& engine, const SceneNodeHandle& node) {
     }, node);
 }
 
+void set_scene_node_parent(Engine& engine, const SceneNodeHandle& child, const SceneNodeHandle& parent) {
+    // load-gltf.ts buildNodeHierarchy fills each node's children; the parent
+    // link of each is addToScene's (scene-core.ts), or the program's own.
+    // The child's import and its link; an import's root has neither.
+    const auto [owner, linked] = std::visit([&](const auto& concrete) -> std::pair<AssetHandle, bool*> {
+        using Handle = std::decay_t<decltype(concrete)>;
+        if constexpr (std::is_same_v<Handle, MeshHandle>) {
+            auto& record = ${recordAt("engine.meshes", "concrete")};
+            return {record.import_owner, &record.import_linked};
+        } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
+            auto& record = ${recordAt("engine.transform_nodes", "concrete")};
+            return {record.import_owner, &record.import_linked};
+        } else return {AssetHandle{}, nullptr};
+    }, child);
+    bool imported = false;
+    if (linked && owner.value < engine.assets.size())
+        for (const SceneNodeHandle sibling : scene_node_children(engine, parent))
+            if ((imported = sibling == child)) break;
+    if (!imported)
+        throw std::runtime_error(
+            "A SceneNode parent other than an imported node's own is not lowered natively.");
+    AssetRecord& asset = engine.assets[owner.value];
+    if (*linked || asset.hierarchy_linked) return;
+    *linked = true;
+    // The hierarchy composes once every node under its root is linked.
+    if (asset.import_nodes == 0) {
+        const auto count = [&](const auto& self, const SceneNodeHandle& node) -> void {
+            for (const SceneNodeHandle below : scene_node_children(engine, node)) {
+                ++asset.import_nodes;
+                self(self, below);
+            }
+        };
+        count(count, SceneNodeHandle(owner));
+    }
+    asset.hierarchy_linked = ++asset.linked_import_nodes == asset.import_nodes;
+}
+
 std::size_t SceneNodeChildrenView::size() const {
     return std::visit([&](const auto& concrete) -> std::size_t {
         using Handle = std::decay_t<decltype(concrete)>;

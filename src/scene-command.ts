@@ -292,6 +292,9 @@ function compilerArguments(scene: SceneDefinition): string[] {
             ? [
                   scene.page.path,
                   ...(scene.page.root ? ["--site-root", scene.page.root] : []),
+                  ...(scene.page.entry
+                      ? ["--page-entry", scene.page.entry]
+                      : []),
               ]
             : [scene.source]),
         ...(scene.publicDir ? ["--public-dir", scene.publicDir] : []),
