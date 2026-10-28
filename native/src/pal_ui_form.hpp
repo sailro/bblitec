@@ -104,6 +104,100 @@ protected:
     }
 };
 
+/**
+ * Chromium draws an open select's list in the top layer, above every stacking
+ * context of the page and outside every clip. RmlUi keeps the list
+ * (`selectbox`, `clip: none`) in its select's stacking contexts, where a later
+ * sibling context -- a panel after the select's own -- paints and hit-tests
+ * over it. While the focused select's box is open, the box and each stacking
+ * context above it rise over their siblings; a page still reads its authored
+ * z-index (`authored_z_index`).
+ */
+class UiSelectTopLayer {
+public:
+    /** Raises the focused select's open box, or restores a closed one's chain; whether either ran. */
+    bool sync(Rml::Context& context) {
+        auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(context.GetFocusElement());
+        const bool open = select && select->IsSelectBoxVisible();
+        if (open && select_.get() == select)
+            return false;
+        bool changed = restore();
+        if (open) {
+            raise(*select);
+            changed = true;
+        }
+        return changed;
+    }
+
+    /** The authored z-index of an element this layer raised. */
+    [[nodiscard]] std::optional<Rml::Style::ZIndex>
+    authored_z_index(const Rml::Element& element) const {
+        for (const auto& raised : chain_)
+            if (raised.element.get() == &element)
+                return raised.authored;
+        return std::nullopt;
+    }
+
+private:
+    struct Raised {
+        Rml::ObserverPtr<Rml::Element> element;
+        std::optional<Rml::Property> local;
+        Rml::Style::ZIndex authored;
+    };
+
+    /** RmlUi's local stacking context: a z-index, filter, mask, transform, isolation or clip-path. */
+    static bool stacking_context(Rml::Element& element) {
+        const auto& computed = element.GetComputedValues();
+        const auto* clip_path = element.GetLocalProperty(Rml::PropertyId::ClipPath);
+        return computed.z_index().type != Rml::Style::ZIndex::Auto || computed.has_filter() ||
+               computed.has_backdrop_filter() || computed.has_mask_image() ||
+               computed.has_local_transform() || computed.has_local_perspective() ||
+               computed.isolation() == Rml::Style::Isolation::Isolate ||
+               (clip_path && clip_path->ToString() != "none");
+    }
+
+    void raise(Rml::ElementFormControlSelect& select) {
+        Rml::Element* box = nullptr;
+        for (int index = 0; index < select.GetNumChildren(true); ++index)
+            if (select.GetChild(index)->GetTagName() == "selectbox")
+                box = select.GetChild(index);
+        if (!box)
+            return;
+        select_ = select.GetObserverPtr();
+        // The document's own stack orders documents, which no page shares.
+        for (Rml::Element* element = box; element && element != select.GetOwnerDocument();
+             element = element->GetParentNode()) {
+            if (element != box && !stacking_context(*element))
+                continue;
+            const auto* local = element->GetLocalProperty(Rml::PropertyId::ZIndex);
+            chain_.push_back({element->GetObserverPtr(),
+                              local ? std::optional<Rml::Property>(*local) : std::nullopt,
+                              element->GetComputedValues().z_index()});
+            element->SetProperty(Rml::PropertyId::ZIndex,
+                                 Rml::Property(2147483647.f, Rml::Unit::NUMBER));
+        }
+    }
+
+    bool restore() {
+        const bool raised = !chain_.empty();
+        for (const auto& entry : chain_) {
+            Rml::Element* element = entry.element.get();
+            if (!element)
+                continue;
+            if (entry.local)
+                element->SetProperty(Rml::PropertyId::ZIndex, *entry.local);
+            else
+                element->RemoveProperty(Rml::PropertyId::ZIndex);
+        }
+        chain_.clear();
+        select_.reset();
+        return raised;
+    }
+
+    Rml::ObserverPtr<Rml::Element> select_;
+    std::vector<Raised> chain_;
+};
+
 class UiControlArrowDecorator final : public Rml::Decorator {
     bool solid;
     struct Data {

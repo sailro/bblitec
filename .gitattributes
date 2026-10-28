@@ -1,6 +1,7 @@
 * text=auto
 
 *.cmake text eol=lf
+*.cc text eol=lf
 *.cpp text eol=lf
 *.dxil binary
 *.spv binary
