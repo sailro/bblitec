@@ -84,6 +84,11 @@ function parsed(text: string): string {
     }
 }
 
+async function parkedAsync(empty: boolean): Promise<unknown> {
+    if (empty) return null;
+    return undefined;
+}
+
 export async function run(): Promise<string> {
     const log: string[] = [];
     const limited = <T>(label: string, operation: () => Promise<T>): Promise<T> =>
@@ -125,6 +130,9 @@ export async function run(): Promise<string> {
         const doubled = value * 2;
         readers.push(() => doubled);
     }
+    const parkedNull = await parkedAsync(true);
+    const parkedUndefined = await parkedAsync(false);
+    log.push(\`parked \${parkedNull === null} \${parkedUndefined === undefined}\`);
     log.push(\`kept \${kept} readers \${readers.map((read) => read()).join(",")} \${parsed("[1]")} \${parsed("{")}\`);
     return log.join("\\n");
 }

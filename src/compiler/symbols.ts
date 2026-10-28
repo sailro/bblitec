@@ -1013,12 +1013,23 @@ export function isGlobalUndefined(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isIdentifier(node) &&
+    return absentLiteral(checker, unwrapExpression(expression)) === "undefined";
+}
+
+/**
+ * The absence an absent literal spells as written: `"null"` for `null`,
+ * `"undefined"` for the global `undefined`.
+ */
+export function absentLiteral(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+): "null" | "undefined" | undefined {
+    if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
+    return ts.isIdentifier(node) &&
         node.text === "undefined" &&
         isCheckerGlobal(checker, node)
-    );
+        ? "undefined"
+        : undefined;
 }
 
 /**
@@ -1031,10 +1042,10 @@ export function nullishLiteral(
     expression: ts.Expression,
 ): "null" | "undefined" | undefined {
     const node = unwrapExpression(expression);
-    if (node.kind === ts.SyntaxKind.NullKeyword) return "null";
-    return isGlobalUndefined(checker, node) || ts.isVoidExpression(node)
-        ? "undefined"
-        : undefined;
+    return (
+        absentLiteral(checker, node) ??
+        (ts.isVoidExpression(node) ? "undefined" : undefined)
+    );
 }
 
 /**

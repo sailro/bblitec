@@ -2,6 +2,7 @@ import { CPP_SCALAR } from "./cpp-types.js";
 import ts from "typescript";
 import type { MemberSpec, RecordSpec } from "./pinned-record-lowerer.js";
 import { valueKindOf } from "../compiler/type-facts.js";
+import { jsonAbsenceCpp } from "../compiler/values/model.js";
 import { typedArrayElement } from "../compiler/data-types/typed-arrays.js";
 import type { TypedArrayKind } from "../typed-array-classes.js";
 
@@ -278,12 +279,19 @@ export class RecordRepresentation {
         }
     }
 
-    public absent(shape: RecordShape): string | undefined {
-        if (shape.kind === "optional")
-            return this.nullable(shape.value)
-                ? `${this.cppType(shape.value)}{}`
-                : "std::nullopt";
-        return this.nullable(shape) ? `${this.cppType(shape)}{}` : undefined;
+    /**
+     * `absence` stored as `shape`: a dynamic value holds `undefined` and
+     * `null` apart, any other shape has one empty value.
+     */
+    public absent(
+        shape: RecordShape,
+        absence: "undefined" | "null" = "undefined",
+    ): string | undefined {
+        const stored = this.storedShape(shape);
+        if (stored.kind === "json")
+            return jsonAbsenceCpp(absence, this.storage.jsNamespace);
+        if (stored.kind === "optional") return "std::nullopt";
+        return this.nullable(stored) ? `${this.cppType(stored)}{}` : undefined;
     }
 
     public truthy(value: string, shape: RecordShape): string {
