@@ -250,7 +250,8 @@ export function packagedAudioUrl(
 
 /** `new Audio([url])`: an element over a packaged source (`pal_audio_element.hpp`). */
 function compileAudioElementConstructor(
-    context: PackagedResponseContext & Pick<LoweringServices, "audioSessionCpp">,
+    context: PackagedResponseContext &
+        Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value {
     if (!context.options.workers) throw new ApplicationRealmRequired();
@@ -277,7 +278,8 @@ function compileAudioElementConstructor(
 }
 
 export function compileAudioConstructor(
-    context: PackagedResponseContext & Pick<LoweringServices, "audioSessionCpp">,
+    context: PackagedResponseContext &
+        Pick<LoweringServices, "audioSessionCpp">,
     expression: ts.NewExpression,
 ): Value | undefined {
     if (context.libraryGlobal(expression.expression) === "Audio")

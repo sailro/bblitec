@@ -702,7 +702,7 @@ inline std::shared_ptr<bbl::SplatStreamSourceGpu> upload_source(bbl::GpuDevice& 
                            static_cast<double>(SogImages::height), 1};
         descriptor.format = "rgba8unorm";
         descriptor.usage = TU::texture_binding | TU::copy_dst | TU::render_attachment;
-        const auto texture = device.create_texture(descriptor);
+        const auto texture = device.texture(descriptor);
         bbl::pal::DecodedImage decoded;
         decoded.width = static_cast<int>(SogImages::width);
         decoded.height = static_cast<int>(SogImages::height);

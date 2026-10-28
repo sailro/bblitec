@@ -13,15 +13,13 @@ import type { LoweringContext } from "./context.js";
 export function assertExternalRenderableContracts(
     context: LoweringContext,
 ): void {
-    const check = (module: string, name: string, source: string): void => {
-        const { file, declaration } = context.functionDeclaration(module, name);
-        context.assertStatementShapes(
-            file,
-            [declaration],
+    const check = (module: string, name: string, source: string): void =>
+        context.assertFunctionContract(
+            module,
+            name,
             source,
             `${module}#${name} external-renderable contract`,
         );
-    };
     check(
         "src/render/draw-update-batches.ts",
         "enableDrawBatchCollection",

@@ -11,7 +11,10 @@ import { sharedPinnedContext } from "../lowering/context.js";
 import type { LoweredLibrary } from "../lowering/library-runtime.js";
 import { MESH_LOD_LIBRARY } from "../lowering/mesh-lod-library.js";
 import type { PinnedRecordModel } from "../lowering/pinned-record-lowerer.js";
-import type { RecordShape } from "../lowering/record-shapes.js";
+import {
+    isPrimitiveShape,
+    type RecordShape,
+} from "../lowering/record-shapes.js";
 import { SPLAT_STREAM_LIBRARY } from "../lowering/splat-stream-library.js";
 import { isPinnedType, pinnedRecordHandleKind } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -60,22 +63,36 @@ export function publicMember(
     access: ts.PropertyAccessExpression,
     owner: string,
 ): PublicMember | undefined {
-    const declaration = resolvedSymbol(checker, access)?.declarations?.find(
-        ts.isPropertySignature,
+    return publicMemberNamed(
+        checker,
+        resolvedSymbol(checker, access),
+        checker.getTypeAtLocation(access.expression),
+        access.name.text,
+        owner,
     );
+}
+
+/** The member `name` of `symbol` on a value of `ownerType`, when declared publicly. */
+function publicMemberNamed(
+    checker: ts.TypeChecker,
+    symbol: ts.Symbol | undefined,
+    ownerType: ts.Type,
+    name: string,
+    owner: string,
+): PublicMember | undefined {
+    const declaration = symbol?.declarations?.find(ts.isPropertySignature);
     if (
         !declaration ||
         !ts.isInterfaceDeclaration(declaration.parent) ||
-        !declaringInterfaces(
-            checker.getTypeAtLocation(access.expression),
-            owner,
-        ).has(declaration.parent.name.text) ||
+        !declaringInterfaces(ownerType, owner).has(
+            declaration.parent.name.text,
+        ) ||
         internalMember(declaration)
     )
         return undefined;
     return {
-        name: access.name.text,
-        field: cppIdentifier(snakeCase(access.name.text)),
+        name,
+        field: cppIdentifier(snakeCase(name)),
         // The declared type: a read inside a null check narrows its own.
         type: checker.getTypeAtLocation(declaration),
         readonly:
@@ -144,6 +161,20 @@ function loweredMemberValue(
                     kind: "optional",
                     inner: { kind: inner },
                 });
+            // A record the program holds, or none: the record stores none
+            // as a null handle.
+            if (inner === "record") {
+                const handle = pinnedRecordHandleKind(shape.value.name);
+                return handle
+                    ? context.dataLowerer.leafValue(
+                          `bbl::library::nullable_handle(${read})`,
+                          {
+                              kind: "optional",
+                              inner: { kind: "handle", handle },
+                          },
+                      )
+                    : undefined;
+            }
             // The record stores `Error | null` as an empty js::Error for null.
             if (inner === "error")
                 return context.dataLowerer.leafValue(
@@ -155,7 +186,10 @@ function loweredMemberValue(
         case "record": {
             const handle = pinnedRecordHandleKind(shape.name);
             return handle
-                ? context.dataLowerer.leafValue(read, { kind: "handle", handle })
+                ? context.dataLowerer.leafValue(read, {
+                      kind: "handle",
+                      handle,
+                  })
                 : undefined;
         }
         case "tuple":
@@ -191,37 +225,141 @@ export function readLoweredRecordProperty(
     owner: Value,
     access: ts.PropertyAccessExpression,
 ): Value | undefined {
-    // A record value is its handle kind, typed or not.
-    const handle =
-        owner.dataType?.kind === "handle" ? owner.dataType.handle : owner.kind;
     // The value is the record its handle names, whichever declared type
     // (an interface it extends) the program reads it as.
+    const held = heldRecord(owner);
+    if (!held) return undefined;
+    const { library, record } = held;
+    if (!publicMember(context.checker, access, record))
+        return context.fail(
+            access,
+            `${record}.${access.name.text} is not a public member the native library reads.`,
+        );
+    const model = library.model(sharedPinnedContext());
+    const name = access.name.text;
+    const shape = model.memberShape(record, name);
+    return (
+        loweredMemberValue(
+            context,
+            shape,
+            model.memberRead(`(${owner.cpp})`, record, name),
+        ) ??
+        context.fail(
+            access,
+            `${record}.${name} of type ${context.checker.typeToString(context.checker.getTypeAtLocation(access))} has no native read.`,
+        )
+    );
+}
+
+type LoweredRecordStoreContext = Pick<
+    LoweringServices,
+    "checker" | "fail" | "emit"
+> & {
+    readonly dataLowerer: Pick<
+        LoweringServices["dataLowerer"],
+        "compileKnownValueForSink"
+    >;
+};
+
+/**
+ * The lowered library record a value holds, with its library: the record its
+ * handle kind names, typed or not.
+ */
+export function heldRecord(
+    owner: Value,
+): { library: LoweredLibrary; record: string } | undefined {
+    const handle =
+        owner.dataType?.kind === "handle" ? owner.dataType.handle : owner.kind;
     for (const { library } of LOWERED_LIBRARIES) {
         const record = library.records.find(
             (name) => pinnedRecordHandleKind(name) === handle,
         );
-        if (!record) continue;
-        if (!publicMember(context.checker, access, record))
-            return context.fail(
-                access,
-                `${record}.${access.name.text} is not a public member the native library reads.`,
-            );
-        const model = library.model(sharedPinnedContext());
-        const name = access.name.text;
-        const shape = model.memberShape(record, name);
-        return (
-            loweredMemberValue(
-                context,
-                shape,
-                model.memberRead(`(${owner.cpp})`, record, name),
-            ) ??
-            context.fail(
-                access,
-                `${record}.${name} of type ${context.checker.typeToString(context.checker.getTypeAtLocation(access))} has no native read.`,
-            )
-        );
+        if (record) return { library, record };
     }
     return undefined;
+}
+
+/**
+ * A value the program writes as the record model stores a member of
+ * `shape`: a primitive, or the arm of a primitive union it is
+ * (`renderScale: number | "auto"`).
+ */
+function loweredMemberStore(
+    context: LoweredRecordStoreContext,
+    model: PinnedRecordModel,
+    shape: RecordShape,
+    value: Value,
+    site: ts.Node,
+): string | undefined {
+    if (isPrimitiveShape(shape))
+        return context.dataLowerer.compileKnownValueForSink(
+            value,
+            { kind: shape.kind },
+            site,
+        );
+    if (shape.kind !== "variant") return undefined;
+    // A union the program holds (`std::variant` of its members): the arm it
+    // holds, in the record's union.
+    if (value.dataType?.kind === "union")
+        return `bbl::pinned::variant_cast<${model.cppType(shape)}>(${value.cpp})`;
+    const held = value.dataType?.kind ?? value.kind;
+    const arm = shape.members.find(
+        (member) => isPrimitiveShape(member) && member.kind === held,
+    );
+    return arm && isPrimitiveShape(arm)
+        ? `${model.cppType(shape)}(${context.dataLowerer.compileKnownValueForSink(value, { kind: arm.kind }, site)})`
+        : undefined;
+}
+
+/**
+ * `record.<name> = value` of a lowered library's public record the program
+ * holds (`owner`, of `ownerType`): the record model's own store of the
+ * member, the value as its shape takes it.
+ */
+export function storeLoweredRecordProperty(
+    context: LoweredRecordStoreContext,
+    owner: Value,
+    ownerType: ts.Type,
+    name: string,
+    value: Value,
+    site: ts.Node,
+): void {
+    const held = heldRecord(owner);
+    if (!held)
+        return context.fail(
+            site,
+            `.${name} is written on a value no native library record holds.`,
+        );
+    const { library, record } = held;
+    const member = publicMemberNamed(
+        context.checker,
+        ownerType.getProperty(name),
+        ownerType,
+        name,
+        record,
+    );
+    if (!member || member.readonly)
+        return context.fail(
+            site,
+            `${record}.${name} is not a public member the program writes.`,
+        );
+    const model = library.model(sharedPinnedContext());
+    const stored =
+        loweredMemberStore(
+            context,
+            model,
+            model.memberShape(record, name),
+            value,
+            site,
+        ) ??
+        context.fail(
+            site,
+            `${record}.${name} takes no ${value.dataType?.kind ?? value.kind} natively.`,
+        );
+    context.emit({
+        kind: "expression",
+        code: `${model.memberWrite(`(${owner.cpp})`, record, name, stored)};`,
+    });
 }
 
 /** The lowered libraries' scene nodes a program holds (`library::SceneNode`). */

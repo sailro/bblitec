@@ -10,7 +10,7 @@ import ts from "typescript";
 import { cppIdentifier, snakeCase } from "../../cpp-literals.js";
 import type { LoweringServices } from "../lowering-services.js";
 import { pinnedRecordHandleKind } from "../data-types.js";
-import { LOWERED_LIBRARIES } from "../lowered-record-surface.js";
+import { heldRecord, LOWERED_LIBRARIES } from "../lowered-record-surface.js";
 import { calledDeclaration } from "../symbols.js";
 import { argumentAt } from "../syntax.js";
 import { valueKinds } from "../type-facts.js";
@@ -115,6 +115,31 @@ export function compileLoweredLibraryIntrinsic(
                       index,
                   );
         }
+        // A union some of whose arms are the library's records
+        // (`GaussianSplattingMesh | GaussianSplatStream`): one the program
+        // holds of the library, as the union holds it.
+        const arms =
+            parameter.type && ts.isUnionTypeNode(parameter.type)
+                ? parameter.type.types.map(declaredName)
+                : [];
+        const records = arms.filter(
+            (arm): arm is string =>
+                arm !== undefined && entry.library.records.includes(arm),
+        );
+        if (records.length > 0) {
+            const value = context.compileValue(site);
+            const held = heldRecord(value);
+            if (!held || !records.includes(held.record))
+                return context.fail(
+                    site,
+                    `${name} takes ${label} as a ${records.join(" or ")} of the native library, not a ${value.kind}.`,
+                );
+            return context.bindings.pinValueToTemporary(
+                value,
+                `library_${snakeCase(label)}`,
+                site,
+            ).cpp;
+        }
         // One kind of value: a literal union (`MeshLoDDebugView`) included.
         const [kind, ...others] = valueKinds(
             context.checker.getTypeAtLocation(parameter),
@@ -159,7 +184,10 @@ export function compileLoweredLibraryIntrinsic(
         ? {
               kind: "promise",
               cpp,
-              promiseType: context.dataTypes.cppType({ kind: "handle", handle }),
+              promiseType: context.dataTypes.cppType({
+                  kind: "handle",
+                  handle,
+              }),
               promiseResult: record,
           }
         : record;

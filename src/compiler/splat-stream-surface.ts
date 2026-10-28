@@ -1,16 +1,17 @@
 /**
- * The members of a streamed Gaussian-splat cloud the application writes
- * (its reads are `lowered-record-surface.ts`'s): a public number of the
- * lowered `GaussianSplatStream` record (`bblite/upstream_splat_stream.hpp`),
- * and `rotation`, the stream node's Euler proxy (scene-node.ts
- * `createEulerProxy`), whose writes update the quaternion the world matrix
- * composes.
+ * A lowered library record's members the application writes (its reads
+ * are `lowered-record-surface.ts`'s): a public member of a record it holds
+ * (`stream.screenError`, `pointSplatting.colorRenderMode`), and `rotation`,
+ * a stream node's Euler proxy (scene-node.ts `createEulerProxy`), whose
+ * writes update the quaternion the world matrix composes.
  */
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { isPinnedType } from "./data-types.js";
-import { publicMember } from "./lowered-record-surface.js";
-import { valueKindOf } from "./type-facts.js";
+import {
+    LOWERED_LIBRARIES,
+    storeLoweredRecordProperty,
+} from "./lowered-record-surface.js";
 
 interface SplatStreamSurfaceContext extends Pick<
     LoweringServices,
@@ -23,15 +24,13 @@ interface SplatStreamSurfaceContext extends Pick<
     | "fail"
 > {}
 
-const isNumber = (type: ts.Type): boolean => valueKindOf(type) === "number";
-
 /** The Euler proxy's axes, in its setter's lane order. */
 const EULER_AXES = ["x", "y", "z"];
 
 /**
- * `stream.<member> = v` of a public number the pin lets the application
- * write, and `stream.rotation.<axis> = v`: a plain write of the record's
- * field, and the Euler proxy's setter.
+ * `record.<member> = v` of a lowered library record's public member
+ * (`storeLoweredRecordProperty`), and `stream.rotation.<axis> = v`: the
+ * Euler proxy's setter.
  */
 export function emitSplatStreamAssignment(
     context: SplatStreamSurfaceContext,
@@ -39,19 +38,23 @@ export function emitSplatStreamAssignment(
 ): boolean {
     const left = expression.left;
     if (!ts.isPropertyAccessExpression(left)) return false;
-    const streamOwner = (node: ts.Expression): boolean =>
-        isPinnedType(context.checker.getTypeAtLocation(node), [
-            "GaussianSplatStream",
-        ]);
+    const recordOwner = (node: ts.Expression): boolean =>
+        isPinnedType(
+            context.checker.getTypeAtLocation(node),
+            LOWERED_LIBRARIES.flatMap(({ library }) => library.records),
+        );
     const rotation =
         ts.isPropertyAccessExpression(left.expression) &&
         left.expression.name.text === "rotation" &&
-        streamOwner(left.expression.expression);
-    if (!rotation && !streamOwner(left.expression)) return false;
+        isPinnedType(
+            context.checker.getTypeAtLocation(left.expression.expression),
+            ["GaussianSplatStream"],
+        );
+    if (!rotation && !recordOwner(left.expression)) return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
         context.fail(
             expression.operatorToken,
-            "A stream member takes a simple assignment natively.",
+            "A library record member takes a simple assignment natively.",
         );
     if (rotation) {
         const axis = EULER_AXES.indexOf(left.name.text);
@@ -71,20 +74,18 @@ export function emitSplatStreamAssignment(
         });
         return true;
     }
-    const member = publicMember(context.checker, left, "GaussianSplatStream");
-    if (!member || member.readonly || !isNumber(member.type))
-        return context.fail(
-            left.name,
-            `GaussianSplatStream.${left.name.text} is not a writable stream member.`,
-        );
-    const stream = context.bindings.pinValueToTemporary(
+    const owner = context.bindings.pinValueToTemporary(
         context.compileValue(left.expression),
-        "stream",
+        "record",
         left.expression,
     );
-    context.emit({
-        kind: "expression",
-        code: `(${stream.cpp})->${member.field} = ${context.compileNumber(expression.right, "double")};`,
-    });
+    storeLoweredRecordProperty(
+        context,
+        owner,
+        context.checker.getTypeAtLocation(left.expression),
+        left.name.text,
+        context.compileValue(expression.right),
+        left.name,
+    );
     return true;
 }

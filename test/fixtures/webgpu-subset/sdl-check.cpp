@@ -84,7 +84,8 @@ struct SdlTarget final : stream_check::RenderTarget {
             bbl::pal::SdlRenderPass pass{
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info)};
             stream_check::require(pass.get() != nullptr, "SDL_BeginGPURenderPass");
-            draw(bbl::pal::SdlWebGpuDevice::borrow_render_pass(command, pass));
+            bbl::GpuEncoderHandle lent;
+            draw(bbl::pal::SdlWebGpuDevice::lend_render_pass(lent, command, pass));
         }
         {
             bbl::pal::SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};

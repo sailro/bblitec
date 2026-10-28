@@ -32,6 +32,10 @@
 #define NOMINMAX
 #include <windows.h>
 #include <psapi.h>
+#if defined(_MSC_VER)
+// navigator.maxTouchPoints reads GetSystemMetrics.
+#pragma comment(lib, "user32.lib")
+#endif
 #elif defined(__APPLE__)
 #include <bblite/js_data.hpp>
 #include <CoreFoundation/CoreFoundation.h>
@@ -63,6 +67,19 @@ std::string js::macos_time_zone() {
 
 std::string native_platform() { return SDL_GetPlatform(); }
 double logical_processor_count() { return static_cast<double>(SDL_GetNumLogicalCPUCores()); }
+double max_touch_points() {
+#if defined(_WIN32)
+    // What Chromium reports on Windows.
+    return static_cast<double>(GetSystemMetrics(SM_MAXIMUMTOUCHES));
+#else
+    // A device without touch input reports none; elsewhere the contact
+    // count is not measured.
+    if (pal::touch_device_count() == 0)
+        return 0;
+    throw std::runtime_error(
+        "navigator.maxTouchPoints: this platform reports touch devices, not their contact count.");
+#endif
+}
 const void* native_navigator_identity() {
     static const bool identity = true;
     return std::addressof(identity);

@@ -6,6 +6,7 @@
 #include <bblite/runtime.hpp>
 
 #include <memory>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,8 @@ struct GpuTextureDescriptor {
     std::string format;
     GpuExtent3D size;
     double usage = 0;
+    /** `sampleCount`, 1 when absent. */
+    bbl::js::Nullable<double> sample_count;
 };
 struct GpuBufferBinding {
     GpuHandle buffer;
@@ -72,8 +75,16 @@ struct GpuRenderPassColorAttachment {
     std::string load_op;
     std::string store_op;
 };
+struct GpuRenderPassDepthStencilAttachment {
+    GpuHandle view;
+    bbl::js::Nullable<double> depth_clear_value;
+    bbl::js::Nullable<std::string> depth_load_op;
+    bbl::js::Nullable<std::string> depth_store_op;
+};
 struct GpuRenderPassDescriptor {
+    bbl::js::Nullable<std::string> label;
     js::Array<GpuRenderPassColorAttachment> color_attachments;
+    bbl::js::Nullable<GpuRenderPassDepthStencilAttachment> depth_stencil_attachment;
 };
 
 /** `GPUSupportedLimits`: the members a reached pin reads. */
@@ -167,10 +178,36 @@ struct GpuProgrammableStage {
     GpuHandle module;
     bbl::js::Nullable<std::string> entry_point;
 };
-/** `GPUComputePipelineDescriptor` with an explicit layout. */
+/** `GPUTextureViewDescriptor`: the members a reached pin sets. */
+struct GpuTextureViewDescriptor {
+    bbl::js::Nullable<std::string> aspect;
+    bbl::js::Nullable<std::string> dimension;
+};
+/** `texture.createView(descriptor)`: a texture with one kind of view takes the descriptor unset. */
+inline std::shared_ptr<GpuObject> gpu_texture_view(GpuObject& texture,
+                                                   const GpuTextureViewDescriptor& descriptor) {
+    if (descriptor.aspect || descriptor.dimension)
+        throw std::runtime_error("GPU texture has no view of that aspect or dimension.");
+    return texture.create_view();
+}
+/** `GPUPipelineLayout | "auto"`: a layout, or none for the device to derive from the stages. */
+struct GpuPipelineLayoutChoice {
+    GpuPipelineLayoutChoice() = default;
+    GpuPipelineLayoutChoice(GpuHandle layout) : layout(std::move(layout)) {}
+    GpuPipelineLayoutChoice(const std::string& mode) {
+        if (mode != "auto")
+            throw std::runtime_error("A pipeline layout is a GPUPipelineLayout or \"auto\".");
+    }
+    template <class... T>
+    GpuPipelineLayoutChoice(const std::variant<T...>& value)
+        : GpuPipelineLayoutChoice(std::visit(
+              [](const auto& member) { return GpuPipelineLayoutChoice(member); }, value)) {}
+    GpuHandle layout;
+};
+/** `GPUComputePipelineDescriptor`. */
 struct GpuComputePipelineDescriptor {
     bbl::js::Nullable<std::string> label;
-    GpuHandle layout;
+    GpuPipelineLayoutChoice layout;
     GpuProgrammableStage compute;
 };
 struct GpuBlendComponent {
@@ -212,7 +249,7 @@ struct GpuVertexState : GpuProgrammableStage {
 /** `GPURenderPipelineDescriptor`: a vertex stage without vertex buffers. */
 struct GpuRenderPipelineDescriptor {
     bbl::js::Nullable<std::string> label;
-    GpuHandle layout;
+    GpuPipelineLayoutChoice layout;
     GpuVertexState vertex;
     bbl::js::Nullable<GpuFragmentState> fragment;
     bbl::js::Nullable<GpuPrimitiveState> primitive;
@@ -286,6 +323,11 @@ struct GpuEncoder {
     virtual void set_bind_group(double index, const GpuHandle& group) = 0;
     virtual void draw(double vertices, double instances, double first_vertex,
                       double first_instance) = 0;
+    /** `draw(vertexCount, instanceCount = 1, firstVertex = 0, firstInstance = 0)`. */
+    void draw(double vertices, js::Nullable<double> instances = {},
+              js::Nullable<double> first_vertex = {}, js::Nullable<double> first_instance = {}) {
+        draw(vertices, instances.value_or(1), first_vertex.value_or(0), first_instance.value_or(0));
+    }
     /** `GPURenderBundleEncoder.finish()`. */
     virtual GpuHandle finish() {
         throw std::runtime_error("GPU pass encoder cannot finish a render bundle.");
@@ -300,8 +342,72 @@ struct GpuEncoder {
     virtual void draw_indirect(const GpuHandle&, double) {
         throw std::runtime_error("This GPU encoder does not draw indirectly.");
     }
+    /** Whether the renderer's pass drew before this point; unknown for any other encoder. */
+    virtual std::optional<bool> pass_has_draws() const { return std::nullopt; }
+    /**
+     * The renderer's pass ended, `work` recorded into the frame between its
+     * two halves, and the pass resumed loading what it stored, its pipeline
+     * bound again; false for an encoder that cannot pause.
+     */
+    virtual bool pause_pass(const std::function<void()>&) { return false; }
 };
 using GpuEncoderHandle = std::shared_ptr<GpuEncoder>;
+
+/**
+ * `new Proxy(pass, { get })` over an encoder: each method runs the hook its
+ * trap returned for it, or forwards to the target.
+ */
+struct GpuEncoderProxy final : GpuEncoder {
+    explicit GpuEncoderProxy(GpuEncoderHandle target) : target(std::move(target)) {}
+    GpuEncoderHandle target;
+    js::Callback<void(GpuHandle)> set_pipeline_hook;
+    js::Callback<void(double, GpuHandle)> set_vertex_buffer_hook;
+    js::Callback<void(double, GpuHandle)> set_bind_group_hook;
+    js::Callback<void(double, js::Nullable<double>, js::Nullable<double>, js::Nullable<double>)>
+        draw_hook;
+    js::Callback<void(GpuHandle, double)> draw_indirect_hook;
+    js::Callback<GpuHandle()> finish_hook;
+    js::Callback<void(js::Array<GpuHandle>)> execute_bundles_hook;
+    js::Callback<void()> end_hook;
+
+    void set_pipeline(const GpuHandle& pipeline) override {
+        set_pipeline_hook ? set_pipeline_hook(pipeline) : target->set_pipeline(pipeline);
+    }
+    void set_vertex_buffer(double slot, const GpuHandle& buffer) override {
+        set_vertex_buffer_hook ? set_vertex_buffer_hook(slot, buffer)
+                               : target->set_vertex_buffer(slot, buffer);
+    }
+    void set_bind_group(double index, const GpuHandle& group) override {
+        set_bind_group_hook ? set_bind_group_hook(index, group)
+                            : target->set_bind_group(index, group);
+    }
+    void draw(double vertices, double instances, double first_vertex,
+              double first_instance) override {
+        draw_hook ? draw_hook(vertices, instances, first_vertex, first_instance)
+                  : target->draw(vertices, instances, first_vertex, first_instance);
+    }
+    void draw_indirect(const GpuHandle& buffer, double offset) override {
+        draw_indirect_hook ? draw_indirect_hook(buffer, offset)
+                           : target->draw_indirect(buffer, offset);
+    }
+    GpuHandle finish() override { return finish_hook ? finish_hook() : target->finish(); }
+    void execute_bundles(const js::Array<GpuHandle>& bundles) override {
+        execute_bundles_hook ? execute_bundles_hook(bundles) : target->execute_bundles(bundles);
+    }
+    void end() override { end_hook ? end_hook() : target->end(); }
+    std::optional<bool> pass_has_draws() const override { return target->pass_has_draws(); }
+    bool pause_pass(const std::function<void()>& work) override { return target->pause_pass(work); }
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(set_pipeline_hook);
+        visitor(set_vertex_buffer_hook);
+        visitor(set_bind_group_hook);
+        visitor(draw_hook);
+        visitor(draw_indirect_hook);
+        visitor(finish_hook);
+        visitor(execute_bundles_hook);
+        visitor(end_hook);
+    }
+};
 
 /** The reached `GPUCommandEncoder` surface. */
 struct GpuCommandEncoder {
@@ -361,8 +467,23 @@ struct GpuDevice {
     virtual GpuHandle create_buffer(const GpuBufferDescriptor&) {
         throw std::runtime_error("This GPU device does not provide buffer creation.");
     }
+    /** The backend's texture; `texture` is the one entry, which records its extent. */
     virtual GpuHandle create_texture(const GpuTextureDescriptor&) {
         throw std::runtime_error("This GPU device does not provide texture creation.");
+    }
+    /** `object`, named by its descriptor's label where it has one (`GPUObjectBase.label`). */
+    template <class Descriptor>
+    static GpuHandle labelled(GpuHandle object, const Descriptor& descriptor) {
+        if (descriptor.label)
+            object->label = *descriptor.label;
+        return object;
+    }
+    /** `createTexture(descriptor)`: the backend's texture, with the extent it reads back. */
+    GpuHandle texture(const GpuTextureDescriptor& descriptor) {
+        auto texture = labelled(create_texture(descriptor), descriptor);
+        texture->width = descriptor.size.width;
+        texture->height = descriptor.size.height;
+        return texture;
     }
     virtual GpuHandle create_bind_group(const GpuBindGroupDescriptor&) {
         throw std::runtime_error("This GPU device does not provide bind groups.");
@@ -389,8 +510,16 @@ struct GpuDevice {
     virtual GpuHandle create_compute_pipeline(const GpuComputePipelineDescriptor&) {
         throw std::runtime_error("This GPU device does not provide compute pipelines.");
     }
+    /** `createComputePipeline(descriptor)`: the backend's pipeline, labelled by its descriptor. */
+    GpuHandle compute_pipeline(const GpuComputePipelineDescriptor& descriptor) {
+        return labelled(create_compute_pipeline(descriptor), descriptor);
+    }
     virtual GpuHandle create_render_pipeline(const GpuRenderPipelineDescriptor&) {
         throw std::runtime_error("This GPU device does not provide render pipelines.");
+    }
+    /** `createRenderPipeline(descriptor)`: the backend's pipeline, labelled by its descriptor. */
+    GpuHandle render_pipeline(const GpuRenderPipelineDescriptor& descriptor) {
+        return labelled(create_render_pipeline(descriptor), descriptor);
     }
     virtual GpuCommandEncoderHandle create_command_encoder(const GpuCommandEncoderDescriptor&) {
         throw std::runtime_error("This GPU device does not provide command encoders.");

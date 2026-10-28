@@ -216,6 +216,8 @@ struct SdlStages : Stages {
     int* camera = nullptr;
     int matrix = 0, frame_view = 0;
     bool scene_matrix_bound = false;
+    // Whether the pass drew so far, as a library pausing it reads.
+    bool pass_drawn = false;
     static int write_billboard_scene_block(int, const Scene&, const Engine&, const int*, int, int) {
         return 0;
     }
@@ -244,6 +246,8 @@ struct DawnStages : Stages {
     } state;
     int* camera = nullptr;
     WGPURenderPipeline bound_pipeline = nullptr;
+    // Whether the pass drew so far, as a library pausing it reads.
+    bool pass_drawn = false;
     struct Frame {
         struct {
             int view = 0;

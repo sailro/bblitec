@@ -15,6 +15,10 @@ import {
     type OwnPresence,
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import {
+    heldRecord,
+    storeLoweredRecordProperty,
+} from "./lowered-record-surface.js";
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
@@ -1078,6 +1082,35 @@ function compileObjectAssign(
                     kind: "expression",
                     code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
                 });
+        });
+        return owner;
+    }
+    // A lowered library's record the program holds: each own source
+    // property stored as the record model stores that member.
+    if (heldRecord(target)) {
+        const owner = context.bindings.pinValueToTemporary(
+            target,
+            "assign_target",
+            targetExpression,
+        );
+        const values = sources.map((source) =>
+            context.bindings.pinValueToTemporary(
+                context.compileValue(source),
+                "assign_source",
+                source,
+            ),
+        );
+        const ownerType = context.checker.getTypeAtLocation(targetExpression);
+        sources.forEach((source, index) => {
+            for (const [key, value] of sourcePairs(source, values[index]))
+                storeLoweredRecordProperty(
+                    context,
+                    owner,
+                    ownerType,
+                    key,
+                    value,
+                    source,
+                );
         });
         return owner;
     }

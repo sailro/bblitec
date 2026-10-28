@@ -18,6 +18,9 @@ const handleCppTypes: Record<HandleKind, string> = {
     "mesh-lod-metadata": "bbl::MeshLoDMetadata",
     "mesh-lod-diagnostics": "std::shared_ptr<bbl::MeshLoDDiagnostics>",
     "splat-stream-stats": "std::shared_ptr<bbl::GaussianSplatStreamStats>",
+    "gaussian-point-splatting": "std::shared_ptr<bbl::GaussianPointSplatting>",
+    "gaussian-point-splatting-progress":
+        "std::shared_ptr<bbl::GaussianPointSplattingProgress>",
     "splat-voxel-collision": "std::shared_ptr<bbl::SplatVoxelCollision>",
     "node-input": "bbl::NodeInputHandle",
     "text-data": "std::shared_ptr<bbl::TextDataState>",

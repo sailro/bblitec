@@ -402,7 +402,7 @@ struct SdlWebGpuSampler final : GpuObject {
 struct SdlWebGpuTexture final : GpuObject {
     std::shared_ptr<SdlWebGpuOwner> owner;
     std::shared_ptr<SdlWebGpuTextureLease> lease;
-    std::uint32_t usage = 0, width = 0, height = 0;
+    std::uint32_t usage = 0;
     const void* device_identity() const override { return owner->device; }
     void write_texture_bytes(std::span<const std::uint8_t> data,
                              const GpuTextureWriteLayout& layout,
@@ -446,6 +446,7 @@ struct SdlWebGpuPipelineLayout final : GpuObject {
 struct SdlWebGpuComputePipeline final : GpuObject {
     std::shared_ptr<SdlWebGpuComputeLease> lease;
     GpuHandle layout;
+    GpuHandle get_bind_group_layout(double index) override;
 };
 /** A render stage's sidecar: its slots and the WGSL binding each resource name has. */
 struct SdlWebGpuRenderStage {
@@ -456,7 +457,59 @@ struct SdlWebGpuRenderPipeline final : GpuObject {
     std::shared_ptr<SdlWebGpuGraphicsLease> lease;
     GpuHandle layout;
     SdlWebGpuRenderStage vertex, fragment;
+    GpuHandle get_bind_group_layout(double index) override;
 };
+/** `getBindGroupLayout(index)` of a pipeline's layout. */
+inline GpuHandle sdl_webgpu_group_layout(const GpuHandle& layout, double index) {
+    const auto& groups = webgpu_object<SdlWebGpuPipelineLayout>(layout, "pipeline layout")->groups;
+    const auto group = webgpu_flags(index);
+    if (group >= groups.size())
+        webgpu_refuse("getBindGroupLayout names a group the pipeline has none of.");
+    return groups[group];
+}
+inline GpuHandle SdlWebGpuComputePipeline::get_bind_group_layout(double index) {
+    return sdl_webgpu_group_layout(layout, index);
+}
+inline GpuHandle SdlWebGpuRenderPipeline::get_bind_group_layout(double index) {
+    return sdl_webgpu_group_layout(layout, index);
+}
+/**
+ * `layout: "auto"`: the bind group layouts a compiled compute stage's
+ * slots declare, group by group (the dispatch's own workgroup counts bind
+ * outside them).
+ */
+inline GpuHandle sdl_webgpu_derived_layout(const std::vector<SdlComputeSlot>& slots) {
+    auto layout = std::make_shared<SdlWebGpuPipelineLayout>();
+    std::vector<std::shared_ptr<SdlWebGpuBindGroupLayout>> groups;
+    for (const auto& slot : slots) {
+        if (slot.workgroup_counts)
+            continue;
+        while (groups.size() <= slot.group)
+            groups.push_back(std::make_shared<SdlWebGpuBindGroupLayout>());
+        WebGpuLayoutEntry entry;
+        entry.binding = slot.binding;
+        entry.visibility = webgpu_shader_stage::compute;
+        if (slot.kind == 'b')
+            entry.buffer = WebGpuBufferBinding::uniform;
+        else if (slot.kind == 'r')
+            entry.buffer = WebGpuBufferBinding::read_only_storage;
+        else if (slot.kind == 'w')
+            entry.buffer = WebGpuBufferBinding::storage;
+        else if (slot.kind == 't')
+            entry.texture = true;
+        else if (slot.kind == 's')
+            entry.sampler = true;
+        else
+            webgpu_refuse("a derived layout binds no storage textures.");
+        groups[slot.group]->entries.push_back(entry);
+    }
+    for (auto& group : groups) {
+        std::sort(group->entries.begin(), group->entries.end(),
+                  [](const auto& left, const auto& right) { return left.binding < right.binding; });
+        layout->groups.push_back(group);
+    }
+    return layout;
+}
 /** A bind group entry, resolved to its SDL object when the group is created. */
 struct SdlWebGpuGroupEntry {
     std::uint32_t binding = 0;
@@ -899,9 +952,8 @@ sdl_webgpu_stage_bindings(const PinnedStageSlots& slots) {
 }
 
 /** A renderer's open pass, for a renderable's `draw`. */
-struct SdlWebGpuRenderPass final : GpuEncoder {
+struct SdlWebGpuRenderPass final : WebGpuLentPass<SDL_GPURenderPass*> {
     SDL_GPUCommandBuffer* command = nullptr;
-    SDL_GPURenderPass* pass = nullptr;
     std::shared_ptr<SdlWebGpuRenderPipeline> pipeline;
     std::vector<SdlWebGpuBoundGroup> groups;
     std::vector<SDL_GPUBuffer*> storage_scratch;
@@ -972,7 +1024,17 @@ struct SdlWebGpuRenderPass final : GpuEncoder {
         bind();
         SDL_DrawGPUPrimitivesIndirect(pass, arguments->gpu_buffer(), webgpu_flags(offset), 1);
     }
-    void end() override { webgpu_refuse("a renderer's pass is ended by its renderer."); }
+    /** A draw's own state: a renderable sets what it draws with. */
+    void clear() {
+        pipeline.reset();
+        groups.clear();
+    }
+
+protected:
+    void resumed() override {
+        if (pipeline)
+            SDL_BindGPUGraphicsPipeline(pass, pipeline->lease->get());
+    }
 };
 
 /** The WebGPU subset over an SDL_GPU device; it retires every lease it created when it ends. */
@@ -1056,6 +1118,8 @@ struct SdlWebGpuDevice : GpuDevice {
     GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
         if (descriptor.format != "rgba8unorm")
             webgpu_refuse("the subset creates rgba8unorm textures only.");
+        if (descriptor.sample_count.value_or(1) != 1)
+            webgpu_refuse("the subset creates single-sample textures only.");
         const auto usage = webgpu_flags(descriptor.usage);
         if (usage & webgpu_texture_usage::storage_binding)
             webgpu_refuse("storage textures are not in the subset.");
@@ -1076,8 +1140,6 @@ struct SdlWebGpuDevice : GpuDevice {
         auto texture = std::make_shared<SdlWebGpuTexture>();
         texture->owner = owner;
         texture->usage = usage;
-        texture->width = info.width;
-        texture->height = info.height;
         texture->lease = owner->adopt<SdlWebGpuTextureLease>(
             SDL_CreateGPUTexture(owner->live_device(), &info), "SDL_CreateGPUTexture");
         return texture;
@@ -1109,8 +1171,9 @@ struct SdlWebGpuDevice : GpuDevice {
     }
 
     GpuHandle create_compute_pipeline(const GpuComputePipelineDescriptor& descriptor) override {
-        static_cast<void>(
-            webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
+        if (descriptor.layout.layout)
+            static_cast<void>(webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout.layout,
+                                                                     "pipeline layout"));
         const auto module =
             webgpu_object<SdlWebGpuShaderModule>(descriptor.compute.module, "shader module");
         if (!descriptor.compute.entry_point)
@@ -1118,11 +1181,13 @@ struct SdlWebGpuDevice : GpuDevice {
         const auto& entry = *descriptor.compute.entry_point;
         const auto stem = wgsl_stage_stem(module->code, entry, "comp");
         auto pipeline = std::make_shared<SdlWebGpuComputePipeline>();
-        pipeline->layout = descriptor.layout;
         pipeline->lease = std::make_shared<SdlWebGpuComputeLease>();
         pipeline->lease->pipeline = load_sdl_webgpu_stage(
             stem, [&] { return load_sdl_gpu_compute_pipeline(owner->live_device(), stem, entry); });
         owner->leases.track(pipeline->lease);
+        pipeline->layout = descriptor.layout.layout
+                               ? descriptor.layout.layout
+                               : sdl_webgpu_derived_layout(pipeline->lease->get().slots);
         return pipeline;
     }
 
@@ -1157,8 +1222,10 @@ struct SdlWebGpuDevice : GpuDevice {
 
     GpuHandle create_render_pipeline(const GpuRenderPipelineDescriptor& descriptor) override {
         require_webgpu_vertex_state(descriptor.vertex);
+        if (!descriptor.layout.layout)
+            webgpu_refuse("the subset's render pipelines take an explicit layout.");
         static_cast<void>(
-            webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout, "pipeline layout"));
+            webgpu_object<SdlWebGpuPipelineLayout>(descriptor.layout.layout, "pipeline layout"));
         if (!descriptor.fragment || descriptor.fragment->targets.size() != 1)
             webgpu_refuse("render pipelines have a fragment stage with one target.");
         if (!descriptor.vertex.entry_point || !descriptor.fragment->entry_point)
@@ -1227,7 +1294,7 @@ struct SdlWebGpuDevice : GpuDevice {
                 descriptor.depth_stencil->depth_compare.value_or(std::string("always")));
         }
         auto pipeline = std::make_shared<SdlWebGpuRenderPipeline>();
-        pipeline->layout = descriptor.layout;
+        pipeline->layout = descriptor.layout.layout;
         pipeline->lease = owner->adopt<SdlWebGpuGraphicsLease>(
             create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info),
             "SDL_CreateGPUGraphicsPipeline");
@@ -1328,15 +1395,23 @@ struct SdlWebGpuDevice : GpuDevice {
         encoder->owner = owner;
         return encoder;
     }
-    /** A renderer's open pass on `command`, for a renderable's `draw`. */
-    static GpuEncoderHandle borrow_render_pass(SDL_GPUCommandBuffer* command,
-                                               SDL_GPURenderPass* pass) {
+    /**
+     * A renderer's open pass on `command`, lent through `slot` for one
+     * renderable's `draw` (`lend_webgpu_pass`), with its split on a frame a
+     * library splits it.
+     */
+    static const GpuEncoderHandle& lend_render_pass(
+        GpuEncoderHandle& slot, SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass,
+        const bool* drawn = nullptr,
+        const std::function<SDL_GPURenderPass*(const std::function<void()>&)>* pause = nullptr) {
         if (!command || !pass)
             webgpu_refuse("a renderer pass needs its command buffer and pass.");
-        auto result = std::make_shared<SdlWebGpuRenderPass>();
-        result->command = command;
-        result->pass = pass;
-        return result;
+        auto& lent = lend_webgpu_pass<SdlWebGpuRenderPass>(slot);
+        lent.command = command;
+        lent.pass = pass;
+        lent.drawn = drawn;
+        lent.pause = pause;
+        return slot;
     }
 };
 

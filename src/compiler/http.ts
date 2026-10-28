@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -127,13 +128,17 @@ export function compileHttpCall(
             runtimeInit.inner.kind === "request-init")
     ) {
         context.reachFeature("platform:web-platform", call);
-        const init = context.allocateTemporaryCppName("http_init");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: init,
-            initializer: options!.cpp,
-        });
+        // Evaluated after the URL, as the call does; a name is read in place.
+        const init = cppIdentifierPattern.test(options!.cpp)
+            ? options!.cpp
+            : context.allocateTemporaryCppName("http_init");
+        if (init !== options!.cpp)
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: init,
+                initializer: options!.cpp,
+            });
         return lowerer.leafValue(
             `bbl::web_platform::fetch_response(${url}, ${init})`,
             { kind: "promise", result: { kind: "http-response" } },

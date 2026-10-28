@@ -663,7 +663,7 @@ test("a changed pinned GPU statement is a changed native statement, and unknown 
             module,
             "pass.draw(6, g._slotCount, 0, g._slotStart)",
             "pass.draw(6, g._liveCount, 0, g._slotStart)",
-            /pass->draw\(6\.0, g->live_count, 0\.0, g->slot_start\);/,
+            /pass->draw\(6\.0, bbl::js::Nullable<double>\(g->live_count\), bbl::js::Nullable<double>\(0\.0\), bbl::js::Nullable<double>\(g->slot_start\)\);/,
         ],
         [
             // The descriptor reaches the backend as the pin builds it; the

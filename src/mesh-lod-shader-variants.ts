@@ -21,10 +21,10 @@ import { sharedUpstreamStore } from "./upstream-source.js";
 const COMPOSE = "src/material/pbr/pbr-mesh-lod-compose.ts";
 
 interface MeshLoDComposer {
-    composeMeshLoDWgsl(
+    composeMeshLoDWgsl: (
         features: Readonly<Record<string, unknown>>,
         toneMapping?: unknown,
-    ): string;
+    ) => string;
 }
 
 /** Each `MeshLoDShaderFeatures` member with the values the program reaches. */

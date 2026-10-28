@@ -21,6 +21,18 @@
 #include <vector>
 
 #include "pal_runtime_trace.hpp"
+
+namespace bbl::pal {
+/** How many touch devices SDL reports. */
+[[nodiscard]] inline int touch_device_count() {
+    int count = 0;
+    auto* touches = SDL_GetTouchDevices(&count);
+    if (!touches)
+        throw std::runtime_error(std::string("SDL_GetTouchDevices: ") + SDL_GetError());
+    SDL_free(touches);
+    return count;
+}
+} // namespace bbl::pal
 #if BBLITE_HAS_BROWSER_FILE
 #include "pal_file_dialog.hpp"
 #endif

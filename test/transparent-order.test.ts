@@ -198,12 +198,13 @@ test("external renderables bind, release and sort in the transparent bucket as r
             std::string name; double order_value=200; bool fail=false, is_transparent=true;
             std::optional<std::array<double,3>> center;
             std::shared_ptr<Batch> shared, latest;
+            bbl::GpuRenderTargetSignatureHandle bound;
             int binds=0;
             double order() const override { return order_value; }
             bool transparent() const override { return is_transparent; }
             std::optional<std::array<double,3>> world_center() const override { return center; }
-            bbl::GpuDrawBindingHandle bind(const bbl::GpuRenderTargetSignature&) override {
-                ++binds;
+            bbl::GpuDrawBindingHandle bind(const bbl::GpuRenderTargetSignatureHandle& signature) override {
+                ++binds; bound = signature;
                 if (fail) throw std::runtime_error("bind failed");
                 auto binding=std::make_shared<Binding>(); binding->name=name;
                 latest=std::make_shared<Batch>(name + std::to_string(binds));
@@ -235,6 +236,10 @@ test("external renderables bind, release and sort in the transparent bucket as r
             bbl::pal::ExternalRenderablePass pass;
             pass.follow(engine, scene, signature);
             assert(pass.size()==2 && a->binds==1 && b->binds==1);
+            // The pass's one signature object, as a render task's own: a library
+            // keying state by it shares that state across the pass's renderables.
+            assert(a->bound && a->bound==b->bound && a->bound==pass.signature(signature));
+            const auto first_bound = a->bound;
             // prepareRenderTaskPass: every batch resets, every binding updates, every batch flushes.
             events.clear();
             pass.prepare(engine, {640, 480, std::nullopt}, nullptr);
@@ -328,6 +333,7 @@ test("external renderables bind, release and sort in the transparent bucket as r
             // A published generation retires the previous one's dropped batches behind the GPU.
             b->fail = false;
             pass.follow(engine, scene, signature);
+            assert(a->bound==first_bound && b->bound==first_bound);
             assert(a1->retired_flag && b1->retired_flag && !a1->destroyed && !b->shared->retired_flag);
             assert(retiring.size()==1);
             retiring[0](); retiring.clear();
@@ -337,6 +343,10 @@ test("external renderables bind, release and sort in the transparent bucket as r
             assert(pass.empty() && b->shared->retired_flag && retiring.size()==1);
             retiring[0]();
             assert(b->shared->destroyed && a->latest->destroyed);
+            // Another target value is another signature object, again one for the pass.
+            const bbl::GpuRenderTargetSignature single{"bgra8unorm", std::string("depth24plus-stencil8"), {}, 1};
+            pass.follow(engine, scene, single);
+            assert(a->bound!=first_bound && *a->bound==single && a->bound==b->bound);
         }
     `,
         {

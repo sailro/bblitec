@@ -57,7 +57,8 @@ export const LIBRARY_RUNTIME_HEADER = "bblite/library_runtime.hpp";
 export const LIBRARY_PRELUDE_HEADER = "bblite/upstream/library_prelude.hpp";
 
 const CAMERA = "src/camera/camera.ts";
-const RUNTIME = "bbl::library";
+/** The namespace of library_runtime.hpp's helpers. */
+export const RUNTIME = "bbl::library";
 const { number, boolean, string, void: none } = recordScalars;
 const read = (shape: RecordShape, native: string): MemberSpec => ({
     shape,
@@ -89,6 +90,65 @@ const list = (native: string): MemberSpec => ({
     shape: { kind: "record", name: native },
     access: (owner) => owner,
 });
+
+/**
+ * The scene's renderables a library writes: a pushed one is published as a
+ * deferred builder's is (its engine and publication stamped), and a sort
+ * orders the scene's own list (library_runtime.hpp).
+ */
+const renderableListMembers: readonly (readonly [string, MemberSpec])[] = [
+    [
+        "push",
+        {
+            shape: fn([record("Renderable")], number),
+            access: (owner) => owner,
+            call: (owner, args) =>
+                `${RUNTIME}::push_scene_renderable(${owner}, ${args.join(", ")})`,
+        },
+    ],
+    [
+        "sort",
+        {
+            shape: fn(
+                [fn([record("Renderable"), record("Renderable")], number)],
+                none,
+            ),
+            access: (owner) => owner,
+            call: (owner, args) =>
+                `${RUNTIME}::sort_scene_renderables(${owner}, ${args.join(", ")})`,
+        },
+    ],
+];
+
+/** The scene's lists a lowered library reaches, by their SceneState field. */
+const sceneLists: readonly {
+    readonly name: string;
+    readonly element: RecordShape;
+    readonly field: string;
+    readonly own?: readonly (readonly [string, MemberSpec])[];
+    readonly elements?: RecordSpec["elements"];
+}[] = [
+    {
+        name: "LibraryBeforeRenderList",
+        element: fn([number], none),
+        field: "before_render",
+    },
+    {
+        name: "LibraryDisposableList",
+        element: fn([], none),
+        field: "disposables",
+    },
+    {
+        name: "LibraryRenderableList",
+        element: record("Renderable"),
+        field: "external_renderables",
+        own: renderableListMembers,
+        elements: {
+            shape: array(record("Renderable")),
+            cpp: (owner) => `${RUNTIME}::scene_renderables(${owner})`,
+        },
+    },
+];
 
 /** The frame's encoder as the engine's compute work and post-submit hooks hold it. */
 const computeEncoder: RecordShape = {
@@ -590,55 +650,40 @@ export function libraryRuntimeRecords(
         },
         pbrMaterialRecord,
         // The scene's lists, through the scene-list helpers scene programs use
-        // too (`runtime.hpp`), by their SceneState field. A renderable joins
-        // the scene only through a deferred builder, which binds its engine.
-        ...(
-            [
-                [
-                    "LibraryBeforeRenderList",
-                    fn([number], none),
-                    "before_render",
-                    true,
-                ],
-                ["LibraryDisposableList", fn([], none), "disposables", true],
-                [
-                    "LibraryRenderableList",
-                    record("Renderable"),
-                    "external_renderables",
-                    false,
-                ],
-            ] as const
-        ).map(([name, element, field, pushed]): RecordSpec => ({
-            pinned: [name],
-            cpp: "SceneState",
-            handle: "LibraryScene",
-            reference: true,
-            native: true,
-            members: members([
-                ...(pushed
-                    ? [
-                          sceneListMember(
-                              "push",
-                              field,
-                              fn([element], number),
-                              element,
-                          ),
-                      ]
-                    : []),
-                sceneListMember(
-                    "indexOf",
-                    field,
-                    fn([element], number),
-                    element,
-                ),
-                sceneListMember(
-                    "splice",
-                    field,
-                    fn([number, number], none),
-                    element,
-                ),
-            ]),
-        })),
+        // too (`runtime.hpp`), by their SceneState field: a plain `push`
+        // unless the list declares its own members, and its array view.
+        ...sceneLists.map(
+            ({ name, element, field, own, elements }): RecordSpec => ({
+                pinned: [name],
+                cpp: "SceneState",
+                handle: "LibraryScene",
+                reference: true,
+                native: true,
+                members: members([
+                    ...(own ?? [
+                        sceneListMember(
+                            "push",
+                            field,
+                            fn([element], number),
+                            element,
+                        ),
+                    ]),
+                    sceneListMember(
+                        "indexOf",
+                        field,
+                        fn([element], number),
+                        element,
+                    ),
+                    sceneListMember(
+                        "splice",
+                        field,
+                        fn([number, number], none),
+                        element,
+                    ),
+                ]),
+                ...(elements ? { elements } : {}),
+            }),
+        ),
         {
             // What a deferred builder publishes when the scene builds.
             pinned: ["DeferredSceneRenderables"],
@@ -673,6 +718,7 @@ export function libraryRuntimeRecords(
                     ),
                 ],
                 ["nearPlane", read(number, "camera_near_plane")],
+                ["farPlane", read(number, "camera_far_plane")],
             ]),
         },
         {
@@ -731,6 +777,45 @@ export function libraryRuntimeRecords(
                 ],
                 ["_depthCompare", field(optional(string), "depth_compare")],
                 ["_sampleCount", field(number, "sample_count")],
+            ]),
+        },
+        {
+            // The scene task drawing a signature's pass: what a library
+            // reads of its depth and the renderables it draws.
+            pinned: ["RenderTask"],
+            cpp: "library::RenderTaskView",
+            reference: false,
+            native: true,
+            members: members([
+                ["_config", field(record("RenderTaskConfig"), "config")],
+                [
+                    "_renderables",
+                    read(record("LibraryRenderableList"), "task_renderables"),
+                ],
+            ]),
+        },
+        {
+            pinned: ["RenderTaskConfig"],
+            cpp: "library::RenderTaskConfigView",
+            reference: false,
+            native: true,
+            members: members([
+                ["rt", field(record("RenderTarget"), "target")],
+                ["depth", field(optional(record("RenderTarget")), "depth")],
+                ["depthClear", field(optional(boolean), "depth_clear")],
+            ]),
+        },
+        {
+            pinned: ["RenderTarget"],
+            cpp: "library::RenderTargetView",
+            reference: false,
+            native: true,
+            members: members([
+                [
+                    "_depthTexture",
+                    field(optional(record("GPUTexture")), "depth_texture"),
+                ],
+                ["_eager", field(boolean, "eager")],
             ]),
         },
         {
@@ -858,8 +943,9 @@ export function librarySceneNode(
     return {
         ...spec,
         bases: ["SceneNode"],
-        omit: new Map(
-            [
+        omit: new Map([
+            ...(spec.omit ?? []),
+            ...[
                 "position",
                 "rotationQuaternion",
                 "rotation",
@@ -872,11 +958,11 @@ export function librarySceneNode(
                 "_cloneNode",
             ]
                 .filter((name) => !keep.includes(name))
-                .map((name) => [
+                .map((name): [string, string] => [
                     name,
                     "the native scene node holds the transform the library reads as worldMatrix",
                 ]),
-        ),
+        ]),
         members: members([
             ["children", field(array({ kind: "object" }))],
             ...(spec.members ?? []),

@@ -3,18 +3,13 @@ import { assertDrawRangesUnreached } from "./mesh-draw-range.js";
 
 /** Full AST contracts for the pinned lifecycle represented by native resource ownership. */
 export function assertDeviceRecoveryContracts(context: LoweringContext): void {
-    const check = (module: string, name: string, source: string): void => {
-        const { file, declaration } = context.functionDeclaration(
+    const check = (module: string, name: string, source: string): void =>
+        context.assertFunctionContract(
             `src/engine/${module}.ts`,
             name,
-        );
-        context.assertStatementShapes(
-            file,
-            [declaration],
             source,
             `${module}.${name} native recovery contract`,
         );
-    };
 
     // The coordinator's own defaults map to DeviceRecoveryState; its registration, arming,
     // continuations and forced loss are lowered (device-recovery-lowerer.ts).

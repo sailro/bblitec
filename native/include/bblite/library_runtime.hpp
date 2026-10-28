@@ -39,7 +39,7 @@ namespace bbl {
 /** A `SceneContext` a library holds: the scene's shared state, by identity. */
 using LibraryScene = std::shared_ptr<SceneState>;
 /** A scene pass's `RenderTargetSignature`: one object per distinct signature. */
-using LibraryTargetSignature = std::shared_ptr<GpuRenderTargetSignature>;
+using LibraryTargetSignature = GpuRenderTargetSignatureHandle;
 
 } // namespace bbl
 
@@ -57,6 +57,12 @@ namespace bbl::library {
 /** An `Error | null` member the record stores as an empty js::Error for null. */
 [[nodiscard]] inline js::Nullable<js::Error> nullable_error(const js::Error& error) {
     return error.identity() ? js::Nullable<js::Error>(error) : js::Nullable<js::Error>();
+}
+
+/** A `Record | null` member the record stores as a handle, null for none. */
+template <class T>
+[[nodiscard]] js::Nullable<std::shared_ptr<T>> nullable_handle(const std::shared_ptr<T>& handle) {
+    return handle ? js::Nullable<std::shared_ptr<T>>(handle) : js::Nullable<std::shared_ptr<T>>();
 }
 
 // ── Engine ─────────────────────────────────────────────────────────────
@@ -139,6 +145,9 @@ struct OrthographicBounds {
 [[nodiscard]] inline double camera_near_plane(const Camera& camera) {
     return camera.record().near_plane;
 }
+[[nodiscard]] inline double camera_far_plane(const Camera& camera) {
+    return camera.record().far_plane;
+}
 
 // ── Render tasks ───────────────────────────────────────────────────────
 
@@ -211,9 +220,9 @@ struct DrawBinding final : GpuDrawBinding {
 
 /**
  * The pin's `Renderable`, drawn in the scene's own pass: `bind(engine,
- * signature)` per published version and signature, with one signature object
- * per distinct value (the render task's own signature). The pin's literal
- * has no `_worldCenter`, so its binding sorts at distance 0.
+ * signature)` per published version and signature, with the pass's own
+ * signature object. The pin's literal has no `_worldCenter`, so its binding
+ * sorts at distance 0.
  */
 struct Renderable final : GpuExternalRenderable {
     double order_value = 0;
@@ -227,10 +236,8 @@ struct Renderable final : GpuExternalRenderable {
     double order() const override { return order_value; }
     bool transparent() const override { return is_transparent; }
     std::optional<std::array<double, 3>> world_center() const override { return std::nullopt; }
-    GpuDrawBindingHandle bind(const GpuRenderTargetSignature& signature) override {
-        if (!signature_ || *signature_ != signature)
-            signature_ = std::make_shared<GpuRenderTargetSignature>(signature);
-        auto binding = bind_callback(bound_engine, signature_);
+    GpuDrawBindingHandle bind(const GpuRenderTargetSignatureHandle& signature) override {
+        auto binding = bind_callback(bound_engine, signature);
         if (!binding)
             throw std::runtime_error("A lowered library's renderable bind returned no binding.");
         binding->bound_engine = bound_engine;
@@ -243,9 +250,6 @@ struct Renderable final : GpuExternalRenderable {
         visitor(bind_callback);
         visitor(rebuild_callback);
     }
-
-private:
-    LibraryTargetSignature signature_;
 };
 
 /** `signature._colorFormat`. */
@@ -264,17 +268,166 @@ struct DeferredRenderables {
     }
 };
 
+// ── The scene's renderables ────────────────────────────────────────────
+
+/** A scene renderable as a lowered library reads it: one a lowered library made. */
+[[nodiscard]] inline std::shared_ptr<Renderable>
+library_renderable(const GpuExternalRenderableHandle& renderable) {
+    auto library = std::dynamic_pointer_cast<Renderable>(renderable);
+    if (!library)
+        throw std::runtime_error("A library reads a scene renderable no lowered library owns.");
+    return library;
+}
+
+/** `scene._renderables` read as an array: each a lowered library's renderable. */
+[[nodiscard]] inline js::Array<std::shared_ptr<Renderable>>
+scene_renderables(const LibraryScene& scene) {
+    js::Array<std::shared_ptr<Renderable>> values;
+    for (const auto& renderable : scene->external_renderables)
+        values.push_back(library_renderable(renderable));
+    return values;
+}
+
+/**
+ * A renderable joining the scene pass as `_renderables.push` publishes it:
+ * bound to `engine`, at the next `_renderables` position. Returns the list's
+ * new length.
+ */
+inline double join_scene_renderable(SceneState& state, const StoredEngine& engine,
+                                    const std::shared_ptr<Renderable>& renderable) {
+    renderable->bound_engine = engine;
+    renderable->publication = ++state.engine->source_output_identity;
+    return scene_list_push(state.external_renderables, renderable);
+}
+
+/** `scene._renderables.push(renderable)`. */
+inline double push_scene_renderable(const LibraryScene& scene,
+                                    const std::shared_ptr<Renderable>& renderable) {
+    if (!scene->engine)
+        throw std::runtime_error("A renderable joins a scene that has no engine.");
+    return join_scene_renderable(*scene, StoredEngine(*scene->engine), renderable);
+}
+
+/** `scene._renderables.sort(compare)`: a stable sort of the scene's own list. */
+inline void sort_scene_renderables(
+    const LibraryScene& scene,
+    const js::Callback<double(std::shared_ptr<Renderable>, std::shared_ptr<Renderable>)>& compare) {
+    std::stable_sort(scene->external_renderables.begin(), scene->external_renderables.end(),
+                     [&](const auto& left, const auto& right) {
+                         return compare(library_renderable(left), library_renderable(right)) < 0;
+                     });
+}
+
+// ── The scene pass a library pauses (gps-pass.ts) ──────────────────────
+
+/** The scene pass's depth (`SceneState::pass_depth`), which no lowered library samples yet. */
+struct SceneDepthTexture final : GpuObject {
+    std::shared_ptr<GpuObject> create_view() override {
+        throw std::runtime_error("Sampling the scene pass's depth is not lowered.");
+    }
+};
+
+/** A pass target as gps-scene-depth.ts reads it: its depth and whether it loads it. */
+struct RenderTargetView {
+    GpuHandle depth_texture;
+    bool eager = false;
+};
+struct RenderTaskConfigView {
+    RenderTargetView target;
+    js::Nullable<RenderTargetView> depth;
+    js::Nullable<bool> depth_clear;
+};
+/** The scene task drawing a signature's pass (render-task-base.ts `RenderTask`). */
+struct RenderTaskView {
+    RenderTaskConfigView config;
+    LibraryScene scene;
+};
+
+/** `task._renderables`: the scene task mirrors the scene's (`autoMirror`). */
+[[nodiscard]] inline LibraryScene task_renderables(const RenderTaskView& task) {
+    return task.scene;
+}
+
+/**
+ * `gpsRenderTask(scene, signature)`: the scene's own task for its pass,
+ * whose depth is the task's own, cleared at the pass's start
+ * (scene-core.ts `_createAutomaticRenderTask`); none for another target.
+ */
+[[nodiscard]] inline js::Nullable<RenderTaskView>
+gps_render_task(const LibraryScene& scene, const LibraryTargetSignature& signature) {
+    if (!scene->pausable_pass || scene->pausable_pass != signature)
+        return std::nullopt;
+    RenderTaskView task;
+    task.scene = scene;
+    if (signature->depth_stencil_format) {
+        if (!scene->pass_depth)
+            scene->pass_depth = std::make_shared<SceneDepthTexture>();
+        task.config.depth = RenderTargetView{scene->pass_depth, false};
+    }
+    return task;
+}
+
+/**
+ * `installGpsPasses(scene, isRendering)`: the scene pass splits on a frame
+ * the renderer renders, by default every frame (`scene_pass_split`); the
+ * release gives it back once.
+ */
+[[nodiscard]] inline js::Callback<void()>
+gps_install_passes(const LibraryScene& scene, js::Callback<bool()> is_rendering = {}) {
+    js::Callback<bool()> rendering(
+        js::make_closure(std::tuple{std::move(is_rendering)}, [](auto& environment) {
+            const auto& [predicate] = environment;
+            return !predicate || predicate();
+        }));
+    const auto identity = rendering.identity();
+    scene->pass_controllers.push_back(std::move(rendering));
+    auto released = std::make_shared<bool>(false);
+    // The release sits in the scene's own disposables: it holds the scene weakly.
+    return [owner = std::weak_ptr<SceneState>(scene), released, identity]() {
+        if (std::exchange(*released, true))
+            return;
+        if (const auto state = owner.lock())
+            std::erase_if(state->pass_controllers, [&](const js::Callback<bool()>& rendering) {
+                return rendering.identity() == identity;
+            });
+    };
+}
+
+/** `gpsRefreshPasses`: the renderer follows its own passes. */
+inline void gps_refresh_passes(const LibraryScene&) {}
+
+/**
+ * `gpsDefersDraw(scene, signature)`: a held pass with depth defers its
+ * renderer's work to its draw. Only the scene pass pauses natively.
+ */
+[[nodiscard]] inline bool gps_defers_draw(const LibraryScene& scene,
+                                          const LibraryTargetSignature& signature) {
+    if (scene->pass_controllers.empty() || !signature || !signature->depth_stencil_format)
+        return false;
+    if (scene->pausable_pass != signature)
+        throw std::runtime_error("Pausing a render task's pass is not lowered.");
+    return true;
+}
+
+/** `gpsPassHasDraws(pass)`: undefined for a pass the renderer did not split. */
+[[nodiscard]] inline js::Nullable<bool> gps_pass_has_draws(const GpuEncoderHandle& pass) {
+    const auto drawn = pass->pass_has_draws();
+    return drawn ? js::Nullable<bool>(*drawn) : std::nullopt;
+}
+
+/** `gpsWithPassDepth(pass, work)`: `work` between the pass's two halves. */
+inline bool gps_with_pass_depth(const GpuEncoderHandle& pass, const js::Callback<void()>& work) {
+    return pass->pause_pass([&] { work(); });
+}
+
 /** What a deferred builder returns: its renderables, or their promise. */
 using DeferredBuild = std::variant<DeferredRenderables, js::Promise<DeferredRenderables>>;
 
 /** A built set joining the scene: its renderables the pass's, its disposer the scene's. */
 inline void publish_deferred_renderables(SceneState& state, const StoredEngine& engine,
                                          const DeferredRenderables& built) {
-    for (const auto& renderable : built.renderables) {
-        renderable->bound_engine = engine;
-        renderable->publication = ++state.engine->source_output_identity;
-        state.external_renderables.push_back(renderable);
-    }
+    for (const auto& renderable : built.renderables)
+        static_cast<void>(join_scene_renderable(state, engine, renderable));
     if (built.dispose)
         state.disposables.push_back(built.dispose);
 }

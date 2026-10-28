@@ -4194,7 +4194,7 @@ export class PinnedNumericLowerer {
                 : [];
         }
         const discriminant = this.temporaryName(statement, 0);
-        const selection = `${indent}    const auto ${discriminant} = ${this.expression(statement.expression)};`;
+        const selection = `${indent}    ${this.switchDiscriminantType(statement)} ${discriminant} = ${this.expression(statement.expression)};`;
         const outer = indent;
         indent += "    ";
         const lines: string[] = [];
@@ -4245,6 +4245,11 @@ export class PinnedNumericLowerer {
         }
         if (lines.length > 0) lines.push(`${indent}}`);
         return [`${outer}{`, selection, ...lines, `${outer}}`];
+    }
+
+    /** How a run-time switch holds its discriminant: a number, by value. */
+    protected switchDiscriminantType(_statement: ts.SwitchStatement): string {
+        return "const auto";
     }
 
     /** A run-time switch's case value, as its discriminant compares with it. */

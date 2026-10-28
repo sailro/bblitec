@@ -648,6 +648,23 @@ export class LoweringContext {
         return { file, declaration };
     }
 
+    /**
+     * A native seam's contract over a pinned function: its statements keep
+     * the shapes of `source`, or generation refuses under `label`.
+     */
+    public assertFunctionContract(
+        modulePath: string,
+        symbolName: string,
+        source: string,
+        label: string,
+    ): void {
+        const { file, declaration } = this.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        this.assertStatementShapes(file, [declaration], source, label);
+    }
+
     /** The top-level class a pinned module declares under a name. */
     public classDeclaration(
         modulePath: string,

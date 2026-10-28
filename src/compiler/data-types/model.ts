@@ -19,6 +19,8 @@ export type HandleKind =
     | "mesh-lod-metadata"
     | "mesh-lod-diagnostics"
     | "splat-stream-stats"
+    | "gaussian-point-splatting"
+    | "gaussian-point-splatting-progress"
     | "splat-voxel-collision"
     | "node-input"
     | "text-data"

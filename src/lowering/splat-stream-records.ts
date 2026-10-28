@@ -115,7 +115,11 @@ const coreRecords: readonly RecordSpec[] = [
         reference: true,
     },
     { pinned: ["VisibleLeaf"], cpp: "VisibleLeaf", reference: true },
-    { pinned: ["Candidate"], cpp: "SelectionCandidate", reference: true },
+    {
+        pinned: ["src/loader-splat-stream/splat-stream-selection.ts#Candidate"],
+        cpp: "SelectionCandidate",
+        reference: true,
+    },
     {
         pinned: ["SplatSourceGpuResources"],
         cpp: "SplatSourceGpuResources",

@@ -25,6 +25,13 @@ struct GpuRenderTargetSignature {
     friend bool operator==(const GpuRenderTargetSignature&,
                            const GpuRenderTargetSignature&) = default;
 };
+/**
+ * A pass's signature object, which every renderable's `bind` receives: one
+ * per pass while its value holds, as a render task keeps its own
+ * `_targetSignature`, so a library keying state by it shares that state
+ * across the pass's renderables.
+ */
+using GpuRenderTargetSignatureHandle = std::shared_ptr<const GpuRenderTargetSignature>;
 
 /** The pin's `DrawUpdateContext`: the pass's target extent and camera (`_camera`). */
 struct GpuDrawUpdateContext {
@@ -90,7 +97,7 @@ struct GpuExternalRenderable {
     /** `_worldCenter`, which sorts the binding; absent for a renderable without one. */
     virtual std::optional<std::array<double, 3>> world_center() const = 0;
     /** `bind(engine, signature)`. */
-    virtual GpuDrawBindingHandle bind(const GpuRenderTargetSignature& signature) = 0;
+    virtual GpuDrawBindingHandle bind(const GpuRenderTargetSignatureHandle& signature) = 0;
     /** Edges into lowered records and closures the renderable retains. */
     virtual void gc_trace(const js::TraceVisitor&) const {}
     /**

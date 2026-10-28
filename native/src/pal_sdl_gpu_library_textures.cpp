@@ -65,7 +65,9 @@ LibraryEnvironmentViews sdl_gpu_library_environment_views(Engine& engine,
                       "library environment cube");
     const auto brdf =
         adopt_texture(owner, upload_brdf_lut(device, environment), 0, 0, "library BRDF LUT");
-    return {cube->create_view(), brdf->create_view()};
+    auto cube_view = cube->create_view();
+    auto brdf_view = brdf->create_view();
+    return {std::move(cube_view), std::move(brdf_view)};
 }
 #endif
 } // namespace bbl::pal

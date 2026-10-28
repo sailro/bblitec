@@ -194,8 +194,8 @@ struct DawnTextCommandEncoder final : GpuCommandEncoder {
     WGPUCommandEncoder encoder = nullptr;
 
     GpuEncoderHandle begin_render_pass(const GpuRenderPassDescriptor& descriptor) override {
-        if (descriptor.color_attachments.size() != 1)
-            throw std::runtime_error("Text render passes have one color attachment.");
+        if (descriptor.color_attachments.size() != 1 || descriptor.depth_stencil_attachment)
+            throw std::runtime_error("Text render passes have one color attachment and no depth.");
         const auto& color = descriptor.color_attachments[0];
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         attachment.view = dawn_text_object<DawnTextGpuView>(color.view)->get();

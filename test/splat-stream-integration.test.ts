@@ -9,12 +9,17 @@ import {
     pinnedRawShaderImports,
     runtimeWgslModules,
 } from "../src/lowering/library-shaders.js";
-import { SPLAT_STREAM_SHADER_MODULES } from "../src/lowering/splat-stream-library.js";
+import { assertGpsPassContracts } from "../src/lowering/gps-pass-contract.js";
+import {
+    GPS_PASS,
+    SPLAT_STREAM_SHADER_MODULES,
+} from "../src/lowering/splat-stream-library.js";
 import { wgslStageStem } from "../src/wgsl-artifacts.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
 
 /**
  * The entry points the pinned library creates pipelines with, read off its
@@ -190,4 +195,19 @@ test("createEngine requiredLimits lowers a run-time record into the engine optio
         "/DBBLITE_HAS_UI=1",
         cpp,
     ]);
+});
+
+test("the point renderer's transcribed pass refuses a changed pin", () => {
+    assertGpsPassContracts(new LoweringContext());
+    assert.throws(
+        () =>
+            assertGpsPassContracts(
+                doctoredContext(
+                    GPS_PASS,
+                    "if (predicate()) {",
+                    "if (!predicate()) {",
+                ),
+            ),
+        /gps-pass\.ts#hasRendering point renderer pass contract/,
+    );
 });

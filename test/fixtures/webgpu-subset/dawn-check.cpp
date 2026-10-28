@@ -74,7 +74,8 @@ struct DawnTarget final : stream_check::RenderTarget {
         descriptor.colorAttachments = &attachment;
         descriptor.depthStencilAttachment = &depth_attachment;
         bbl::pal::DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-        draw(bbl::pal::DawnWebGpuDevice::borrow_render_pass(pass));
+        bbl::GpuEncoderHandle lent;
+        draw(bbl::pal::DawnWebGpuDevice::lend_render_pass(lent, pass));
         wgpuRenderPassEncoderEnd(pass);
         pass.reset();
         WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;

@@ -58,6 +58,8 @@ using ShaderPacketSystemOwner = std::shared_ptr<std::shared_ptr<ShaderPacketSyst
 [[nodiscard]] std::string preferred_language();
 [[nodiscard]] std::string native_platform();
 [[nodiscard]] double logical_processor_count();
+/** `navigator.maxTouchPoints`. */
+[[nodiscard]] double max_touch_points();
 [[nodiscard]] const void* native_navigator_identity();
 [[nodiscard]] const void* native_performance_identity();
 struct ShadowGeneratorRecord;
@@ -767,6 +769,7 @@ struct GpuObject;
 struct GpuDevice;
 struct GpuCommandEncoder;
 struct GpuExternalRenderable;
+struct GpuRenderTargetSignature;
 struct TextLayerState;
 struct TextSurface;
 struct TextRendererState;
@@ -5921,6 +5924,16 @@ struct SceneState {
     /** Lowered renderables a scene pass draws through `gpu_renderable.hpp`'s protocol. */
     std::vector<std::shared_ptr<GpuExternalRenderable>> external_renderables;
     /**
+     * Libraries holding the scene pass's pause (gps-pass.ts
+     * `installGpsPasses`), each by whether it renders (`isRendering`): a
+     * frame one of them renders splits the pass (`scene_pass_split`).
+     */
+    std::vector<js::Callback<bool()>> pass_controllers;
+    /** The scene pass's signature object, which its renderables bind to: the one pass a library pauses. */
+    std::shared_ptr<const GpuRenderTargetSignature> pausable_pass;
+    /** The scene pass's depth as a lowered library reads it, one object per scene. */
+    std::shared_ptr<GpuObject> pass_depth;
+    /**
      * The clustered light field this scene was given, if it was given one.
      *
      * `addClusteredLightContainer` stores its container on the scene and
@@ -6009,8 +6022,19 @@ struct SceneState {
         visitor(text_renderables);
         visitor(external_renderables);
         visitor(library_members);
+        visitor(pass_controllers);
     }
 };
+
+/**
+ * gps-pass.ts `hasRendering`: whether a library renders through this
+ * frame's scene pass, which then stores what it drew, reports its draws
+ * and pauses; otherwise the pass is the renderer's own.
+ */
+[[nodiscard]] inline bool scene_pass_split(const SceneState& state) {
+    return std::ranges::any_of(state.pass_controllers,
+                               [](const js::Callback<bool()>& rendering) { return rendering(); });
+}
 
 /**
  * Every pass a scene's frame graph executes, in order: the internal passes

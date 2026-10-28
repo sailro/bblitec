@@ -61,17 +61,22 @@ public:
     }
     FramePostSubmitScope(const FramePostSubmitScope&) = delete;
     FramePostSubmitScope& operator=(const FramePostSubmitScope&) = delete;
+    /**
+     * A scope still open is a run torn down mid-frame, whose own failure is
+     * what propagates: like `js::Finally` while unwinding, it skips the close
+     * and only releases the frame's encoder.
+     */
     ~FramePostSubmitScope() {
-        if (!engine_)
-            return;
-        try {
-            close(false);
-        } catch (...) {
-            // The frame's own failure is what propagates.
-        }
+        if (engine_ && engine_->current_compute_encoder == encoder_)
+            engine_->current_compute_encoder.reset();
     }
     /** After the frame's submission (a compute prefix already resolved its own). */
     void submitted() { close(true); }
+    /** A frame that ended without a submission; a closed scope stays closed. */
+    void unsubmitted() {
+        if (engine_)
+            close(false);
+    }
 
 private:
     void close(bool submitted) {

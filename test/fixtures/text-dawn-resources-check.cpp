@@ -136,8 +136,8 @@ int main() {
         gpu->styles = buffer("text-styles", 32, webgpu_buffer_usage::storage);
     }
     const auto texture = [&](const char* label, double rows) {
-        return device->create_texture(GpuTextureDescriptor{
-            std::string(label), "rgba32float", {4, rows, 1}, 0x04 | 0x02 | 0x01});
+        return device->texture(GpuTextureDescriptor{
+            std::string(label), "rgba32float", {4, rows, 1}, 0x04 | 0x02 | 0x01, {}});
     };
     const auto curves = texture("text-slug-curves", 2), bands = texture("text-slug-bands", 1);
     const auto metadata = buffer("text-glyph-metadata", 64, webgpu_buffer_usage::storage);

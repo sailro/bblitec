@@ -265,8 +265,8 @@ struct SdlTextCommandEncoder final : GpuCommandEncoder {
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
 
     GpuEncoderHandle begin_render_pass(const GpuRenderPassDescriptor& descriptor) override {
-        if (descriptor.color_attachments.size() != 1)
-            throw std::runtime_error("Text render passes have one color attachment.");
+        if (descriptor.color_attachments.size() != 1 || descriptor.depth_stencil_attachment)
+            throw std::runtime_error("Text render passes have one color attachment and no depth.");
         const auto& color = descriptor.color_attachments[0];
         SDL_GPUColorTargetInfo attachment{};
         attachment.texture = sdl_text_object<SdlTextGpuView>(color.view)->get();

@@ -7066,7 +7066,8 @@ export class ExpressionLowerer {
                 this.context.libraryGlobal(argumentAt(call, 0)) === "globalThis"
             ) {
                 const hosted = (value: Value): boolean =>
-                    value.kind === "callback" && value.hostFunction !== undefined;
+                    value.kind === "callback" &&
+                    value.hostFunction !== undefined;
                 const host = this.context.probeEmission(
                     () => this.context.compileValue(callee.expression),
                     hosted,

@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace bbl::pinned {
@@ -237,14 +238,28 @@ template <class T, class F>
     return result;
 }
 
-template <class T, class F> void array_for_each(const js::Array<T>& values, F&& callback) {
+/**
+ * `Map.prototype.forEach` / `Set.prototype.forEach`: each entry in insertion
+ * order as live iteration meets it. The lowered callback takes (value, key)
+ * by value, so it copies both before it runs (a set's value is its key).
+ */
+template <class Collection, class F>
+void collection_for_each(const Collection& values, F&& callback) {
+    for (const auto& entry : values) {
+        if constexpr (requires { entry.second; })
+            callback(entry.second, entry.first);
+        else
+            callback(entry, entry);
+    }
+}
+
+template <class Values, class F> void array_for_each(const Values& values, F&& callback) {
     const std::size_t length = values.size();
     for (std::size_t index = 0; index < length && index < values.size(); ++index)
         callback(values[index], static_cast<double>(index));
 }
 
-template <class T, class F>
-[[nodiscard]] bool array_some(const js::Array<T>& values, F&& callback) {
+template <class Values, class F> [[nodiscard]] bool array_some(const Values& values, F&& callback) {
     const std::size_t length = values.size();
     for (std::size_t index = 0; index < length && index < values.size(); ++index)
         if (truthy(callback(values[index], static_cast<double>(index))))
@@ -252,8 +267,8 @@ template <class T, class F>
     return false;
 }
 
-template <class T, class F>
-[[nodiscard]] bool array_every(const js::Array<T>& values, F&& callback) {
+template <class Values, class F>
+[[nodiscard]] bool array_every(const Values& values, F&& callback) {
     const std::size_t length = values.size();
     for (std::size_t index = 0; index < length && index < values.size(); ++index)
         if (!truthy(callback(values[index], static_cast<double>(index))))
@@ -360,6 +375,14 @@ next_iteration(const std::shared_ptr<Environment>& current) {
 template <class T> [[nodiscard]] std::string template_part(const js::Nullable<T>& value) {
     return value ? template_part(*value) : std::string("undefined");
 }
+/** An array of primitives: `Array.prototype.join(",")` of its elements' parts. */
+template <class T> [[nodiscard]] std::string template_part(const js::Array<T>& values) {
+    return js::array_join(values, ",", [](const T& value) { return template_part(value); });
+}
+/** A union of primitives (`number | "auto"`): the member it holds. */
+template <class... T> [[nodiscard]] std::string template_part(const std::variant<T...>& value) {
+    return std::visit([](const auto& member) { return template_part(member); }, value);
+}
 
 /** `tuple[index] = value`: an element of its fixed length (growing it is not represented). */
 template <std::size_t N> void tuple_write(js::Tuple<N>& values, double index, double value) {
@@ -387,6 +410,31 @@ template <std::size_t N> void tuple_write(js::Tuple<N>& values, double index, do
 template <class T>
 [[nodiscard]] std::weak_ptr<const void> weak_key(const std::shared_ptr<T>& value) {
     return std::weak_ptr<const void>(value);
+}
+/** A union of handles: the key of the one it holds. */
+template <class... T>
+[[nodiscard]] std::weak_ptr<const void> weak_key(const std::variant<T...>& value) {
+    return std::visit([](const auto& member) { return weak_key(member); }, value);
+}
+/** `value === literal` over a union of primitives: holds that kind, with that value. */
+template <class... T, class V>
+[[nodiscard]] bool variant_equals(const std::variant<T...>& value, const V& literal) {
+    return std::visit(
+        [&](const auto& member) {
+            if constexpr (requires { member == literal; })
+                return member == literal;
+            else
+                return false;
+        },
+        value);
+}
+
+/**
+ * A read no call reaches: a parameter its callee was specialized for, where
+ * the pin narrowed it to another member of its union.
+ */
+template <class T> [[noreturn]] T unreachable() {
+    throw std::logic_error("A specialized function reached a branch of another union member.");
 }
 
 } // namespace bbl::pinned
