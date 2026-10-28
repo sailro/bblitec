@@ -117,9 +117,21 @@ int main() try {
             runtime.context->ProcessMouseButtonUp(0, 0);
             render();
         };
+        // The demo's change handler rewrites the legend, as its debug view does.
+        ui_on_event(engine, select, "change", [&](const PlatformMouseEvent&) {
+            ui_set_text(engine, legend, "legend for " + ui_get_form_value(engine, select));
+        });
         render();
         const auto origin = raw->GetAbsoluteOffset(Rml::BoxArea::Border);
         const auto size = raw->GetBox().GetSize(Rml::BoxArea::Border);
+        // A first selection rewrites the legend, then the list opens again.
+        click(origin.x + size.x * .5f, origin.y + size.y * .5f);
+        assert(raw->IsSelectBoxVisible());
+        const auto second = raw->GetOption(1)->GetAbsoluteOffset(Rml::BoxArea::Border) +
+                            raw->GetOption(1)->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
+        click(second.x, second.y);
+        assert(!raw->IsSelectBoxVisible() && ui_get_form_value(engine, select) == "b");
+        render();
         click(origin.x + size.x * .5f, origin.y + size.y * .5f);
         assert(raw->IsSelectBoxVisible());
         // The last option lies over the legend.
@@ -137,7 +149,27 @@ int main() try {
         if (!in_box(runtime.context->GetElementAtPoint(at)))
             throw std::runtime_error("A later panel takes the pointer over an open select's list");
         assert(ui_computed_style(engine, controls, "z-index") == "9000");
-        click(at.x, at.y);
+        // The pointer crosses the options to the last, a frame per move, as a
+        // user's does: each hover re-projects the tree.
+        for (int index = 0; index <= 5; ++index) {
+            const auto over = raw->GetOption(index)->GetAbsoluteOffset(Rml::BoxArea::Border) +
+                              raw->GetOption(index)->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
+            runtime.context->ProcessMouseMove(static_cast<int>(over.x), static_cast<int>(over.y), 0);
+            render();
+            if (!in_box(runtime.context->GetElementAtPoint(at)))
+                throw std::runtime_error("A hovered option hands the list to a later panel");
+        }
+        // A user's press lasts frames: the pressed option takes the focus
+        // before the release selects it.
+        runtime.context->ProcessMouseMove(static_cast<int>(at.x), static_cast<int>(at.y), 0);
+        render();
+        runtime.context->ProcessMouseButtonDown(0, 0);
+        render();
+        render();
+        if (!in_box(runtime.context->GetElementAtPoint(at)))
+            throw std::runtime_error("A pressed option hands the list to a later panel");
+        runtime.context->ProcessMouseButtonUp(0, 0);
+        render();
         assert(!raw->IsSelectBoxVisible() && ui_get_form_value(engine, select) == "f");
         if (auto* hit = runtime.context->GetElementAtPoint(at); hit != legend_element) {
             std::fprintf(stderr, "closed hit: %s\n", hit ? hit->GetAddress().c_str() : "none");

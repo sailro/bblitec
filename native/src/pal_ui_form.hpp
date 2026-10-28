@@ -115,9 +115,16 @@ protected:
  */
 class UiSelectTopLayer {
 public:
-    /** Raises the focused select's open box, or restores a closed one's chain; whether either ran. */
+    /**
+     * Raises the focused select's open box, or restores a closed one's chain; whether either ran.
+     * A pressed option holds the focus until its release selects it, so the select is the
+     * focused element or its ancestor.
+     */
     bool sync(Rml::Context& context) {
-        auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(context.GetFocusElement());
+        Rml::ElementFormControlSelect* select = nullptr;
+        for (Rml::Element* focus = context.GetFocusElement(); focus && !select;
+             focus = focus->GetParentNode())
+            select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(focus);
         const bool open = select && select->IsSelectBoxVisible();
         if (open && select_.get() == select)
             return false;
