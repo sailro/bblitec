@@ -20,6 +20,7 @@
 #include <bblite/js_promise.hpp>
 #include <bblite/js_text_codec.hpp>
 #include <bblite/js_url.hpp>
+#include <bblite/pal_fetch_response.hpp>
 #include <bblite/pal_image_bitmap.hpp>
 
 #include <cstdint>
@@ -61,10 +62,55 @@ struct CopyExternalImageDestination {
     GpuHandle texture;
     js::Nullable<bool> premultiplied_alpha;
 };
-/** The `RequestInit` the pin passes: `{ signal }`. */
+/**
+ * The `RequestInit` the pin passes: `{ headers, signal, credentials }`, its headers a Headers
+ * object. The native transport keeps no ambient credentials (no cookie jar or HTTP
+ * authentication cache), so every credentials mode sends what `"omit"` sends.
+ */
 struct RequestInit {
     js::AbortSignal signal;
+    js::Nullable<pal::HttpHeaders> headers{};
+    js::Nullable<std::string> credentials{};
 };
+
+/** `init.signal`: absent when the request set none. */
+[[nodiscard]] inline js::Nullable<js::AbortSignal> request_signal(const RequestInit& init) {
+    return init.signal ? js::Nullable<js::AbortSignal>(init.signal)
+                       : js::Nullable<js::AbortSignal>();
+}
+
+/** `new Headers()`: an empty list the program may change. */
+[[nodiscard]] inline pal::HttpHeaders make_headers() { return pal::HttpHeaders::mutable_list(); }
+/** `new Headers(headers)`: a copy of another Headers object's fields, in order. */
+[[nodiscard]] inline pal::HttpHeaders make_headers(const pal::HttpHeaders& init) {
+    return init.copy();
+}
+/** `new Headers([[name, value], ...])`: each pair appended; another length is a TypeError. */
+[[nodiscard]] inline pal::HttpHeaders make_headers(const js::Array<js::Array<std::string>>& init) {
+    auto headers = make_headers();
+    for (const auto& pair : init) {
+        if (pair.size() != 2)
+            throw js::NamedError("TypeError", "Failed to construct 'Headers': Invalid value");
+        headers.append(pair[0], pair[1]);
+    }
+    return headers;
+}
+/** `new Headers({ name: value })`: the record's fields appended in order. */
+[[nodiscard]] inline pal::HttpHeaders make_headers(const js::Map<std::string, std::string>& init) {
+    auto headers = make_headers();
+    for (const auto& [name, value] : init)
+        headers.append(name, value);
+    return headers;
+}
+/** `new Headers(init)` over a `HeadersInit` union. */
+template <class... Forms>
+[[nodiscard]] pal::HttpHeaders make_headers(const std::variant<Forms...>& init) {
+    return std::visit([](const auto& form) { return make_headers(form); }, init);
+}
+/** `new Headers(init)` with an optional init: absent is empty. */
+template <class Init> [[nodiscard]] pal::HttpHeaders make_headers(const js::Nullable<Init>& init) {
+    return init ? make_headers(*init) : make_headers();
+}
 
 // ── Calls over the runtime's objects ───────────────────────────────────
 
@@ -129,25 +175,36 @@ struct ReadResult {
 };
 
 /**
- * `fetch(url, { signal })`: fulfills once the response head arrives, its body
- * streaming; a network failure rejects with a TypeError; an abort rejects with
- * the signal's reason (and errors a body still streaming). A URL the program
- * packaged (`pal_packaged_responses.hpp`) is its packaged file instead.
+ * `fetch(url, { headers, signal })`: fulfills once the response head arrives, its body
+ * streaming; a network failure rejects with a TypeError; an abort rejects with the signal's
+ * reason (and errors a body still streaming). A URL the program packaged
+ * (`pal_packaged_responses.hpp`) is its packaged file instead, a single `Range` of it as a
+ * static file server answers one.
  */
 [[nodiscard]] js::Promise<Response> fetch(const std::string& url, const RequestInit& init);
 [[nodiscard]] inline js::Promise<Response> fetch(const js::Url& url, const RequestInit& init) {
     return fetch(url.href(), init);
 }
-/** `response.ok`, `response.status`, `response.statusText` (empty), `response.url`. */
+/** The same request, its response the application's (`pal::HttpResponse`); no init is empty. */
+[[nodiscard]] js::Promise<pal::HttpResponse> fetch_response(const std::string& url,
+                                                            const js::Nullable<RequestInit>& init);
+/**
+ * An application function of `typeof fetch`'s signature as a library's fetch: each
+ * response it settles with is the library's view of that one object.
+ */
+using ApplicationFetch =
+    js::Callback<js::Promise<pal::HttpResponse>(std::string, js::Nullable<RequestInit>)>;
+[[nodiscard]] js::Callback<js::Promise<Response>(std::string, js::Nullable<RequestInit>)>
+fetch_function(ApplicationFetch fetch);
+/** `response.ok`, `response.status`, `response.statusText`, `response.url`. */
 [[nodiscard]] bool response_ok(const Response& response);
 [[nodiscard]] double response_status(const Response& response);
 [[nodiscard]] std::string response_status_text(const Response& response);
 [[nodiscard]] std::string response_url(const Response& response);
 /** `response.arrayBuffer()`: the whole body, within the buffered-body bound. */
 [[nodiscard]] js::Promise<js::ArrayBuffer> response_array_buffer(const Response& response);
-/** `response.headers.get(name)`: null when absent. */
-[[nodiscard]] js::Nullable<std::string> response_header(const Response& response,
-                                                        const std::string& name);
+/** `response.headers`: the response's own Headers object (immutable guard). */
+[[nodiscard]] pal::HttpHeaders response_headers(const Response& response);
 /** `response.body`: the same stream every read; null for a bodiless response. */
 [[nodiscard]] ReadableStream response_body(const Response& response);
 /** `body.cancel()`. */

@@ -88,6 +88,7 @@ import {
     staticAccessKey,
     borrowedPrototypeMethod,
     forwardedCallShape,
+    declaredGlobalTypeof,
 } from "./symbols.js";
 import {
     CRYPTO_GET_RANDOM_VALUES,
@@ -255,6 +256,7 @@ import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
+import { numberToStringCpp } from "../cpp-expressions.js";
 
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
@@ -305,6 +307,7 @@ export interface ExpressionContext
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
             | "emitUiDatasetProperty"
+            | "emitUiElementProperty"
             | "emitUiStyleValue"
             | "refuseBorrowedPlatformEventEscape"
             | "resolveRecordValue"
@@ -1697,6 +1700,21 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
+            // A platform class or function the program does not shadow is a
+            // function, whether or not the native platform holds it (a use
+            // of it is its own question).
+            if (
+                ts.isIdentifier(expression) &&
+                !this.context.bindings.lookupOptional(expression) &&
+                declaredGlobalTypeof(this.context.checker, expression, [
+                    "default-lib",
+                    "dom",
+                    "webgpu",
+                ]) === "function"
+            )
+                return staticStringValue("function", (text) =>
+                    this.context.cppString(text),
+                );
             // typeof observes an element past the end as undefined.
             const compiledOperand =
                 (ts.isElementAccessExpression(expression)
@@ -7042,6 +7060,19 @@ export class ExpressionLowerer {
             if (collection) return collection;
             if (call.arguments.length === 0)
                 this.context.expectArgumentCount(call, 1, 1);
+            // A host function bound to the global object it runs against.
+            if (
+                call.arguments.length === 1 &&
+                this.context.libraryGlobal(argumentAt(call, 0)) === "globalThis"
+            ) {
+                const hosted = (value: Value): boolean =>
+                    value.kind === "callback" && value.hostFunction !== undefined;
+                const host = this.context.probeEmission(
+                    () => this.context.compileValue(callee.expression),
+                    hosted,
+                );
+                if (hosted(host)) return host;
+            }
             const callable = this.compileFunctionObject(callee.expression);
             if (
                 callable.dataType?.kind === "function" &&
@@ -7267,9 +7298,10 @@ export class ExpressionLowerer {
                 const radix = call.arguments[0];
                 return {
                     kind: "data",
-                    cpp: radix
-                        ? `bbl::js::number_to_string_radix(${owner.cpp}, ${this.context.compileNumber(radix, "double")})`
-                        : `bbl::js::number_to_string(${owner.cpp})`,
+                    cpp: numberToStringCpp(
+                        owner.cpp,
+                        radix && this.context.compileNumber(radix, "double"),
+                    ),
                     dataType: { kind: "string" },
                 };
             }

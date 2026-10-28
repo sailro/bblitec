@@ -1277,7 +1277,9 @@ void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,
     Color3 color) {
-    ${recordAt("engine.materials", "material")}.emissive_factor = color;
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.emissive_factor = color;
+    record.has_emissive_color = true;
 }
 
 // set-metallic-reflectance.ts conditionally copies the supplied fields and

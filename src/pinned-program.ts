@@ -14,7 +14,12 @@ import {
     isLibraryTyping,
     libraryTypingFile,
 } from "./typescript-library-files.js";
-import { namesMember, specifierSourceName } from "./compiler/syntax.js";
+import {
+    namesMember,
+    specifierSourceName,
+    unwrapExpression,
+    variableKind,
+} from "./compiler/syntax.js";
 
 /**
  * The sources a typed pinned program is built over: the store that reads
@@ -56,6 +61,18 @@ const PINNED_PROGRAM_OPTIONS: ts.CompilerOptions = {
     noEmit: true,
     skipLibCheck: true,
 };
+
+/**
+ * The bundler's own typing of the pin's `?raw` asset imports (Vite's
+ * client types): a file's text, as the pin type-checks it. One virtual
+ * declaration every pinned program roots (`createProgram`).
+ */
+const BUNDLER_QUERIES = "__pinned_bundler_queries.d.ts";
+const BUNDLER_QUERIES_TEXT = `declare module "*?raw" {
+    const text: string;
+    export default text;
+}
+`;
 
 /** A file bound alone: no libraries, no imports resolved. */
 const OWN_SYMBOL_OPTIONS: ts.CompilerOptions = {
@@ -192,13 +209,25 @@ export class PinnedProgram implements PinnedNames {
         const readFile = host.readFile.bind(host);
         const getSourceFile = host.getSourceFile.bind(host);
         const fileExists = host.fileExists.bind(host);
+        const bundlerQueries = ts.createSourceFile(
+            BUNDLER_QUERIES,
+            BUNDLER_QUERIES_TEXT,
+            ts.ScriptTarget.Latest,
+            true,
+        );
         host.getCurrentDirectory = () => "";
-        host.fileExists = (path) => sources.hasSource(path) || fileExists(path);
+        host.fileExists = (path) =>
+            path === BUNDLER_QUERIES ||
+            sources.hasSource(path) ||
+            fileExists(path);
         host.readFile = (path) =>
-            sources.hasSource(path)
-                ? sources.getSourceFile(path).text
-                : readFile(path);
+            path === BUNDLER_QUERIES
+                ? BUNDLER_QUERIES_TEXT
+                : sources.hasSource(path)
+                  ? sources.getSourceFile(path).text
+                  : readFile(path);
         host.getSourceFile = (path, languageVersion, onError, create) => {
+            if (path === BUNDLER_QUERIES) return bundlerQueries;
             if (sources.hasSource(path)) return sources.getSourceFile(path);
             const load = () =>
                 getSourceFile(path, languageVersion, onError, create);
@@ -249,7 +278,7 @@ export class PinnedProgram implements PinnedNames {
     ): ts.Program {
         const getSourceFile = this.host.getSourceFile.bind(this.host);
         return ts.createProgram({
-            rootNames,
+            rootNames: [...rootNames, BUNDLER_QUERIES],
             options: PINNED_PROGRAM_OPTIONS,
             host: file
                 ? {
@@ -655,6 +684,38 @@ export function pinnedMember(node: ts.Node): NamedMember | undefined {
 /** Types from the same checked program as the pin's name resolution. */
 export function pinnedCheckerOf(file: ts.SourceFile): ts.TypeChecker {
     return owners.get(file)?.().checkerFor(file) ?? moduleSymbols(file);
+}
+
+/**
+ * What a call through a module `const` aliasing a function calls (`const
+ * f32 = Math.fround`): the alias chain followed to the expression it names,
+ * or the callee itself where it is no such alias. The binding is immutable
+ * and reading it has no effect, so the call is the aliased function's.
+ */
+export function pinnedAliasedCallee(callee: ts.Expression): ts.Expression {
+    let current = unwrapExpression(callee);
+    while (ts.isIdentifier(current)) {
+        const declaration = moduleScopeVariable(
+            pinnedNamesOf(current.getSourceFile()).declarationOf(current),
+        );
+        const initializer =
+            declaration &&
+            variableKind(declaration.parent) === "const" &&
+            declaration.initializer
+                ? unwrapExpression(declaration.initializer)
+                : undefined;
+        if (
+            !initializer ||
+            initializer === current ||
+            !(
+                ts.isIdentifier(initializer) ||
+                ts.isPropertyAccessExpression(initializer)
+            )
+        )
+            break;
+        current = initializer;
+    }
+    return current;
 }
 
 /**

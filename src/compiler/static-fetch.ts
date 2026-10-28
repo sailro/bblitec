@@ -12,11 +12,12 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
-import { packagedResponseUrl } from "./deployment.js";
+import { deploymentUrl, packagedResponseUrl } from "./deployment.js";
 import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { unlessRefused } from "./compile-error.js";
 
 export interface StaticFetchContext extends Pick<
     LoweringServices,
@@ -203,6 +204,38 @@ function discoverPackagedAssets(
     );
 }
 
+/**
+ * Whether generation knows the text a runtime read holds (a field of an
+ * unwritten module constant read through a stored copy): that URL is the
+ * one its load names, not a selection among candidates.
+ */
+function generationKnownText(
+    context: StaticFetchContext,
+    expression: ts.Expression,
+): boolean {
+    return (
+        unlessRefused(() =>
+            context.probeEmission(
+                () => context.compileStringLiteral(expression),
+                () => false,
+            ),
+        ) !== undefined
+    );
+}
+
+/**
+ * One packaged candidate (`PackagedFetchEntry`): the key a site selects it
+ * by, the absolute URL a fetch of `requested` answers as, and its output.
+ */
+function packagedFetchEntry(
+    context: Pick<StaticFetchContext, "cppString" | "options">,
+    key: string,
+    requested: string,
+    output: string,
+): string {
+    return `bbl::pal::PackagedFetchEntry{${context.cppString(key)}, ${context.cppString(packagedResponseUrl(context.options, requested))}, ${context.cppString(output)}}`;
+}
+
 /** A discovery as a fetch response whose bytes a native path lookup reads. */
 function packagedAssetFetch(
     context: StaticFetchContext,
@@ -280,6 +313,75 @@ export function packagedUrlAssets(
     };
 }
 
+/** What registering a URL's packaged responses needs beyond the static fetch. */
+export type PackagedResponseContext = StaticFetchContext &
+    Pick<LoweringServices, "emit" | "dataTypes" | "allocateTemporaryCppName">;
+
+/**
+ * A URL argument a platform object fetches at run time: each file it may
+ * select (`packagedUrlAssets`, limited to what `accepts`) is packaged, and
+ * one constant `PackagedFetchEntry` table, keyed by the URL a fetch of
+ * `spell(url)` requests, is registered with the site's realm once, so the
+ * fetch reads the package -- a single `Range` of it included. A
+ * generation-known absolute HTTP(S) URL no package holds is fetched over
+ * HTTP, as the browser fetches it. Returns the files and the URL, pinned in
+ * source order into a `label` temporary, as a C++ `std::string` expression.
+ */
+export function registeredPackagedUrl(
+    context: PackagedResponseContext,
+    site: ts.Node,
+    argument: ts.Expression,
+    {
+        accepts,
+        refusal,
+        spell = (url) => url,
+        label,
+        stem,
+    }: {
+        readonly accepts: (source: string) => boolean;
+        readonly refusal: string;
+        readonly spell?: (url: string) => string;
+        readonly label: string;
+        /** The table's and the registration's temporary name stem. */
+        readonly stem: string;
+    },
+): { url: string; assets: readonly PackagedUrlAsset[] } {
+    const packaged = packagedUrlAssets(context, argument, "binary", accepts);
+    const remote =
+        packaged?.assets.length === 0 &&
+        /^https?:\/\//i.test(packaged.selected.staticString ?? "");
+    if (!packaged || (packaged.assets.length === 0 && !remote))
+        return context.fail(argument, refusal);
+    const url = context.bindings.pinValueToTemporary(
+        {
+            kind: "string",
+            cpp: context.dataLowerer.compileKnownValueForSink(
+                packaged.selected,
+                { kind: "string" },
+                argument,
+            ),
+        },
+        label,
+        argument,
+    );
+    if (remote) return { url: `std::string(${url.cpp})`, assets: [] };
+    const table = context.dataTypes.registerSharedConstantArray(
+        `${stem}_responses`,
+        "bbl::pal::PackagedFetchEntry",
+        packaged.assets.map(({ logicalSource, output }) => {
+            const requested = spell(logicalSource);
+            return packagedFetchEntry(context, requested, requested, output);
+        }),
+        false,
+        site,
+    );
+    const registered = context.allocateTemporaryCppName(`${stem}_registered`);
+    context.emit(
+        `[[maybe_unused]] static thread_local const bool ${registered} = bbl::pal::register_packaged_responses(${context.cppString(deploymentUrl(context.options).href)}, &bbl::asset_path, ${table});`,
+    );
+    return { url: `std::string(${url.cpp})`, assets: packaged.assets };
+}
+
 /**
  * Packages a finite set of module-relative asset URLs for a runtime selection.
  * Demos commonly put immutable asset URLs in descriptor tables, collect a
@@ -295,7 +397,11 @@ function discoverPackagedCandidates(
     unpackaged?: (url: string) => boolean,
 ): PackagedDiscovery | undefined {
     const selected = context.compileValue(expression);
-    if (selected.staticString !== undefined || !isStringValue(selected)) {
+    if (
+        selected.staticString !== undefined ||
+        !isStringValue(selected) ||
+        generationKnownText(context, expression)
+    ) {
         return undefined;
     }
     const domain = assetUrlDomain(context, expression, unpackaged);
@@ -603,9 +709,8 @@ function ownedPackagedResponse(
 ): Value {
     context.reachFeature("platform:packaged-fetch", node);
     context.reachJsData();
-    const entries = assets.map(
-        ({ key, logicalSource, output }) =>
-            `{${context.cppString(key)}, ${context.cppString(packagedResponseUrl(context.options, logicalSource))}, ${context.cppString(output)}}`,
+    const entries = assets.map(({ key, logicalSource, output }) =>
+        packagedFetchEntry(context, key, logicalSource, output),
     );
     const response = context.dataLowerer.leafValue(
         `bbl::pal::fetch_packaged(${selected.cpp}, std::array<bbl::pal::PackagedFetchEntry, ${entries.length}>{{${entries.join(", ")}}})`,

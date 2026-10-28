@@ -195,12 +195,12 @@ test("external renderables bind, release and sort in the transparent bucket as r
             std::vector<bbl::GpuDrawUpdateBatchHandle> update_batches() const override { return batches; }
         };
         struct Renderable final : bbl::GpuExternalRenderable {
-            std::string name; double order_value=200; bool fail=false;
+            std::string name; double order_value=200; bool fail=false, is_transparent=true;
             std::optional<std::array<double,3>> center;
             std::shared_ptr<Batch> shared, latest;
             int binds=0;
             double order() const override { return order_value; }
-            bool transparent() const override { return true; }
+            bool transparent() const override { return is_transparent; }
             std::optional<std::array<double,3>> world_center() const override { return center; }
             bbl::GpuDrawBindingHandle bind(const bbl::GpuRenderTargetSignature&) override {
                 ++binds;
@@ -218,7 +218,7 @@ test("external renderables bind, release and sort in the transparent bucket as r
             void set_bind_group(double index, const bbl::GpuHandle&) override { events.push_back("group " + std::to_string(static_cast<int>(index))); }
             void draw(double, double, double, double) override {}
         };
-        struct Item { bbl::MeshHandle mesh; double order; };
+        struct Item { bbl::MeshHandle mesh; double order; bool direct=false; std::uint64_t source_identity=0; };
         struct Command { Item item; };
         struct List { std::vector<Command> commands; };
         using Kind = bbl::pal::TransparentDrawKind;
@@ -258,7 +258,7 @@ test("external renderables bind, release and sort in the transparent bucket as r
             // Each binding draws at its place: group 0, its pipeline, its draw.
             events.clear();
             const auto encoder_pass = std::make_shared<Encoder>();
-            assert(pass.draw(encoder_pass, std::make_shared<bbl::GpuObject>(), order[1].index)==1);
+            assert(pass.draw(encoder_pass, engine, order[1].index)==1);
             assert((events==std::vector<std::string>{"group 0","pipeline","draw b"}));
             // _worldCenter sorts: b at 20 draws before the mesh at 10. Read live each frame.
             b->center = std::array<double,3>{0,0,20};
@@ -288,6 +288,33 @@ test("external renderables bind, release and sort in the transparent bucket as r
             catch (const std::runtime_error& error) { unmerged=std::string(error.what()).find("draw outside that order")!=std::string::npos; }
             assert(unmerged);
             scene.splat_meshes.clear();
+            // The opaque bucket: compareBindingOrder over the _renderables walk, an
+            // equal order by publication; direct draws after the whole bucket.
+            a->is_transparent = b->is_transparent = false;
+            a->order_value = 100; b->order_value = 50;
+            a->publication = 2; b->publication = 4;
+            List opaque{{{{{0}, 100, false, 1}}, {{{0}, 100, false, 3}}, {{{0}, 0, true, 5}}}};
+            std::vector<std::string> drawn;
+            const auto draw_opaque = [&] {
+                drawn.clear();
+                bbl::pal::draw_opaque_bucket(
+                    opaque, &pass,
+                    [&](const auto& list) {
+                        for (const auto& command : list.commands)
+                            drawn.push_back(command.item.direct ? "direct" : "mesh" + std::to_string(command.item.source_identity));
+                    },
+                    [&](std::size_t index) { drawn.push_back(pass.renderable(index).order() == 50 ? "b" : "a"); });
+            };
+            draw_opaque();
+            assert((drawn==std::vector<std::string>{"b","mesh1","a","mesh3","direct"}));
+            // A renderable published without a position cannot take a tie.
+            a->publication = 0;
+            bool unordered=false;
+            try { draw_opaque(); }
+            catch (const std::runtime_error& error) { unordered=std::string(error.what()).find("source binding order")!=std::string::npos; }
+            assert(unordered);
+            a->is_transparent = b->is_transparent = true;
+            a->order_value = 200; b->order_value = 100;
             // A failed bind releases the candidate generation at once, keeping the
             // published generation's batches.
             const auto a1 = a->latest; const auto b1 = b->latest;

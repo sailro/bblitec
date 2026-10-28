@@ -11,7 +11,11 @@ import {
     EmissionMap,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { deploymentUrl } from "./deployment.js";
+import {
+    deploymentUrl,
+    moduleRelativeUrl,
+    nativeModuleUrl,
+} from "./deployment.js";
 // Browser environment recognition and bounded erasure. Platform-backed
 // values stay on the native lowering path; deployment queries fold against
 // the configured search string. Unrepresented browser instrumentation is
@@ -47,7 +51,7 @@ import { platformHandleKind } from "./data-types.js";
 import {
     declaredIn,
     declaredInDomLibrary,
-    ecmascriptGlobalTypeof,
+    declaredGlobalTypeof,
     libraryName,
     namedMember,
     libraryStaticMember,
@@ -1831,7 +1835,7 @@ export class BrowserErasure {
             );
             if (windowInterface)
                 return { kind: "string", value: windowInterface };
-            const intrinsic = ecmascriptGlobalTypeof(
+            const intrinsic = declaredGlobalTypeof(
                 this.context.checker,
                 unwrapped.expression,
             );
@@ -1924,6 +1928,27 @@ export class BrowserErasure {
             return resolved === undefined || resolved === unwrapped
                 ? undefined
                 : this.browserValueOf(resolved);
+        }
+        // `new URL(path, import.meta.url).href`: the module-relative URL as
+        // the package resolves it.
+        const constructed = ts.isPropertyAccessExpression(unwrapped)
+            ? this.context.unwrap(unwrapped.expression)
+            : undefined;
+        if (
+            constructed &&
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "href" &&
+            ts.isNewExpression(constructed) &&
+            this.context.libraryGlobal(constructed.expression) === "URL" &&
+            constructed.arguments?.length === 2
+        ) {
+            const path = this.browserValueOf(argumentAt(constructed, 0));
+            const base = this.browserValueOf(argumentAt(constructed, 1));
+            return path?.kind === "string" &&
+                base?.kind === "object" &&
+                base.moduleUrl === true
+                ? { kind: "string", value: moduleRelativeUrl(path.value) }
+                : undefined;
         }
         if (
             ts.isNewExpression(unwrapped) &&
@@ -2168,6 +2193,26 @@ export class BrowserErasure {
                     // The primary canvas starts at the client origin. Its
                     // CSS extent is independent of its backing resolution.
                     return { kind: "dom-rect" };
+                }
+                // A pure string query over a browser string, or over the
+                // module URL, which natively is the package's public root.
+                const text =
+                    owner?.kind === "string"
+                        ? owner.value
+                        : owner?.kind === "object" && owner.moduleUrl === true
+                          ? nativeModuleUrl
+                          : undefined;
+                if (
+                    text !== undefined &&
+                    (method === "includes" ||
+                        method === "startsWith" ||
+                        method === "endsWith") &&
+                    unwrapped.arguments.length === 1
+                ) {
+                    const query = this.browserValueOf(argumentAt(unwrapped, 0));
+                    return query?.kind === "string"
+                        ? { kind: "boolean", value: text[method](query.value) }
+                        : undefined;
                 }
                 if (
                     owner?.kind === "search-params" &&

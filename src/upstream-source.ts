@@ -284,13 +284,34 @@ export class UpstreamSourceStore {
                 }
             }
         }
-        // Vite 8 publishes the original barrel in its source map. The
-        // bundled barrel aliases imports through minified local names.
-        if (!this.sources.has("src/index.ts")) {
-            this.sources.set(
-                "src/index.ts",
-                readFileSync(join(libRoot, "index.js"), "utf8"),
-            );
+        // A re-export barrel's source map carries no source (Vite 8 keeps
+        // only the package index's): its emitted module re-exports the same
+        // values, and is TypeScript as written. A module emitted empty held
+        // only types, which the readers name as unresolved.
+        for (const modulePath of listFiles(libRoot)) {
+            const emitted = relative(libRoot, modulePath).replace(/\\/g, "/");
+            if (!emitted.endsWith(".js") || emitted.startsWith("_chunks/"))
+                continue;
+            const source = `src/${emitted.slice(0, -".js".length)}.ts`;
+            if (this.sources.has(source)) continue;
+            const text = readFileSync(modulePath, "utf8");
+            const statements = ts.createSourceFile(
+                source,
+                text,
+                ts.ScriptTarget.Latest,
+                false,
+            ).statements;
+            if (
+                statements.length > 0 &&
+                statements.every(
+                    (statement) =>
+                        ts.isImportDeclaration(statement) ||
+                        ts.isExportDeclaration(statement),
+                )
+            ) {
+                this.sources.set(source, text);
+                this.packagedModules.set(source, emitted);
+            }
         }
     }
 

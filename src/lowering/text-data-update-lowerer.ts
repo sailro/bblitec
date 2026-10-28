@@ -9,7 +9,7 @@ import {
 
 /** The pin's text records and the bodies the static data path reaches. */
 export function textRecordsHeader(context: LoweringContext): string {
-    const { declarations, definitions } = lowerTextFunctions(
+    const { declarations, definitions, includes } = lowerTextFunctions(
         context,
         "records",
         [],
@@ -26,6 +26,7 @@ export function textRecordsHeader(context: LoweringContext): string {
 #include <optional>
 #include <string>
 #include <variant>
+${includes}
 namespace bbl {
 ${textRecordModel(context).structs(TEXT_RECORDS)}
 ${declarations}
@@ -144,7 +145,7 @@ export class TextDataUpdateLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public header(): string {
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "update",
             ["records", "layout"],
@@ -156,6 +157,7 @@ export class TextDataUpdateLowerer {
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}

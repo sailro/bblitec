@@ -18,6 +18,7 @@
 #include "pal_gpu_pipeline.hpp"
 #include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
+#include <bblite/features/frame_post_submit.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -48,6 +49,9 @@
 #include "pal_transparent_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
+#endif
+#if BBLITE_FRAME_POST_SUBMIT
+#include <bblite/pal_frame_post_submit.hpp>
 #endif
 
 namespace bbl::pal {
@@ -476,6 +480,9 @@ class SdlSceneRun {
         ShaderPassMatrices frame_pass_matrices{};
         SDL_GPUTexture* capture_texture = nullptr;
         SDL_GPUTexture* visible_color = nullptr;
+#if BBLITE_FRAME_POST_SUBMIT
+        std::optional<FramePostSubmitScope> post_submit;
+#endif
     };
     std::optional<Frame> frame_;
 
@@ -1665,6 +1672,9 @@ public:
         begin_gpu_task_timing_frame(engine);
         if (const auto frame_timer = gpu_frame_timer_begin(engine))
             encode_sdl_gpu_timestamp(command, *frame_timer);
+#if BBLITE_FRAME_POST_SUBMIT
+        current_frame().post_submit.emplace(engine);
+#endif
 #if BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
@@ -2041,6 +2051,9 @@ public:
             bind_sdl_thin_buffers(state, row, args);
         };
         [[maybe_unused]] auto& pass_blocks = data_.pass_blocks;
+#if BBLITE_EXTERNAL_RENDERABLES
+        state.external_passes.release_disposed(engine);
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
@@ -2080,11 +2093,6 @@ public:
         }
 #endif
         current_frame().graph = scene.has_frame_passes();
-#if BBLITE_EXTERNAL_RENDERABLES
-        if (current_frame().graph && !scene.state->external_renderables.empty())
-            throw std::runtime_error("External renderables draw in the scene's own pass; a scene "
-                                     "with render tasks refuses them.");
-#endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         current_frame().ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
         current_frame().present_swapchain = swapchain;
@@ -2323,7 +2331,11 @@ public:
                                                 pal::TaskPassBreaks* pass_breaks = nullptr,
                                                 std::optional<
                                                     pal::FunctionRef<SDL_GPURenderPass*()>>
-                                                    resume_pass = {}) {
+                                                    resume_pass = {},
+                                                // The task's external renderables, bound
+                                                // and prepared for its target.
+                                                [[maybe_unused]] const ExternalRenderablePass*
+                                                    externals = nullptr) {
                         update_material_bindings(draw_context, engine, draw_lists.opaque,
                                                  draw_pass_matrices, draw_meshes,
                                                  bind_thin_buffers);
@@ -2685,7 +2697,22 @@ public:
                                     mesh.indirect_args);
                             }
                         };
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+                        // An external binding at its place in either bucket.
+                        const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_EXTERNAL_RENDERABLES
+                            externals->draw(SdlWebGpuDevice::borrow_render_pass(command, task_pass),
+                                            engine, index);
+                            bound_pipeline = nullptr;
+                            scene_matrix_bound = false;
+#endif
+                        };
+#endif
+#if BBLITE_EXTERNAL_RENDERABLES
+                        draw_opaque_bucket(draw_lists.opaque, externals, draw_list, draw_external);
+#else
                         draw_list(draw_lists.opaque);
+#endif
 #if BBLITE_HAS_BILLBOARDS
                         if (draw_scene_billboard_stages) {
                             if (!draw_pass_matrices.view)
@@ -2699,27 +2726,41 @@ public:
                             bound_pipeline = nullptr;
                         }
 #endif
-#if BBLITE_HAS_BILLBOARDS
-                        if (draw_scene_billboard_stages) {
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+                        // Billboards and external renderables sort with the
+                        // transparent meshes, as in the scene's own pass.
+                        if (draw_scene_billboard_stages || externals) {
+                            if (!draw_pass_matrices.view)
+                                throw std::runtime_error(
+                                    "Transparent ordering requires a view matrix.");
                             const auto& view = *draw_pass_matrices.view;
-                            const auto& block = write_billboard_scene_block(
-                                pass_blocks.pass(draw_context, pass_task), draw_context, engine,
-                                draw_camera, draw_matrix, view);
                             TransparentOrder order(draw_camera, view);
                             order.add_meshes(draw_lists.transparent, engine);
-                            order.add_billboards(engine, state.billboard_passes);
-                            for (const auto& item : order.sorted()) {
-                                if (item.kind == TransparentDrawKind::billboard) {
+#if BBLITE_HAS_BILLBOARDS
+                            const auto* block =
+                                draw_scene_billboard_stages
+                                    ? &write_billboard_scene_block(
+                                          pass_blocks.pass(draw_context, pass_task), draw_context,
+                                          engine, draw_camera, draw_matrix, view)
+                                    : nullptr;
+                            if (block)
+                                order.add_billboards(engine, state.billboard_passes);
+#endif
+#if BBLITE_EXTERNAL_RENDERABLES
+                            if (externals)
+                                order.add_externals(*externals, draw_context);
+#endif
+                            draw_transparent_bucket(
+                                order, draw_lists.transparent, draw_list,
+                                [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_HAS_BILLBOARDS
                                     record_billboard_pass(command, task_pass, engine,
-                                                          state.billboard_passes[item.index],
-                                                          block);
+                                                          state.billboard_passes[index], *block);
                                     bound_pipeline = nullptr;
                                     scene_matrix_bound = false;
-                                } else {
-                                    draw_list(BorrowedDrawList{
-                                        draw_lists.transparent.commands[item.index]});
-                                }
-                            }
+#endif
+                                },
+                                draw_external);
                         } else
 #endif
                             if (pass_breaks && resume_pass) {
@@ -2965,6 +3006,12 @@ public:
                                     throw std::runtime_error(
                                         "Depth-only render task has no depth attachment.");
                                 }
+#if BBLITE_EXTERNAL_RENDERABLES
+                                // A task mirroring its scene binds the scene's renderables.
+                                if (task.render.auto_mirror)
+                                    refuse_external_renderables(graph_scene,
+                                                                "a depth-only render task");
+#endif
                                 SDL_GPUDepthStencilTargetInfo task_depth{};
                                 task_depth.texture = target.depth;
                                 // Zero for every target but a layered one, and
@@ -3068,6 +3115,10 @@ public:
                             // post-process writes, outside this task.
                             (void)pal::task_pass_breaks(task, {.temporal = true});
                             timing_sequence.refuse("temporal anti-aliasing sources");
+#if BBLITE_EXTERNAL_RENDERABLES
+                            refuse_external_renderables(graph_scene,
+                                                        "a temporal anti-aliasing source pass");
+#endif
                             PreparedSdlScenePass prepared;
                             prepared.target = target_info;
                             if (task_depth_pointer)
@@ -3098,6 +3149,48 @@ public:
                             temporal_passes.emplace_back(std::move(prepared));
                             continue;
 #endif
+#if BBLITE_EXTERNAL_RENDERABLES
+#if BBLITE_PINNED_MATERIALS
+                            // The task's block, which its draws push, written before its
+                            // external renderables' group reads it.
+                            (void)write_pass_scene_block(pass_blocks.task(handle), graph_scene,
+                                                         engine, task_camera, task_matrix);
+#endif
+                            // render-task-base.ts: a task mirroring its scene binds the
+                            // scene's external renderables for its own target and updates
+                            // them into the frame's command buffer before its pass begins.
+                            std::shared_ptr<SdlWebGpuCommandEncoder> task_frame;
+                            const auto open_task_frame = [&]() -> GpuCommandEncoderHandle {
+                                task_frame = sdl_engine_webgpu_device(engine, state.device)
+                                                 .frame_command_encoder();
+                                return task_frame;
+                            };
+                            const ExternalRenderablePass* const task_externals =
+                                !task.render.auto_mirror ? nullptr :
+                                prepare_external_pass(
+                                    state.external_passes.task(handle), engine, graph_scene,
+                                    GpuRenderTargetSignature{
+                                        sdl_webgpu_format_name(target.color_format),
+                                        task_depth_pointer
+                                            ? js::Nullable<std::string>(sdl_webgpu_format_name(
+                                                  task.render.depth.source ==
+                                                          RenderTextureSource::geometry_depth
+                                                      ? state.depth_format
+                                                      : target.depth_format))
+                                            : js::Nullable<std::string>(),
+                                        {},
+                                        static_cast<double>(gpu_sample_count_value(
+                                            target_sample_count(state, target_record)))},
+                                    pass_blocks.task(handle),
+                                    GpuDrawUpdateContext{static_cast<double>(target.width),
+                                                         static_cast<double>(target.height),
+                                                         task_pass_camera_handle(engine, task)},
+                                    open_task_frame);
+                            if (task_frame)
+                                task_frame->encode(command);
+#else
+                            const ExternalRenderablePass* const task_externals = nullptr;
+#endif
                             auto color_timing = sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(command, &target_info, 1,
                                                                            task_depth_pointer)};
@@ -3111,7 +3204,8 @@ public:
                                                        SDL_GPU_SAMPLECOUNT_1,
                                        .swapchain = target_record.swapchain,
                                        .billboard_stages =
-                                           BBLITE_HAS_BILLBOARDS && task.render.scene_stages});
+                                           BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
+                                       .external_renderables = task_externals != nullptr});
                             const auto resume_pass = [&]() -> SDL_GPURenderPass* {
                                 task_pass.end();
 #if BBLITE_RENDER_TASK_TRANSMISSION
@@ -3166,7 +3260,7 @@ public:
                                                      : SDL_GPU_TEXTUREFORMAT_INVALID,
                                                  target_sample_count(state, target_record),
                                                  target_record.depth_compare},
-                                &pass_breaks, resume_pass);
+                                &pass_breaks, resume_pass, task_externals);
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT
                                 // The scene's text, bound for this pass's
@@ -3771,27 +3865,37 @@ public:
             }
             depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+#if BBLITE_PINNED_MATERIALS
+            // The frame's scene and lights blocks, once per frame rather
+            // than per draw — the same hoist the Dawn backend's
+            // write_pinned_frame_blocks already makes. A scene without a
+            // camera pushes the block its pass last wrote.
+            upstream::SceneUniforms pass_scene_block =
+                write_pass_scene_block(pass_blocks.scene(scene), scene, engine, camera, matrix);
+            std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
+#endif
 #if BBLITE_EXTERNAL_RENDERABLES
             // External renderables bind to this pass's target, update, and encode
             // their batches' compute into the frame's command buffer before the pass.
-            if (!scene.state->external_renderables.empty() || !state.external_pass.empty()) {
-                auto& webgpu = sdl_engine_webgpu_device(engine, state.device);
-                state.external_pass.follow(
-                    engine, scene,
-                    GpuRenderTargetSignature{
-                        sdl_webgpu_format_name(state.frame_color_format),
-                        sdl_webgpu_format_name(state.depth_format),
-                        {},
-                        static_cast<double>(gpu_sample_count_value(state.sample_count))});
-                const auto frame = webgpu.frame_command_encoder();
-                state.external_pass.prepare(
-                    engine,
-                    GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
-                                         camera ? std::optional<CameraHandle>(scene.camera)
-                                                : std::nullopt},
-                    frame);
-                frame->encode(command);
-            }
+            std::shared_ptr<SdlWebGpuCommandEncoder> external_frame;
+            const auto open_external_frame = [&]() -> GpuCommandEncoderHandle {
+                external_frame = sdl_engine_webgpu_device(engine, state.device).frame_command_encoder();
+                return external_frame;
+            };
+            const ExternalRenderablePass* const externals = prepare_external_pass(
+                state.external_passes.scene, engine, scene,
+                GpuRenderTargetSignature{
+                    sdl_webgpu_format_name(state.frame_color_format),
+                    sdl_webgpu_format_name(state.depth_format),
+                    {},
+                    static_cast<double>(gpu_sample_count_value(state.sample_count))},
+                pass_blocks.scene(scene),
+                GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
+                                     camera ? std::optional<CameraHandle>(scene.camera)
+                                            : std::nullopt},
+                open_external_frame);
+            if (external_frame)
+                external_frame->encode(command);
 #endif
             SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
@@ -3824,16 +3928,17 @@ public:
             // sets it and never reads it.
             [[maybe_unused]] const Scene* pass_scene = &scene;
             std::vector<GpuMesh>* pass_meshes = &state.meshes;
-#if BBLITE_PINNED_MATERIALS
-            // The frame's scene and lights blocks, once per frame rather
-            // than per draw — the same hoist the Dawn backend's
-            // write_pinned_frame_blocks already makes. A scene without a
-            // camera pushes the block its pass last wrote.
-            upstream::SceneUniforms pass_scene_block =
-                write_pass_scene_block(pass_blocks.scene(scene), scene, engine, camera, matrix);
-            std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
-#endif
             SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+            // An external binding at its place in either bucket.
+            const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_EXTERNAL_RENDERABLES
+                externals->draw(SdlWebGpuDevice::borrow_render_pass(command, pass), engine, index);
+                bound_pipeline = nullptr;
+                scene_matrix_bound = false;
+#endif
+            };
+#endif
             ShaderPassMatrices active_shader_pass = frame_pass_matrices;
             update_material_bindings(scene, engine, render_plan.draw_lists.opaque,
                                      active_shader_pass, *pass_meshes, bind_thin_buffers);
@@ -4093,7 +4198,12 @@ public:
 #endif
                     break;
                 case upstream::RenderStage::opaque:
+#if BBLITE_EXTERNAL_RENDERABLES
+                    draw_opaque_bucket(render_plan.draw_lists.opaque, externals, draw_render_list,
+                                       draw_external);
+#else
                     draw_render_list(render_plan.draw_lists.opaque);
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
                     if (has_scene_sprite_pass) {
                         record_scene_sprite_pass(command, pass, engine, scene_sprite_pass,
@@ -4117,33 +4227,20 @@ public:
                     order.add_billboards(engine, state.billboard_passes);
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
-                    order.add_externals(state.external_pass, scene);
+                    if (externals)
+                        order.add_externals(*externals, scene);
 #endif
-                    for (const auto& item : order.sorted()) {
-                        switch (item.kind) {
-                        case TransparentDrawKind::mesh:
-                            draw_render_list(BorrowedDrawList{
-                                render_plan.draw_lists.transparent.commands[item.index]});
-                            break;
-                        case TransparentDrawKind::billboard:
+                    draw_transparent_bucket(
+                        order, render_plan.draw_lists.transparent, draw_render_list,
+                        [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_HAS_BILLBOARDS
                             record_billboard_pass(command, pass, engine,
-                                                  state.billboard_passes[item.index], block);
+                                                  state.billboard_passes[index], block);
                             bound_pipeline = nullptr;
                             scene_matrix_bound = false;
 #endif
-                            break;
-                        case TransparentDrawKind::external:
-#if BBLITE_EXTERNAL_RENDERABLES
-                            state.external_pass.draw(
-                                SdlWebGpuDevice::borrow_render_pass(command, pass),
-                                engine.webgpu_scene_group, item.index);
-                            bound_pipeline = nullptr;
-                            scene_matrix_bound = false;
-#endif
-                            break;
-                        }
-                    }
+                        },
+                        draw_external);
                 }
 #else
                     draw_render_list(render_plan.draw_lists.transparent);
@@ -4441,6 +4538,9 @@ public:
         resolve_gpu_frame_timer(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
+#endif
+#if BBLITE_FRAME_POST_SUBMIT
+        current_frame().post_submit->submitted();
 #endif
         if (capture_ids) {
             save_geometry_id_buffer_png(state, width, height, matrix, render_plan.scene_items(),

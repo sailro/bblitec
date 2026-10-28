@@ -111,7 +111,7 @@ import {
 } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { readSplatStreamProperty } from "./splat-stream-surface.js";
+import { readLoweredRecordProperty } from "./lowered-record-surface.js";
 import {
     contextCanvas,
     optionalPresentCpp,
@@ -2167,9 +2167,17 @@ const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
 ]);
+/** Whether a member names a retained element's tree read (`ui_tree_element`). */
+export function isUiTreeRead(name: string): boolean {
+    return UI_TREE_READS.has(name);
+}
+
 /** Element tree reads and their `bbl::UiTreeRead` arms. */
 const UI_TREE_READS: ReadonlyMap<string, string> = new Map([
     ["parentElement", "Parent"],
+    // A retained element's parent node is an element: the document node
+    // above the root element is not one the native tree holds.
+    ["parentNode", "Parent"],
     ["firstElementChild", "FirstChild"],
     ["lastElementChild", "LastChild"],
     ["previousElementSibling", "PreviousSibling"],
@@ -3994,13 +4002,12 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (textProperty) return textProperty;
-        const streamProperty = readSplatStreamProperty(
+        const libraryProperty = readLoweredRecordProperty(
             this.context,
             owner,
-            expression.name.text,
             expression,
         );
-        if (streamProperty) return streamProperty;
+        if (libraryProperty) return libraryProperty;
         const inputProperty = readNodeInputProperty(
             this.context,
             owner,

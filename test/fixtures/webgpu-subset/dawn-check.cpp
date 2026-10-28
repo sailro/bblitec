@@ -1,98 +1,21 @@
 // The lowered splat-stream library's GPU work on a headless Dawn device through
 // `DawnWebGpuDevice`.
 
-#include "pal_dawn_webgpu.hpp"
+#include "dawn-harness.hpp"
 #include "stream-render.hpp"
-
-#include <bblite/js_realm_state.hpp>
-
-#include <mutex>
-#include <thread>
 
 namespace {
 
-struct DawnHarness {
-    WGPUInstance instance = nullptr;
-    WGPUAdapter adapter = nullptr;
-    WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr;
-    std::mutex mutex;
-    std::vector<std::string> errors;
-
-    void wait(WGPUFuture future) const {
-        WGPUFutureWaitInfo completion = WGPU_FUTURE_WAIT_INFO_INIT;
-        completion.future = future;
-        stream_check::require(wgpuInstanceWaitAny(instance, 1, &completion, 30'000'000'000) ==
-                                  WGPUWaitStatus_Success,
-                              "Dawn wait");
-    }
-    explicit DawnHarness(const bbl::GpuSupportedLimits& required) {
-        const WGPUInstanceFeatureName feature = WGPUInstanceFeatureName_TimedWaitAny;
-        WGPUInstanceDescriptor descriptor = WGPU_INSTANCE_DESCRIPTOR_INIT;
-        descriptor.requiredFeatureCount = 1;
-        descriptor.requiredFeatures = &feature;
-        instance = wgpuCreateInstance(&descriptor);
-        stream_check::require(instance != nullptr, "Dawn instance");
-        WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-        options.powerPreference = WGPUPowerPreference_HighPerformance;
-        options.backendType = WGPUBackendType_D3D12;
-        WGPURequestAdapterCallbackInfo callback = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-        callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        callback.userdata1 = this;
-        callback.callback = [](WGPURequestAdapterStatus status, WGPUAdapter value, WGPUStringView,
-                               void* data, void*) {
-            if (status == WGPURequestAdapterStatus_Success)
-                static_cast<DawnHarness*>(data)->adapter = value;
-        };
-        wait(wgpuInstanceRequestAdapter(instance, &options, callback));
-        stream_check::require(adapter != nullptr, "Dawn adapter");
-        WGPULimits limits = WGPU_LIMITS_INIT;
-        WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
-        if (bbl::pal::request_dawn_limits(limits, required))
-            device_descriptor.requiredLimits = &limits;
-        device_descriptor.uncapturedErrorCallbackInfo.userdata1 = this;
-        device_descriptor.uncapturedErrorCallbackInfo.callback =
-            [](WGPUDevice const*, WGPUErrorType, WGPUStringView message, void* data, void*) {
-                auto* self = static_cast<DawnHarness*>(data);
-                const std::lock_guard lock(self->mutex);
-                self->errors.push_back(bbl::pal::view_text(message));
-            };
-        WGPURequestDeviceCallbackInfo device_callback = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
-        device_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        device_callback.userdata1 = this;
-        device_callback.callback = [](WGPURequestDeviceStatus status, WGPUDevice value,
-                                      WGPUStringView, void* data, void*) {
-            if (status == WGPURequestDeviceStatus_Success)
-                static_cast<DawnHarness*>(data)->device = value;
-        };
-        wait(wgpuAdapterRequestDevice(adapter, &device_descriptor, device_callback));
-        stream_check::require(device != nullptr, "Dawn device");
-        queue = wgpuDeviceGetQueue(device);
-    }
-    ~DawnHarness() {
-        wgpuQueueRelease(queue);
-        wgpuDeviceDestroy(device);
-        wgpuDeviceRelease(device);
-        wgpuAdapterRelease(adapter);
-        wgpuInstanceRelease(instance);
-    }
-    void check_errors() {
-        const std::lock_guard lock(mutex);
-        for (const auto& error : errors)
-            std::fprintf(stderr, "Dawn error: %s\n", error.c_str());
-        stream_check::require(errors.empty(), "Dawn reported validation errors");
-    }
-};
-
 /** The scene pass a Dawn renderer opens: rgba8unorm colour, depth24plus-stencil8 depth. */
 struct DawnTarget final : stream_check::RenderTarget {
-    DawnHarness& harness;
+    webgpu_fixture::DawnHarness& harness;
     bbl::pal::DawnWebGpuDevice& device;
     bbl::pal::DawnTexture color, multisampled, depth;
     bbl::pal::DawnTextureView color_view, multisampled_view, depth_view;
     bbl::pal::DawnBuffer readback;
     static constexpr std::uint32_t row_bytes = 512;
-    DawnTarget(DawnHarness& owner, bbl::pal::DawnWebGpuDevice& gpu) : harness(owner), device(gpu) {
+    DawnTarget(webgpu_fixture::DawnHarness& owner, bbl::pal::DawnWebGpuDevice& gpu)
+        : harness(owner), device(gpu) {
         width = 96;
         height = 64;
         signature = {"rgba8unorm", std::string("depth24plus-stencil8"), {}, 1};
@@ -186,7 +109,7 @@ struct DawnTarget final : stream_check::RenderTarget {
 };
 
 bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::DawnWebGpuDevice> device,
-                                           DawnHarness& harness,
+                                           webgpu_fixture::DawnHarness& harness,
                                            const bbl::GpuSupportedLimits& limits) {
     stream_check::Library library(device);
     stream_check::check_limits(*device, limits);
@@ -204,38 +127,11 @@ bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::DawnWebGpuD
 } // namespace
 
 int main() {
-    try {
-        const auto limits = bbl::gpu_required_limits(
-            {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
-        DawnHarness harness(limits);
-        std::exception_ptr failure;
-        // The realm runs on its own thread: the library's realm state (its
-        // pipeline caches) ends with that thread, before the device does.
-        std::thread([&] {
-            try {
-                const bbl::js::RealmScope realm;
-                bbl::pal::EventLoop loop;
-                loop.run([&] {
-                    auto device = std::make_shared<bbl::pal::DawnWebGpuDevice>(
-                        harness.instance, harness.device, harness.queue);
-                    run(device, harness, limits)
-                        .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
-                              [device, &loop, &failure](std::exception_ptr error) {
-                                  failure = error;
-                                  loop.close();
-                              });
-                });
-            } catch (...) {
-                failure = std::current_exception();
-            }
-        }).join();
-        if (failure)
-            std::rethrow_exception(failure);
-        harness.check_errors();
-        std::printf("dawn ok\n");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
+    const auto limits = bbl::gpu_required_limits(
+        {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
+    return webgpu_fixture::run_dawn(
+        limits,
+        [&](std::shared_ptr<bbl::pal::DawnWebGpuDevice> device,
+            webgpu_fixture::DawnHarness& harness) { return run(device, harness, limits); },
+        "dawn");
 }

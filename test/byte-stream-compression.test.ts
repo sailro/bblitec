@@ -79,8 +79,8 @@ test("byte pipelines lower in strict mode and refuse unlowered stream forms", ()
     const refusals: [string, RegExp][] = [
         [`new Response("text");`, /other bodies are not lowered/],
         [
-            `new Response(new Blob([]).stream(), { status: 201 });`,
-            /without init/,
+            `new Response(new Blob([]).stream(), JSON.parse("{}") as ResponseInit);`,
+            /A Response init is lowered from a record of status, statusText and headers/,
         ],
         [
             `new Blob([]).stream().pipeThrough(new CompressionStream("gzip"), { preventClose: true });`,

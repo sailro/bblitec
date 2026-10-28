@@ -64,6 +64,21 @@ private:
     double (*load_)(const void*, std::size_t) = nullptr;
 };
 
+/** `collection ?? []` iterated: the collection, or an empty one of its kind. */
+template <typename Collection>
+[[nodiscard]] Collection present_or_empty(const js::Nullable<Collection>& value) {
+    return value ? *value : Collection{};
+}
+
+/** `Array.from(values)` of an `ArrayLike<number>`: its elements by index. */
+[[nodiscard]] inline js::Array<double> array_from_arraylike(const NumberArrayLike& values) {
+    js::Array<double> result;
+    result.reserve(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index)
+        result.push_back(values.at(static_cast<double>(index)));
+    return result;
+}
+
 // ── Thrown values ─────────────────────────────────────────────────────
 
 /**
@@ -109,13 +124,6 @@ template <class R, class F> [[nodiscard]] R nullish(const js::Error& left, F rig
     } catch (...) {
         return true;
     }
-}
-
-/** An authored `class X extends Error` instance as the error it is thrown as. */
-template <class T> [[nodiscard]] js::Error class_error(const std::shared_ptr<T>& instance) {
-    if (!instance)
-        return {};
-    return js::make_object_error(instance, "Error");
 }
 
 /** `error instanceof X` for an authored error class: its instance, or null. */
@@ -173,6 +181,12 @@ public:
     template <class K, class V> ArrayBuilder& spread_keys(const js::Map<K, V>& map) {
         for (const auto& entry : map)
             values_.push_back(entry.first);
+        return *this;
+    }
+    /** `...map` of a number-to-number map: each entry a `[key, value]` pair. */
+    ArrayBuilder& spread_entries(const js::Map<double, double>& map) {
+        for (const auto& entry : map)
+            values_.push_back(T{entry.first, entry.second});
         return *this;
     }
     /** The array built; the builder is a temporary that ends here. */
@@ -366,11 +380,12 @@ template <std::size_t N> void tuple_write(js::Tuple<N>& values, double index, do
 [[nodiscard]] inline double number_of(double value) { return value; }
 [[nodiscard]] inline double number_of(bool value) { return value ? 1.0 : 0.0; }
 
-/** A JavaScript object reference as the weak key a WeakMap or WeakSet files it under. */
+/**
+ * A JavaScript object reference as the weak key a WeakMap or WeakSet files it under; null is
+ * no key, which a lookup misses and an insertion refuses (`js::WeakMap::set`).
+ */
 template <class T>
 [[nodiscard]] std::weak_ptr<const void> weak_key(const std::shared_ptr<T>& value) {
-    if (!value)
-        throw js::NamedError("TypeError", "Invalid value used as weak key");
     return std::weak_ptr<const void>(value);
 }
 

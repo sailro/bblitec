@@ -241,7 +241,7 @@ struct DawnState {
 };
 void dawn_error(const char* error) { throw std::runtime_error(error); }
 ${uploadCompressed}
-WGPUTexture upload_selected(DawnState& state, const bbl::TextureData& texture_data, std::uint32_t& out_mip_count) {
+WGPUTexture upload_selected(WGPUDevice device, WGPUQueue queue, const bbl::TextureData& texture_data, std::uint32_t& out_mip_count) {
 ${cppSection(upload, "    if (!texture_data.compressed.mips.empty()) {", "    const DecodedImage image")}
     throw std::runtime_error("Expected a compressed texture.");
 }
@@ -268,16 +268,16 @@ int main() {
     assert(&mobile == &source.compressed);
     dawn::DawnState state;
     std::uint32_t mip_count = 0;
-    dawn::upload_selected(state, source, mip_count);
+    dawn::upload_selected(state.device, state.queue, source, mip_count);
     assert(mip_count == 2);
     assert(uploaded_format == WGPUTextureFormat_BC1RGBAUnorm && texture_writes == 2);
     supported = WGPUFeatureName_TextureCompressionASTC;
-    dawn::upload_selected(state, source, mip_count);
+    dawn::upload_selected(state.device, state.queue, source, mip_count);
     assert(mip_count == 3);
     assert(uploaded_format == WGPUTextureFormat_ASTC8x8Unorm && texture_writes == 5);
     supported = WGPUFeatureName_TimestampQuery;
     bool device_refused = false;
-    try { dawn::upload_selected(state, source, mip_count); }
+    try { dawn::upload_selected(state.device, state.queue, source, mip_count); }
     catch (const std::runtime_error&) { device_refused = true; }
     assert(device_refused && texture_writes == 5);
     bool refused = false;

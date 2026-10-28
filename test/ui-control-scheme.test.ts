@@ -17,6 +17,7 @@ test("color-scheme, accent-color and text-decoration lower as retained declarati
             ":root{color-scheme:dark}.a{color-scheme:light}.b{color-scheme:normal}" +
                 ".c{accent-color:#58c6ff}.d{accent-color:rgb(1, 2, 3)}.e{accent-color:auto}" +
                 ".f{accent-color:rgba(1,2,3,1)}.g{accent-color:teal}" +
+                ".j{accent-color:var(--accent)}" +
                 ".h{text-decoration:none}.i{text-decoration:line-through}",
         ),
     ).cpp;
@@ -24,12 +25,14 @@ test("color-scheme, accent-color and text-decoration lower as retained declarati
         "color-scheme:dark",
         "accent-color:#58c6ff",
         "accent-color:rgb(1, 2, 3)",
+        // A variable's color is checked as the PAL projects it (ui_accent_color).
+        "accent-color:var(--accent)",
         "text-decoration:line-through",
     ])
         assert.ok(cpp.includes(declaration), declaration);
 });
 
-test("color-scheme lists, translucent or variable accents and decoration details refuse", () => {
+test("color-scheme lists, translucent accents and decoration details refuse", () => {
     for (const [css, pattern] of [
         [
             ".a{color-scheme:light dark}",
@@ -42,7 +45,6 @@ test("color-scheme lists, translucent or variable accents and decoration details
         ],
         [".a{accent-color:transparent}", /'accent-color'/],
         [".a{accent-color:#58c6ff80}", /'accent-color'/],
-        [".a{accent-color:var(--accent)}", /'accent-color'/],
         [".a{text-decoration:underline red}", /'text-decoration'/],
         [".a{text-decoration:underline wavy}", /'text-decoration'/],
     ] as const)

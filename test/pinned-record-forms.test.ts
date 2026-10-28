@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
-import { PinnedRecordModel } from "../src/lowering/pinned-record-lowerer.js";
+import {
+    PinnedRecordModel,
+    type RecordSpec,
+} from "../src/lowering/pinned-record-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import {
     optionalNativeFixtureTools,
@@ -158,22 +161,25 @@ class FixtureStore extends UpstreamSourceStore {
     }
 }
 
-function lowered(source: string): string {
+/** The sound-family forms' records. */
+const soundRecords: readonly RecordSpec[] = [
+    { pinned: ["Bus"], cpp: "Bus", reference: true },
+    { pinned: ["MainBus"], cpp: "MainBus", reference: true },
+    { pinned: ["Holder"], cpp: "Holder", reference: true },
+];
+
+function lowered(
+    source: string,
+    records: readonly RecordSpec[] = soundRecords,
+): string {
     const store = new FixtureStore(source);
     const model = new PinnedRecordModel(
         new LoweringContext(store),
         store.program.modules([MODULE]),
         {
-            records: [
-                { pinned: ["Bus"], cpp: "Bus", reference: true },
-                { pinned: ["MainBus"], cpp: "MainBus", reference: true },
-                { pinned: ["Holder"], cpp: "Holder", reference: true },
-            ],
+            records,
             values: new Map(),
             adapters: new Map(),
-            platformClasses: new Map([
-                ["Uint8Array", { kind: "typed", element: "u8" }],
-            ]),
             exported: new Set([`${MODULE}#run`]),
         },
     );
@@ -184,20 +190,21 @@ function lowered(source: string): string {
 #include <bblite/pinned_records.hpp>
 ${[...model.includes].map((header) => `#include <${header}>`).join("\n")}
 namespace bbl {
-${model.structs(["Bus", "MainBus", "Holder", ...model.literalRecords()])}
+${model.structs([...records.map((record) => record.pinned[0]!), ...model.literalRecords()])}
 ${declarations}
 ${definitions}
 } // namespace bbl
 `;
 }
 
-test("the record model lowers set snapshots, structural tests, remainders, comma incrementors and zero module state", async (t) => {
-    const header = lowered(SOURCE);
-    assert.match(header, /std::holds_alternative<std::shared_ptr<bbl::Bus>>/);
-    assert.match(header, /std::fmod\(/);
-    // A frozen constant's members are their literals; the object is never built.
-    assert.doesNotMatch(header, /->busy = /);
-    const javascript = ts.transpileModule(SOURCE, {
+/** `run` of `source` under Node and of its lowered `header` natively print the same text. */
+async function assertRunsAsPinned(
+    t: TestContext,
+    source: string,
+    header: string,
+    name: string,
+): Promise<void> {
+    const javascript = ts.transpileModule(source, {
         compilerOptions: {
             target: ts.ScriptTarget.ES2022,
             module: ts.ModuleKind.ESNext,
@@ -212,7 +219,7 @@ test("the record model lowers set snapshots, structural tests, remainders, comma
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/test-pinned-record-forms");
+    const directory = resolve(`artifacts/test-${name}`);
     mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "forms.hpp"), header);
     writeFileSync(
@@ -232,8 +239,20 @@ int main() {
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
     ]);
-    const printed = execFileSync(exe, { cwd: directory, encoding: "utf8" });
+    const printed = execFileSync(exe, {
+        cwd: directory,
+        encoding: "utf8",
+    }).replaceAll("\r\n", "\n");
     assert.equal(printed, expected);
+}
+
+test("the record model lowers set snapshots, structural tests, remainders, comma incrementors and zero module state", async (t) => {
+    const header = lowered(SOURCE);
+    assert.match(header, /std::holds_alternative<std::shared_ptr<bbl::Bus>>/);
+    assert.match(header, /std::fmod\(/);
+    // A frozen constant's members are their literals; the object is never built.
+    assert.doesNotMatch(header, /->busy = /);
+    await assertRunsAsPinned(t, SOURCE, header, "pinned-record-forms");
 });
 
 test("the record model refuses structural tests it cannot decide", () => {
@@ -255,4 +274,24 @@ test("the record model refuses structural tests it cannot decide", () => {
         () => lowered(SOURCE.replace('"g")', '"gu")')),
         /Pinned RegExp constructors support the g and i flags, not 'u'/,
     );
+});
+
+test("the record model lowers the forms the MeshLoD core uses as the pin runs them", async (t) => {
+    const source = readFileSync(
+        "test/fixtures/record-forms-mesh-lod.ts",
+        "utf8",
+    );
+    const header = lowered(source, [
+        {
+            pinned: ["Failure", "FailureMutable"],
+            cpp: "Failure",
+            reference: true,
+        },
+        { pinned: ["FailureContext"], cpp: "FailureContext", reference: false },
+        { pinned: ["Box"], cpp: "Box", reference: false },
+    ]);
+    // `f32(a + b)` is `Math.fround`'s own call; the update holds its view and key once.
+    assert.match(header, /bbl::js::math_fround\(/);
+    assert.match(header, /auto&& typed_\d+ = bits; const double key_\d+ = /);
+    await assertRunsAsPinned(t, source, header, "pinned-record-forms-mesh-lod");
 });

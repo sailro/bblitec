@@ -16,8 +16,8 @@ import {
 import {
     type Exports,
     pinnedModules,
-    splatStreamFamilyHeader,
-} from "./splat-stream-fixtures.js";
+    recordFamilyHeader,
+} from "./pinned-library-fixtures.js";
 
 /** The transport's modules and the ledger the scenarios create. */
 const TRANSPORT_ROOTS = [
@@ -1070,7 +1070,7 @@ async function pinnedRun(scenario: Scenario): Promise<string> {
 // ── The lowered transport ──────────────────────────────────────────────
 
 test("the lowered splat-stream requests and voxel collision schedule, retry, abort and fail as the pin does", async (t) => {
-    const header = splatStreamFamilyHeader(
+    const header = recordFamilyHeader(
         lowerSplatStreamTransport(new LoweringContext()),
     );
     // Async functions are coroutines over the runtime promise; platform

@@ -2,6 +2,7 @@
 #include <bblite/features/gpu_task_timing.hpp>
 
 #include <bblite/pal_compute_task_execution.hpp>
+#include <bblite/pal_frame_post_submit.hpp>
 #include <span>
 #if BBLITE_GPU_TASK_TIMING
 #include <bblite/pal_gpu_task_timing.hpp>
@@ -122,8 +123,13 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
     return prefix;
 }
 
+/** The frame's prefix already recorded (its encoder finished). */
+inline bool compute_frame_prefix_recorded(const Engine& engine) {
+    return engine.current_compute_encoder && engine.current_compute_encoder->finished;
+}
+
 inline bool compute_frame_prefix_deferred(const Engine& engine) {
-    if (engine.stopped || engine.current_compute_encoder)
+    if (engine.stopped || compute_frame_prefix_recorded(engine))
         return false;
     const auto prefix = collect_compute_frame_prefix(engine);
     return prefix.leading_shadows && !prefix.tasks.empty();
@@ -136,14 +142,14 @@ inline void begin_compute_frame_prefix(Engine& engine, bool shadows_submitted = 
     const auto prefix = collect_compute_frame_prefix(engine);
     if (prefix.tasks.empty() || (prefix.leading_shadows && !shadows_submitted))
         return;
-    if (engine.current_compute_encoder)
+    if (compute_frame_prefix_recorded(engine))
         throw std::runtime_error("Compute frame encoder is already active.");
     if (!engine.offscreen_run)
         throw std::runtime_error("Compute frame requires an owned graphics device.");
-    auto encoder =
-        std::make_shared<pal::ComputeCommandEncoder>(std::shared_ptr<pal::OffscreenDevice>(
-            engine.offscreen_run, &engine.offscreen_run->device()));
-    engine.current_compute_encoder = encoder;
+    // The frame's encoder when a frame scope opened it (`FramePostSubmitScope`).
+    if (!engine.current_compute_encoder)
+        engine.current_compute_encoder = frame_compute_encoder(engine);
+    const auto encoder = engine.current_compute_encoder;
     try {
         for (const auto& task : prefix.tasks)
             if (!task->pass && !task->execute)

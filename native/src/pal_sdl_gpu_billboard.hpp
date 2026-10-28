@@ -15,7 +15,7 @@
 // pinned pipeline module. Nothing here decides a number.
 
 #include <bblite/features/texture_pixel_writes.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/billboard_system.hpp>
 // The fx block a custom-shader system binds is the shared custom-shader

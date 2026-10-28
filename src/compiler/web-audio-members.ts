@@ -52,10 +52,10 @@ export const ANALYSER_PROPERTIES = [
 
 /** An analyser's readouts: the element type each writes and its `AnalyserData` enumerator. */
 export const ANALYSER_READOUTS = [
-    ["getByteFrequencyData", "u8", "Frequency"],
-    ["getFloatFrequencyData", "f32", "Frequency"],
-    ["getByteTimeDomainData", "u8", "TimeDomain"],
-    ["getFloatTimeDomainData", "f32", "TimeDomain"],
+    ["getByteFrequencyData", "u8array", "Frequency"],
+    ["getFloatFrequencyData", "f32array", "Frequency"],
+    ["getByteTimeDomainData", "u8array", "TimeDomain"],
+    ["getFloatTimeDomainData", "f32array", "TimeDomain"],
 ] as const;
 
 /** A buffer source's loop flag and points: `audio_<native>` reads, `audio_set_<native>` writes. */

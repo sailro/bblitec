@@ -5,11 +5,11 @@
 #include <bblite/features/has_frame_graph_renderer.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/engine_webgpu.hpp>
+#include <bblite/features/library_textures.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text_renderer.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 
-#include <bblite/pal_gpu.hpp>
 #include "pal_gpu_backend.hpp"
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_window_presenter.hpp"
@@ -36,6 +36,10 @@ struct GpuBackend {
     std::shared_ptr<WindowPresenter> (*create_window_presenter)(SDL_Window*);
     /** Creates `Engine::webgpu_device` over the engine's source device. */
     void (*bind_webgpu_device)(Engine&);
+    /** A lowered library's material image, sampler and scene environment on that device. */
+    LibraryImage (*library_image)(Engine&, const TextureData&);
+    std::shared_ptr<GpuObject> (*library_sampler)(Engine&, const TextureSamplerState&);
+    LibraryEnvironmentViews (*library_environment_views)(Engine&, const EnvironmentState&);
     /** Flags the backend's surface needs on the SDL window it presents to. */
     SDL_WindowFlags window_flags;
 };
@@ -72,6 +76,12 @@ struct GpuBackend {
 #else
 #define BBLITE_GPU_WEBGPU_ENTRY(entry) nullptr
 #endif
+// A library's images reuse the scene renderer's texture uploads.
+#if BBLITE_LIBRARY_TEXTURES && BBLITE_HAS_PBR_RENDERER
+#define BBLITE_GPU_LIBRARY_ENTRY(entry) &entry
+#else
+#define BBLITE_GPU_LIBRARY_ENTRY(entry) nullptr
+#endif
 
 #if BBLITE_HAS_SDL_GPU
 inline constexpr GpuBackend sdl_gpu_backend{
@@ -82,6 +92,9 @@ inline constexpr GpuBackend sdl_gpu_backend{
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_gpu_engine),
     BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_gpu_presenter),
     BBLITE_GPU_WEBGPU_ENTRY(bind_sdl_gpu_engine_webgpu_device),
+    BBLITE_GPU_LIBRARY_ENTRY(sdl_gpu_library_image),
+    BBLITE_GPU_LIBRARY_ENTRY(sdl_gpu_library_sampler),
+    BBLITE_GPU_LIBRARY_ENTRY(sdl_gpu_library_environment_views),
     0,
 };
 #endif
@@ -94,6 +107,9 @@ inline constexpr GpuBackend dawn_gpu_backend{
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_dawn_engine),
     BBLITE_GPU_WINDOW_ENTRY(create_window_dawn_presenter),
     BBLITE_GPU_WEBGPU_ENTRY(bind_dawn_engine_webgpu_device),
+    BBLITE_GPU_LIBRARY_ENTRY(dawn_library_image),
+    BBLITE_GPU_LIBRARY_ENTRY(dawn_library_sampler),
+    BBLITE_GPU_LIBRARY_ENTRY(dawn_library_environment_views),
 #ifdef __ANDROID__
     // Marks Dawn's external Vulkan context so SDL does not restore an EGL context on resume.
     SDL_WINDOW_VULKAN,
@@ -109,6 +125,7 @@ inline constexpr GpuBackend dawn_gpu_backend{
 #undef BBLITE_GPU_FRAME_GRAPH_ENTRY
 #undef BBLITE_GPU_WINDOW_ENTRY
 #undef BBLITE_GPU_WEBGPU_ENTRY
+#undef BBLITE_GPU_LIBRARY_ENTRY
 
 /** The backend BBLITE_GPU_BACKEND selects; `use_dawn_backend` refuses one this build lacks. */
 inline const GpuBackend& selected_gpu_backend() {
@@ -125,8 +142,8 @@ inline const GpuBackend& selected_gpu_backend() {
 #else
     // A PAL unit compiled without any renderer (a native fixture): every
     // entry is absent, so each caller refuses by name.
-    static constexpr GpuBackend none{"none",  nullptr, nullptr, nullptr,
-                                     nullptr, nullptr, nullptr, 0};
+    static constexpr GpuBackend none{"none",  nullptr, nullptr, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, nullptr, 0};
     return none;
 #endif
 }

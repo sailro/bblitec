@@ -349,6 +349,7 @@ test("registers unique generated scene targets", () => {
             "mosquito-amber",
             "calculator",
             "trogir-streaming",
+            "mesh-lod",
         ],
     );
     assert.equal(

@@ -414,20 +414,18 @@ export function pinnedDefaultVec2Cpp(name: PinnedMaterialDefaultName): string {
 }
 
 /**
- * `writeReflectanceUBO`'s absent metallic reflectance colour: the pin
- * reads `mrc ? mrc[i] : <lane>` rather than a `??`, so the three lanes are
- * the conditionals' own false arms.
+ * The lanes a pinned writer states for an absent colour it reads as
+ * `<name> ? <name>[i] : <lane>` rather than through a `??`: the
+ * conditionals' own false arms, by lane.
  */
-function pinnedMetallicReflectanceColorAbsent(): readonly [
-    number,
-    number,
-    number,
-] {
+function pinnedAbsentLanes(
+    module: string,
+    writer: string,
+    name: string,
+    count: number,
+): readonly number[] {
     const reader = sharedPinnedContext();
-    const { file, declaration } = reader.functionDeclaration(
-        reflectanceModule,
-        "writeReflectanceUBO",
-    );
+    const { file, declaration } = reader.functionDeclaration(module, writer);
     const lanes: number[] = [];
     for (const conditional of reader.findNodes(
         declaration,
@@ -438,29 +436,74 @@ function pinnedMetallicReflectanceColorAbsent(): readonly [
         const read = unwrapExpression(conditional.whenTrue);
         if (
             !ts.isIdentifier(condition) ||
-            condition.text !== "mrc" ||
+            condition.text !== name ||
             !ts.isElementAccessExpression(read) ||
             !ts.isIdentifier(read.expression) ||
-            read.expression.text !== "mrc"
+            read.expression.text !== name
         ) {
             continue;
         }
         const lane = reader.numericValue(read.argumentExpression, file);
         lanes[lane] = reader.numericValue(conditional.whenFalse, file);
     }
-    const [r, g, b] = lanes;
-    if (
-        lanes.length !== 3 ||
-        r === undefined ||
-        g === undefined ||
-        b === undefined
-    ) {
+    if (lanes.length !== count || lanes.some((lane) => lane === undefined)) {
         return reader.contractError(
             declaration,
-            "Expected writeReflectanceUBO to read three `mrc ? mrc[i] : <lane>` lanes.",
+            `Expected ${writer} to read ${count} \`${name} ? ${name}[i] : <lane>\` lanes.`,
         );
     }
-    return [r, g, b];
+    return lanes;
+}
+
+/** `writeReflectanceUBO`'s absent metallic reflectance colour (`mrc`). */
+function pinnedMetallicReflectanceColorAbsent(): readonly [
+    number,
+    number,
+    number,
+] {
+    const [r, g, b] = pinnedAbsentLanes(
+        reflectanceModule,
+        "writeReflectanceUBO",
+        "mrc",
+        3,
+    );
+    return [r!, g!, b!];
+}
+
+/**
+ * `_writeMaterialData`'s absent base colour (`factor`), which the record's
+ * own initializer holds until the material states one.
+ */
+function pinnedBaseColorFactorAbsent(): readonly number[] {
+    return pinnedAbsentLanes(
+        baseWriterModule,
+        "_writeMaterialData",
+        "factor",
+        4,
+    );
+}
+
+/** A default a lowered library may read a seeded record member under. */
+export type SeededMaterialDefault =
+    PinnedMaterialDefaultName | "pbrBaseColorFactor";
+
+/**
+ * Whether `value`, the fallback a lowered library states for a material
+ * member (`material.metallicFactor ?? 1`), is what the native record holds
+ * for that member when the pin's material leaves it absent: the record is
+ * seeded with the pin's writer default, so the read is the record's value
+ * exactly when the two agree.
+ */
+export function seededMaterialDefault(
+    name: SeededMaterialDefault,
+    value: PinnedDefaultValue,
+): boolean {
+    return samePinnedDefault(
+        value,
+        name === "pbrBaseColorFactor"
+            ? pinnedBaseColorFactorAbsent()
+            : entryValue(name),
+    );
 }
 
 /**

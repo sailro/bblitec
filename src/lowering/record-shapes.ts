@@ -1,7 +1,9 @@
-import { CPP_ELEMENT, CPP_SCALAR } from "./cpp-types.js";
+import { CPP_SCALAR } from "./cpp-types.js";
 import ts from "typescript";
 import type { MemberSpec, RecordSpec } from "./pinned-record-lowerer.js";
 import { valueKindOf } from "../compiler/type-facts.js";
+import { typedArrayElement } from "../compiler/data-types/typed-arrays.js";
+import type { TypedArrayKind } from "../typed-array-classes.js";
 
 /** The represented shape of a pinned value, independent of its native owner. */
 export type RecordShape =
@@ -10,6 +12,8 @@ export type RecordShape =
               | "number"
               | "boolean"
               | "string"
+              /** An exact integer: `bbl::js::BigInt`. */
+              | "bigint"
               | "void"
               | "object"
               | "buffer"
@@ -39,7 +43,7 @@ export type RecordShape =
     | { readonly kind: "weakset" }
     | {
           readonly kind: "typed";
-          readonly element: "f32" | "f64" | "u32" | "i32" | "u8";
+          readonly element: TypedArrayKind;
       }
     | {
           readonly kind: "function";
@@ -48,6 +52,8 @@ export type RecordShape =
       }
     /** `Promise<T>`: `bbl::js::Promise<T>` (`void` for `Promise<void>`). */
     | { readonly kind: "promise"; readonly value: RecordShape }
+    /** A linked module's namespace (`typeof import(m)`): `bbl::js::ModuleNamespace`. */
+    | { readonly kind: "module"; readonly path: string }
     | { readonly kind: "optional"; readonly value: RecordShape }
     | { readonly kind: "variant"; readonly members: readonly RecordShape[] };
 
@@ -98,6 +104,17 @@ export const functionOf = (
     result: RecordShape,
 ): RecordShape => ({ kind: "function", parameters, result });
 
+/** A `Float32Array`. */
+export const typedF32: RecordShape = { kind: "typed", element: "f32array" };
+/** A `Uint8Array`. */
+export const typedU8: RecordShape = { kind: "typed", element: "u8array" };
+
+/** A single-precision engine's matrices, as the pin's matrix aliases name them. */
+export const matrixValues: readonly (readonly [string, RecordShape])[] = [
+    ["Mat4", typedF32],
+    ["Mat4Storage", typedF32],
+];
+
 /** A backend GPU object a record holds by identity; absent while `null`. */
 export const gpuObjectShape: RecordShape = {
     kind: "native",
@@ -118,6 +135,19 @@ export const spelled = (
     shape: RecordShape,
     call: (owner: string, args: readonly string[]) => string,
 ): MemberSpec => ({ shape, access: (owner) => owner, call });
+/** A runtime object the pin holds by identity, its members spelled over it. */
+export const nativeObject = (
+    pinned: readonly string[],
+    cpp: string,
+    entries: readonly (readonly [string, MemberSpec])[],
+): RecordSpec => ({
+    pinned,
+    cpp,
+    handle: cpp,
+    reference: true,
+    native: true,
+    members: members(entries),
+});
 /** A member read the port spells over the receiver. */
 export const reads = (
     shape: RecordShape,
@@ -140,11 +170,23 @@ export function stripOptional(shape: RecordShape): RecordShape {
     return shape.kind === "optional" ? shape.value : shape;
 }
 
+/** An indexed sequence of numbers: a number array, a typed array or a tuple. */
+export function isNumberSequence(shape: RecordShape): boolean {
+    return (
+        shape.kind === "typed" ||
+        shape.kind === "tuple" ||
+        (shape.kind === "array" && shape.element.kind === "number")
+    );
+}
+
 export function isRecordScalar(shape: RecordShape | undefined): boolean {
     return shape?.kind === "number" || shape?.kind === "boolean";
 }
 
-export const typedElementCpp = CPP_ELEMENT;
+/** The C++ element a typed array of `kind` stores. */
+export function typedElementCpp(kind: TypedArrayKind): string {
+    return typedArrayElement(kind).elementCppType;
+}
 
 /** Native ownership choices; shape and absence rules are shared by every record lowerer. */
 export interface RecordStorage {
@@ -193,6 +235,10 @@ export class RecordRepresentation {
                 return `${js}::JsonValue`;
             case "dataview":
                 return `${js}::DataView`;
+            case "bigint":
+                return `${js}::BigInt`;
+            case "module":
+                return `${js}::ModuleNamespace`;
             case "arraylike":
                 return "bbl::pinned::NumberArrayLike";
             case "error":
@@ -220,7 +266,7 @@ export class RecordRepresentation {
             case "weakset":
                 return `${js}::WeakMap<bool>`;
             case "typed":
-                return `${js}::TypedArray<${typedElementCpp[shape.element]}>`;
+                return `${js}::TypedArray<${typedElementCpp(shape.element)}>`;
             case "function":
                 return `${js}::Callback<${this.cppType(shape.result)}(${shape.parameters.map((parameter) => this.cppType(parameter)).join(", ")})>`;
             case "optional":

@@ -133,8 +133,11 @@ template <class T> [[nodiscard]] double typed_get(const js::TypedArray<T>& value
 }
 
 /** `typed.fill(value)`: every element, stored as its element type stores it. */
-template <class T> js::TypedArray<T>& typed_fill(js::TypedArray<T>& values, double value) {
-    for (std::size_t index = 0; index < values.size(); ++index)
+template <class T>
+js::TypedArray<T>& typed_fill(js::TypedArray<T>& values, double value, double start = 0.0,
+                              double end = std::numeric_limits<double>::infinity()) {
+    const auto [from, to] = js::relative_slice_bounds(values.size(), start, end);
+    for (std::size_t index = from; index < to; ++index)
         js::typed_array_write(values, static_cast<double>(index), value);
     return values;
 }
@@ -154,6 +157,10 @@ template <std::size_t N> [[nodiscard]] double tuple_at(const js::Tuple<N>& value
 inline void console_part(std::string& line, const std::string& value) { line += value; }
 inline void console_part(std::string& line, const char* value) { line += value; }
 inline void console_part(std::string& line, double value) { line += js::number_to_string(value); }
+/** A caught value as `console.error` prints it: an Error's `name: message`. */
+inline void console_part(std::string& line, const js::Error& value) {
+    line += js::error_to_string(js::error_name(value), js::error_message(value));
+}
 
 /** `console.error/warn(...)`: the arguments' string forms, space separated, on stderr. */
 template <class... Parts> void console_line(const Parts&... parts) {

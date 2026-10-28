@@ -118,6 +118,27 @@ export function compileHttpCall(
     );
     const optionsNode = call.arguments[1];
     const options = optionsNode ? context.compileValue(optionsNode) : undefined;
+    // A RequestInit held at run time (a parameter of a fetch the program
+    // wraps): the web platform seam's own request, its signal and headers.
+    const runtimeInit = options?.dataType;
+    if (
+        runtimeInit?.kind === "request-init" ||
+        (runtimeInit?.kind === "optional" &&
+            runtimeInit.inner.kind === "request-init")
+    ) {
+        context.reachFeature("platform:web-platform", call);
+        const init = context.allocateTemporaryCppName("http_init");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: init,
+            initializer: options!.cpp,
+        });
+        return lowerer.leafValue(
+            `bbl::web_platform::fetch_response(${url}, ${init})`,
+            { kind: "promise", result: { kind: "http-response" } },
+        );
+    }
     if (
         options &&
         options.kind !== "record" &&
@@ -162,7 +183,7 @@ export function compileHttpCall(
         ? requestSignal(lowerer, fields.signal, optionsNode!)
         : undefined;
     return lowerer.leafValue(
-        `bbl::pal::fetch_http(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}}${signal ? `, ${signal}` : ""})`,
+        `bbl::pal::fetch_deployed(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}}${signal ? `, ${signal}` : ""})`,
         { kind: "promise", result: { kind: "http-response" } },
     );
 }
@@ -200,6 +221,34 @@ function requestSignal(
         : cpp;
 }
 
+/**
+ * `init.signal`, `init.headers` and `init.credentials` of a RequestInit held
+ * at run time: the seam's fields, a signal never set being absent.
+ */
+export function requestInitProperty(
+    lowerer: DataLowerer,
+    owner: Value,
+    property: string,
+): Value | undefined {
+    if (owner.dataType?.kind !== "request-init") return undefined;
+    if (property === "signal")
+        return lowerer.leafValue(
+            `bbl::web_platform::request_signal(${owner.cpp})`,
+            { kind: "optional", inner: { kind: "abort-signal" } },
+        );
+    if (property === "headers")
+        return lowerer.leafValue(`(${owner.cpp}).headers`, {
+            kind: "optional",
+            inner: { kind: "http-headers" },
+        });
+    if (property === "credentials")
+        return lowerer.leafValue(`(${owner.cpp}).credentials`, {
+            kind: "optional",
+            inner: { kind: "string" },
+        });
+    return undefined;
+}
+
 export function httpResponseProperty(
     lowerer: DataLowerer,
     owner: Value,
@@ -214,6 +263,10 @@ export function httpResponseProperty(
         return lowerer.leafValue(`(${owner.cpp})->status`, { kind: "number" });
     if (property === "url")
         return lowerer.leafValue(`(${owner.cpp})->url`, { kind: "string" });
+    if (property === "statusText")
+        return lowerer.leafValue(`(${owner.cpp})->status_text`, {
+            kind: "string",
+        });
     if (property === "bodyUsed")
         return lowerer.leafValue(
             `bbl::pal::http_response_body_used(${owner.cpp})`,

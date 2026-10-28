@@ -13,13 +13,14 @@ export class TextLowerer {
 
     /** `upstream_text.hpp`: alpha-to-coverage membership. */
     public header(): string {
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "coverage",
             ["records"],
         );
         return `#pragma once
 #include <bblite/upstream_text_records.hpp>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}
@@ -30,7 +31,7 @@ ${definitions}
     /** `upstream_text_renderable.hpp`: the scene renderable. */
     public renderableHeader(): string {
         assertDeferredSceneRenderables(this.context);
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "renderable",
             ["records", "gpu"],
@@ -38,6 +39,7 @@ ${definitions}
         return `#pragma once
 #include <bblite/upstream_text_gpu.hpp>
 #include <cmath>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}

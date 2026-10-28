@@ -51,13 +51,14 @@ WGPUTextureFormat compressed_texture_format(std::string_view name) {
                              "'.");
 }
 
-WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture& compressed) {
+WGPUTexture upload_compressed_texture(WGPUDevice device, WGPUQueue queue,
+                                      const CompressedTexture& compressed) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = {compressed.width, compressed.height, 1};
     descriptor.format = compressed_texture_format(compressed.format);
     descriptor.mipLevelCount = static_cast<std::uint32_t>(compressed.mips.size());
-    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
     if (!texture)
         dawn_error("wgpuDeviceCreateTexture compressed");
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
@@ -71,13 +72,18 @@ WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture&
         layout.bytesPerRow = geometry.row_bytes;
         layout.rowsPerImage = WGPU_COPY_STRIDE_UNDEFINED;
         const WGPUExtent3D size{geometry.width, geometry.height, 1};
-        DawnGpuDevice{state.queue}.write_texture(&destination, mip.bytes.data(), mip.bytes.size(),
-                                                 &layout, &size);
+        DawnGpuDevice{queue}.write_texture(&destination, mip.bytes.data(), mip.bytes.size(),
+                                           &layout, &size);
     }
     return texture.release();
 }
 
-WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture_data, bool srgb,
+WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture& compressed) {
+    return upload_compressed_texture(state.device, state.queue, compressed);
+}
+
+WGPUTexture upload_material_texture(WGPUDevice device, WGPUQueue queue, DawnMipGenerator& mips,
+                                    const TextureData& texture_data, bool srgb,
                                     const std::array<std::uint8_t, 4>& fallback,
                                     std::uint32_t& out_mip_count) {
     // A compressed slot carries its own format and its own chain, so the
@@ -86,13 +92,12 @@ WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture
     if (!texture_data.compressed.mips.empty()) {
         const auto& compressed =
             select_compressed_texture(texture_data, [&](std::string_view format) {
-                return wgpuDeviceHasFeature(state.device,
-                                            format.starts_with("astc-")
-                                                ? WGPUFeatureName_TextureCompressionASTC
-                                                : WGPUFeatureName_TextureCompressionBC);
+                return wgpuDeviceHasFeature(device, format.starts_with("astc-")
+                                                        ? WGPUFeatureName_TextureCompressionASTC
+                                                        : WGPUFeatureName_TextureCompressionBC);
             });
         out_mip_count = static_cast<std::uint32_t>(compressed.mips.size());
-        return upload_compressed_texture(state, compressed);
+        return upload_compressed_texture(device, queue, compressed);
     }
     const DecodedImage image = decode_uploadable_image(texture_data, fallback);
     const std::uint32_t mip_count = full_mip_chain(static_cast<std::uint32_t>(image.width),
@@ -110,7 +115,7 @@ WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture
     };
     descriptor.format = format;
     descriptor.mipLevelCount = mip_count;
-    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
     if (!texture)
         dawn_error("wgpuDeviceCreateTexture material");
     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -124,10 +129,17 @@ WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture
         static_cast<std::uint32_t>(image.height),
         1,
     };
-    DawnGpuDevice{state.queue}.write_texture(&destination, image.rgba.data(), image.rgba.size(),
-                                             &layout, &size);
-    generate_mipmaps(state, texture, format, mip_count);
+    DawnGpuDevice{queue}.write_texture(&destination, image.rgba.data(), image.rgba.size(), &layout,
+                                       &size);
+    generate_mipmaps(device, queue, mips, texture, format, mip_count);
     return texture.release();
+}
+
+WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture_data, bool srgb,
+                                    const std::array<std::uint8_t, 4>& fallback,
+                                    std::uint32_t& out_mip_count) {
+    return upload_material_texture(state.device, state.queue, state.mips, texture_data, srgb,
+                                   fallback, out_mip_count);
 }
 
 WGPUTexture upload_reflection_cube(DawnState& state,
@@ -186,8 +198,8 @@ WGPUTexture upload_reflection_cube(DawnState& state,
     return texture.release();
 }
 
-WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState& environment,
-                                       std::uint32_t layers) {
+WGPUTexture create_environment_texture(WGPUDevice device, WGPUQueue queue,
+                                       const EnvironmentState& environment, std::uint32_t layers) {
 #if BBLITE_COMPUTE_TEXTURES
     if (environment.specular_gpu) {
         const auto allocation =
@@ -208,7 +220,7 @@ WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState&
     descriptor.size = {width, width, layers};
     descriptor.format = WGPUTextureFormat_RGBA16Float;
     descriptor.mipLevelCount = mip_count;
-    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
     if (!texture)
         dawn_error("wgpuDeviceCreateTexture environment");
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
@@ -255,11 +267,16 @@ WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState&
             layout.bytesPerRow = mip_width * 8;
             layout.rowsPerImage = mip_width;
             const WGPUExtent3D size{mip_width, mip_width, 1};
-            DawnGpuDevice{state.queue}.write_texture(&destination, source_bytes, byte_size, &layout,
-                                                     &size);
+            DawnGpuDevice{queue}.write_texture(&destination, source_bytes, byte_size, &layout,
+                                               &size);
         }
     }
     return texture.release();
+}
+
+WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState& environment,
+                                       std::uint32_t layers) {
+    return create_environment_texture(state.device, state.queue, environment, layers);
 }
 
 void upload_environment(DawnState& state, const EnvironmentState& environment) {
@@ -314,7 +331,8 @@ DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRe
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER)
-void upload_brdf(DawnState& state, const EnvironmentState& environment) {
+WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
+                                const EnvironmentState& environment) {
     std::vector<std::uint16_t> half_pixels;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
@@ -342,7 +360,7 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = {width, height, 1};
     descriptor.format = WGPUTextureFormat_RGBA16Float;
-    WGPUTexture texture = wgpuDeviceCreateTexture(state.device, &descriptor);
+    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
     if (!texture)
         dawn_error("wgpuDeviceCreateTexture brdf");
     WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -351,9 +369,13 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     layout.bytesPerRow = width * 8;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    DawnGpuDevice{state.queue}.write_texture(&destination, half_pixels.data(),
-                                             half_pixels.size() * sizeof(std::uint16_t), &layout,
-                                             &size);
+    DawnGpuDevice{queue}.write_texture(&destination, half_pixels.data(),
+                                       half_pixels.size() * sizeof(std::uint16_t), &layout, &size);
+    return texture;
+}
+
+void upload_brdf(DawnState& state, const EnvironmentState& environment) {
+    const auto texture = create_brdf_texture(state.device, state.queue, environment);
     if (state.brdf_view)
         wgpuTextureViewRelease(state.brdf_view);
     if (state.brdf_texture)

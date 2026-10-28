@@ -90,7 +90,7 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
                                  HttpHeaders(std::move(received->headers)),
                                  null_body ? std::optional<BodyStream>()
                                            : std::optional<BodyStream>(BodyStream(state)),
-                                 false});
+                                 false, std::string()});
             pending->result.resolve(std::move(response));
         },
         [pending] {
@@ -131,6 +131,36 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
         pending->result.reject(std::current_exception());
     }
     return pending->result;
+}
+
+/**
+ * What `fetch_deployed` reads before HTTP: the program's packaged files
+ * (`pal_packaged_responses.hpp`), installed with their first registration,
+ * so a program that packages none links no packaged lookup.
+ */
+inline std::optional<js::Promise<HttpResponse>> (*packaged_fetch)(const std::string& url,
+                                                                  std::string range) = nullptr;
+
+/**
+ * `fetch(url, request)` from the deployment: a GET of a URL the program
+ * packaged reads that file (its `Range` field answered from it); anything
+ * else goes over the HTTP transport.
+ */
+inline js::Promise<HttpResponse> fetch_deployed(std::string url, HttpRequest request,
+                                                js::AbortSignal signal = {}) {
+    if (packaged_fetch && (request.method == "GET" || request.method == "get")) {
+        const auto range =
+            std::find_if(request.headers.begin(), request.headers.end(), [](const auto& header) {
+                return http_header_name(header.first) == "range";
+            });
+        if (auto packaged =
+                packaged_fetch(url, range == request.headers.end() ? std::string() : range->second)) {
+            if (signal && signal.aborted())
+                return js::Promise<HttpResponse>::rejected(*signal.reason());
+            return *packaged;
+        }
+    }
+    return fetch_http(std::move(url), std::move(request), std::move(signal));
 }
 
 } // namespace bbl::pal

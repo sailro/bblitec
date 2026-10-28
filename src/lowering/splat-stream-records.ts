@@ -22,17 +22,11 @@ import {
     type RecordSchema,
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
-import { gpuSubsetRecords } from "./gpu-schema.js";
-import { webgpuFlagConstants } from "../webgpu-flags.js";
-import { functionOf as fn } from "./record-shapes.js";
 import {
-    webPlatformConstructors,
-    webPlatformGlobals,
-    webPlatformGlobalValues,
-    webPlatformInstanceOf,
-    webPlatformRecords,
-    webPlatformValues,
-} from "./web-platform-schema.js";
+    libraryRecordSchema,
+    type LoweredRecordFamily,
+} from "./library-record-schema.js";
+import { functionOf as fn } from "./record-shapes.js";
 
 const TYPES = "src/loader-splat-stream/splat-stream-types.ts";
 const META = "src/loader-splat-stream/splat-stream-meta.ts";
@@ -146,38 +140,12 @@ export const SPLAT_STREAM_CORE_RECORDS = [
     ...coreRecords.map((spec) => spec.pinned[0]!),
 ];
 
-/** The schema every splat-stream model shares: the web platform and the WebGPU subset. */
-function sharedSchema(
-    records: readonly RecordSpec[],
-): Pick<
-    RecordSchema,
-    | "records"
-    | "values"
-    | "adapters"
-    | "constructors"
-    | "globals"
-    | "globalValues"
-    | "instanceOf"
-    | "constants"
-> {
-    return {
-        records: [...gpuSubsetRecords, ...webPlatformRecords, ...records],
-        values: webPlatformValues,
-        adapters: new Map(),
-        constructors: webPlatformConstructors,
-        globals: webPlatformGlobals,
-        globalValues: webPlatformGlobalValues,
-        instanceOf: webPlatformInstanceOf,
-        constants: webgpuFlagConstants,
-    };
-}
-
 /** The splat-stream record model over the pinned synchronous core. */
 function splatStreamCoreModel(context: LoweringContext): PinnedRecordModel {
     return new PinnedRecordModel(
         context,
         context.store.program.modules([...SPLAT_STREAM_CORE_MODULES]),
-        sharedSchema([optionsRecord(false), ...coreRecords]),
+        libraryRecordSchema([optionsRecord(false), ...coreRecords]),
     );
 }
 
@@ -211,14 +179,6 @@ function splatStreamCoreRoots(model: PinnedRecordModel): PinnedCallable[] {
                 roots.push(statement);
     }
     return roots;
-}
-
-/** A lowered record family: structs, prototypes, definitions and includes. */
-export interface LoweredRecordFamily {
-    readonly structs: string;
-    readonly declarations: string;
-    readonly definitions: string;
-    readonly includes: readonly string[];
 }
 
 /** The lowered synchronous core. */
@@ -336,7 +296,7 @@ export const SPLAT_STREAM_TRANSPORT_RECORDS = transportRecords.map(
  * options carry the loader's `_runtime`, which a caller's records type.
  */
 export function splatStreamTransportSchema(runtimeSeams = false): RecordSchema {
-    return sharedSchema([
+    return libraryRecordSchema([
         optionsRecord(runtimeSeams),
         ...coreRecords,
         ...transportRecords,

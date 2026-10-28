@@ -6,13 +6,35 @@ import type { Value } from "./types.js";
 
 /**
  * A response's Headers and byte ReadableStreams (`bblite/pal_fetch_response.hpp`):
- * `headers.get/has`, a body or `blob.stream()`, `getReader()`, `cancel()`,
- * `locked`, `pipeThrough` a CompressionStream or DecompressionStream
- * (`bblite/pal_compression.hpp`), `new Response(stream)`, the reader's
- * `read/cancel/releaseLock()` and the read result's `done`/`value`.
+ * `headers.get/has`, a body or `blob.stream()`, a program's own source
+ * (`new ReadableStream({ pull, cancel })` and its controller's
+ * `enqueue/close/error`), `getReader()`, `cancel()`, `locked`, `pipeThrough`
+ * a CompressionStream or DecompressionStream (`bblite/pal_compression.hpp`),
+ * `new Response(stream, init)`, the reader's `read/cancel/releaseLock()` and
+ * the read result's `done`/`value`.
  */
 
 const BYTE_STREAM: DataType = { kind: "byte-stream" };
+
+/** A cancel reason as a program source's cancel algorithm receives it. */
+const CANCEL_REASON: DataType = {
+    kind: "optional",
+    inner: { kind: "error" },
+};
+
+/** A program source's algorithms, as the native stream calls them. */
+const SOURCE_ALGORITHMS: Readonly<Record<"pull" | "cancel", DataType>> = {
+    pull: {
+        kind: "function",
+        parameters: [{ kind: "byte-stream-controller" }],
+        result: { kind: "promise" },
+    },
+    cancel: {
+        kind: "function",
+        parameters: [CANCEL_REASON],
+        result: { kind: "promise" },
+    },
+};
 
 /** Storage `pal_fetch_response.hpp` declares; reached even when nothing stores it. */
 function responseStorage(lowerer: DataLowerer, type: DataType): DataType {
@@ -82,15 +104,17 @@ export function compileBodyStreamNew(
     if (
         name !== "CompressionStream" &&
         name !== "DecompressionStream" &&
-        name !== "Response"
+        name !== "Response" &&
+        name !== "ReadableStream"
     )
         return undefined;
     const arguments_ = node.arguments ?? [];
+    if (name === "ReadableStream") return pullStream(lowerer, node);
     if (name === "Response") {
-        if (arguments_.length !== 1)
+        if (arguments_.length < 1 || arguments_.length > 2)
             return context.fail(
-                arguments_[1] ?? node,
-                "new Response lowers one byte ReadableStream body without init.",
+                node,
+                "new Response lowers one byte ReadableStream body and its init.",
             );
         const body = context.compileValue(arguments_[0]!);
         // The body's declared chunk type must be bytes too, not only its value.
@@ -107,9 +131,10 @@ export function compileBodyStreamNew(
             );
         // Its body is read on the realm's microtask queue.
         if (!context.options.workers) throw new ApplicationRealmRequired();
+        const init = arguments_[1] && responseInit(lowerer, arguments_[1]);
         return {
             ...lowerer.leafValue(
-                `bbl::pal::make_stream_response(${body.cpp})`,
+                `bbl::pal::make_stream_response(${body.cpp}${init ? `, ${init}` : ""})`,
                 responseStorage(lowerer, { kind: "http-response" }),
             ),
             impure: true,
@@ -124,6 +149,108 @@ export function compileBodyStreamNew(
         ...lowerer.leafValue(
             `bbl::pal::${name === "CompressionStream" ? "compression" : "decompression"}_stream(${format})`,
             responseStorage(lowerer, { kind: "byte-transform-stream" }),
+        ),
+        impure: true,
+    };
+}
+
+/** The `ResponseInit` members a Response lowers, in `HttpResponseInit`'s field order. */
+const RESPONSE_INIT_FIELDS: readonly (readonly [string, string, DataType])[] = [
+    ["status", "status", { kind: "number" }],
+    ["statusText", "status_text", { kind: "string" }],
+    ["headers", "headers", { kind: "http-headers" }],
+];
+
+/**
+ * `new Response(body, { status, statusText, headers })`: a closed record
+ * of those members (`pal::HttpResponseInit`).
+ */
+function responseInit(lowerer: DataLowerer, node: ts.Expression): string {
+    const context = lowerer.context;
+    const init = context.compileValue(node);
+    if (
+        init.kind !== "record" ||
+        Object.keys(init.recordGetters ?? {}).length ||
+        Object.keys(init.recordMethods ?? {}).length
+    )
+        return context.fail(
+            node,
+            "A Response init is lowered from a record of status, statusText and headers.",
+        );
+    const properties = init.recordProperties ?? {};
+    for (const name of Object.keys(properties))
+        if (!RESPONSE_INIT_FIELDS.some(([member]) => member === name))
+            return context.fail(
+                node,
+                `Response init member '${name}' is not lowered.`,
+            );
+    const fields = RESPONSE_INIT_FIELDS.flatMap(([member, field, sink]) => {
+        const value = properties[member];
+        return value
+            ? [
+                  `.${field} = ${lowerer.compileKnownValueForSink(value, sink, node)}`,
+              ]
+            : [];
+    });
+    return `bbl::pal::HttpResponseInit{${fields.join(", ")}}`;
+}
+
+/**
+ * `new ReadableStream({ pull, cancel })` over byte chunks: a program's own
+ * underlying source, its algorithms the record's methods (a start
+ * algorithm, a strategy or a byte source type is not lowered).
+ */
+function pullStream(lowerer: DataLowerer, node: ts.NewExpression): Value {
+    const context = lowerer.context;
+    if (!context.options.workers) throw new ApplicationRealmRequired();
+    const arguments_ = node.arguments ?? [];
+    const sourceNode = arguments_[0];
+    if (arguments_.length !== 1 || !sourceNode)
+        return context.fail(
+            node,
+            "new ReadableStream lowers one underlying source without a strategy.",
+        );
+    if (
+        context.dataTypes.fromTsType(
+            context.checker.getTypeAtLocation(node),
+            node,
+        )?.kind !== "byte-stream"
+    )
+        return context.fail(
+            node,
+            "new ReadableStream lowers a stream of Uint8Array chunks.",
+        );
+    const source = context.compileValue(sourceNode);
+    const methods = source.kind === "record" ? source.recordMethods ?? {} : {};
+    if (
+        source.kind !== "record" ||
+        Object.keys(source.recordProperties ?? {}).length ||
+        Object.keys(source.recordGetters ?? {}).length ||
+        Object.keys(methods).some((name) => name !== "pull" && name !== "cancel")
+    )
+        return context.fail(
+            sourceNode,
+            "An underlying source is lowered from a record of pull and cancel methods.",
+        );
+    const algorithm = (name: "pull" | "cancel"): string => {
+        const method = methods[name];
+        return method
+            ? lowerer.compileKnownValueForSink(
+                  {
+                      kind: "callback",
+                      cpp: "",
+                      callbackDeclaration: method,
+                      callbackRecordOwner: source,
+                  },
+                  SOURCE_ALGORITHMS[name],
+                  sourceNode,
+              )
+            : "{}";
+    };
+    return {
+        ...lowerer.leafValue(
+            `bbl::pal::make_pull_stream(${algorithm("pull")}, ${algorithm("cancel")})`,
+            responseStorage(lowerer, BYTE_STREAM),
         ),
         impure: true,
     };
@@ -179,14 +306,33 @@ export function compileBodyStreamMethod(
     const cancel = (): Value => {
         context.expectArgumentCount(call, 0, 1);
         const reason = call.arguments[0];
-        if (reason) {
-            // The reason is evaluated; a byte stream from fetch has no source to receive it.
-            context.emitDiscardedValue(context.compileValue(reason));
-        }
-        return lowerer.leafValue(`(${receiver.cpp}).cancel()`, {
-            kind: "promise",
-        });
+        // A program's source receives the reason; a fetched body has none.
+        return lowerer.leafValue(
+            `(${receiver.cpp}).cancel(${reason ? lowerer.compileForSink(reason, CANCEL_REASON) : ""})`,
+            { kind: "promise" },
+        );
     };
+    if (kind === "byte-stream-controller") {
+        if (method === "close") {
+            context.expectArgumentCount(call, 0, 0);
+            return { kind: "void", cpp: `(${receiver.cpp}).close()` };
+        }
+        context.expectArgumentCount(call, 1, 1);
+        if (method === "enqueue")
+            return {
+                kind: "void",
+                cpp: `(${receiver.cpp}).enqueue(${lowerer.compileForSink(call.arguments[0]!, { kind: "u8array" })})`,
+            };
+        if (method === "error")
+            return {
+                kind: "void",
+                cpp: `(${receiver.cpp}).error(${lowerer.compileForSink(call.arguments[0]!, { kind: "error" })})`,
+            };
+        return context.fail(
+            call,
+            `ReadableStreamDefaultController.${method} is not lowered.`,
+        );
+    }
     if (kind === "byte-stream") {
         if (method === "cancel") return cancel();
         if (method === "pipeThrough")

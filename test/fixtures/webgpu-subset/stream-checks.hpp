@@ -6,6 +6,7 @@
 // with a CPU evaluation of the pinned WGSL and prints one line the test
 // compares across backends.
 
+#include "fixture-require.hpp"
 #include "pal_webgpu_usage.hpp"
 
 #include <bblite/upstream_splat_stream.hpp>
@@ -30,10 +31,7 @@ namespace js = bbl::js;
 namespace BU = bbl::pal::webgpu_buffer_usage;
 namespace TU = bbl::pal::webgpu_texture_usage;
 
-inline void require(bool condition, const std::string& message) {
-    if (!condition)
-        throw std::runtime_error("stream check: " + message);
-}
+using webgpu_fixture::require;
 
 /** The stream's GPU budget: room for every check's canonical and pass state. */
 constexpr double MAX_GPU_BYTES = 64.0 * 1024 * 1024;

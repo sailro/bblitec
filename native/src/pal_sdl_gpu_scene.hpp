@@ -26,7 +26,7 @@
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include <bblite/pal_ui.hpp>
@@ -1011,8 +1011,8 @@ struct GpuState : SdlGpuDevice {
     std::vector<SplatPass> splat_passes;
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
-    /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
-    ExternalRenderablePass external_pass;
+    /** Lowered renderables drawn in the scene's own pass and each task's (pal_external_renderables.hpp). */
+    ExternalRenderablePasses external_passes;
 #endif
 #if BBLITE_HAS_PICKING
     // Built on the first pick and released with the renderer, as the pin
@@ -1810,8 +1810,10 @@ SDL_GPUTextureFormat compressed_texture_format(std::string_view name);
 SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
                                           const CompressedTexture& compressed);
 
+/** A material image's texture; `size`, when given, receives its width and height. */
 SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture_data, bool srgb,
-                               std::array<std::uint8_t, 4> fallback);
+                               std::array<std::uint8_t, 4> fallback,
+                               std::array<std::uint32_t, 2>* size = nullptr);
 
 SDL_GPUTexture* upload_cube_texture(SDL_GPUDevice* device,
                                     const std::array<TextureData, 6>* texture_data);

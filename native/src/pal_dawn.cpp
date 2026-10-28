@@ -19,6 +19,7 @@
 #include "pal_gpu_pipeline.hpp"
 #include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
+#include <bblite/features/frame_post_submit.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -47,6 +48,9 @@
 #include "pal_transparent_order.hpp"
 #if BBLITE_COMPUTE_FRAME_GRAPH
 #include <bblite/pal_compute_frame_graph.hpp>
+#endif
+#if BBLITE_FRAME_POST_SUBMIT
+#include <bblite/pal_frame_post_submit.hpp>
 #endif
 
 namespace bbl::pal {
@@ -618,6 +622,9 @@ class DawnSceneRun {
         DawnTextureView surface_view;
         DawnCommandEncoder encoder;
         WGPUTexture capture_source = nullptr;
+#if BBLITE_FRAME_POST_SUBMIT
+        std::optional<FramePostSubmitScope> post_submit;
+#endif
     };
     std::optional<Frame> frame_;
 
@@ -1603,6 +1610,9 @@ public:
             return FramePreparation::restart;
         }
         begin_gpu_task_timing_frame(engine);
+#if BBLITE_FRAME_POST_SUBMIT
+        current_frame().post_submit.emplace(engine);
+#endif
 #if BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
@@ -2228,6 +2238,14 @@ public:
         [[maybe_unused]] auto& capture_source = current_frame().capture_source;
         [[maybe_unused]] auto& frame_graph_presented = current_frame().frame_graph_presented;
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+#if BBLITE_EXTERNAL_RENDERABLES
+        state.external_passes.release_disposed(engine);
+        // External renderables record their updates into the frame encoder.
+        const auto external_encoder = [&]() -> GpuCommandEncoderHandle {
+            return dawn_engine_webgpu_device(engine, state.instance, state.device, state.queue)
+                .borrow_command_encoder(encoder);
+        };
+#endif
 #if BBLITE_COMPUTE_FRAME_GRAPH
         DawnCommandEncoder surface_encoder;
         if (compute_frame_prefix_deferred(engine)) {
@@ -2473,11 +2491,6 @@ public:
 #endif
             }
         };
-#if BBLITE_EXTERNAL_RENDERABLES
-        if (scene.has_frame_passes() && !scene.state->external_renderables.empty())
-            dawn_error("External renderables draw in the scene's own pass; a scene with render "
-                       "tasks refuses them.");
-#endif
         if (!scene.has_frame_passes()) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
@@ -2550,26 +2563,30 @@ public:
 #if BBLITE_EXTERNAL_RENDERABLES
             // External renderables bind to this pass's target, update, and record
             // their batches' compute into the frame encoder before the pass begins.
-            if (!scene.state->external_renderables.empty() || !state.external_pass.empty()) {
-                auto& webgpu =
-                    dawn_engine_webgpu_device(engine, state.instance, state.device, state.queue);
-                state.external_pass.follow(
-                    engine, scene,
-                    GpuRenderTargetSignature{dawn_webgpu_format_name(state.frame_color_format),
-                                             std::string("depth24plus-stencil8"),
-                                             {},
-                                             static_cast<double>(state.sample_count)});
-                state.external_pass.prepare(
-                    engine,
-                    GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
-                                         camera ? std::optional<CameraHandle>(scene.camera)
-                                                : std::nullopt},
-                    webgpu.borrow_command_encoder(encoder));
-            }
+            const ExternalRenderablePass* const externals = prepare_external_pass(
+                state.external_passes.scene, engine, scene,
+                GpuRenderTargetSignature{dawn_webgpu_format_name(state.frame_color_format),
+                                         std::string("depth24plus-stencil8"),
+                                         {},
+                                         static_cast<double>(state.sample_count)},
+                data_.pass_blocks.scene(scene),
+                GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
+                                     camera ? std::optional<CameraHandle>(scene.camera)
+                                            : std::nullopt},
+                external_encoder);
 #endif
             DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             WGPURenderPipeline bound_pipeline = nullptr;
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+            // An external binding at its place in either bucket.
+            const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_EXTERNAL_RENDERABLES
+                externals->draw(DawnWebGpuDevice::borrow_render_pass(pass), engine, index);
+                bound_pipeline = nullptr;
+#endif
+            };
+#endif
             bool transmission_copied = false;
             const auto draw_render_list = [&](const auto& list) {
                 if (!transmission) {
@@ -2642,7 +2659,12 @@ public:
 #endif
                     break;
                 case upstream::RenderStage::opaque:
+#if BBLITE_EXTERNAL_RENDERABLES
+                    draw_opaque_bucket(render_plan.draw_lists.opaque, externals, draw_render_list,
+                                       draw_external);
+#else
                     draw_render_list(render_plan.draw_lists.opaque);
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
                     if (state.has_scene_sprite_pass) {
                         record_dawn_scene_sprite_pass(pass, engine, state.scene_sprite_pass,
@@ -2662,33 +2684,20 @@ public:
                     order.add_billboards(engine, state.billboard_passes);
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
-                    order.add_externals(state.external_pass, scene);
+                    if (externals)
+                        order.add_externals(*externals, scene);
 #endif
-                    for (const auto& item : order.sorted()) {
-                        switch (item.kind) {
-                        case TransparentDrawKind::mesh:
-                            draw_render_list(BorrowedDrawList{
-                                render_plan.draw_lists.transparent.commands[item.index]});
-                            break;
-                        case TransparentDrawKind::billboard:
+                    draw_transparent_bucket(
+                        order, render_plan.draw_lists.transparent, draw_render_list,
+                        [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_HAS_BILLBOARDS
-                        {
-                            const auto& billboard = state.billboard_passes[item.index];
+                            const auto& billboard = state.billboard_passes[index];
                             record_dawn_billboard_pass(pass, engine, billboard,
                                                        billboard.frame_scene);
                             bound_pipeline = nullptr;
-                        }
 #endif
-                        break;
-                        case TransparentDrawKind::external:
-#if BBLITE_EXTERNAL_RENDERABLES
-                            state.external_pass.draw(DawnWebGpuDevice::borrow_render_pass(pass),
-                                                     engine.webgpu_scene_group, item.index);
-                            bound_pipeline = nullptr;
-#endif
-                            break;
-                        }
-                    }
+                        },
+                        draw_external);
                 }
 #else
                     draw_render_list(render_plan.draw_lists.transparent);
@@ -2959,6 +2968,10 @@ public:
                                 throw std::runtime_error(
                                     "Temporal source requires an admitted Standard color pass in its owning scene.");
                             }
+#if BBLITE_EXTERNAL_RENDERABLES
+                            refuse_external_renderables(graph_scene,
+                                                        "a temporal anti-aliasing source pass");
+#endif
                             // `validate_temporal_source` refuses a task
                             // without a camera.
                             CameraRecord* const source_camera = pass_camera;
@@ -3136,6 +3149,12 @@ public:
                                     throw std::runtime_error("Depth-only render task has no depth "
                                                              "attachment.");
                                 }
+#if BBLITE_EXTERNAL_RENDERABLES
+                                // A task mirroring its scene binds the scene's renderables.
+                                if (task.render.auto_mirror)
+                                    refuse_external_renderables(graph_scene,
+                                                                "a depth-only render task");
+#endif
                                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                                 depth_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
@@ -3246,6 +3265,34 @@ public:
                                 }
                                 pass_descriptor.depthStencilAttachment = &depth_attachment;
                             }
+#if BBLITE_EXTERNAL_RENDERABLES
+                            // render-task-base.ts: a task mirroring its scene binds the
+                            // scene's external renderables for its own target and updates
+                            // them into the frame encoder before its pass begins; group 0
+                            // reads the block the frame's pass blocks wrote for the task.
+                            const ExternalRenderablePass* const task_externals =
+                                !task.render.auto_mirror ? nullptr :
+                                prepare_external_pass(
+                                    state.external_passes.task(handle), engine, graph_scene,
+                                    GpuRenderTargetSignature{
+                                        dawn_webgpu_format_name(target.color_format),
+                                        pass_descriptor.depthStencilAttachment
+                                            ? js::Nullable<std::string>(dawn_webgpu_format_name(
+                                                  borrowed_depth_view
+                                                      ? WGPUTextureFormat_Depth24PlusStencil8
+                                                      : target.depth_format))
+                                            : js::Nullable<std::string>(),
+                                        {},
+                                        static_cast<double>(
+                                            target_sample_count(state, target_record))},
+                                    data_.pass_blocks.task(handle),
+                                    GpuDrawUpdateContext{static_cast<double>(target.width),
+                                                         static_cast<double>(target.height),
+                                                         task_pass_camera_handle(engine, task)},
+                                    external_encoder);
+#else
+                            const ExternalRenderablePass* const task_externals = nullptr;
+#endif
                             const DawnPassTimestamps color_timestamps{timing_sequence.pass()};
                             pass_descriptor.timestampWrites = color_timestamps.get();
                             DawnRenderPass task_pass{
@@ -3259,7 +3306,8 @@ public:
                                 {.multisampled = target_sample_count(state, target_record) > 1,
                                  .swapchain = target_record.swapchain,
                                  .billboard_stages =
-                                     BBLITE_HAS_BILLBOARDS && task.render.scene_stages});
+                                     BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
+                                 .external_renderables = task_externals != nullptr});
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -3306,21 +3354,7 @@ public:
                                 }
 #endif
                             }
-                            draw_list_into(
-                                task_pass, render_task.draw_lists.opaque, samples, bound_pipeline,
-                                pass_has_depth, render_task.pinned_frame_group, false,
-                                invalid_handle, render_task.view_projection,
-                                DawnTaskTarget{target.color_format,
-                                               borrowed_depth_view
-                                                   ? WGPUTextureFormat_Depth24PlusStencil8
-                                                   : target.depth_format,
-                                               target_record.depth_compare});
-#if BBLITE_HAS_BILLBOARDS
-                            if (task.render.scene_stages) {
-                                draw_task_billboards(BillboardDepthMode::cutout);
-                            }
-#endif
-                            const auto draw_transparent = [&](const auto& list) {
+                            const auto draw_task_list = [&](const auto& list) {
                                 draw_list_into(
                                     task_pass, list, samples, bound_pipeline, pass_has_depth,
                                     render_task.pinned_frame_group, false, invalid_handle,
@@ -3331,34 +3365,64 @@ public:
                                                        : target.depth_format,
                                                    target_record.depth_compare});
                             };
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+                            // An external binding at its place in either bucket.
+                            const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_EXTERNAL_RENDERABLES
+                                task_externals->draw(DawnWebGpuDevice::borrow_render_pass(task_pass),
+                                                     engine, index);
+                                bound_pipeline = nullptr;
+#endif
+                            };
+#endif
+#if BBLITE_EXTERNAL_RENDERABLES
+                            draw_opaque_bucket(render_task.draw_lists.opaque, task_externals,
+                                               draw_task_list, draw_external);
+#else
+                            draw_task_list(render_task.draw_lists.opaque);
+#endif
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {
+                                draw_task_billboards(BillboardDepthMode::cutout);
+                            }
+#endif
+#if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
+                            // Billboards and external renderables sort with the
+                            // transparent meshes, as in the scene's own pass.
+                            if ((BBLITE_HAS_BILLBOARDS && task.render.scene_stages) ||
+                                task_externals) {
                                 const auto view =
                                     pass_camera ? upstream::build_camera_view_matrix(*pass_camera)
                                                 : std::array<float, 16>{};
                                 TransparentOrder order(pass_camera, view);
                                 order.add_meshes(render_task.draw_lists.transparent, engine);
-                                order.add_billboards(engine, state.billboard_passes);
-                                for (const auto& item : order.sorted()) {
-                                    if (item.kind == TransparentDrawKind::billboard) {
-                                        const auto& billboard = state.billboard_passes[item.index];
+#if BBLITE_HAS_BILLBOARDS
+                                if (task.render.scene_stages)
+                                    order.add_billboards(engine, state.billboard_passes);
+#endif
+#if BBLITE_EXTERNAL_RENDERABLES
+                                if (task_externals)
+                                    order.add_externals(*task_externals, graph_scene);
+#endif
+                                draw_transparent_bucket(
+                                    order, render_task.draw_lists.transparent, draw_task_list,
+                                    [&]([[maybe_unused]] std::size_t index) {
+#if BBLITE_HAS_BILLBOARDS
+                                        const auto& billboard = state.billboard_passes[index];
                                         record_dawn_billboard_pass(
                                             task_pass, engine, billboard,
                                             dawn_billboard_task_scene(billboard, handle.value));
                                         bound_pipeline = nullptr;
-                                    } else {
-                                        draw_transparent(
-                                            BorrowedDrawList{render_task.draw_lists.transparent
-                                                                 .commands[item.index]});
-                                    }
-                                }
+#endif
+                                    },
+                                    draw_external);
                             } else
 #endif
                                 // The plan's break: end the pass, grab, and resume
                                 // loading what the first segment stored.
                                 pal::draw_split_list(
                                     engine, pass_breaks, render_task.draw_lists.transparent,
-                                    draw_transparent, [&] {
+                                    draw_task_list, [&] {
                                         wgpuRenderPassEncoderEnd(task_pass);
                                         task_pass.reset();
 #if BBLITE_RENDER_TASK_TRANSMISSION
@@ -4095,6 +4159,9 @@ public:
         resolve_gpu_frame_timer(engine);
 #if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
+#endif
+#if BBLITE_FRAME_POST_SUBMIT
+        current_frame().post_submit->submitted();
 #endif
 
         if (capture_frame) {

@@ -52,28 +52,44 @@ js::Promise<Result> wrapped(const js::Promise<Source>& source, Wrap wrap) {
 
 // ── fetch ──────────────────────────────────────────────────────────────
 
+namespace {
+
+/** The library's view of an application response: one object per response. */
+Response response_of(const pal::HttpResponse& response) {
+    return std::make_shared<ResponseState>(ResponseState{response, nullptr});
+}
+
+} // namespace
+
+js::Promise<pal::HttpResponse> fetch_response(const std::string& url,
+                                              const js::Nullable<RequestInit>& init) {
+    pal::HttpRequest request;
+    if (init && init->headers)
+        request.headers = init->headers->entries();
+    return pal::fetch_deployed(url, std::move(request), init ? init->signal : js::AbortSignal{});
+}
+
 js::Promise<Response> fetch(const std::string& url, const RequestInit& init) {
-    const auto wrap = [](const pal::HttpResponse& response) {
-        return std::make_shared<ResponseState>(ResponseState{response, nullptr});
-    };
-    if (auto packaged = pal::fetch_registered_packaged(url)) {
-        if (init.signal && init.signal.aborted())
-            return js::Promise<Response>::rejected(*init.signal.reason());
-        return wrapped<Response>(*packaged, wrap);
-    }
-    return wrapped<Response>(
-        pal::fetch_http(url, pal::HttpRequest{"GET", {}, std::nullopt}, init.signal), wrap);
+    return wrapped<Response>(fetch_response(url, init), response_of);
+}
+
+js::Callback<js::Promise<Response>(std::string, js::Nullable<RequestInit>)>
+fetch_function(ApplicationFetch fetch) {
+    return js::Callback<js::Promise<Response>(std::string, js::Nullable<RequestInit>)>(
+        [fetch](std::string url, js::Nullable<RequestInit> init) {
+            return wrapped<Response>(fetch(std::move(url), std::move(init)), response_of);
+        });
 }
 bool response_ok(const Response& response) { return pal::http_response_ok(response->response); }
 double response_status(const Response& response) { return response->response->status; }
-std::string response_status_text(const Response&) { return {}; }
+std::string response_status_text(const Response& response) {
+    return response->response->status_text;
+}
 js::Promise<js::ArrayBuffer> response_array_buffer(const Response& response) {
     return pal::http_response_buffer(response->response);
 }
 std::string response_url(const Response& response) { return response->response->url; }
-js::Nullable<std::string> response_header(const Response& response, const std::string& name) {
-    return response->response->headers.get(name);
-}
+pal::HttpHeaders response_headers(const Response& response) { return response->response->headers; }
 ReadableStream response_body(const Response& response) {
     if (!response->body) {
         const auto body = pal::http_response_body(response->response);

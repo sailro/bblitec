@@ -2,6 +2,7 @@
 // the scene block, the billboard group, the lights array, the mesh blocks
 // and the geometry task's parameters and velocity history.
 #pragma once
+#include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 
@@ -12,6 +13,10 @@
 #include <vector>
 #include "pal_gpu_variants.hpp"
 #include "pal_gpu_velocity.hpp"
+#if BBLITE_EXTERNAL_RENDERABLES
+#include <bblite/gpu_renderable.hpp>
+#include "pal_gpu_common.hpp"
+#endif
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
@@ -57,6 +62,33 @@ upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& 
                                               const CameraRecord& camera,
                                               const std::array<float, 16>& view_projection,
                                               const std::array<float, 16>& view);
+#endif
+
+#if BBLITE_EXTERNAL_RENDERABLES
+class ExternalRenderablePass;
+/**
+ * The engine's scene layout rows (`Engine::webgpu_scene_uniform_bindings`):
+ * the pin's `getSceneBindGroupLayout` rows its composed shaders declare, set
+ * before the engine's WebGPU device makes the layout. A build without
+ * composed materials sets none.
+ */
+void configure_engine_scene_layout(Engine& engine);
+struct RetainedSceneBlock;
+/**
+ * render-task-base.ts before a pass begins, for the scene's external
+ * renderables: bound for the pass's target (`ExternalRenderablePass::follow`),
+ * group 0 written from the scene block the pass retains, which this frame
+ * already wrote (`write_pass_scene_block`, kept as it was by a camera-less
+ * pass), and the scene's lights (`refreshTaskSceneBindGroup`), then updated
+ * into the frame encoder `encoder` opens. Returns the pass when it has
+ * bindings to draw; null otherwise, without opening an encoder.
+ */
+const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass, Engine& engine,
+                                                    const Scene& scene,
+                                                    const GpuRenderTargetSignature& signature,
+                                                    const RetainedSceneBlock& retained,
+                                                    const GpuDrawUpdateContext& context,
+                                                    FunctionRef<GpuCommandEncoderHandle()> encoder);
 #endif
 
 #if BBLITE_PINNED_MATERIALS

@@ -377,6 +377,19 @@ export function compileAdaptations(
                 "native compression-stream fixture: application byte pipelines, standard-tool decompression and Chromium's measured errors",
             ],
         });
+    if (features.includes("platform:meshopt"))
+        adaptations.push({
+            id: "native-meshopt-decoder",
+            category: "platform",
+            sourceSemantics:
+                "The pinned meshopt_decoder.js loads by script injection and decodes through meshoptimizer 0.20 built to WebAssembly: each stream decodes into a scratch rounded up to four elements, the named filter runs over that rounded count, the target receives count * size bytes, and a codec failure throws `Malformed buffer data: <code>` after the copy.",
+            nativeSemantics:
+                "meshoptimizer 0.20's C++ decoder, linked, with the same mode and filter tables, scratch rounding, copy and error; the load and `ready` settle at once.",
+            risk: "low",
+            validation: [
+                "MeshLoD core fixture: the lowered page decoder over the pinned .mlod pages, against the pin executed under Node with its own decoder",
+            ],
+        });
     if (features.includes("platform:http"))
         adaptations.push({
             id: "native-http-transport",

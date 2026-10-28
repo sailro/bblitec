@@ -124,12 +124,31 @@ struct GpuTextureBindingLayout {
     bbl::js::Nullable<std::string> view_dimension;
     bbl::js::Nullable<bool> multisampled;
 };
-/** `GPUBindGroupLayoutEntry` with a buffer or a sampled texture. */
+/** `GPUSamplerBindingLayout`. */
+struct GpuSamplerBindingLayout {
+    bbl::js::Nullable<std::string> type;
+};
+/** `GPUBindGroupLayoutEntry` with a buffer, a sampler or a sampled texture. */
 struct GpuBindGroupLayoutEntry {
     double binding = 0;
     double visibility = 0;
     bbl::js::Nullable<GpuBufferBindingLayout> buffer;
+    bbl::js::Nullable<GpuSamplerBindingLayout> sampler;
     bbl::js::Nullable<GpuTextureBindingLayout> texture;
+};
+/** `GPUSamplerDescriptor`; absent members take WebGPU's defaults. */
+struct GpuSamplerDescriptor {
+    bbl::js::Nullable<std::string> label;
+    bbl::js::Nullable<std::string> address_mode_u;
+    bbl::js::Nullable<std::string> address_mode_v;
+    bbl::js::Nullable<std::string> address_mode_w;
+    bbl::js::Nullable<std::string> mag_filter;
+    bbl::js::Nullable<std::string> min_filter;
+    bbl::js::Nullable<std::string> mipmap_filter;
+    bbl::js::Nullable<double> lod_min_clamp;
+    bbl::js::Nullable<double> lod_max_clamp;
+    bbl::js::Nullable<std::string> compare;
+    bbl::js::Nullable<double> max_anisotropy;
 };
 struct GpuBindGroupLayoutDescriptor {
     bbl::js::Nullable<std::string> label;
@@ -176,6 +195,7 @@ struct GpuFragmentState {
 struct GpuPrimitiveState {
     bbl::js::Nullable<std::string> topology;
     bbl::js::Nullable<std::string> cull_mode;
+    bbl::js::Nullable<std::string> front_face;
 };
 struct GpuDepthStencilState {
     std::string format;
@@ -185,11 +205,15 @@ struct GpuDepthStencilState {
 struct GpuMultisampleState {
     bbl::js::Nullable<double> count;
 };
+/** `GPUVertexState`: a stage that fetches from storage; `buffers` stays empty. */
+struct GpuVertexState : GpuProgrammableStage {
+    bbl::js::Nullable<js::Array<std::shared_ptr<const void>>> buffers;
+};
 /** `GPURenderPipelineDescriptor`: a vertex stage without vertex buffers. */
 struct GpuRenderPipelineDescriptor {
     bbl::js::Nullable<std::string> label;
     GpuHandle layout;
-    GpuProgrammableStage vertex;
+    GpuVertexState vertex;
     bbl::js::Nullable<GpuFragmentState> fragment;
     bbl::js::Nullable<GpuPrimitiveState> primitive;
     bbl::js::Nullable<GpuDepthStencilState> depth_stencil;
@@ -353,6 +377,9 @@ struct GpuDevice {
     virtual GpuHandle create_bind_group_layout(const GpuBindGroupLayoutDescriptor&) {
         throw std::runtime_error("This GPU device does not provide bind group layouts.");
     }
+    virtual GpuHandle create_sampler(const GpuSamplerDescriptor&) {
+        throw std::runtime_error("This GPU device does not provide samplers.");
+    }
     virtual GpuHandle create_shader_module(const GpuShaderModuleDescriptor&) {
         throw std::runtime_error("This GPU device does not provide shader modules.");
     }
@@ -404,7 +431,7 @@ struct GpuDevice {
     template <typename T>
     void write_buffer(const GpuHandle& buffer, double buffer_offset,
                       const js::TypedArray<T>& data) {
-        write_buffer(buffer, buffer_offset, typed_array_bytes(data));
+        write_buffer(buffer, buffer_offset, js::typed_array_bytes(data));
     }
     void write_texture(GpuObject& texture, std::span<const std::uint8_t> data,
                        const GpuTextureWriteLayout& layout, const GpuWriteExtent& size) {
@@ -422,7 +449,7 @@ struct GpuDevice {
     template <typename T>
     void write_texture(const GpuTexelCopyTextureInfo& destination, const js::TypedArray<T>& data,
                        const GpuTexelCopyBufferLayout& layout, const GpuExtent3D& size) {
-        write_texture(destination, typed_array_bytes(data), layout, size);
+        write_texture(destination, js::typed_array_bytes(data), layout, size);
     }
 
     void write_texture(const GpuTexelCopyTextureInfo& destination,
@@ -439,13 +466,6 @@ struct GpuDevice {
                       {gpu_u32(gpu_size(size.width)), gpu_u32(gpu_size(size.height)),
                        gpu_u32(gpu_size(size.depth_or_array_layers))});
     }
-
-private:
-    template <typename T>
-    static std::span<const std::uint8_t> typed_array_bytes(const js::TypedArray<T>& data) {
-        const auto buffer = data.buffer();
-        return {buffer.data() + data.byte_offset(), data.byte_length()};
-    }
 };
 using GpuDeviceHandle = std::shared_ptr<GpuDevice>;
 
@@ -454,6 +474,15 @@ template <typename... Sources>
 void gpu_queue_write_buffer(GpuDevice& device, const GpuHandle& buffer, double offset,
                             const std::variant<Sources...>& data) {
     std::visit([&](const auto& source) { device.write_buffer(buffer, offset, source); }, data);
+}
+
+/** `queue.writeTexture(destination, data, layout, size)` with an ArrayBuffer or typed-array source. */
+template <typename... Sources>
+void gpu_queue_write_texture(GpuDevice& device, const GpuTexelCopyTextureInfo& destination,
+                             const std::variant<Sources...>& data,
+                             const GpuTexelCopyBufferLayout& layout, const GpuExtent3D& size) {
+    std::visit([&](const auto& source) { device.write_texture(destination, source, layout, size); },
+               data);
 }
 
 /**

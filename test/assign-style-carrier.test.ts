@@ -133,6 +133,7 @@ test("Object.assign style carriers refuse unsupported sources and setters", () =
             compileSource(
                 `const panel=document.createElement('div');Object.assign(panel,{imaginaryProperty:'x'});`,
             ),
-        /Object.assign cannot write into a ui-element value/,
+        // Each property stores as its assignment would.
+        /Retained element property 'imaginaryProperty' assignment is not lowered natively/,
     );
 });

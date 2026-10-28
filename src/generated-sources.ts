@@ -28,6 +28,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["compute:one-shot"],
     },
     {
+        source: "upstream/src/frame_post_submit.cpp",
+        features: ["engine:frame-post-submit"],
+    },
+    {
         source: "upstream/src/compute_bindings.cpp",
         features: ["compute:bindings"],
     },

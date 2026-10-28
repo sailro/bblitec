@@ -4,14 +4,12 @@ import {
 } from "../../lowering/pinned-operators.js";
 import { float32Literal } from "../../cpp-literals.js";
 import { EmissionMap } from "../emission-transaction.js";
+import { TYPED_ARRAY_CLASSES } from "../../typed-array-classes.js";
 import type { DataType, TypedArrayKind } from "./model.js";
 
 interface TypedArrayRecord {
-    readonly constructor: string;
     readonly stem: string;
     readonly cppType: string;
-    /** `BYTES_PER_ELEMENT` of the class and of each instance. */
-    readonly bytesPerElement: number;
     /** The C++ type of one element, which a constant table stores. */
     readonly elementCppType: string;
     readonly store: (value: string) => string;
@@ -26,82 +24,64 @@ interface TypedArrayRecord {
 
 const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
     i8array: {
-        constructor: "Int8Array",
         stem: "i8",
         cppType: "bbl::js::I8Array",
-        bytesPerElement: 1,
         elementCppType: "std::int8_t",
         store: (value) => `bbl::js::to_int8(${value})`,
         storeLiteral: (value) => `${Int8Array.of(value)[0]!}`,
     },
     u8array: {
-        constructor: "Uint8Array",
         stem: "u8",
         cppType: "bbl::js::U8Array",
-        bytesPerElement: 1,
         elementCppType: "std::uint8_t",
         store: (value) => `bbl::js::to_uint8(${value})`,
         storeLiteral: (value) => `${Uint8Array.of(value)[0]!}u`,
     },
     f64array: {
-        constructor: "Float64Array",
         stem: "f64",
         cppType: "bbl::js::F64Array",
-        bytesPerElement: 8,
         elementCppType: "double",
         store: (value) => value,
     },
     f32array: {
-        constructor: "Float32Array",
         stem: "f32",
         cppType: "bbl::js::F32Array",
-        bytesPerElement: 4,
         elementCppType: "float",
         store: (value) => `static_cast<float>(${value})`,
         storeLiteral: float32TableLiteral,
     },
     u16array: {
-        constructor: "Uint16Array",
         stem: "u16",
         cppType: "bbl::js::U16Array",
-        bytesPerElement: 2,
         elementCppType: "std::uint16_t",
         store: (value) => `bbl::js::to_uint16(${value})`,
         storeLiteral: (value) => `${Uint16Array.of(value)[0]!}u`,
     },
     i16array: {
-        constructor: "Int16Array",
         stem: "i16",
         cppType: "bbl::js::I16Array",
-        bytesPerElement: 2,
         elementCppType: "std::int16_t",
         store: (value) => `bbl::js::to_int16(${value})`,
         storeLiteral: (value) => `${Int16Array.of(value)[0]!}`,
     },
     u32array: {
-        constructor: "Uint32Array",
         stem: "u32",
         cppType: "bbl::js::U32Array",
-        bytesPerElement: 4,
         elementCppType: "std::uint32_t",
         store: jsToUint32Call,
         storeLiteral: (value) => `${Uint32Array.of(value)[0]!}u`,
     },
     u8clampedarray: {
-        constructor: "Uint8ClampedArray",
         stem: "u8c",
         cppType: "bbl::js::U8CArray",
-        bytesPerElement: 1,
         elementCppType: "bbl::js::ClampedByte",
         store: (value) => `bbl::js::to_uint8_clamp(${value})`,
         storeLiteral: (value) =>
             `bbl::js::ClampedByte{${Uint8ClampedArray.of(value)[0]!}u}`,
     },
     i32array: {
-        constructor: "Int32Array",
         stem: "i32",
         cppType: "bbl::js::I32Array",
-        bytesPerElement: 4,
         elementCppType: "std::int32_t",
         store: jsToInt32Call,
         storeLiteral: (value) => `${Int32Array.of(value)[0]!}`,
@@ -111,8 +91,11 @@ const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
 export const TYPED_ARRAY_KINDS: ReadonlyMap<string, TypedArrayKind> =
     new EmissionMap(
         (
-            Object.entries(TYPED_ARRAYS) as [TypedArrayKind, TypedArrayRecord][]
-        ).map(([kind, record]) => [record.constructor, kind]),
+            Object.entries(TYPED_ARRAY_CLASSES) as [
+                TypedArrayKind,
+                (typeof TYPED_ARRAY_CLASSES)[TypedArrayKind],
+            ][]
+        ).map(([kind, type]) => [type.name, kind]),
     );
 
 /** BigInt64Array and BigUint64Array, by constructor name. */
@@ -128,7 +111,7 @@ export function typedArrayBytesPerElement(
 ): number {
     return kind === "i64array" || kind === "u64array"
         ? 8
-        : TYPED_ARRAYS[kind].bytesPerElement;
+        : TYPED_ARRAY_CLASSES[kind].BYTES_PER_ELEMENT;
 }
 
 /**
@@ -188,7 +171,7 @@ export function isBinaryDataType(
 
 /** The global constructor of a typed-array kind: `Float32Array`, ... */
 export function typedArrayConstructorName(kind: TypedArrayKind): string {
-    return TYPED_ARRAYS[kind].constructor;
+    return TYPED_ARRAY_CLASSES[kind].name;
 }
 
 export function typedArrayStem(kind: TypedArrayKind): string {

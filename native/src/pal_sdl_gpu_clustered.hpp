@@ -13,7 +13,7 @@
 // covers the region the pin's own `writeDataTexture` stated. Neither backend
 // derives one, so the two cannot disagree.
 
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/clustered_light.hpp>
 

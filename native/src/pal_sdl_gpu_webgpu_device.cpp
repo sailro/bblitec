@@ -1,4 +1,7 @@
-#include <bblite/pal_gpu.hpp>
+#include <bblite/features/external_renderables.hpp>
+
+#include "pal_gpu_backend.hpp"
+#include "pal_gpu_scene_blocks.hpp"
 
 #include "pal_sdl_gpu_offscreen.hpp"
 #include "pal_sdl_gpu_webgpu.hpp"
@@ -17,6 +20,9 @@ void bind_sdl_gpu_engine_webgpu_device(Engine& engine) {
     if (!shared)
         throw std::runtime_error(
             "The engine's WebGPU device requires a canvas on an SDL_GPU presentation host.");
+#if BBLITE_EXTERNAL_RENDERABLES
+    configure_engine_scene_layout(engine);
+#endif
     static_cast<void>(sdl_engine_webgpu_device(engine, shared->device));
 }
 

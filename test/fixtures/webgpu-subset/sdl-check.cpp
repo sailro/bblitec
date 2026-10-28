@@ -4,44 +4,10 @@
 // a stage the device does not find under the name the library's own module
 // text gives it fails the run.
 
-#include "pal_sdl_gpu_webgpu.hpp"
+#include "sdl-harness.hpp"
 #include "stream-render.hpp"
 
-#include <bblite/js_realm_state.hpp>
-
-#include <SDL3/SDL.h>
-
-#include <atomic>
-#include <fstream>
-#include <iterator>
-#include <thread>
-
-namespace bbl::pal {
-// The PAL file services the shader loaders read through.
-std::vector<std::uint8_t> read_binary_file(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        throw std::runtime_error("missing " + path);
-    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-}
-std::string join_path(const std::string& root, const std::string& relative_path) {
-    return root + "/" + relative_path;
-}
-std::string executable_directory() { return "."; }
-std::string environment_variable(const char* name) {
-    const char* value = SDL_getenv(name);
-    return value ? value : "";
-}
-} // namespace bbl::pal
-
 namespace {
-
-std::atomic<int> sdl_errors = 0;
-void SDLCALL log_message(void*, int, SDL_LogPriority priority, const char* message) {
-    std::fprintf(stderr, "SDL: %s\n", message);
-    if (priority >= SDL_LOG_PRIORITY_ERROR)
-        ++sdl_errors;
-}
 
 /** The scene pass an SDL_GPU renderer opens: rgba8 colour and its depth format. */
 struct SdlTarget final : stream_check::RenderTarget {
@@ -157,43 +123,12 @@ bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::SdlWebGpuDe
 } // namespace
 
 int main() {
-    try {
-        SDL_SetLogOutputFunction(log_message, nullptr);
-        stream_check::require(SDL_Init(SDL_INIT_VIDEO), "SDL_Init");
-        const auto limits = bbl::gpu_required_limits(
-            {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
-        SDL_GPUDevice* native = bbl::pal::create_compiled_shader_device(true);
-        stream_check::require(native != nullptr, "SDL_CreateGPUDevice");
-        std::exception_ptr failure;
-        // The realm runs on its own thread: the library's realm state (its
-        // pipeline caches) ends with that thread, before the device does.
-        std::thread([&] {
-            try {
-                const bbl::js::RealmScope realm;
-                bbl::pal::EventLoop loop;
-                loop.run([&] {
-                    auto device = std::make_shared<bbl::pal::SdlWebGpuDevice>(native, limits);
-                    run(device, native, limits)
-                        .then([device, &loop](const bbl::js::PromiseVoid&) { loop.close(); },
-                              [device, &loop, &failure](std::exception_ptr error) {
-                                  failure = error;
-                                  loop.close();
-                              });
-                });
-            } catch (...) {
-                failure = std::current_exception();
-            }
-        }).join();
-        SDL_WaitForGPUIdle(native);
-        SDL_DestroyGPUDevice(native);
-        SDL_Quit();
-        if (failure)
-            std::rethrow_exception(failure);
-        stream_check::require(sdl_errors == 0, "SDL reported errors");
-        std::printf("sdl ok\n");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
+    const auto limits = bbl::gpu_required_limits(
+        {{"maxBufferSize", 256640000}, {"maxStorageBufferBindingSize", 256640000}});
+    return webgpu_fixture::run_sdl(
+        limits,
+        [&](std::shared_ptr<bbl::pal::SdlWebGpuDevice> device, SDL_GPUDevice* native) {
+            return run(device, native, limits);
+        },
+        "sdl");
 }

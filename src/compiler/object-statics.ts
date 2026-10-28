@@ -70,6 +70,7 @@ type ObjectStaticContext = Pick<
     | "options"
     | "fail"
     | "emitUiDatasetProperty"
+    | "emitUiElementProperty"
     | "emitUiStyleValue"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
@@ -861,7 +862,9 @@ function compileObjectAssign(
         });
         return owner;
     }
-    if (target.kind === "ui-element" && (target.uiDataset || target.uiStyle)) {
+    // A retained element, its dataset or its style: each source property is
+    // stored as an assignment stores it, through the element's setter.
+    if (target.kind === "ui-element") {
         const owner = pinDetached(
             context,
             target,
@@ -872,6 +875,9 @@ function compileObjectAssign(
         // Pin their values, then read each source's fields in copy order.
         const values = sources.map((source) => {
             const value = context.compileValue(source);
+            // A lone record source has no later argument to change it: its
+            // properties are read as compiled, their static facts included.
+            if (value.kind === "record" && sources.length === 1) return value;
             if (value.kind === "record") {
                 readPairs(source, value);
                 // A later argument can mutate an earlier source. Retain that
@@ -888,7 +894,16 @@ function compileObjectAssign(
             for (const [key, value] of readPairs(source, values[index])) {
                 if (target.uiStyle)
                     context.emitUiStyleValue(owner, key, value, source);
-                else context.emitUiDatasetProperty(owner, key, value, source);
+                else if (target.uiDataset)
+                    context.emitUiDatasetProperty(owner, key, value, source);
+                else
+                    context.emitUiElementProperty(
+                        owner,
+                        targetExpression,
+                        key,
+                        value,
+                        source,
+                    );
             }
         });
         return owner;

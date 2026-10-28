@@ -1,3 +1,4 @@
+import { requestInitProperty } from "./http.js";
 import ts from "typescript";
 import {
     abortProperty,
@@ -54,6 +55,7 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["http-headers", compileBodyStreamMethod],
     ["byte-stream", compileBodyStreamMethod],
     ["byte-stream-reader", compileBodyStreamMethod],
+    ["byte-stream-controller", compileBodyStreamMethod],
     ["url", compileUrlMethod],
     ["image-bitmap", compileImageBitmapMethod],
     ["idle-deadline", compileIdleDeadlineMethod],
@@ -97,6 +99,7 @@ export function webPlatformProperty(
 ): Value | undefined {
     return (
         abortProperty(lowerer, owner, property) ??
+        requestInitProperty(lowerer, owner, property) ??
         urlProperty(lowerer, owner, property) ??
         imageBitmapProperty(lowerer, owner, property) ??
         idleDeadlineProperty(lowerer, owner, property) ??

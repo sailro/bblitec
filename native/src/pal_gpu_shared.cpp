@@ -3,6 +3,7 @@
 // scene's generated headers, so this unit compiles once per scene -- once,
 // rather than in every backend unit that includes the headers.
 #include <bblite/features/csm_static_cache.hpp>
+#include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -28,6 +29,11 @@
 #include "pal_gpu_materials.hpp"
 #include "pal_gpu_shadows.hpp"
 #include "pal_gpu_scene_blocks.hpp"
+#if BBLITE_EXTERNAL_RENDERABLES
+#include "pal_external_renderables.hpp"
+#include "pal_pass_camera.hpp"
+#include "pal_webgpu_usage.hpp"
+#endif
 #include "pal_gpu_velocity.hpp"
 #include "pal_gpu_picking.hpp"
 #include "pal_gpu_targets.hpp"
@@ -1604,6 +1610,41 @@ upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& 
     block.viewProjection = view_projection;
     block.view = view;
     return block;
+}
+#endif
+
+#if BBLITE_EXTERNAL_RENDERABLES
+void configure_engine_scene_layout([[maybe_unused]] Engine& engine) {
+#if BBLITE_PINNED_MATERIALS
+    engine.webgpu_scene_uniform_bindings.clear();
+    for (const upstream::PinnedSceneLayoutEntry& row : upstream::pinned_scene_layout)
+        engine.webgpu_scene_uniform_bindings.emplace_back(
+            row.binding, (row.vertex ? webgpu_shader_stage::vertex : 0u) |
+                             (row.fragment ? webgpu_shader_stage::fragment : 0u));
+#endif
+}
+
+const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass, Engine& engine,
+                                                    const Scene& scene,
+                                                    const GpuRenderTargetSignature& signature,
+                                                    [[maybe_unused]] const RetainedSceneBlock& retained,
+                                                    const GpuDrawUpdateContext& context,
+                                                    FunctionRef<GpuCommandEncoderHandle()> encoder) {
+    if (scene.state->external_renderables.empty() && pass.empty())
+        return nullptr;
+    pass.follow(engine, scene, signature);
+    if (pass.empty())
+        return nullptr;
+#if BBLITE_PINNED_MATERIALS
+    const upstream::SceneUniforms& block = retained.pass.block();
+    pass.write_scene_group(
+        engine,
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(&block),
+                                      sizeof(block)),
+        pinned_lights_block(scene, engine));
+#endif
+    pass.prepare(engine, context, encoder());
+    return &pass;
 }
 #endif
 

@@ -7,6 +7,7 @@
 // `hasOwnProperty`, the iteration methods of an array, and the reads a
 // checker narrowed to a primitive, which assert the narrowing.
 
+#include <bblite/js_callback.hpp>
 #include <bblite/js_json.hpp>
 #include <bblite/pinned_values.hpp>
 
@@ -16,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -41,6 +43,22 @@ namespace bbl::pinned {
     } catch (...) {
         return js::JsonValue::from_native(error);
     }
+}
+
+/**
+ * An authored Error record (`class X extends Error`, or an Error interface the
+ * pin fills) as the error it is thrown as, its own properties read dynamically
+ * through the record's `json_property` and `json_keys`.
+ */
+template <class T> [[nodiscard]] js::Error class_error(const std::shared_ptr<T>& instance) {
+    if (!instance)
+        return {};
+    auto read = js::make_closure(std::tuple{instance}, [](auto& environment, std::string_view key) {
+        return std::get<0>(environment)->json_property(key);
+    });
+    return js::make_object_error(instance, "Error",
+                                 js::make_gc_shared<js::JsonRecordView<decltype(read)>>(
+                                     std::move(read), instance->json_keys()));
 }
 
 /** `value instanceof Error` over a dynamic value. */
@@ -119,12 +137,9 @@ json_entries(const js::JsonValue& value) {
     return entries;
 }
 
-/** The parsed object a WeakMap or WeakSet keys; a primitive is a TypeError. */
+/** A dynamic value as a weak key: an object's identity, or no key for a primitive. */
 [[nodiscard]] inline std::weak_ptr<const void> weak_key(const js::JsonValue& value) {
-    auto identity = value.shared_identity();
-    if (!identity)
-        throw js::NamedError("TypeError", "Invalid value used as weak key");
-    return identity;
+    return value.shared_identity();
 }
 
 [[noreturn]] inline void json_not_callable(std::string_view method) {

@@ -29,6 +29,7 @@ import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
 import { enclosingLoopControl } from "../compiler/loop-control.js";
 import {
+    pinnedAliasedCallee,
     pinnedCheckerOf,
     pinnedLibraryGlobal,
     pinnedMember,
@@ -827,6 +828,8 @@ export interface PinnedIteration {
     readonly prefix?: readonly string[];
     readonly header: string;
     readonly bindings?: readonly string[];
+    /** Runs once the loop's body is lowered (a per-iteration scope left). */
+    readonly after?: () => void;
 }
 
 export class PinnedNumericLowerer {
@@ -1131,7 +1134,13 @@ export class PinnedNumericLowerer {
                     ...(iteration.bindings ?? []).map(
                         (line) => loopIndent + "    " + line,
                     ),
-                    ...this.branch(statement.statement, loopIndent),
+                    ...(() => {
+                        try {
+                            return this.branch(statement.statement, loopIndent);
+                        } finally {
+                            iteration.after?.();
+                        }
+                    })(),
                     `${loopIndent}}`,
                     ...(iteration.prefix?.length ? [`${indent}}`] : []),
                 ];
@@ -4196,17 +4205,34 @@ export class PinnedNumericLowerer {
         indent += "    ";
         const lines: string[] = [];
         let defaultClause: ts.DefaultClause | undefined;
+        // Grouped labels (`case "a": case "b":`) select the next clause
+        // with statements; a group ending at `default` is the default's.
+        let grouped: ts.Expression[] = [];
         clauses.forEach((clause, index) => {
             if (ts.isDefaultClause(clause)) {
                 defaultClause = clause;
+                grouped = [];
+                return;
+            }
+            if (
+                clause.statements.length === 0 &&
+                index !== clauses.length - 1
+            ) {
+                grouped.push(clause.expression);
                 return;
             }
             if (!ends(clause) && index !== clauses.length - 1) {
                 this.fail(clause, "switch clause falling through");
             }
+            const condition = [...grouped, clause.expression]
+                .map(
+                    (value) =>
+                        `${discriminant} == ${this.switchCase(statement, value)}`,
+                )
+                .join(" || ");
+            grouped = [];
             lines.push(
-                `${indent}${lines.length === 0 ? "" : "} else "}if (` +
-                    `${discriminant} == ${this.switchCase(statement, clause.expression)}) {`,
+                `${indent}${lines.length === 0 ? "" : "} else "}if (${condition}) {`,
                 ...clauseLines(clause, `${indent}    `),
             );
         });
@@ -4701,7 +4727,7 @@ export class PinnedNumericLowerer {
         }
         const spelling = this.scope.calls.get(name);
         const math = mathMemberAccess(
-            callee,
+            pinnedAliasedCallee(callee),
             pinnedLibraryGlobal,
             pinnedMember,
         );

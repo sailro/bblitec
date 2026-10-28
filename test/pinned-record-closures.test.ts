@@ -262,16 +262,15 @@ int main() {
 });
 
 test("pinned closures refuse what their environment cannot represent", () => {
-    // A closure over a for-of binding: no block environment holds it.
-    assert.throws(
-        () =>
-            lowered(
-                SOURCE.replace(
-                    "    const probe: Probe = {",
-                    "    for (const inner of log) log.push((() => inner)());\n    const probe: Probe = {",
-                ),
+    // A closure over a for-of binding holds that iteration's own scope
+    // (run against the pin in pinned-record-forms.test.ts).
+    assert.doesNotThrow(() =>
+        lowered(
+            SOURCE.replace(
+                "    const probe: Probe = {",
+                "    for (const inner of log) log.push((() => inner)());\n    const probe: Probe = {",
             ),
-        /captures a binding no block scope holds/,
+        ),
     );
     // A closure over a case clause's binding.
     assert.throws(

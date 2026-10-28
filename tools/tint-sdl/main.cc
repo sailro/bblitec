@@ -923,8 +923,10 @@ int main(int argc, const char** argv) {
 
     // The slot sidecar: `<kind><index> <name>` per slot; a compute stage leads
     // with its workgroup size and carries each resource's WGSL group and binding
-    // with those of its sampler. A render stage's opens with its entry point and
-    // closes with the layout lines of the module Dawn compiles: the input, or
+    // with those of its sampler. A render stage's opens with its entry point,
+    // states each sampler at the texture slot SDL_GPU binds it with (its HLSL
+    // register; a sampler no texture is sampled through has none), and closes
+    // with the layout lines of the module Dawn compiles: the input, or
     // `--binding-layout-of` when the input is SDL's adaptation of it.
     std::string sidecar;
     if (*arguments.stage == Stage::kCompute) {
@@ -954,7 +956,16 @@ int main(int argc, const char** argv) {
             sidecar += "\n";
         }
         for (const auto& slot : slots) {
-            sidecar += std::string(1, slot.kind) + std::to_string(slot.kind_index) + " " +
+            uint32_t index = slot.kind_index;
+            if (slot.kind == 's') {
+                const auto texture =
+                    sampler_textures.find({slot.resource.bind_group, slot.resource.binding});
+                if (texture == sampler_textures.end()) {
+                    continue;
+                }
+                index = texture->second->kind_index;
+            }
+            sidecar += std::string(1, slot.kind) + std::to_string(index) + " " +
                        slot.resource.variable_name + "\n";
         }
         std::optional<tint::Source::File> layout_file;

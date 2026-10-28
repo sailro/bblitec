@@ -34,13 +34,75 @@ struct HttpHeaderList {
 }
 
 /**
- * A response's Headers object (immutable guard). `get` is case-insensitive and joins repeated
- * fields with ", ", as the Fetch Standard's header list does. Copies share one object.
+ * A forbidden request-header name (the Fetch Standard's list): a request drops the field rather
+ * than send it, as a browser's does.
+ */
+[[nodiscard]] inline bool http_forbidden_request_header(std::string_view name) {
+    const auto key = http_header_name(name);
+    constexpr std::string_view forbidden[] = {"accept-charset",
+                                              "accept-encoding",
+                                              "access-control-request-headers",
+                                              "access-control-request-method",
+                                              "connection",
+                                              "content-length",
+                                              "cookie",
+                                              "cookie2",
+                                              "date",
+                                              "dnt",
+                                              "expect",
+                                              "host",
+                                              "keep-alive",
+                                              "origin",
+                                              "referer",
+                                              "set-cookie",
+                                              "te",
+                                              "trailer",
+                                              "transfer-encoding",
+                                              "upgrade",
+                                              "via"};
+    return key.starts_with("proxy-") || key.starts_with("sec-") ||
+           std::find(std::begin(forbidden), std::end(forbidden), key) != std::end(forbidden);
+}
+
+/** A header name the Fetch Standard admits: an HTTP token. */
+[[nodiscard]] inline bool http_header_name_valid(std::string_view name) {
+    constexpr std::string_view punctuation = "!#$%&'*+-.^_`|~";
+    return !name.empty() && std::all_of(name.begin(), name.end(), [&](char unit) {
+        const auto byte = static_cast<unsigned char>(unit);
+        return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'z') ||
+               (byte >= 'A' && byte <= 'Z') || punctuation.find(unit) != std::string_view::npos;
+    });
+}
+
+/** A header value normalized (HTTP whitespace trimmed), or nothing where it holds NUL, CR or LF. */
+[[nodiscard]] inline std::optional<std::string> http_header_value(std::string_view value) {
+    constexpr std::string_view whitespace = "\t\n\r ";
+    const auto first = value.find_first_not_of(whitespace);
+    if (first == std::string_view::npos)
+        return std::string();
+    value = value.substr(first, value.find_last_not_of(whitespace) - first + 1);
+    if (value.find_first_of(std::string_view("\0\r\n", 3)) != std::string_view::npos)
+        return std::nullopt;
+    return std::string(value);
+}
+
+/**
+ * A Headers object: a response's (immutable guard) or one a program constructs (`new
+ * Headers(init)`, no guard). `get` is case-insensitive and joins repeated fields with ", ", as
+ * the Fetch Standard's header list does. Copies share one object.
  */
 class HttpHeaders {
 public:
     HttpHeaders() = default;
     explicit HttpHeaders(std::shared_ptr<const HttpHeaderList> list) : list_(std::move(list)) {}
+
+    /** `new Headers()`: an empty list the program may change. */
+    [[nodiscard]] static HttpHeaders mutable_list() {
+        HttpHeaders headers;
+        headers.mutable_ = std::make_shared<HttpHeaderList>();
+        headers.list_ = headers.mutable_;
+        return headers;
+    }
 
     [[nodiscard]] js::Nullable<std::string> get(std::string_view name) const {
         const auto key = http_header_name(name);
@@ -61,6 +123,48 @@ public:
         return std::any_of(list().entries.begin(), list().entries.end(),
                            [&](const auto& entry) { return entry.first == key; });
     }
+    /** `headers.set(name, value)`: the first field takes the value, later ones are removed. */
+    void set(std::string_view name, std::string_view value) {
+        auto [key, normalized] = validated("set", name, value);
+        auto& entries = writable("set").entries;
+        const auto first = std::find_if(entries.begin(), entries.end(),
+                                        [&](const auto& entry) { return entry.first == key; });
+        if (first == entries.end()) {
+            entries.emplace_back(std::move(key), std::move(normalized));
+            return;
+        }
+        first->second = std::move(normalized);
+        entries.erase(std::remove_if(std::next(first), entries.end(),
+                                     [&](const auto& entry) { return entry.first == key; }),
+                      entries.end());
+    }
+    /** `headers.append(name, value)`. */
+    void append(std::string_view name, std::string_view value) {
+        auto [key, normalized] = validated("append", name, value);
+        writable("append").entries.emplace_back(std::move(key), std::move(normalized));
+    }
+    /** `headers.delete(name)`. */
+    void remove(std::string_view name) {
+        if (!http_header_name_valid(name))
+            throw js::NamedError("TypeError",
+                                 "Failed to execute 'delete' on 'Headers': Invalid name");
+        const auto key = http_header_name(name);
+        auto& entries = writable("delete").entries;
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&](const auto& entry) { return entry.first == key; }),
+                      entries.end());
+    }
+    /** `new Headers(this)`: a list the program may change, with these fields in order. */
+    [[nodiscard]] HttpHeaders copy() const {
+        auto headers = mutable_list();
+        for (const auto& [name, value] : entries())
+            headers.append(name, value);
+        return headers;
+    }
+    /** The list in order, as a request sends it. */
+    [[nodiscard]] const std::vector<std::pair<std::string, std::string>>& entries() const {
+        return list().entries;
+    }
     [[nodiscard]] const void* get() const noexcept { return list_.get(); }
     explicit operator bool() const noexcept { return static_cast<bool>(list_); }
     [[nodiscard]] friend bool operator==(const HttpHeaders& left, const HttpHeaders& right) {
@@ -73,7 +177,25 @@ private:
             throw std::runtime_error("Headers receiver is absent.");
         return *list_;
     }
+    HttpHeaderList& writable(const char* operation) {
+        if (!mutable_)
+            throw js::NamedError("TypeError", std::string("Failed to execute '") + operation +
+                                                  "' on 'Headers': Headers are immutable");
+        return *mutable_;
+    }
+    static std::pair<std::string, std::string>
+    validated(const char* operation, std::string_view name, std::string_view value) {
+        if (!http_header_name_valid(name))
+            throw js::NamedError("TypeError", std::string("Failed to execute '") + operation +
+                                                  "' on 'Headers': Invalid name");
+        auto normalized = http_header_value(value);
+        if (!normalized)
+            throw js::NamedError("TypeError", std::string("Failed to execute '") + operation +
+                                                  "' on 'Headers': Invalid value");
+        return {http_header_name(name), std::move(*normalized)};
+    }
     std::shared_ptr<const HttpHeaderList> list_;
+    std::shared_ptr<HttpHeaderList> mutable_;
 };
 
 /** What the transport learns before the body: status, final URL and headers. */
@@ -316,6 +438,48 @@ public:
 struct HttpBodyState;
 
 /**
+ * `controller` of a program's underlying source (`ReadableStreamDefaultController`): it
+ * enqueues a chunk, closes the stream once its queue drains, or errors it. Copies share it.
+ */
+class BodyStreamController {
+public:
+    BodyStreamController() = default;
+    explicit BodyStreamController(std::shared_ptr<HttpBodyState> state) : state_(std::move(state)) {}
+    /** `controller.enqueue(chunk)`: a TypeError once closing or no longer readable. */
+    void enqueue(js::U8Array chunk) const;
+    /** `controller.close()`: a TypeError once closing or no longer readable. */
+    void close() const;
+    /** `controller.error(reason)`. */
+    void error(js::Error reason) const;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(state_); }
+
+private:
+    std::shared_ptr<HttpBodyState> state_;
+};
+
+/**
+ * A program's underlying source (`new ReadableStream({ pull, cancel })`): its pull and cancel
+ * algorithms and the chunks its controller enqueued that no read took yet. The stream pulls once
+ * started and again whenever a read waits on an empty queue, never while a pull's promise is
+ * pending: the default strategy, a high-water mark of one chunk.
+ */
+struct BodyPullSource {
+    js::Callback<js::Promise<js::PromiseVoid>(BodyStreamController)> pull;
+    js::Callback<js::Promise<js::PromiseVoid>(js::Nullable<js::Error>)> cancel;
+    std::deque<js::U8Array> queue;
+    bool started = false;
+    bool pulling = false;
+    bool pull_again = false;
+    bool close_requested = false;
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(pull);
+        visitor(cancel);
+        for (const auto& chunk : queue)
+            visitor(chunk);
+    }
+};
+
+/**
  * A transform stream's readable side: its transformer (absent once flushed), the stream piped
  * into its writable side (absent until `pipeThrough` and after the pipe ends) and output not yet
  * read. The pipe reads its source only while a read of this side waits for output.
@@ -339,6 +503,7 @@ struct HttpBodyState {
     std::optional<std::vector<std::uint8_t>> whole;
     std::shared_ptr<HttpTransport> transport;
     std::optional<ByteTransformSide> transform;
+    std::shared_ptr<BodyPullSource> pull;
     std::optional<js::Error> error;
     bool disturbed = false;
     bool locked = false;
@@ -350,6 +515,7 @@ struct HttpBodyState {
         visitor(reads);
         visitor(error);
         visitor(signal);
+        visitor(pull);
         if (transform)
             visitor(transform->source);
     }
@@ -380,6 +546,8 @@ inline void release_source(HttpBodyState& state) {
     if (state.transport && state.transport->exchange)
         state.transport->exchange->cancel();
     state.whole.reset();
+    if (state.pull)
+        state.pull->queue.clear();
     if (state.transform) {
         state.transform->transformer.reset();
         state.transform->output.clear();
@@ -467,6 +635,41 @@ inline void pull_transform_source(const std::shared_ptr<HttpBodyState>& state,
                  }));
 }
 /**
+ * A program's source asked for its next chunk when the stream wants one (`ReadableStream
+ * DefaultControllerCallPullIfNeeded`): started, not closing, a read waiting or the queue under
+ * its one chunk; a pull settling while another was asked for pulls again.
+ */
+inline void call_pull_if_needed(const std::shared_ptr<HttpBodyState>& state) {
+    const auto source = state->pull;
+    if (!source || !source->started || source->close_requested ||
+        state->phase != HttpBodyState::Phase::readable ||
+        (state->reads.empty() && !source->queue.empty()))
+        return;
+    if (source->pulling) {
+        source->pull_again = true;
+        return;
+    }
+    source->pulling = true;
+    js::Promise<js::PromiseVoid> pulled;
+    try {
+        pulled = source->pull(BodyStreamController(state));
+    } catch (...) {
+        pulled = js::Promise<js::PromiseVoid>::rejected(std::current_exception());
+    }
+    pulled.observe(js::make_closure(std::tuple{state},
+                                    [](auto& captured, const js::PromiseVoid&) {
+                                        const auto& current = std::get<0>(captured);
+                                        const auto& settled = current->pull;
+                                        settled->pulling = false;
+                                        if (std::exchange(settled->pull_again, false))
+                                            call_pull_if_needed(current);
+                                    }),
+                   js::make_closure(std::tuple{state}, [](auto& captured, std::exception_ptr reason) {
+                       error(*std::get<0>(captured), reason);
+                   }));
+}
+
+/**
  * Serve queued reads from the source; wait on the transport when it has nothing yet. Only a
  * `delivery_task` (the task a transport completion runs) ends or errors the stream, and only
  * before it delivers a chunk: the end or failure is its own task after that chunk's. A
@@ -474,6 +677,21 @@ inline void pull_transform_source(const std::shared_ptr<HttpBodyState>& state,
  */
 inline void pump(const std::shared_ptr<HttpBodyState>& state, bool delivery_task) {
     while (!state->reads.empty() && state->phase == HttpBodyState::Phase::readable) {
+        if (const auto& source = state->pull) {
+            if (!source->queue.empty()) {
+                auto read = std::move(state->reads.front());
+                state->reads.pop_front();
+                auto chunk = std::move(source->queue.front());
+                source->queue.pop_front();
+                read.resolve(BodyReadResult{false, std::move(chunk)});
+                continue;
+            }
+            if (source->close_requested)
+                close(*state);
+            else
+                call_pull_if_needed(state);
+            return;
+        }
         if (state->transform) {
             auto& transform = *state->transform;
             if (!transform.output.empty()) {
@@ -539,8 +757,11 @@ public:
 
     /** `stream.locked`. */
     [[nodiscard]] bool locked() const { return state().locked; }
-    /** `stream.cancel()`: rejects while locked; closes the stream and stops its transfer. */
-    js::Promise<js::PromiseVoid> cancel() const;
+    /**
+     * `stream.cancel(reason)`: rejects while locked; closes the stream and stops its transfer,
+     * or cancels a program's source with `reason`.
+     */
+    js::Promise<js::PromiseVoid> cancel(js::Nullable<js::Error> reason = std::nullopt) const;
     /** `stream.getReader()`: throws TypeError while another reader holds the lock. */
     [[nodiscard]] class BodyReader get_reader() const;
     /**
@@ -583,11 +804,12 @@ public:
             return js::Promise<BodyReadResult>::rejected(std::current_exception());
         }
     }
-    /** `reader.cancel()`. */
-    [[nodiscard]] js::Promise<js::PromiseVoid> cancel() const {
+    /** `reader.cancel(reason)`. */
+    [[nodiscard]] js::Promise<js::PromiseVoid>
+    cancel(js::Nullable<js::Error> reason = std::nullopt) const {
         try {
             stream_state();
-            return cancel_stream(state().stream.shared_state());
+            return cancel_stream(state().stream.shared_state(), std::move(reason));
         } catch (...) {
             return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
         }
@@ -606,12 +828,23 @@ public:
             read.reject(http_detail::type_error("The reader's lock was released."));
     }
 
-    /** Close or reuse: shared by `reader.cancel()` and `stream.cancel()`. */
-    static js::Promise<js::PromiseVoid> cancel_stream(const std::shared_ptr<HttpBodyState>& body) {
+    /**
+     * Close or reuse: shared by `reader.cancel()` and `stream.cancel()`. A program's source is
+     * canceled too, the cancel settling as its cancel algorithm does.
+     */
+    static js::Promise<js::PromiseVoid> cancel_stream(const std::shared_ptr<HttpBodyState>& body,
+                                                      js::Nullable<js::Error> reason) {
         body->disturbed = true;
         if (body->phase == HttpBodyState::Phase::errored)
             return js::Promise<js::PromiseVoid>::rejected(*body->error);
+        const bool readable = body->phase == HttpBodyState::Phase::readable;
         http_detail::close(*body);
+        if (readable && body->pull && body->pull->cancel)
+            try {
+                return body->pull->cancel(std::move(reason));
+            } catch (...) {
+                return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
+            }
         return js::Promise<js::PromiseVoid>::resolved({});
     }
 
@@ -642,11 +875,11 @@ private:
     std::shared_ptr<State> state_;
 };
 
-inline js::Promise<js::PromiseVoid> BodyStream::cancel() const {
+inline js::Promise<js::PromiseVoid> BodyStream::cancel(js::Nullable<js::Error> reason) const {
     try {
         if (state().locked)
             throw js::NamedError("TypeError", "A locked ReadableStream cannot be canceled.");
-        return BodyReader::cancel_stream(state_);
+        return BodyReader::cancel_stream(state_, std::move(reason));
     } catch (...) {
         return js::Promise<js::PromiseVoid>::rejected(std::current_exception());
     }
@@ -716,6 +949,46 @@ inline BodyStream BodyStream::pipe_through(const ByteTransformStream& transform)
     return BodyStream(readable);
 }
 
+inline void BodyStreamController::enqueue(js::U8Array chunk) const {
+    auto& state = *state_;
+    if (state.phase != HttpBodyState::Phase::readable || state.pull->close_requested)
+        throw js::NamedError("TypeError", "The ReadableStream cannot enqueue a chunk.");
+    state.pull->queue.push_back(std::move(chunk));
+    http_detail::pump(state_, false);
+    http_detail::call_pull_if_needed(state_);
+}
+
+inline void BodyStreamController::close() const {
+    auto& state = *state_;
+    if (state.phase != HttpBodyState::Phase::readable || state.pull->close_requested)
+        throw js::NamedError("TypeError", "The ReadableStream cannot be closed.");
+    state.pull->close_requested = true;
+    if (state.pull->queue.empty())
+        http_detail::close(state);
+}
+
+inline void BodyStreamController::error(js::Error reason) const {
+    http_detail::error(*state_, std::move(reason));
+}
+
+/**
+ * `new ReadableStream({ pull, cancel })` over byte chunks: the program's source, started on
+ * the next microtask as its absent start algorithm settles.
+ */
+[[nodiscard]] inline BodyStream make_pull_stream(
+    js::Callback<js::Promise<js::PromiseVoid>(BodyStreamController)> pull,
+    js::Callback<js::Promise<js::PromiseVoid>(js::Nullable<js::Error>)> cancel) {
+    auto state = js::make_gc_shared<HttpBodyState>();
+    state->pull = js::make_gc_shared<BodyPullSource>();
+    state->pull->pull = std::move(pull);
+    state->pull->cancel = std::move(cancel);
+    EventLoop::current().queue_microtask([state] {
+        state->pull->started = true;
+        http_detail::call_pull_if_needed(state);
+    });
+    return BodyStream(std::move(state));
+}
+
 /** A ReadableStream over bytes already in memory (`blob.stream()`): one chunk, then its end. */
 [[nodiscard]] inline BodyStream whole_body_stream(std::vector<std::uint8_t> bytes) {
     auto state = js::make_gc_shared<HttpBodyState>();
@@ -738,6 +1011,11 @@ struct HttpResponseData {
      * a body stream error as TypeError "Failed to fetch".
      */
     bool constructed = false;
+    /**
+     * `response.statusText`: a constructed response's; the native transport keeps no reason
+     * phrase, so a fetched one's is empty, as an HTTP/2 response's is.
+     */
+    std::string status_text;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(body); }
 };
 using HttpResponse = js::Ref<HttpResponseData>;
@@ -754,22 +1032,39 @@ using HttpResponse = js::Ref<HttpResponseData>;
     return js::make_ref<HttpResponseData>(HttpResponseData{
         status, std::move(url),
         headers ? std::move(headers) : HttpHeaders(std::make_shared<HttpHeaderList>()),
-        whole_body_stream(std::move(body)), false});
+        whole_body_stream(std::move(body)), false, std::string()});
 }
 
+/** `new Response(body, init)`'s `{ status, statusText, headers }`. */
+struct HttpResponseInit {
+    double status = 200;
+    std::string status_text;
+    /** Copied into the response's own Headers object. */
+    js::Nullable<HttpHeaders> headers;
+};
+
 /**
- * `new Response(stream)`: status 200, no headers and `stream` itself as the body. A locked or
- * disturbed stream throws TypeError.
+ * `new Response(stream, init)`: the init's status (200), status text and a copy of its headers,
+ * with `stream` itself as the body. A locked or disturbed stream, or a status outside 200-599,
+ * throws TypeError; a null-body status takes no body.
  */
-[[nodiscard]] inline HttpResponse make_stream_response(const BodyStream& body) {
+[[nodiscard]] inline HttpResponse make_stream_response(const BodyStream& body,
+                                                       HttpResponseInit init = {}) {
     const auto& state = body.shared_state();
     if (!state)
         throw std::runtime_error("ReadableStream receiver is absent.");
+    if (init.status < 200 || init.status > 599)
+        throw js::NamedError("RangeError", "Failed to construct 'Response': The status provided "
+                                           "is outside the range [200, 599].");
+    if (http_null_body_status(init.status))
+        throw js::NamedError("TypeError", "Failed to construct 'Response': Response with null "
+                                          "body status cannot have body");
     if (state->locked || state->disturbed)
         throw js::NamedError("TypeError", "Failed to construct 'Response': Response body object "
                                           "should not be disturbed or locked");
+    auto headers = init.headers ? init.headers->copy() : HttpHeaders::mutable_list();
     return js::make_ref<HttpResponseData>(HttpResponseData{
-        200, std::string(), HttpHeaders(std::make_shared<HttpHeaderList>()), body, true});
+        init.status, std::string(), std::move(headers), body, true, std::move(init.status_text)});
 }
 
 /** WHATWG UTF-8 replacement decoding, including initial BOM removal. */

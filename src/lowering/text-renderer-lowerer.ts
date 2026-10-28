@@ -11,7 +11,7 @@ export class TextRendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public header(): string {
-        const { declarations, definitions } = lowerTextFunctions(
+        const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "renderer",
             ["records", "gpu"],
@@ -20,6 +20,7 @@ export class TextRendererLowerer {
 #include <bblite/text_renderer.hpp>
 #include <bblite/upstream_text_gpu.hpp>
 #include <stdexcept>
+${includes}
 namespace bbl {
 ${declarations}
 ${definitions}

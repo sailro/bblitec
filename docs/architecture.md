@@ -84,17 +84,18 @@ Paths are relative to `generated/<id>/`.
   a survey records it against the site's statement and continues.
 - Namespace member calls (`N.f`) are rewritten only in `compileCall`. Never in the shared `unwrap`: it would silently
   admit writes and rewrite library namespaces (`Intl.*`).
-- Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules (text family)
-  use `PinnedRecordModel`; `pinned-record-transport.ts` rebuilds generation-time records; shapes live in `record-shapes.ts`.
+- Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules and whole
+  libraries (text, splat stream, MeshLoD) use `PinnedRecordModel`; `pinned-record-transport.ts` rebuilds generation-time
+  records; shapes live in `record-shapes.ts`. A lowered library is one `LoweredLibrary` (`library-runtime.ts`).
 - A closure is a `bbl::js::Callback` over its frame's environment struct (named structs of numbered captures, one per
   shape). Array-method callbacks are native lambdas.
 - `unknown` is `JsonValue` (`pinned_json.hpp`). Async functions are C++20 coroutines over `bbl::js::Promise`
   (`pinned_async.hpp`); `finally` is a guard run once per exit.
 - Operands the entry compiler's `EvaluationOrder` pins are evaluated into temporaries in source order; an `await` a
   lambda would still hold refuses.
-- Bundled packages bind by `package#name` to native records and adapters. Web platform objects share
-  `src/lowering/web-platform-schema.ts` over `web_platform.hpp`; fetch, image decode, timers and task queue are a seam
-  in `pal_web_platform.cpp`. Splat streaming runtime: `splat_stream_runtime.hpp`. Text pipeline policy: `text_gpu.hpp`.
+- Bundled packages bind by `package#name` to native records and adapters. Lowered libraries spell web platform objects
+  through `src/lowering/web-platform-schema.ts` over `web_platform.hpp`; fetch, image decode, timers and task queue are
+  a seam in `pal_web_platform.cpp`. Lowered library runtime: `library_runtime.hpp`. Text pipeline policy: `text_gpu.hpp`.
 - A body is shared across distinct generation-time arguments when every reached effect has a native representation
   (`canShareFunctionBody`, `reachesOnlyClosedEffects`); otherwise it specializes inline. Ordinary loops stay native;
   static expansion only for generation-time values or frame yields.

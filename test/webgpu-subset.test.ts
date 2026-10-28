@@ -1,28 +1,15 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import {
-    copyFileSync,
-    existsSync,
-    mkdirSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { compileOfflineShaders } from "../src/compile-shaders.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { sharedPinnedContext } from "../src/lowering/context.js";
-import {
-    pinnedRawShaderImports,
-    runtimeWgslModules,
-    SPLAT_STREAM_SHADER_MODULES,
-} from "../src/lowering/splat-stream-shaders.js";
+import { SPLAT_STREAM_SHADER_MODULES } from "../src/lowering/splat-stream-library.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
+import { optionalNativeFixtureTools } from "./native-fixture.js";
 import {
-    nativeFixtureVcpkgRoot,
-    optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+    compileLibraryShaders,
+    runWebGpuFixture,
+} from "./webgpu-subset-fixture.js";
 
 /**
  * The lowered splat-stream library (upstream_splat_stream.hpp) and the
@@ -45,123 +32,36 @@ function streamLibraryInclude(): string {
     return generatedInclude;
 }
 
-/**
- * The library's run-time WGSL as SDL_GPU deploys it (`runtimeWgslModules`):
- * each module's every stage, compiled under the name its text and entry
- * point give it (`wgslStageStem`).
- */
-async function compileStreamShaders(root: string): Promise<string> {
-    const directory = join(root, "generated/stream/upstream/shaders");
-    rmSync(directory, { recursive: true, force: true });
-    mkdirSync(directory, { recursive: true });
-    mkdirSync(join(root, "upstream"), { recursive: true });
-    copyFileSync("upstream/tint.json", join(root, "upstream/tint.json"));
-    const modules = runtimeWgslModules(
-        pinnedRawShaderImports(
-            sharedPinnedContext(),
-            SPLAT_STREAM_SHADER_MODULES,
-        ),
-    ).map(({ output, data, entryPoint, alsoStages }) => {
-        writeFileSync(join(directory, basename(output)), data);
-        return {
-            output: basename(output),
-            entryPoint,
-            pinnedBindings: true,
-            alsoStages,
-        };
-    });
-    writeFileSync(
-        join(directory, "composition.json"),
-        JSON.stringify({ modules }),
-    );
-    await compileOfflineShaders({
-        directories: [directory],
-        repositoryRoot: root,
-        target: "d3d12",
-        tools: discoverDevelopmentTools(),
-    });
-    return directory;
-}
-
-const dawnRoot = resolve("artifacts/tools/dawn");
-
-/** The fixture's result lines, keyed by their first word. */
-function resultLines(output: string): Map<string, string> {
-    const lines = new Map<string, string>();
-    for (const line of output.split(/\r?\n/)) {
-        const space = line.indexOf(" ");
-        if (space > 0) lines.set(line.slice(0, space), line.slice(space + 1));
-    }
-    return lines;
-}
-
 let dawnResult: Map<string, string> | undefined;
 function runDawnStream(): Map<string, string> | undefined {
-    if (dawnResult) return dawnResult;
-    const tools = optionalNativeFixtureTools(false);
-    if (!tools || !existsSync(join(dawnRoot, "lib/webgpu_dawn.lib")))
-        return undefined;
-    const output = resolve("artifacts/test-webgpu-subset/dawn");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        `/I${resolve("native/src")}`,
-        `/I${resolve("test/fixtures/webgpu-subset")}`,
-        `/I${streamLibraryInclude()}`,
-        `/external:I${join(dawnRoot, "include")}`,
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        resolve("test/fixtures/webgpu-subset/dawn-check.cpp"),
-        "/link",
-        join(dawnRoot, "lib/webgpu_dawn.lib"),
-    ]);
-    dawnResult = resultLines(
-        execFileSync(executable, {
-            encoding: "utf8",
-            timeout: 120000,
-            windowsHide: true,
-            env: {
-                ...process.env,
-                PATH: `${join(dawnRoot, "bin")};${process.env.PATH ?? ""}`,
-            },
-        }),
-    );
+    dawnResult ??= runWebGpuFixture("dawn", {
+        output: resolve("artifacts/test-webgpu-subset/dawn"),
+        sources: [resolve("test/fixtures/webgpu-subset/dawn-check.cpp")],
+        includes: [streamLibraryInclude()],
+    });
     return dawnResult;
 }
 
 let sdlResult: Map<string, string> | undefined;
 async function runSdlStream(): Promise<Map<string, string> | undefined> {
     if (sdlResult) return sdlResult;
-    const tools = optionalNativeFixtureTools();
     const shaderTools = discoverDevelopmentTools();
-    if (!tools || !shaderTools.bbliteTint || !shaderTools.dxc) return undefined;
+    if (
+        !optionalNativeFixtureTools() ||
+        !shaderTools.bbliteTint ||
+        !shaderTools.dxc
+    )
+        return undefined;
     const output = resolve("artifacts/test-webgpu-subset/sdl");
-    const shaders = await compileStreamShaders(join(output, "root"));
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        "/DBBLITE_VISUAL_CAPTURE=0",
-        `/I${resolve("native/src")}`,
-        `/I${resolve("test/fixtures/webgpu-subset")}`,
-        `/I${streamLibraryInclude()}`,
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        resolve("test/fixtures/webgpu-subset/sdl-check.cpp"),
-        "/link",
-        `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        "SDL3.lib",
-    ]);
-    sdlResult = resultLines(
-        execFileSync(executable, {
-            encoding: "utf8",
-            timeout: 120000,
-            windowsHide: true,
-            env: {
-                ...process.env,
-                BBLITE_GPU_SHADER_DIR: shaders,
-                PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
-            },
-        }),
-    );
+    sdlResult = runWebGpuFixture("sdl", {
+        output,
+        sources: [resolve("test/fixtures/webgpu-subset/sdl-check.cpp")],
+        includes: [streamLibraryInclude()],
+        shaders: await compileLibraryShaders(
+            join(output, "root"),
+            SPLAT_STREAM_SHADER_MODULES,
+        ),
+    });
     return sdlResult;
 }
 

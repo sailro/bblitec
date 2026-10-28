@@ -185,11 +185,11 @@ export function extractPackagedRawShader(
 
 const rawShaderCache = new Map<string, string>();
 
-/** Vite may inline a raw import into its call argument and remove the region. */
-function inlinedRawShader(
+/** The pinned source of a packaged module and the binding its raw import of `sourcePath` names. */
+function rawImportBinding(
     modulePath: string,
     sourcePath: string,
-): string | undefined {
+): { original: ts.SourceFile; imported: string } | undefined {
     const originalPath = `src/${modulePath.replace(/\.js$/, ".ts")}`;
     const store = sharedUpstreamStore();
     if (!store.hasSource(originalPath)) return undefined;
@@ -200,7 +200,17 @@ function inlinedRawShader(
             ts.isStringLiteral(node.moduleSpecifier) &&
             node.moduleSpecifier.text.endsWith(`/${sourcePath}?raw`),
     )?.importClause?.name?.text;
-    if (!imported) return undefined;
+    return imported ? { original, imported } : undefined;
+}
+
+/** Vite may inline a raw import into its call argument and remove the region. */
+function inlinedRawShader(
+    modulePath: string,
+    sourcePath: string,
+): string | undefined {
+    const binding = rawImportBinding(modulePath, sourcePath);
+    if (!binding) return undefined;
+    const { original, imported } = binding;
     const uses: { callee: string; argument: number }[] = [];
     const collect = (node: ts.Node): void => {
         if (ts.isCallExpression(node))
@@ -236,6 +246,28 @@ function inlinedRawShader(
     return values.size === 1 ? [...values][0] : undefined;
 }
 
+/**
+ * The module constants aliasing a raw import (`export const SCENE_UBO_WGSL =
+ * sceneUniformsWgsl`), which Vite folds into one string under the alias.
+ */
+function rawShaderAliases(modulePath: string, sourcePath: string): string[] {
+    const binding = rawImportBinding(modulePath, sourcePath);
+    if (!binding) return [];
+    const { original, imported } = binding;
+    return original.statements.flatMap((statement) =>
+        ts.isVariableStatement(statement)
+            ? statement.declarationList.declarations.flatMap((declaration) =>
+                  ts.isIdentifier(declaration.name) &&
+                  declaration.initializer &&
+                  ts.isIdentifier(declaration.initializer) &&
+                  declaration.initializer.text === imported
+                      ? [declaration.name.text]
+                      : [],
+              )
+            : [],
+    );
+}
+
 /** Find a raw import in the implementation or a shared dependency chunk. */
 export function readPinnedRawShader(
     modulePath: string,
@@ -244,6 +276,7 @@ export function readPinnedRawShader(
     const key = `${modulePath}:${sourcePath}`;
     const cached = rawShaderCache.get(key);
     if (cached !== undefined) return cached;
+    const aliases = rawShaderAliases(modulePath, sourcePath);
     const visited = new Set<string>();
     const visit = (path: string): string | undefined => {
         if (visited.has(path)) return undefined;
@@ -251,6 +284,10 @@ export function readPinnedRawShader(
         const text = readFileSync(join(pinnedLibraryRoot(), path), "utf8");
         if (text.includes(`//#region ${sourcePath}?raw`))
             return extractPackagedRawShader(text, sourcePath);
+        for (const alias of aliases) {
+            const folded = packagedDeclaration(text, ts.isStringLiteral, alias);
+            if (folded) return folded.initializer.text;
+        }
         const file = ts.createSourceFile(
             path,
             text,

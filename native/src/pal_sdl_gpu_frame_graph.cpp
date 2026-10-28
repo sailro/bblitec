@@ -9,7 +9,7 @@
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_POST_PROCESS
 #include <bblite/upstream/frame_graph_post_process.hpp>

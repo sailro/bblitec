@@ -42,7 +42,7 @@ import {
     type RecordShape,
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
-
+import { typedF32 } from "./record-shapes.js";
 import { webgpuFlagConstants } from "../webgpu-flags.js";
 import {
     textGpuAdapters,
@@ -192,7 +192,7 @@ const records: readonly RecordSpec[] = [
         reference: true,
         native: true,
         members: new Map([
-            ["worldMatrix", { shape: { kind: "typed", element: "f32" } }],
+            ["worldMatrix", { shape: typedF32 }],
             ["worldMatrixVersion", { shape: number }],
         ]),
     },
@@ -858,7 +858,7 @@ export function lowerTextFunctions(
     context: LoweringContext,
     header: keyof typeof TEXT_HEADER_ROOTS,
     after: readonly (keyof typeof TEXT_HEADER_ROOTS)[],
-): { declarations: string; definitions: string } {
+): { declarations: string; definitions: string; includes: string } {
     const earlier = new Set<string>();
     for (const previous of after) {
         const model = textRecordModel(context);
@@ -870,8 +870,13 @@ export function lowerTextFunctions(
         for (const key of model.emittedKeys()) earlier.add(key);
     }
     const model = textRecordModel(context);
-    return model.lower(
+    const { declarations, definitions } = model.lower(
         TEXT_HEADER_ROOTS[header].map((root) => rootDeclaration(model, root)),
         (entry) => !earlier.has(`${entry.module}#${entry.name}`),
     );
+    // The helper headers the lowered bodies call (`model.include`).
+    const includes = [...model.includes]
+        .map((include) => `#include <${include}>`)
+        .join("\n");
+    return { declarations, definitions, includes };
 }

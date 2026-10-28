@@ -14,7 +14,12 @@
  * references. So the module is part of the record here too, and an export the
  * pin renames or moves fails at the import rather than composing the default.
  */
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import ts from "typescript";
+import {
+    sharedPinnedContext,
+    unwrapExpression,
+    type LoweringContext,
+} from "./lowering/context.js";
 
 /**
  * A pinned `ToneMapping`, carried whole because the composer takes it whole.
@@ -52,28 +57,50 @@ export function toneMappingExportNames(): readonly string[] {
     return Object.keys(toneMappingModules);
 }
 
-/** The WGSL one named export carries. */
-export async function pinnedToneMapping(
+/**
+ * The record one named export carries, read whole off the pinned module's
+ * own declaration: each member the literal states, a string constant or a
+ * module constant naming one.
+ */
+export function pinnedToneMapping(
     importedName: string,
-): Promise<PinnedToneMapping> {
-    const modulePath = toneMappingModules[importedName];
-    if (!modulePath) {
+    context: LoweringContext = sharedPinnedContext(),
+): PinnedToneMapping {
+    const packaged = toneMappingModules[importedName];
+    if (!packaged) {
         throw new Error(
             `'${importedName}' is not a pinned tone mapping; the package ` +
                 `exports ${toneMappingExportNames().join(", ")}.`,
         );
     }
-    const module =
-        await importPinnedModule<Record<string, PinnedToneMapping>>(modulePath);
-    const record = module[importedName];
-    if (!record) {
+    const module = `src/${packaged.slice(0, -".js".length)}.ts`;
+    const constant = context.pinnedConstant(module, importedName);
+    const literal = constant && unwrapExpression(constant.initializer);
+    if (!constant || !literal || !ts.isObjectLiteralExpression(literal)) {
         throw new Error(
-            `The pinned module ${modulePath} no longer exports ` +
-                `'${importedName}'.`,
+            `The pinned module ${module} no longer declares '${importedName}' as a record literal.`,
         );
     }
-    // The record itself, not a projection of it: a field the pin adds is
-    // what "carried whole" means, and re-listing the three here would drop
-    // it by the same mechanism that dropped the composer's tone mapping.
-    return record;
+    const record: Record<string, string> = {};
+    for (const property of literal.properties) {
+        if (
+            !ts.isPropertyAssignment(property) ||
+            !ts.isIdentifier(property.name)
+        )
+            return context.contractError(
+                property,
+                `Expected ${importedName} to state named string members.`,
+            );
+        const value = unwrapExpression(property.initializer);
+        record[property.name.text] = ts.isIdentifier(value)
+            ? context.pinnedString(module, value.text)
+            : context.stringValue(value, constant.file);
+    }
+    const { id, helpersWGSL, callWGSL } = record;
+    if (id === undefined || helpersWGSL === undefined || callWGSL === undefined)
+        return context.contractError(
+            literal,
+            `Expected ${importedName} to state id, helpersWGSL and callWGSL.`,
+        );
+    return { ...record, id, helpersWGSL, callWGSL };
 }

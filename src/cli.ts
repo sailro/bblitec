@@ -99,6 +99,7 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import { meshLoDShaderVariants } from "./mesh-lod-shader-variants.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import {
     composeDefaultTextPipelines,
@@ -141,6 +142,8 @@ interface CliOptions {
     environment: Record<string, string>;
     hostUi?: string;
     siteRoot?: string;
+    /** The module an HTML page's module script loads in place of its URL. */
+    pageEntry?: string;
     idDiagnostics: boolean;
     sourceProfile?: string[];
     coverage?: string;
@@ -168,6 +171,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--env", value: "<NAME=value>" },
     { flag: "--host-ui", value: "<json>" },
     { flag: "--site-root", value: "<directory>" },
+    { flag: "--page-entry", value: "<module.ts>" },
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
@@ -213,6 +217,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     const environment = new Map<string, string>();
     let hostUi: string | undefined;
     let siteRoot: string | undefined;
+    let pageEntry: string | undefined;
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
@@ -276,6 +281,11 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--site-root":
                 if (!value) usage();
                 siteRoot = value;
+                index += 1;
+                break;
+            case "--page-entry":
+                if (!value) usage();
+                pageEntry = value;
                 index += 1;
                 break;
             case "--public-dir":
@@ -346,6 +356,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
         ...(siteRoot ? { siteRoot } : {}),
+        ...(pageEntry ? { pageEntry } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
         ...(deferredCapabilities ? { deferredCapabilities } : {}),
@@ -891,6 +902,7 @@ async function main(): Promise<void> {
         ? readHostPage({
               path: options.input,
               ...(options.siteRoot ? { root: options.siteRoot } : {}),
+              ...(options.pageEntry ? { entry: options.pageEntry } : {}),
           })
         : undefined;
     if (page && options.hostUi)
@@ -899,6 +911,8 @@ async function main(): Promise<void> {
         );
     if (!page && options.siteRoot)
         throw new Error("--site-root applies to an HTML page input.");
+    if (!page && options.pageEntry)
+        throw new Error("--page-entry applies to an HTML page input.");
     const inputPath = resolve(page?.entry ?? options.input);
     const source = readFileSync(inputPath, "utf8");
     const compileOptions: CompileOptions = {
@@ -1598,6 +1612,14 @@ async function main(): Promise<void> {
         shaderPrograms,
         ...(result.manifest.computePrograms
             ? { computePrograms: result.manifest.computePrograms }
+            : {}),
+        ...(result.manifest.features.includes("loader:mesh-lod")
+            ? {
+                  meshLoDShaders: await meshLoDShaderVariants(
+                      result.manifest.features,
+                      result.manifest.toneMapping,
+                  ),
+              }
             : {}),
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         postProcessTasks: result.manifest.postProcessTasks,

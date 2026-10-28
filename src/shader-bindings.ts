@@ -4,6 +4,7 @@
  * records the stage's layout; this module adapts the WGSL a stage is compiled
  * from and checks that record. Babylon shader expressions stay intact.
  */
+import { applyTextEdits } from "./text-edits.js";
 import { shadowBindingSlotOrNull } from "./pinned-pbr-variant-cpp.js";
 import {
     reflectWgslBindings,
@@ -168,6 +169,67 @@ export function sdlUniformSource(
     if (plan) return plan.source;
     assertUniformBufferCap(uniformBuffers, stage);
     return undefined;
+}
+
+/**
+ * The read-only storage binding SDL_GPU stages read `@builtin(num_workgroups)`
+ * from: D3D12 places the builtin outside SDL_GPU's compute bindings, so each
+ * dispatch binds its own counts there (`sdl_workgroup_counts_binding`,
+ * native/src/pal_sdl_gpu_compute_pipeline.hpp).
+ */
+export const SDL_WORKGROUP_COUNTS = "bbl_num_workgroups";
+
+/**
+ * The module with every entry point's `@builtin(num_workgroups)` parameter
+ * read from {@link SDL_WORKGROUP_COUNTS} instead, declared after group 0's
+ * last binding; undefined when no function takes the builtin.
+ */
+export function sdlWorkgroupCountsSource(wgsl: string): string | undefined {
+    if (!wgsl.includes("num_workgroups")) return undefined;
+    const reading = reflectWgslModule(wgsl).declarations.flatMap(
+        (declaration) =>
+            declaration.kind === "fn"
+                ? declaration.parameters.flatMap((parameter, index) =>
+                      parameter.attributes.some(
+                          (attribute) =>
+                              attribute.name === "builtin" &&
+                              attribute.arguments[0]?.kind === "path" &&
+                              attribute.arguments[0].parts.join(".") ===
+                                  "num_workgroups",
+                      )
+                          ? [{ declaration, parameter, index }]
+                          : [],
+                  )
+                : [],
+    );
+    if (reading.length === 0) return undefined;
+    const edits = reading.flatMap(({ declaration, parameter, index }) => {
+        const { parameters, body } = declaration;
+        const removed =
+            index > 0
+                ? { start: parameters[index - 1]!.end, end: parameter.end }
+                : {
+                      start: parameter.start,
+                      end: parameters[1]?.start ?? parameter.end,
+                  };
+        return [
+            { ...removed, text: "" },
+            {
+                start: body.start,
+                end: body.start,
+                text: `\n    let ${parameter.name} = ${SDL_WORKGROUP_COUNTS};`,
+            },
+        ];
+    });
+    const adapted = applyTextEdits(wgsl, edits);
+    const binding =
+        Math.max(
+            -1,
+            ...reflectWgslBindings(wgsl)
+                .filter(({ group }) => group === 0)
+                .map(({ binding }) => binding),
+        ) + 1;
+    return `${adapted}\n@group(0) @binding(${binding}) var<storage, read> ${SDL_WORKGROUP_COUNTS}: vec3<u32>;\n`;
 }
 
 /** Every binding Tint reflects is one the module declares. */

@@ -167,6 +167,7 @@ test("both record lowerers preserve reference absence and optional scalar truthi
     writeFileSync(
         cpp,
         `#include <bblite/pinned_records.hpp>
+${[...model.includes].map((include) => `#include <${include}>`).join("\n")}
 #include <iostream>
 namespace bbl {
 ${model.structs(["FixtureCell"])}

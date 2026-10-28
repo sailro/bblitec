@@ -1548,6 +1548,7 @@ export class PlatformCalls {
                           "querySelectorAll",
                           "matches",
                           "closest",
+                          "removeChild",
                       ].includes(callee.name)
                     ? this.ui.compileUiElementReceiver(callee.expression)
                     : this.ui.uiElementValue(callee.expression));
@@ -2179,7 +2180,7 @@ export class PlatformCalls {
                 element,
                 engine,
                 name,
-                argumentAt(call, 1),
+                { site: argumentAt(call, 1) },
                 call,
                 "attribute",
             );
@@ -2516,6 +2517,18 @@ export class PlatformCalls {
             return {
                 kind: "void",
                 cpp: `bbl::ui_replace_children(${engine}, ${element.cpp})`,
+            };
+        }
+        if (element && callee.name === "removeChild") {
+            this.context.expectArgumentCount(call, 1, 1);
+            const engine = this.context.requireEngine(element, call);
+            const child = this.context.compileValue(argumentAt(call, 0));
+            this.context.expectKind(child, "ui-element", argumentAt(call, 0));
+            this.ui.recordUiStaticRemoval(child);
+            return {
+                ...child,
+                cpp: `bbl::ui_remove_child(${engine}, ${element.cpp}, ${child.cpp})`,
+                impure: true,
             };
         }
         if (element && callee.name === "remove") {

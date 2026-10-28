@@ -211,6 +211,38 @@ test("packaged URL domains survive descriptor selection, base helpers and async 
     runPackagedProgram(t, directory, result.cpp);
 });
 
+test("a module URL reads as the package's public root in conditions and URL bases", (t) => {
+    const directory = resolve("artifacts/packaged-module-url");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "assets"), { recursive: true });
+    writeFileSync(join(publicDir, "assets", "a.bin"), Buffer.from([7, 8]));
+    const result = compileSource(
+        `
+        // The browser bundle's URL decides the base; natively the module URL
+        // is the public root, so both arms name the same packaged directory.
+        function base(moduleUrl:string):string{
+            if(moduleUrl.includes("/lite/bundle/demos/"))return new URL("/assets/",moduleUrl).href;
+            return new URL("./assets/",moduleUrl).href;
+        }
+        void(async()=>{
+            const root=base(import.meta.url);
+            if(root!=="/assets/"||import.meta.url.startsWith("/lite/"))throw new Error("module URL");
+            const bytes=new Uint8Array(await fetch(\`\${root}a.bin\`).then(r=>r.arrayBuffer()));
+            if(bytes.length!==2||bytes[0]!==7)throw new Error("module-relative fetch");
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 1);
+    for (const asset of result.manifest.assets) {
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
+    }
+    runPackagedProgram(t, directory, result.cpp);
+});
+
 test("worker native-object mutations preserve sibling packaged URL selection", (t) => {
     const directory = resolve("artifacts/packaged-url-native-sibling");
     const publicDir = join(directory, "public");

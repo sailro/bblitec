@@ -9,10 +9,11 @@ import {
 const TASK = "src/frame-graph/render-task-base.ts";
 
 /**
- * `transparent_order.hpp`: the pin's transparent comparator and sort
- * distance, which `pal_transparent_order.hpp` applies to a scene pass's
- * transparent meshes, billboards and external renderables as one bucket.
- * A binding whose renderable has no `_worldCenter` sorts at distance 0.
+ * `transparent_order.hpp`: the pin's bucket comparators and sort distance,
+ * which `pal_transparent_order.hpp` applies to a scene pass's transparent
+ * meshes, billboards and external renderables as one bucket, and to its
+ * opaque meshes and external renderables as another. A binding whose
+ * renderable has no `_worldCenter` sorts at distance 0.
  */
 export function transparentOrderHeader(context: LoweringContext): string {
     const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -30,6 +31,20 @@ export function transparentOrderHeader(context: LoweringContext): string {
             bindings: new Map([
                 ["a._sortDistance", scalar("a.distance")],
                 ["b._sortDistance", scalar("b.distance")],
+                ["a.renderable.order", scalar("a.order")],
+                ["b.renderable.order", scalar("b.order")],
+            ]),
+        },
+    );
+    const bucket = context.functionDeclaration(TASK, "compareBindingOrder");
+    const compareOrder = lowerPinnedBody(
+        bucket.file,
+        bucket.declaration.body!.statements,
+        {
+            calls: new Map(),
+            returnValue: (expression, lowerer) =>
+                lowerer.expression(expression!),
+            bindings: new Map([
                 ["a.renderable.order", scalar("a.order")],
                 ["b.renderable.order", scalar("b.order")],
             ]),
@@ -71,6 +86,10 @@ namespace bbl::upstream {
 // ${context.provenance(TASK, "compareTransparentBindings, sortTransparentBindings")}
 template<class Binding> inline double compare_transparent_order(const Binding& a, const Binding& b) {
 ${compare}
+}
+// ${context.provenance(TASK, "compareBindingOrder")}
+template<class Left, class Right> inline double compare_binding_order(const Left& a, const Right& b) {
+${compareOrder}
 }
 /** \`_sortDistance\` from a renderable's \`_worldCenter\`; \`center\` is null where it has none. */
 template<class View> inline double transparent_sort_distance(const std::array<double, 3>* center, const View& view) {

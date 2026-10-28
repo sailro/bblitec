@@ -27,7 +27,7 @@
 #include <bblite/features/workers.hpp>
 
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
@@ -823,8 +823,8 @@ struct DawnState : DawnDevice {
     std::vector<DawnSplatPass> splat_passes;
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
-    /** Lowered renderables drawn in the scene's own pass (pal_external_renderables.hpp). */
-    ExternalRenderablePass external_pass;
+    /** Lowered renderables drawn in the scene's own pass and each task's (pal_external_renderables.hpp). */
+    ExternalRenderablePasses external_passes;
 #endif
 #if BBLITE_HAS_PICKING
     // A scene that picks without loading a cloud reaches every one of
@@ -2088,8 +2088,18 @@ WGPUBindGroupLayoutEntry storage_layout_entry(std::uint32_t binding, WGPUShaderS
  * A texture whose bytes are already blocks: the container's own mip chain,
  * uploaded level by level with nothing decoded and nothing generated.
  */
+WGPUTexture upload_compressed_texture(WGPUDevice device, WGPUQueue queue,
+                                      const CompressedTexture& compressed);
 WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture& compressed);
 
+/**
+ * A material image's texture with its generated mip chain; the device-level
+ * spelling serves a device's other owners (a lowered library's images).
+ */
+WGPUTexture upload_material_texture(WGPUDevice device, WGPUQueue queue, DawnMipGenerator& mips,
+                                    const TextureData& texture_data, bool srgb,
+                                    const std::array<std::uint8_t, 4>& fallback,
+                                    std::uint32_t& out_mip_count);
 WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture_data, bool srgb,
                                     const std::array<std::uint8_t, 4>& fallback,
                                     std::uint32_t& out_mip_count);
@@ -2106,6 +2116,9 @@ WGPUTexture upload_reflection_cube(DawnState& state,
 // Upload the environment cubemap exactly as the browser does: rgba16f
 // faces with pre-baked mips, uploaded unflipped (the SDL_GPU vertical
 // reversal is an SDL-only adaptation).
+WGPUTexture create_environment_texture(WGPUDevice device, WGPUQueue queue,
+                                       const EnvironmentState& environment,
+                                       std::uint32_t layers = 6);
 WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState& environment,
                                        std::uint32_t layers = 6);
 
@@ -2115,6 +2128,9 @@ void upload_environment(DawnState& state, const EnvironmentState& environment);
 DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRecord* material);
 #endif
 
+/** The environment's BRDF LUT texture (rgba16float, its decoded fallback without a LUT). */
+WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
+                                const EnvironmentState& environment);
 void upload_brdf(DawnState& state, const EnvironmentState& environment);
 
 inline std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested) {

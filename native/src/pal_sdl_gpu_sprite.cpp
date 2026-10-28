@@ -15,7 +15,7 @@
 #include <bblite/features/workers.hpp>
 
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
+#include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #include <bblite/text_gpu.hpp>
 #if BBLITE_HAS_UI && !BBLITE_WORKERS

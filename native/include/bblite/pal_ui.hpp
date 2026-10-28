@@ -181,6 +181,8 @@ void ui_insert_text(Engine& engine, UiElementHandle parent, std::string text,
 UiElementHandle ui_append_to_root(Engine& engine, UiElementHandle child);
 void ui_replace_children(Engine& engine, UiElementHandle parent);
 void ui_remove(Engine& engine, UiElementHandle element);
+/** Node.removeChild(child): `child`, removed, or NotFoundError when `parent` is not its parent. */
+UiElementHandle ui_remove_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
 /** ChildNode.replaceWith(nodes...): a parentless node is left unchanged. */
 void ui_replace_with(Engine& engine, UiElementHandle node,
                      std::initializer_list<UiElementHandle> nodes);

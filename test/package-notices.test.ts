@@ -66,6 +66,7 @@ const everyFeature = [
     "data:locale",
     "platform:http",
     "platform:compression",
+    "platform:meshopt",
     "audio:engine",
 ];
 

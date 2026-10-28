@@ -6,6 +6,7 @@ import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { isNullable, holdsOnly } from "./type-facts.js";
+import { unlessRefused } from "./compile-error.js";
 import {
     compileClassInstanceOf,
     conditionComparison,
@@ -453,6 +454,32 @@ export class ConditionLowerer {
             if (knownCondition(operand) === true) return "false";
             if (knownCondition(operand) === false) return "true";
             return `!(${operand})`;
+        }
+        // A primitive is no instance of any class, a platform one the native
+        // deployment lacks included; its operand still runs.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword
+        ) {
+            // The value as the deployment holds it: a union that holds a
+            // primitive natively (a fetch's input) is no instance either.
+            const primitive = (value: Value | undefined): boolean =>
+                value !== undefined &&
+                ["string", "number", "boolean"].includes(
+                    value.kind === "data"
+                        ? (value.dataType?.kind ?? "")
+                        : value.kind,
+                );
+            const left = unlessRefused(() =>
+                this.context.probeEmission(
+                    () => this.context.compileValue(unwrapped.left),
+                    primitive,
+                ),
+            );
+            if (left && primitive(left)) {
+                this.context.emitDiscardedValue(left);
+                return "false";
+            }
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             const condition =

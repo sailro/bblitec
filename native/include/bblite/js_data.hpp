@@ -414,6 +414,13 @@ private:
     std::shared_ptr<BufferView> view_;
 };
 
+/** A typed array's bytes in place: its owned storage, or its view's range of the buffer. */
+template <typename T>
+[[nodiscard]] std::span<std::uint8_t> typed_array_bytes(const TypedArray<T>& values) {
+    ArrayBuffer buffer = values.buffer();
+    return {buffer.data() + values.byte_offset(), values.byte_length()};
+}
+
 /** A source element reference retains its evaluated view even if the RHS
  * reassigns the array binding. The compiler supplies the JS store conversion. */
 /** A typed-array element as an lvalue; `Owner` holds the view (`Values`) or borrows it (`Values&`). */
@@ -935,7 +942,7 @@ public:
     [[nodiscard]] float get_float32(std::size_t offset, bool little_endian) const {
         return std::bit_cast<float>(get_uint32(offset, little_endian));
     }
-    [[nodiscard]] double get_float64(std::size_t offset, bool little_endian) const {
+    [[nodiscard]] std::uint64_t get_uint64(std::size_t offset, bool little_endian) const {
         require(offset, 8);
         const auto* bytes = buffer_.data() + offset_ + offset;
         std::uint64_t bits = 0;
@@ -943,7 +950,10 @@ public:
             const std::size_t position = little_endian ? index : 7 - index;
             bits |= static_cast<std::uint64_t>(bytes[position]) << (8 * index);
         }
-        return std::bit_cast<double>(bits);
+        return bits;
+    }
+    [[nodiscard]] double get_float64(std::size_t offset, bool little_endian) const {
+        return std::bit_cast<double>(get_uint64(offset, little_endian));
     }
     // The setters store JavaScript's converted integer (ToInt8/ToUint32...)
     // or the float's bits, in the requested byte order.
@@ -2678,8 +2688,9 @@ public:
     }
     WeakMap& set(const WeakIdentity& key, const V& value) {
         storage_->prune();
+        // CanBeHeldWeakly: only an insertion refuses a key that is no live object.
         if (key.expired())
-            throw std::runtime_error("WeakMap key is not a live object.");
+            throw NamedError("TypeError", "Invalid value used as weak map key");
         const auto [entry, inserted] = storage_->entries.try_emplace(key, value);
         if (inserted) {
             if (storage_->entries.size() == 1)
