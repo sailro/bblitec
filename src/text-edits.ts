@@ -6,10 +6,16 @@ export interface TextEdit {
 }
 
 /** `text` with every edit applied, each against the original offsets. */
-export function applyTextEdits(text: string, edits: readonly TextEdit[]): string {
+export function applyTextEdits(
+    text: string,
+    edits: readonly TextEdit[],
+): string {
     let edited = text;
     // From the end, so every earlier offset holds.
-    for (const edit of [...edits].sort((left, right) => right.start - left.start))
-        edited = edited.slice(0, edit.start) + edit.text + edited.slice(edit.end);
+    for (const edit of [...edits].sort(
+        (left, right) => right.start - left.start,
+    ))
+        edited =
+            edited.slice(0, edit.start) + edit.text + edited.slice(edit.end);
     return edited;
 }

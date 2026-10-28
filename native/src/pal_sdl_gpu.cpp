@@ -684,7 +684,13 @@ public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_update;
     explicit SdlSceneRun(Engine& engine) : data_(engine) {}
     bool keep_running() const { return data_.keep_running(); }
-    void discard_frame() { frame_.reset(); }
+    void discard_frame() {
+#if BBLITE_FRAME_POST_SUBMIT
+        if (frame_ && frame_->post_submit)
+            frame_->post_submit->unsubmitted();
+#endif
+        frame_.reset();
+    }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
     /** One frame, its storage-buffer writes staged with its uploads (`SdlStagedWrites`). */
@@ -2701,7 +2707,8 @@ public:
                         // An external binding at its place in either bucket.
                         const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_EXTERNAL_RENDERABLES
-                            externals->draw(SdlWebGpuDevice::borrow_render_pass(command, task_pass),
+                            externals->draw(SdlWebGpuDevice::lend_render_pass(externals->lent,
+                                                                              command, task_pass),
                                             engine, index);
                             bound_pipeline = nullptr;
                             scene_matrix_bound = false;
@@ -3865,6 +3872,17 @@ public:
             }
             depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+#if BBLITE_EXTERNAL_RENDERABLES
+            // A library rendering through the pass (gps-pass.ts) pauses it,
+            // resuming it loading what the first half stored.
+            const bool split_pass = scene_pass_split(*scene.state);
+            if (split_pass) {
+                if (color_info.store_op == SDL_GPU_STOREOP_RESOLVE)
+                    color_info.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+                depth_info.store_op = SDL_GPU_STOREOP_STORE;
+                depth_info.stencil_store_op = SDL_GPU_STOREOP_STORE;
+            }
+#endif
 #if BBLITE_PINNED_MATERIALS
             // The frame's scene and lights blocks, once per frame rather
             // than per draw — the same hoist the Dawn backend's
@@ -3882,13 +3900,14 @@ public:
                 external_frame = sdl_engine_webgpu_device(engine, state.device).frame_command_encoder();
                 return external_frame;
             };
+            const GpuRenderTargetSignature scene_signature{
+                sdl_webgpu_format_name(state.frame_color_format),
+                sdl_webgpu_format_name(state.depth_format),
+                {},
+                static_cast<double>(gpu_sample_count_value(state.sample_count))};
+            scene.state->pausable_pass = state.external_passes.scene.signature(scene_signature);
             const ExternalRenderablePass* const externals = prepare_external_pass(
-                state.external_passes.scene, engine, scene,
-                GpuRenderTargetSignature{
-                    sdl_webgpu_format_name(state.frame_color_format),
-                    sdl_webgpu_format_name(state.depth_format),
-                    {},
-                    static_cast<double>(gpu_sample_count_value(state.sample_count))},
+                state.external_passes.scene, engine, scene, scene_signature,
                 pass_blocks.scene(scene),
                 GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
                                      camera ? std::optional<CameraHandle>(scene.camera)
@@ -3900,6 +3919,8 @@ public:
             SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             bool scene_matrix_bound = true;
+            // Whether the pass drew so far, as a library pausing it reads.
+            [[maybe_unused]] bool pass_drawn = false;
 #if BBLITE_RENDERER_TRANSMISSION
             // The pin's transmission grab fires once, before the first
             // transmissive draw: the opaque scene colour drawn so far is
@@ -3929,11 +3950,46 @@ public:
             [[maybe_unused]] const Scene* pass_scene = &scene;
             std::vector<GpuMesh>* pass_meshes = &state.meshes;
             SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_EXTERNAL_RENDERABLES
+            // The pass ends, `between` records into the command buffer, and
+            // the pass resumes loading what it stored (the transmission
+            // grab, a library's pause). A restarted pass starts at the whole
+            // target again, so the camera's rectangle is set once per PASS
+            // rather than once per frame.
+            const auto restart_scene_pass = [&](const auto& between) {
+                pass.end();
+                between();
+                color_info.load_op = SDL_GPU_LOADOP_LOAD;
+                depth_info.load_op = SDL_GPU_LOADOP_LOAD;
+                if (depth_info.stencil_store_op == SDL_GPU_STOREOP_STORE)
+                    depth_info.stencil_load_op = SDL_GPU_LOADOP_LOAD;
+                pass = SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
+                set_pass_camera_viewport(pass, scene, engine, camera, width, height);
+                bound_pipeline = nullptr;
+                scene_matrix_bound = false;
+            };
+#endif
 #if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
             // An external binding at its place in either bucket.
+#if BBLITE_EXTERNAL_RENDERABLES
+            // gps-pass.ts `pause`: the work recorded into the frame between
+            // the pass's halves.
+            const std::function<SDL_GPURenderPass*(const std::function<void()>&)> pause_scene_pass =
+                [&](const std::function<void()>& work) -> SDL_GPURenderPass* {
+                auto frame = sdl_engine_webgpu_device(engine, state.device).frame_command_encoder();
+                with_current_encoder(engine, frame, work);
+                restart_scene_pass([&] { frame->encode(command); });
+                return pass;
+            };
+#endif
             const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_EXTERNAL_RENDERABLES
-                externals->draw(SdlWebGpuDevice::borrow_render_pass(command, pass), engine, index);
+                if (externals->draw(
+                        SdlWebGpuDevice::lend_render_pass(externals->lent, command, pass,
+                                                          split_pass ? &pass_drawn : nullptr,
+                                                          split_pass ? &pause_scene_pass : nullptr),
+                        engine, index) > 0)
+                    pass_drawn = true;
                 bound_pipeline = nullptr;
                 scene_matrix_bound = false;
 #endif
@@ -3953,6 +4009,7 @@ public:
                     }
                     const upstream::RenderItem& item = draw.item;
                     GpuMesh& mesh = (*pass_meshes)[draw.item_index];
+                    pass_drawn = true;
 #if BBLITE_THIN_INSTANCES
                     publish_thin_binding(*item.thin_binding, mesh, bind_thin_buffers);
 #endif
@@ -3963,27 +4020,20 @@ public:
                         // executePassWithTransmission: end the pass, draw
                         // the pinned grab from the colour stored so far into
                         // the refraction texture, build its mip chain, and
-                        // resume loading what was stored.
-                        pass.end();
-                        const SDL_GPUTextureSamplerBinding source{state.color,
-                                                                  state.ground_sampler};
-                        encode_grab_pass(command, state.transmission_grab_pipeline,
-                                         state.transmission_color, &source,
-                                         multisampled ? state.msaa_color : nullptr);
-                        generate_texture_mipmaps(state.device, command, state.transmission_color,
-                                                 state.transmission_width,
-                                                 state.transmission_height,
-                                                 transmission_grab_mip_count());
-                        color_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        // Image processing reads what this pass stores.
+                        // resume loading what was stored. Image processing
+                        // reads what the resumed pass stores.
                         color_info.store_op = SDL_GPU_STOREOP_STORE;
-                        depth_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        pass = SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
-                        // A restarted pass starts at the whole target
-                        // again, so the camera's rectangle is set once
-                        // per PASS rather than once per frame.
-                        set_pass_camera_viewport(pass, scene, engine, camera, width, height);
-                        bound_pipeline = nullptr;
+                        restart_scene_pass([&] {
+                            const SDL_GPUTextureSamplerBinding source{state.color,
+                                                                      state.ground_sampler};
+                            encode_grab_pass(command, state.transmission_grab_pipeline,
+                                             state.transmission_color, &source,
+                                             multisampled ? state.msaa_color : nullptr);
+                            generate_texture_mipmaps(
+                                state.device, command, state.transmission_color,
+                                state.transmission_width, state.transmission_height,
+                                transmission_grab_mip_count());
+                        });
                         transmission_copied = true;
                     }
 #endif
@@ -4167,6 +4217,7 @@ public:
                         return;
                     draw_background_arm(command, pass, state.background_arm(*kind),
                                         pass_scene_block);
+                    pass_drawn = true;
                     scene_matrix_bound = false;
                 };
 #endif
@@ -4183,6 +4234,7 @@ public:
                         continue;
                     }
                     record_billboard_pass(command, pass, engine, billboard, billboard_block);
+                    pass_drawn = true;
                 }
             };
 #endif
@@ -4208,6 +4260,7 @@ public:
                     if (has_scene_sprite_pass) {
                         record_scene_sprite_pass(command, pass, engine, scene_sprite_pass,
                                                  Sprite2DDepthMode::test_write, width, height);
+                        pass_drawn = true;
                     }
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -4236,6 +4289,7 @@ public:
 #if BBLITE_HAS_BILLBOARDS
                             record_billboard_pass(command, pass, engine,
                                                   state.billboard_passes[index], block);
+                            pass_drawn = true;
                             bound_pipeline = nullptr;
                             scene_matrix_bound = false;
 #endif
@@ -4540,7 +4594,10 @@ public:
         finish_compute_frame_prefix(engine);
 #endif
 #if BBLITE_FRAME_POST_SUBMIT
-        current_frame().post_submit->submitted();
+        auto& post_submit = current_frame().post_submit;
+        if (!post_submit)
+            throw std::logic_error("A submitted frame opened no post-submit scope.");
+        post_submit->submitted();
 #endif
         if (capture_ids) {
             save_geometry_id_buffer_png(state, width, height, matrix, render_plan.scene_items(),

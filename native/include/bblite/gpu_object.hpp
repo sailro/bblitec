@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 
 namespace bbl {
 struct GpuWriteExtent {
@@ -21,6 +22,10 @@ struct GpuTextureWriteLayout {
 struct GpuObject {
     /** `GPUBuffer.size`, in bytes; zero for every other object. */
     double size = 0;
+    /** `GPUObjectBase.label`: what its descriptor named it, where read back. */
+    std::string label;
+    /** `GPUTexture.width` / `.height`; zero for every other object. */
+    double width = 0, height = 0;
     GpuObject() = default;
     GpuObject(const GpuObject&) = delete;
     GpuObject& operator=(const GpuObject&) = delete;
@@ -42,6 +47,10 @@ struct GpuObject {
     /** `GPUTexture.createView()`. */
     virtual std::shared_ptr<GpuObject> create_view() {
         throw std::runtime_error("GPU object has no texture view.");
+    }
+    /** `GPUPipelineBase.getBindGroupLayout(index)`. */
+    virtual std::shared_ptr<GpuObject> get_bind_group_layout(double) {
+        throw std::runtime_error("GPU object is not a pipeline.");
     }
 };
 using GpuHandle = std::shared_ptr<GpuObject>;

@@ -63,6 +63,10 @@ import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
 import {
+    NATIVE_MAX_TOUCH_POINTS_CPP,
+    NATIVE_USER_AGENT,
+} from "../native-navigator.js";
+import {
     computedStyleElement,
     documentVisibilityAvailable,
     isDocumentVisibilityRead,
@@ -496,7 +500,8 @@ function nativeNavigatorProperties(): Record<string, Value> {
     const graphics = "bbl::pal::WorkerRealm::current().graphics_identity()";
     return {
         language: { kind: "string", cpp: "bbl::preferred_language()" },
-        userAgent: staticStringValue("bblitec/native", stringLiteral),
+        userAgent: staticStringValue(NATIVE_USER_AGENT, stringLiteral),
+        maxTouchPoints: { kind: "number", cpp: NATIVE_MAX_TOUCH_POINTS_CPP },
         platform: { kind: "string", cpp: "bbl::native_platform()" },
         hardwareConcurrency: {
             kind: "number",

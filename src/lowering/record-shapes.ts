@@ -184,6 +184,17 @@ export function isRecordScalar(shape: RecordShape | undefined): boolean {
     return shape?.kind === "number" || shape?.kind === "boolean";
 }
 
+/** A JavaScript primitive: a number, a string or a boolean. */
+export function isPrimitiveShape(
+    shape: RecordShape,
+): shape is { kind: "number" | "string" | "boolean" } {
+    return (
+        shape.kind === "number" ||
+        shape.kind === "string" ||
+        shape.kind === "boolean"
+    );
+}
+
 /** The C++ element a typed array of `kind` stores. */
 export function typedElementCpp(kind: TypedArrayKind): string {
     return typedArrayElement(kind).elementCppType;

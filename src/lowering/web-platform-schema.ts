@@ -15,6 +15,10 @@ import { jsToUint32Call } from "./pinned-operators.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { isUtf8Label } from "../compiler/text-codecs.js";
 import {
+    NATIVE_MAX_TOUCH_POINTS_CPP,
+    NATIVE_USER_AGENT,
+} from "../native-navigator.js";
+import {
     AUDIO_BUFFER_PROPERTIES,
     AUDIO_CONTEXT_TRANSITIONS,
     AUDIO_ELEMENT_PROPERTIES,
@@ -489,6 +493,17 @@ export const webPlatformGlobals: ReadonlyMap<string, CallAdapter> = new Map<
 
 /** `globalThis.fetch` read as a function value. */
 export const webPlatformGlobalValues = new Map([
+    [
+        "navigator.userAgent",
+        {
+            shape: string,
+            cpp: `std::string(${stringLiteral(NATIVE_USER_AGENT)})`,
+        },
+    ],
+    [
+        "navigator.maxTouchPoints",
+        { shape: number, cpp: NATIVE_MAX_TOUCH_POINTS_CPP },
+    ],
     [
         "fetch",
         {

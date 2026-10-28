@@ -2123,6 +2123,8 @@ class Compiler implements LoweringServices {
             case "storage-buffer":
             case "scene":
             case "gaussian-splat-stream":
+            case "gaussian-point-splatting":
+            case "gaussian-point-splatting-progress":
             case "mesh-lod-asset":
             case "mesh-lod-instance":
             case "splat-voxel-collision":

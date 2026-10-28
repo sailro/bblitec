@@ -19,6 +19,17 @@
 
 namespace bbl::pal {
 
+/** Runs `work` with `encoder` as `Engine::current_encoder`, which lowered GPU code records into. */
+template <class Work>
+void with_current_encoder(Engine& engine, const GpuCommandEncoderHandle& encoder, Work&& work) {
+    struct Current {
+        Engine& engine;
+        ~Current() { engine.current_encoder.reset(); }
+    } current{engine};
+    engine.current_encoder = encoder;
+    work();
+}
+
 /**
  * render-task-base.ts for a scene pass's external renderables
  * (`SceneState::external_renderables`, gpu_renderable.hpp), which
@@ -33,6 +44,12 @@ namespace bbl::pal {
  */
 class ExternalRenderablePass {
 public:
+    /**
+     * The renderer's pass as the bindings draw into it, lent for each draw
+     * (`lend_webgpu_pass`): the slot moves as a draw lends it, the bindings
+     * do not.
+     */
+    mutable GpuEncoderHandle lent;
     bool empty() const { return bindings_.empty(); }
     std::size_t size() const { return bindings_.size(); }
     /** The renderable bound at `index`, whose `order` and `_worldCenter` sort its binding. */
@@ -40,8 +57,16 @@ public:
         return *bindings_.at(index).renderable;
     }
 
-    void follow(Engine& engine, const Scene& scene, const GpuRenderTargetSignature& signature) {
-        if (bound_ && version_ == scene.state->renderable_version && signature_ == signature)
+    /** The pass's signature object for `value`: kept while the value holds. */
+    const GpuRenderTargetSignatureHandle& signature(const GpuRenderTargetSignature& value) {
+        if (!signature_ || *signature_ != value)
+            signature_ = std::make_shared<const GpuRenderTargetSignature>(value);
+        return signature_;
+    }
+
+    void follow(Engine& engine, const Scene& scene, const GpuRenderTargetSignature& value) {
+        const GpuRenderTargetSignatureHandle signature = this->signature(value);
+        if (bound_signature_ == signature && version_ == scene.state->renderable_version)
             return;
         std::vector<Bound> bindings;
         std::vector<GpuDrawUpdateBatchHandle> batches;
@@ -64,8 +89,7 @@ public:
         auto previous = std::exchange(batches_, std::move(batches));
         bindings_ = std::move(bindings);
         version_ = scene.state->renderable_version;
-        signature_ = signature;
-        bound_ = true;
+        bound_signature_ = signature;
         // `previousBatchState?._release(task.engine, [generation._batchState])`.
         release(&engine, previous, batches_);
     }
@@ -75,17 +99,14 @@ public:
                  const GpuCommandEncoderHandle& encoder) {
         if (bindings_.empty())
             return;
-        struct CurrentEncoder {
-            Engine& engine;
-            ~CurrentEncoder() { engine.current_encoder.reset(); }
-        } current{engine};
-        engine.current_encoder = encoder;
-        for (const auto& batch : batches_)
-            batch->reset();
-        for (const auto& bound : bindings_)
-            bound.binding->update(context);
-        for (const auto& batch : batches_)
-            batch->flush();
+        with_current_encoder(engine, encoder, [&] {
+            for (const auto& batch : batches_)
+                batch->reset();
+            for (const auto& bound : bindings_)
+                bound.binding->update(context);
+            for (const auto& batch : batches_)
+                batch->flush();
+        });
     }
 
     /**
@@ -141,7 +162,7 @@ public:
     void release(Engine& engine) {
         auto previous = std::exchange(batches_, {});
         bindings_.clear();
-        bound_ = false;
+        bound_signature_.reset();
         release(&engine, previous, {});
     }
 
@@ -176,9 +197,10 @@ private:
 
     std::vector<Bound> bindings_;
     std::vector<GpuDrawUpdateBatchHandle> batches_;
-    GpuRenderTargetSignature signature_;
+    GpuRenderTargetSignatureHandle signature_;
+    /** The signature the bindings were bound for; none before the first. */
+    GpuRenderTargetSignatureHandle bound_signature_;
     std::uint64_t version_ = 0;
-    bool bound_ = false;
     GpuHandle scene_buffer_;
     GpuHandle lights_buffer_;
     GpuHandle scene_group_;

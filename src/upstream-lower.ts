@@ -55,6 +55,7 @@ import {
 } from "./lowering/static-sound-library.js";
 import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
 import { assertExternalRenderableContracts } from "./lowering/external-renderable-contract.js";
+import { assertGpsPassContracts } from "./lowering/gps-pass-contract.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
@@ -411,6 +412,11 @@ export interface UpstreamEmitOptions {
      * (`meshLoDShaderVariants`), required with `loader:mesh-lod`.
      */
     meshLoDShaders?: readonly string[];
+    /**
+     * Every WGSL text the splat stream's point renderer builds at run time
+     * (`gpsShaderVariants`), required with `loader:splat-stream`.
+     */
+    gpsShaders?: readonly string[];
     geometryOutputTasks: GeometryOutputTaskManifest[];
     /**
      * The post-process passes a scene reached, in reach order. Each carries
@@ -1548,14 +1554,25 @@ ${lowerThinInstanceSync(context)}
         // The splat stream's run-time WGSL: SDL_GPU loads each stage by the
         // stem the module text and entry point name.
         if (features.includes("loader:splat-stream")) {
-            for (const module of runtimeWgslModules(
-                pinnedRawShaderImports(context, SPLAT_STREAM_SHADER_MODULES),
-            ))
+            if (!options.gpsShaders)
+                throw new Error(
+                    "A splat stream program's point renderer WGSL is derived before emission (gpsShaderVariants).",
+                );
+            for (const module of runtimeWgslModules([
+                ...pinnedRawShaderImports(context, SPLAT_STREAM_SHADER_MODULES),
+                ...options.gpsShaders.map((code) => ({
+                    code,
+                    source: "gaussian point splatting",
+                })),
+            ]))
                 composedShaders.push({ ...module, family: "pinnedModule" });
             this.tree.write(
                 "upstream/include/bblite/upstream_splat_stream.hpp",
                 loweredLibraryHeader(context, SPLAT_STREAM_LIBRARY),
             );
+            // Its point renderer's pass adapters transcribe gps-pass.ts; a
+            // pinned change to it refuses generation.
+            assertGpsPassContracts(context);
         }
         // MeshLoD's run-time WGSL: its GPU selection's module and every
         // text its renderables compose.

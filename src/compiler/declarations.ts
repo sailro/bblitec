@@ -5677,14 +5677,13 @@ export class DeclarationLowerer {
                     ) !== undefined,
             );
         if (value.kind === "physics-aggregate" || platformObject) {
-            const temporary =
-                this.context.allocateTemporaryCppName("destructure");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: temporary,
-                initializer: value.cpp,
-            });
+            // Defaults are refused below, so a name is read in place too.
+            const temporary = this.patternSource(
+                pattern,
+                value,
+                held || cppIdentifierPattern.test(value.cpp),
+                "destructure",
+            );
             for (const element of pattern.elements) {
                 if (element.initializer) {
                     this.context.fail(
@@ -5698,15 +5697,20 @@ export class DeclarationLowerer {
                         name,
                         `${value.kind} destructuring binds identifiers.`,
                     );
-                const held = { ...value, cpp: temporary };
+                const holder = { ...value, cpp: temporary };
                 const propertyValue =
                     (value.kind === "data"
                         ? this.context.dataLowerer.platformMember(
-                              held,
+                              holder,
                               property,
                               element,
                           )
-                        : readProperty(this.context, held, property, element)) ??
+                        : readProperty(
+                              this.context,
+                              holder,
+                              property,
+                              element,
+                          )) ??
                     this.context.fail(
                         element,
                         `Unsupported ${value.kind} property '${property}'.`,

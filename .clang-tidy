@@ -43,6 +43,9 @@ CheckOptions:
   # Realm termination is a control-flow abort, not an error: a handler that
   # lets the realm end does nothing else.
   bugprone-empty-catch.AllowEmptyCatchForExceptions: '::bbl::pal::WorkerTerminated'
+  # A pinned `catch {}` is the pin's own decision to drop what it caught; the
+  # record lowerer marks the native handler with this text.
+  bugprone-empty-catch.IgnoreCatchWithKeywords: 'pinned catch {}'
   # The check already ignores std::bad_alloc; MSVC's allocators throw its
   # subclass when a container default-constructs its sentinel node.
   bugprone-exception-escape.IgnoredExceptions: 'bad_array_new_length'

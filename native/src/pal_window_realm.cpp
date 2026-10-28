@@ -1796,14 +1796,9 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 if (SDL_HasMouse()) {
                     next_layout.input = {PointerPrecision::Fine, true};
                 } else {
-                    int count = 0;
-                    auto* touches = SDL_GetTouchDevices(&count);
-                    if (!touches)
-                        throw std::runtime_error(std::string("SDL_GetTouchDevices: ") +
-                                                 SDL_GetError());
-                    SDL_free(touches);
-                    next_layout.input = {
-                        count > 0 ? PointerPrecision::Coarse : PointerPrecision::None, false};
+                    next_layout.input = {touch_device_count() > 0 ? PointerPrecision::Coarse
+                                                                  : PointerPrecision::None,
+                                         false};
                 }
                 const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
                 update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,

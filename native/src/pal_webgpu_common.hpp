@@ -45,6 +45,48 @@ inline std::string wgsl_stage_stem(const std::string& code, const std::string& e
     throw std::runtime_error("WebGPU subset: " + message);
 }
 
+/**
+ * A renderer's pass as its renderables draw into it (gps-pass.ts
+ * `wrapPass`). On a frame a library splits the pass, whether it drew so far
+ * and its pause, which ends it, records the work and resumes it loading
+ * what it stored.
+ */
+template <class Pass> struct WebGpuLentPass : GpuEncoder {
+    Pass pass{};
+    const bool* drawn = nullptr;
+    const std::function<Pass(const std::function<void()>&)>* pause = nullptr;
+    std::optional<bool> pass_has_draws() const override {
+        return drawn ? std::optional<bool>(*drawn) : std::nullopt;
+    }
+    bool pause_pass(const std::function<void()>& work) override {
+        if (!pause)
+            return false;
+        pass = (*pause)(work);
+        resumed();
+        return true;
+    }
+    void end() override { webgpu_refuse("a renderer's pass is ended by its renderer."); }
+
+protected:
+    /** The state set so far, replayed into the resumed pass. */
+    virtual void resumed() = 0;
+};
+
+/**
+ * The lent pass `slot` holds, created on first use and cleared for one draw:
+ * one object per renderer pass, so a library keying state by it
+ * (gps-suppression.ts's proxies) keeps that state.
+ */
+template <class Lent> Lent& lend_webgpu_pass(GpuEncoderHandle& slot) {
+    if (!slot)
+        slot = std::make_shared<Lent>();
+    auto* lent = dynamic_cast<Lent*>(slot.get());
+    if (!lent)
+        webgpu_refuse("a renderer pass is lent by another backend.");
+    lent->clear();
+    return *lent;
+}
+
 /** A handle as the backend object `Object` its device created; anything else refuses. */
 template <class Object>
 std::shared_ptr<Object> webgpu_object(const GpuHandle& handle, const char* what) {

@@ -186,7 +186,7 @@ struct ReadResult {
     return fetch(url.href(), init);
 }
 /** The same request, its response the application's (`pal::HttpResponse`); no init is empty. */
-[[nodiscard]] js::Promise<pal::HttpResponse> fetch_response(const std::string& url,
+[[nodiscard]] js::Promise<pal::HttpResponse> fetch_response(std::string url,
                                                             const js::Nullable<RequestInit>& init);
 /**
  * An application function of `typeof fetch`'s signature as a library's fetch: each

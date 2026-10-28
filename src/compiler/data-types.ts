@@ -257,6 +257,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     MeshLoDMetadata: "mesh-lod-metadata",
     MeshLoDDiagnostics: "mesh-lod-diagnostics",
     GaussianSplatStreamStats: "splat-stream-stats",
+    GaussianPointSplatting: "gaussian-point-splatting",
+    GaussianPointSplattingProgress: "gaussian-point-splatting-progress",
     SplatVoxelCollision: "splat-voxel-collision",
     NodeInputHandle: "node-input",
     NodeMaterial: "material",

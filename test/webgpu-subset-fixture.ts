@@ -90,7 +90,8 @@ export function runWebGpuFixture(
     const tools = optionalNativeFixtureTools(false);
     if (
         !tools ||
-        (backend === "dawn" && !existsSync(join(dawnRoot, "lib/webgpu_dawn.lib")))
+        (backend === "dawn" &&
+            !existsSync(join(dawnRoot, "lib/webgpu_dawn.lib")))
     )
         return undefined;
     mkdirSync(fixture.output, { recursive: true });
@@ -118,7 +119,9 @@ export function runWebGpuFixture(
             timeoutMs: fixture.timeoutMs ?? 120000,
             env: {
                 ...process.env,
-                ...(fixture.shaders ? { BBLITE_GPU_SHADER_DIR: fixture.shaders } : {}),
+                ...(fixture.shaders
+                    ? { BBLITE_GPU_SHADER_DIR: fixture.shaders }
+                    : {}),
                 PATH: [
                     ...(dawn ? [join(dawnRoot, "bin")] : []),
                     join(nativeFixtureVcpkgRoot, "bin"),

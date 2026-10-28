@@ -5971,10 +5971,7 @@ export class UiProjection {
         assigned: UiAssigned,
         site: ts.Node,
     ): void {
-        const engine = this.context.requireEngine(
-            element,
-            site,
-        );
+        const engine = this.context.requireEngine(element, site);
         if (property === "checked") {
             if (element.uiTag && element.uiTag !== "input")
                 this.context.fail(
@@ -6031,11 +6028,7 @@ export class UiProjection {
             });
             return;
         }
-        const booleanAttribute = this.booleanAttribute(
-            element,
-            property,
-            site,
-        );
+        const booleanAttribute = this.booleanAttribute(element, property, site);
         if (booleanAttribute) {
             this.context.emit({
                 kind: "expression",
@@ -6045,11 +6038,7 @@ export class UiProjection {
         }
         if (
             property === "value" &&
-            this.declaresUiTags(
-                element,
-                receiver,
-                UI_FORM_VALUE_TAGS,
-            ) &&
+            this.declaresUiTags(element, receiver, UI_FORM_VALUE_TAGS) &&
             !element.uiFileInput
         ) {
             this.context.emit({
@@ -6096,24 +6085,15 @@ export class UiProjection {
             // Byte identity of generated/ wins until a renumbering
             // window is open.
             const staticSize = this.assignedValue(assigned).staticNumber;
-            if (
-                staticSize !== undefined &&
-                element.uiCanvasId !== undefined
-            ) {
+            if (staticSize !== undefined && element.uiCanvasId !== undefined) {
                 const sizes = this.uiCanvasStaticSizes.get(
                     element.uiCanvasId,
                 ) ?? { pairs: new EmissionSet<string>() };
                 writable(sizes)[property] = staticSize;
-                if (
-                    sizes.width !== undefined &&
-                    sizes.height !== undefined
-                ) {
+                if (sizes.width !== undefined && sizes.height !== undefined) {
                     sizes.pairs.add(`${sizes.width}x${sizes.height}`);
                 }
-                this.uiCanvasStaticSizes.set(
-                    element.uiCanvasId,
-                    sizes,
-                );
+                this.uiCanvasStaticSizes.set(element.uiCanvasId, sizes);
             }
             this.context.emit({
                 kind: "expression",
@@ -6195,9 +6175,7 @@ export class UiProjection {
             ["textContent", "innerText", "innerHTML", "text"].includes(
                 property,
             ) &&
-            this.declaresUiTags(element, receiver, [
-                "script",
-            ])
+            this.declaresUiTags(element, receiver, ["script"])
         )
             this.context.fail(
                 site,
@@ -6206,10 +6184,7 @@ export class UiProjection {
         if (property === "textContent" || property === "innerText") {
             this.recordUiStaticReplaceChildren(element);
             let textCpp: string;
-            if (
-                this.uiCreatedElementTag(receiver) ===
-                "style"
-            ) {
+            if (this.uiCreatedElementTag(receiver) === "style") {
                 const right = this.assignedExpression(assigned, property);
                 const source = this.uiSheetSource(right);
                 if (
@@ -6233,7 +6208,11 @@ export class UiProjection {
                 ))
                     this.context.emit({ kind: "expression", code });
             } else {
-                textCpp = this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value);
+                textCpp = this.uiStringCpp(
+                    assigned.site,
+                    `UI ${property}`,
+                    assigned.value,
+                );
             }
             this.context.emit({
                 kind: "expression",
@@ -6301,10 +6280,7 @@ export class UiProjection {
             });
             return;
         }
-        const tag = this.declaredUiTag(
-            element,
-            receiver,
-        );
+        const tag = this.declaredUiTag(element, receiver);
         if (property === "src" && tag === "img") {
             // Every source the write can select is packaged; the
             // selection itself runs as written.
@@ -6332,7 +6308,11 @@ export class UiProjection {
                                       right,
                                   ),
                               )
-                            : this.uiStringCpp(assigned.site, "UI img src", assigned.value)
+                            : this.uiStringCpp(
+                                  assigned.site,
+                                  "UI img src",
+                                  assigned.value,
+                              )
                     });`,
             });
             return;

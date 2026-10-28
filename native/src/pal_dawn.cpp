@@ -1030,7 +1030,13 @@ public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
     explicit DawnSceneRun(Engine& engine) : data_(engine) {}
     bool keep_running() const { return data_.keep_running(); }
-    void discard_frame() { frame_.reset(); }
+    void discard_frame() {
+#if BBLITE_FRAME_POST_SUBMIT
+        if (frame_ && frame_->post_submit)
+            frame_->post_submit->unsubmitted();
+#endif
+        frame_.reset();
+    }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
     Iteration<bool> setup() {
@@ -2292,11 +2298,14 @@ public:
             (void)frame_group;
             (void)shadow_pass;
             (void)esm_shadow_index;
+            // Whether it issued a draw, as a library pausing the pass reads.
+            bool drew = false;
             for (const upstream::RenderDrawCommand& draw : list.commands) {
                 if (!upstream::render_item_draws_now(draw.item, engine))
                     continue;
                 if (draw.item_index >= (*pass_meshes).size())
                     continue;
+                drew = true;
                 DawnMesh& mesh = (*pass_meshes)[draw.item_index];
 #if BBLITE_THIN_INSTANCES
                 publish_thin_binding(*draw.item.thin_binding, mesh, bind_thin_buffers);
@@ -2490,6 +2499,7 @@ public:
                                          1, nullptr);
 #endif
             }
+            return drew;
         };
         if (!scene.has_frame_passes()) {
             write_material_uniforms(render_plan.draw_lists.opaque,
@@ -2556,6 +2566,16 @@ public:
             depth_attachment.depthClearValue = upstream::pinned_depth_clear;
             depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
             depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+#if BBLITE_EXTERNAL_RENDERABLES
+            // A library rendering through the pass (gps-pass.ts) pauses it,
+            // resuming it loading what the first half stored.
+            const bool split_pass = scene_pass_split(*scene.state);
+            if (split_pass) {
+                color_attachment.storeOp = WGPUStoreOp_Store;
+                depth_attachment.depthStoreOp = WGPUStoreOp_Store;
+                depth_attachment.stencilStoreOp = WGPUStoreOp_Store;
+            }
+#endif
             WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
             pass_descriptor.colorAttachmentCount = 1;
             pass_descriptor.colorAttachments = &color_attachment;
@@ -2563,12 +2583,14 @@ public:
 #if BBLITE_EXTERNAL_RENDERABLES
             // External renderables bind to this pass's target, update, and record
             // their batches' compute into the frame encoder before the pass begins.
+            const GpuRenderTargetSignature scene_signature{
+                dawn_webgpu_format_name(state.frame_color_format),
+                std::string("depth24plus-stencil8"),
+                {},
+                static_cast<double>(state.sample_count)};
+            scene.state->pausable_pass = state.external_passes.scene.signature(scene_signature);
             const ExternalRenderablePass* const externals = prepare_external_pass(
-                state.external_passes.scene, engine, scene,
-                GpuRenderTargetSignature{dawn_webgpu_format_name(state.frame_color_format),
-                                         std::string("depth24plus-stencil8"),
-                                         {},
-                                         static_cast<double>(state.sample_count)},
+                state.external_passes.scene, engine, scene, scene_signature,
                 data_.pass_blocks.scene(scene),
                 GpuDrawUpdateContext{static_cast<double>(width), static_cast<double>(height),
                                      camera ? std::optional<CameraHandle>(scene.camera)
@@ -2578,11 +2600,43 @@ public:
             DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
             set_pass_camera_viewport(pass, scene, engine, camera, width, height);
             WGPURenderPipeline bound_pipeline = nullptr;
+            // Whether the pass drew so far, as a library pausing it reads.
+            [[maybe_unused]] bool pass_drawn = false;
+            // The pass ends, `between` records into the frame encoder, and
+            // the pass resumes loading what it stored (the transmission
+            // grab, a library's pause). A restarted pass starts at the whole
+            // target again, so the camera's rectangle is set once per PASS
+            // rather than once per frame.
+            const auto restart_scene_pass = [&](const auto& between) {
+                wgpuRenderPassEncoderEnd(pass);
+                pass.reset();
+                between();
+                color_attachment.loadOp = WGPULoadOp_Load;
+                depth_attachment.depthLoadOp = WGPULoadOp_Load;
+                if (depth_attachment.stencilStoreOp == WGPUStoreOp_Store)
+                    depth_attachment.stencilLoadOp = WGPULoadOp_Load;
+                pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+                set_pass_camera_viewport(pass, scene, engine, camera, width, height);
+                bound_pipeline = nullptr;
+            };
+#if BBLITE_EXTERNAL_RENDERABLES
+            // gps-pass.ts `pause`: the work recorded into the frame encoder
+            // between the pass's halves.
+            const std::function<WGPURenderPassEncoder(const std::function<void()>&)>
+                pause_scene_pass = [&](const std::function<void()>& work) -> WGPURenderPassEncoder {
+                restart_scene_pass([&] { with_current_encoder(engine, external_encoder(), work); });
+                return pass;
+            };
+#endif
 #if BBLITE_HAS_BILLBOARDS || BBLITE_EXTERNAL_RENDERABLES
             // An external binding at its place in either bucket.
             const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_EXTERNAL_RENDERABLES
-                externals->draw(DawnWebGpuDevice::borrow_render_pass(pass), engine, index);
+                if (externals->draw(DawnWebGpuDevice::lend_render_pass(
+                                        externals->lent, pass, split_pass ? &pass_drawn : nullptr,
+                                        split_pass ? &pause_scene_pass : nullptr),
+                                    engine, index) > 0)
+                    pass_drawn = true;
                 bound_pipeline = nullptr;
 #endif
             };
@@ -2590,7 +2644,8 @@ public:
             bool transmission_copied = false;
             const auto draw_render_list = [&](const auto& list) {
                 if (!transmission) {
-                    draw_list_into(pass, list, state.sample_count, bound_pipeline);
+                    if (draw_list_into(pass, list, state.sample_count, bound_pipeline))
+                        pass_drawn = true;
                     return;
                 }
                 for (const upstream::RenderDrawCommand& draw : list.commands) {
@@ -2606,21 +2661,12 @@ public:
                         // color from the preserved multisampled
                         // attachment, then resume loading color and
                         // depth for the transmissive draws.
-                        wgpuRenderPassEncoderEnd(pass);
-                        pass.reset();
-                        encode_transmission_grab(state, encoder);
-                        color_attachment.loadOp = WGPULoadOp_Load;
-                        depth_attachment.depthLoadOp = WGPULoadOp_Load;
-                        pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
-                        // A restarted pass starts at the whole target
-                        // again, so the camera's rectangle is set once
-                        // per PASS rather than once per frame.
-                        set_pass_camera_viewport(pass, scene, engine, camera, width, height);
-                        bound_pipeline = nullptr;
+                        restart_scene_pass([&] { encode_transmission_grab(state, encoder); });
                         transmission_copied = true;
                     }
-                    draw_list_into(pass, BorrowedDrawList{draw}, state.sample_count,
-                                   bound_pipeline);
+                    if (draw_list_into(pass, BorrowedDrawList{draw}, state.sample_count,
+                                       bound_pipeline))
+                        pass_drawn = true;
                 }
             };
 #if BBLITE_PINNED_BACKGROUNDS
@@ -2631,6 +2677,7 @@ public:
                         return;
                     const DawnBackgroundArm& arm = state.background_arm(*kind);
                     draw_dawn_background_arm(pass, arm, pinned_frame_group(state));
+                    pass_drawn = true;
                     bound_pipeline = arm.pipeline;
                 };
 #endif
@@ -2645,6 +2692,7 @@ public:
                         continue;
                     }
                     record_dawn_billboard_pass(pass, engine, billboard, billboard.frame_scene);
+                    pass_drawn = true;
                 }
             };
 #endif
@@ -2669,6 +2717,7 @@ public:
                     if (state.has_scene_sprite_pass) {
                         record_dawn_scene_sprite_pass(pass, engine, state.scene_sprite_pass,
                                                       Sprite2DDepthMode::test_write);
+                        pass_drawn = true;
                     }
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -2694,6 +2743,7 @@ public:
                             const auto& billboard = state.billboard_passes[index];
                             record_dawn_billboard_pass(pass, engine, billboard,
                                                        billboard.frame_scene);
+                            pass_drawn = true;
                             bound_pipeline = nullptr;
 #endif
                         },
@@ -3369,7 +3419,8 @@ public:
                             // An external binding at its place in either bucket.
                             const auto draw_external = [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_EXTERNAL_RENDERABLES
-                                task_externals->draw(DawnWebGpuDevice::borrow_render_pass(task_pass),
+                                task_externals->draw(DawnWebGpuDevice::lend_render_pass(
+                                                         task_externals->lent, task_pass),
                                                      engine, index);
                                 bound_pipeline = nullptr;
 #endif
@@ -4161,7 +4212,10 @@ public:
         finish_compute_frame_prefix(engine);
 #endif
 #if BBLITE_FRAME_POST_SUBMIT
-        current_frame().post_submit->submitted();
+        auto& post_submit = current_frame().post_submit;
+        if (!post_submit)
+            throw std::logic_error("A submitted frame opened no post-submit scope.");
+        post_submit->submitted();
 #endif
 
         if (capture_frame) {

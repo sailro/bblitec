@@ -8,7 +8,9 @@
 #include <webgpu/webgpu.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -212,19 +214,43 @@ struct DawnWebGpuPipelineLayout final : GpuObject {
     std::shared_ptr<DawnWebGpuPipelineLayoutLease> lease;
     std::vector<GpuHandle> groups;
 };
+/** A pipeline's layout choice: its explicit layout, or none for `"auto"` (Dawn derives it). */
+inline WGPUPipelineLayout dawn_webgpu_pipeline_layout(const GpuPipelineLayoutChoice& choice) {
+    return choice.layout ? webgpu_object<DawnWebGpuPipelineLayout>(choice.layout, "pipeline layout")
+                               ->lease->get()
+                         : nullptr;
+}
 struct DawnWebGpuComputePipeline final : GpuObject {
     std::shared_ptr<DawnWebGpuComputeLease> lease;
     GpuHandle layout;
+    std::shared_ptr<DawnWebGpuOwner> owner;
+    GpuHandle get_bind_group_layout(double index) override;
 };
 struct DawnWebGpuRenderPipeline final : GpuObject {
     std::shared_ptr<DawnWebGpuRenderLease> lease;
     GpuHandle layout;
+    std::shared_ptr<DawnWebGpuOwner> owner;
+    GpuHandle get_bind_group_layout(double index) override;
 };
 /** `GPUBindGroup`, holding what it binds. */
 struct DawnWebGpuBindGroup final : GpuObject {
     std::shared_ptr<DawnWebGpuGroupLease> lease;
     std::vector<GpuHandle> resources;
 };
+/** `getBindGroupLayout(index)`: the group Dawn derived or was given. */
+inline GpuHandle dawn_webgpu_group_layout(DawnWebGpuOwner& owner, WGPUBindGroupLayout layout) {
+    auto result = std::make_shared<DawnWebGpuBindGroupLayout>();
+    result->lease = owner.adopt<DawnWebGpuLayoutLease>(layout, "bind group layout");
+    return result;
+}
+inline GpuHandle DawnWebGpuComputePipeline::get_bind_group_layout(double index) {
+    return dawn_webgpu_group_layout(
+        *owner, wgpuComputePipelineGetBindGroupLayout(lease->get(), webgpu_flags(index)));
+}
+inline GpuHandle DawnWebGpuRenderPipeline::get_bind_group_layout(double index) {
+    return dawn_webgpu_group_layout(
+        *owner, wgpuRenderPipelineGetBindGroupLayout(lease->get(), webgpu_flags(index)));
+}
 struct DawnWebGpuCommandBuffer final : GpuObject {
     std::shared_ptr<DawnWebGpuCommandsLease> lease;
 };
@@ -319,20 +345,24 @@ struct DawnWebGpuCommandEncoder final : GpuCommandEncoder {
 };
 
 /** A renderer's `GPURenderPassEncoder`: the pass a renderable's `draw` records into. */
-struct DawnWebGpuRenderPass final : GpuEncoder {
-    WGPURenderPassEncoder pass = nullptr;
+struct DawnWebGpuRenderPass final : WebGpuLentPass<WGPURenderPassEncoder> {
     void set_pipeline(const GpuHandle& pipeline) override {
         wgpuRenderPassEncoderSetPipeline(
             pass,
             webgpu_object<DawnWebGpuRenderPipeline>(pipeline, "render pipeline")->lease->get());
+        bound_pipeline = pipeline;
     }
     void set_vertex_buffer(double, const GpuHandle&) override {
         webgpu_refuse("the subset's render pipelines take no vertex buffers.");
     }
     void set_bind_group(double index, const GpuHandle& group) override {
+        const auto slot = webgpu_flags(index);
+        if (slot >= bound_groups.size())
+            webgpu_refuse("a render pass binds at most four groups.");
         wgpuRenderPassEncoderSetBindGroup(
-            pass, webgpu_flags(index),
-            webgpu_object<DawnWebGpuBindGroup>(group, "bind group")->lease->get(), 0, nullptr);
+            pass, slot, webgpu_object<DawnWebGpuBindGroup>(group, "bind group")->lease->get(), 0,
+            nullptr);
+        bound_groups[slot] = group;
     }
     void draw(double vertices, double instances, double first_vertex,
               double first_instance) override {
@@ -344,7 +374,25 @@ struct DawnWebGpuRenderPass final : GpuEncoder {
             pass, webgpu_object<DawnWebGpuBuffer>(buffer, "buffer")->lease->get(),
             gpu_size(offset));
     }
-    void end() override { webgpu_refuse("a renderer's pass is ended by its renderer."); }
+    /** A draw's own state: a renderable sets what it draws with. */
+    void clear() {
+        bound_pipeline.reset();
+        bound_groups = {};
+    }
+
+protected:
+    /** The resumed pass replays the pipeline and groups set so far (gps-pass.ts `pause`). */
+    void resumed() override {
+        if (bound_pipeline)
+            set_pipeline(bound_pipeline);
+        for (std::uint32_t index = 0; index < bound_groups.size(); ++index)
+            if (bound_groups[index])
+                set_bind_group(index, bound_groups[index]);
+    }
+
+private:
+    GpuHandle bound_pipeline;
+    std::array<GpuHandle, 4> bound_groups;
 };
 
 inline WGPUCompareFunction dawn_webgpu_compare(const std::string& name) {
@@ -431,6 +479,8 @@ struct DawnWebGpuDevice : GpuDevice {
     GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
         if (descriptor.format != "rgba8unorm")
             webgpu_refuse("the subset creates rgba8unorm textures only.");
+        if (descriptor.sample_count.value_or(1) != 1)
+            webgpu_refuse("the subset creates single-sample textures only.");
         WGPUTextureDescriptor info = WGPU_TEXTURE_DESCRIPTOR_INIT;
         info.label = dawn_webgpu_label(descriptor.label);
         info.dimension = WGPUTextureDimension_2D;
@@ -518,14 +568,14 @@ struct DawnWebGpuDevice : GpuDevice {
     GpuHandle create_compute_pipeline(const GpuComputePipelineDescriptor& descriptor) override {
         WGPUComputePipelineDescriptor info = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
         info.label = dawn_webgpu_label(descriptor.label);
-        info.layout = webgpu_object<DawnWebGpuPipelineLayout>(descriptor.layout, "pipeline layout")
-                          ->lease->get();
+        info.layout = dawn_webgpu_pipeline_layout(descriptor.layout);
         info.compute.module =
             webgpu_object<DawnWebGpuShaderModule>(descriptor.compute.module, "shader module")
                 ->lease->get();
         info.compute.entryPoint = dawn_webgpu_label(descriptor.compute.entry_point);
         auto pipeline = std::make_shared<DawnWebGpuComputePipeline>();
-        pipeline->layout = descriptor.layout;
+        pipeline->layout = descriptor.layout.layout;
+        pipeline->owner = owner;
         pipeline->lease = owner->adopt<DawnWebGpuComputeLease>(
             wgpuDeviceCreateComputePipeline(owner->live_device(), &info), "compute pipeline");
         return pipeline;
@@ -563,8 +613,7 @@ struct DawnWebGpuDevice : GpuDevice {
         require_webgpu_vertex_state(descriptor.vertex);
         WGPURenderPipelineDescriptor info = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
         info.label = dawn_webgpu_label(descriptor.label);
-        info.layout = webgpu_object<DawnWebGpuPipelineLayout>(descriptor.layout, "pipeline layout")
-                          ->lease->get();
+        info.layout = dawn_webgpu_pipeline_layout(descriptor.layout);
         info.vertex.module =
             webgpu_object<DawnWebGpuShaderModule>(descriptor.vertex.module, "shader module")
                 ->lease->get();
@@ -617,7 +666,8 @@ struct DawnWebGpuDevice : GpuDevice {
             info.fragment = &fragment;
         }
         auto pipeline = std::make_shared<DawnWebGpuRenderPipeline>();
-        pipeline->layout = descriptor.layout;
+        pipeline->layout = descriptor.layout.layout;
+        pipeline->owner = owner;
         pipeline->lease = owner->adopt<DawnWebGpuRenderLease>(
             wgpuDeviceCreateRenderPipeline(owner->live_device(), &info), "render pipeline");
         return pipeline;
@@ -697,11 +747,18 @@ struct DawnWebGpuDevice : GpuDevice {
         result->encoder = require_dawn_resource(encoder, "frame command encoder");
         return result;
     }
-    /** A renderer's open pass, for a renderable's `draw`. */
-    static GpuEncoderHandle borrow_render_pass(WGPURenderPassEncoder pass) {
-        auto result = std::make_shared<DawnWebGpuRenderPass>();
-        result->pass = require_dawn_resource(pass, "renderer pass");
-        return result;
+    /**
+     * A renderer's open pass, lent through `slot` for one renderable's `draw`
+     * (`lend_webgpu_pass`), with its split on a frame a library splits it.
+     */
+    static const GpuEncoderHandle& lend_render_pass(
+        GpuEncoderHandle& slot, WGPURenderPassEncoder pass, const bool* drawn = nullptr,
+        const std::function<WGPURenderPassEncoder(const std::function<void()>&)>* pause = nullptr) {
+        auto& lent = lend_webgpu_pass<DawnWebGpuRenderPass>(slot);
+        lent.pass = require_dawn_resource(pass, "renderer pass");
+        lent.drawn = drawn;
+        lent.pause = pause;
+        return slot;
     }
 };
 

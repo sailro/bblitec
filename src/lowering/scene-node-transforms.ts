@@ -185,7 +185,10 @@ void set_scene_node_parent(Engine& engine, const SceneNodeHandle& child, const S
     bool imported = false;
     if (linked && owner.value < engine.assets.size())
         for (const SceneNodeHandle sibling : scene_node_children(engine, parent))
-            if ((imported = sibling == child)) break;
+            if (sibling == child) {
+                imported = true;
+                break;
+            }
     if (!imported)
         throw std::runtime_error(
             "A SceneNode parent other than an imported node's own is not lowered natively.");

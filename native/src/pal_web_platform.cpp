@@ -61,12 +61,13 @@ Response response_of(const pal::HttpResponse& response) {
 
 } // namespace
 
-js::Promise<pal::HttpResponse> fetch_response(const std::string& url,
+js::Promise<pal::HttpResponse> fetch_response(std::string url,
                                               const js::Nullable<RequestInit>& init) {
     pal::HttpRequest request;
     if (init && init->headers)
         request.headers = init->headers->entries();
-    return pal::fetch_deployed(url, std::move(request), init ? init->signal : js::AbortSignal{});
+    return pal::fetch_deployed(std::move(url), std::move(request),
+                               init ? init->signal : js::AbortSignal{});
 }
 
 js::Promise<Response> fetch(const std::string& url, const RequestInit& init) {

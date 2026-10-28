@@ -123,6 +123,7 @@ export function run(): string {
     for (let i = 0, j = 4; i < 5; i++, j--) mirrored.push(i * 10 + j);
     const main: MainBus = { _in: 4 };
     const bus: Bus = { _graph: { gain: 0.5 } };
+    const either: PrimaryBus = mirrored.length > 4 ? bus : main;
     const plain = "_in" in main;
     const list: string[] = ["b.ogg", "c.mp3"];
     const holder: Holder = { _held: 3 };
@@ -139,7 +140,7 @@ export function run(): string {
     const extensions = ["a.wav", "b.ogg?v=2", "c", "d.webm#t"].map((url) => fileExtension(url) ?? "-").join(",");
     const numbers = digits("a1b22c333") + " " + digits("none");
     const kinds = ["wav", "mp3", "aac"].map((key) => kindOf(key)).join("|") + " " + optionalKind(3) + "/" + optionalKind();
-    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers} \${kinds}\`;
+    return \`\${snapshot.join(",")} \${sounds.size} \${offset} \${tail} \${mirrored.join(",")} \${input(main)} \${input(bus)} \${input(either)} \${flags} \${warnings} \${lastWarning} \${described} \${mode} \${modeName} \${extensions} \${numbers} \${kinds}\`;
 }
 `;
 

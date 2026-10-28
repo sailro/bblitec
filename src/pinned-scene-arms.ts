@@ -77,7 +77,7 @@ interface PinnedSceneArmRequest {
 export async function pinnedSceneArms(
     request: PinnedSceneArmRequest,
 ): Promise<readonly PinnedSceneArm[]> {
-    const [bits, multiLight, toneMapping] = await Promise.all([
+    const [bits, multiLight] = await Promise.all([
         importPinnedModule<{
             PBR_HAS_ENV: number;
             PBR_HAS_TONEMAP: number;
@@ -88,8 +88,10 @@ export async function pinnedSceneArms(
             COMPUTE_PBR_LIGHT: string;
             getMultiLightLoop: () => string;
         }>("material/pbr/fragments/multilight-wgsl.js"),
-        pinnedToneMapping(request.toneMappingName ?? defaultToneMappingName),
     ]);
+    const toneMapping = pinnedToneMapping(
+        request.toneMappingName ?? defaultToneMappingName,
+    );
     const multi = {
         multiLightWgsl:
             multiLight.MULTI_LIGHT_STRUCTS() + multiLight.COMPUTE_PBR_LIGHT,

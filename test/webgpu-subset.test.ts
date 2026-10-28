@@ -4,12 +4,19 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { SPLAT_STREAM_SHADER_MODULES } from "../src/lowering/splat-stream-library.js";
-import { emitUpstreamGenerated } from "../src/upstream-lower.js";
+import { gpsShaderVariants } from "../src/gps-shader-variants.js";
+import {
+    DEFAULT_UPSTREAM_EMIT_OPTIONS,
+    emitUpstreamGenerated,
+} from "../src/upstream-lower.js";
 import { optionalNativeFixtureTools } from "./native-fixture.js";
 import {
     compileLibraryShaders,
     runWebGpuFixture,
 } from "./webgpu-subset-fixture.js";
+
+/** The point renderer's run-time WGSL, which the library's emission carries. */
+const gpsShaders = await gpsShaderVariants();
 
 /**
  * The lowered splat-stream library (upstream_splat_stream.hpp) and the
@@ -20,14 +27,21 @@ function streamLibraryInclude(): string {
     if (generatedInclude) return generatedInclude;
     const output = resolve("artifacts/test-webgpu-subset/generated");
     rmSync(output, { recursive: true, force: true });
-    emitUpstreamGenerated(output, [
-        "core",
-        "renderer:scene",
-        "camera:view-projection",
-        "renderer:external-renderables",
-        "engine:webgpu-device",
-        "loader:splat-stream",
-    ]);
+    emitUpstreamGenerated(
+        output,
+        [
+            "core",
+            "renderer:scene",
+            "camera:view-projection",
+            "renderer:external-renderables",
+            "engine:webgpu-device",
+            "loader:splat-stream",
+        ],
+        {
+            ...DEFAULT_UPSTREAM_EMIT_OPTIONS,
+            gpsShaders,
+        },
+    );
     generatedInclude = join(output, "upstream/include");
     return generatedInclude;
 }

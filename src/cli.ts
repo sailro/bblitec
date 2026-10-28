@@ -100,6 +100,7 @@ import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { meshLoDShaderVariants } from "./mesh-lod-shader-variants.js";
+import { gpsShaderVariants } from "./gps-shader-variants.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import {
     composeDefaultTextPipelines,
@@ -1612,6 +1613,9 @@ async function main(): Promise<void> {
         shaderPrograms,
         ...(result.manifest.computePrograms
             ? { computePrograms: result.manifest.computePrograms }
+            : {}),
+        ...(result.manifest.features.includes("loader:splat-stream")
+            ? { gpsShaders: await gpsShaderVariants() }
             : {}),
         ...(result.manifest.features.includes("loader:mesh-lod")
             ? {

@@ -189,7 +189,7 @@ test("Dawn and SDL_GPU converge on the selection the pin's model makes of the sa
     // The pin's CPU model of the passes, on the inputs Dawn's last frame read.
     const module = "src/mesh-lod/mesh-lod-selection-gpu.ts";
     const { runMeshLoDGpuSelection } = pinnedModules([module]).get(module) as {
-        runMeshLoDGpuSelection(input: unknown): {
+        runMeshLoDGpuSelection: (input: unknown) => {
             selected: unknown[];
             overflow: boolean;
         };

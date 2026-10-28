@@ -58,12 +58,7 @@ const deferredCapabilityDescriptors: readonly Descriptor[] = [
         api,
         timing: "reject",
     })),
-    ...[
-        "createUnmuteUI",
-        "createAudioVisualizer",
-        "enableGaussianPointSplatting",
-        "disableGaussianPointSplatting",
-    ].map((api): Descriptor => ({
+    ...["createUnmuteUI", "createAudioVisualizer"].map((api): Descriptor => ({
         origin: "babylon",
         api,
         timing: "throw",

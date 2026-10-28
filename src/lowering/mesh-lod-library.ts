@@ -131,9 +131,7 @@ const libraryRecords: readonly RecordSpec[] = [
     own("MeshLoDAsset", true),
     // The instance declares its own `visible`; GPU selection reads it as
     // its instance input, by identity.
-    librarySceneNode(own(NODE, true, ["MeshLoDGpuInstanceInput"]), [
-        "visible",
-    ]),
+    librarySceneNode(own(NODE, true, ["MeshLoDGpuInstanceInput"]), ["visible"]),
     // The runtime (mesh-lod-runtime.ts).
     own("MeshLoDEffectiveSettings", false),
     own("MeshLoDAssetRuntime", true),

@@ -3,7 +3,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
-import { emitUpstreamGenerated } from "../src/upstream-lower.js";
+import { gpsShaderVariants } from "../src/gps-shader-variants.js";
+import {
+    DEFAULT_UPSTREAM_EMIT_OPTIONS,
+    emitUpstreamGenerated,
+} from "../src/upstream-lower.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -76,7 +80,7 @@ async function main(): Promise<void> {
 void main();
 `;
 
-test("a stream program lowers its loads, attachment, stats, writes and collision onto the lowered library", (t) => {
+test("a stream program lowers its loads, attachment, stats, writes and collision onto the lowered library", async (t) => {
     const directory = resolve("artifacts/test-splat-stream-application");
     mkdirSync(directory, { recursive: true });
     const entry = join(directory, "entry.ts");
@@ -121,7 +125,10 @@ test("a stream program lowers its loads, attachment, stats, writes and collision
         return;
     }
     // The lowered library and the program compile together.
-    emitUpstreamGenerated(directory, compiled.manifest.features);
+    emitUpstreamGenerated(directory, compiled.manifest.features, {
+        ...DEFAULT_UPSTREAM_EMIT_OPTIONS,
+        gpsShaders: await gpsShaderVariants(),
+    });
     const source = join(directory, "main.cpp");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(tools, [
@@ -148,12 +155,12 @@ test("stream members without a native form refuse", () => {
     refuses(
         "stream.screenError = stream.screenError + 1;",
         "stream.screenError += 1;",
-        /A stream member takes a simple assignment natively/,
+        /A library record member takes a simple assignment natively/,
     );
     refuses(
         "stream.maxSplats = Math.max(stream.maxSplats, 2000);",
-        'stream.name = "renamed";',
-        /GaussianSplatStream\.name is not a writable stream member/,
+        "stream._frame = 2;",
+        /GaussianSplatStream\._frame is not a public member the program writes/,
     );
     refuses(
         "await stream.firstFrameReady;",

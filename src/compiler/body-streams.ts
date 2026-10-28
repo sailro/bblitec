@@ -221,12 +221,15 @@ function pullStream(lowerer: DataLowerer, node: ts.NewExpression): Value {
             "new ReadableStream lowers a stream of Uint8Array chunks.",
         );
     const source = context.compileValue(sourceNode);
-    const methods = source.kind === "record" ? source.recordMethods ?? {} : {};
+    const methods =
+        source.kind === "record" ? (source.recordMethods ?? {}) : {};
     if (
         source.kind !== "record" ||
         Object.keys(source.recordProperties ?? {}).length ||
         Object.keys(source.recordGetters ?? {}).length ||
-        Object.keys(methods).some((name) => name !== "pull" && name !== "cancel")
+        Object.keys(methods).some(
+            (name) => name !== "pull" && name !== "cancel",
+        )
     )
         return context.fail(
             sourceNode,

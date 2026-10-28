@@ -1,0 +1,37 @@
+{
+  "scene": "trogir-streaming",
+  "notes": "Point sampling (gaussian-point-splatting) over the streamed Trogir cloud: the renderer accumulates, then once switched off the stream settles where it settles without it.",
+  "base": "registry",
+  "capture": false,
+  "timeoutMs": 300000,
+  "phases": [
+    { "id": "classic", "frame": 3300, "notes": "the stream at rest without point sampling" },
+    { "id": "points", "frame": 1500, "env": { "BBLITE_LOCATION_SEARCH": "?points=1" }, "notes": "the accumulation at its cap (255 frames), past streaming's arrival timing" },
+    { "id": "points-off", "frame": 3300, "env": { "BBLITE_LOCATION_SEARCH": "?points=1" }, "tape": ["-*300", "UiClick@36:321"] }
+  ],
+  "observe": {
+    "search": "?points=1",
+    "golden": false,
+    "steps": [
+      {
+        "id": "points",
+        "actions": [
+          { "frames": 600 },
+          { "evaluate": "document.body.innerText", "as": "panel" }
+        ]
+      },
+      {
+        "id": "points-off",
+        "actions": [
+          { "click": [36, 321] },
+          { "frames": 3000 },
+          { "evaluate": "document.body.innerText", "as": "panel" }
+        ]
+      }
+    ]
+  },
+  "expect": [
+    { "kind": "image-mad", "phase": "points-off", "vs": "classic", "max": 0.5, "notes": "the point renderer shares the classic pass's projection state, so the stream keeps its budget and reaches the same files" },
+    { "kind": "backends-agree", "phase": "points", "imageMad": 2 }
+  ]
+}

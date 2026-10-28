@@ -10,7 +10,11 @@
  * TRS triple the pin's world-matrix composition and Euler proxy read.
  */
 import { type LoweringContext } from "./context.js";
-import { PinnedRecordModel, type RecordSpec } from "./pinned-record-lowerer.js";
+import {
+    type CallAdapter,
+    PinnedRecordModel,
+    type RecordSpec,
+} from "./pinned-record-lowerer.js";
 import {
     SPLAT_STREAM_CORE_MODULES,
     SPLAT_STREAM_CORE_RECORDS,
@@ -32,6 +36,7 @@ import {
     libraryRuntimeRecords,
     libraryRuntimeUnresolved,
     librarySceneNode,
+    RUNTIME,
     sceneNodeTransformAdapter,
 } from "./library-runtime.js";
 import { recordModelPerContext } from "./library-record-schema.js";
@@ -46,10 +51,116 @@ const MATERIAL = "src/loader-splat-stream/splat-stream-material.ts";
 export const SPLAT_STREAM_SHADER_MODULES = [GPU, MATERIAL] as const;
 const SIGNATURE = "src/engine/render-target-signature.ts";
 
+const GPS = "src/gaussian-point-splatting/gaussian-point-splatting.ts";
+export const GPS_PASS = "src/gaussian-point-splatting/gps-pass.ts";
+/** The point renderer's modules (gaussian-point-splatting/*). */
+const GPS_MODULES = [
+    "src/gaussian-point-splatting/gps-state.ts",
+    "src/gaussian-point-splatting/gps-shaders.ts",
+    "src/gaussian-point-splatting/gps-scene-depth.ts",
+    "src/gaussian-point-splatting/gps-reproject.ts",
+    GPS_PASS,
+    "src/gaussian-point-splatting/gps-suppression.ts",
+    "src/gaussian-point-splatting/gps-runtime.ts",
+    GPS,
+] as const;
+
 /** The modules the library model lowers beyond the core's. */
-const SPLAT_STREAM_LIBRARY_MODULES = [GPU, MATERIAL, LOAD, SIGNATURE] as const;
+const SPLAT_STREAM_LIBRARY_MODULES = [
+    GPU,
+    MATERIAL,
+    LOAD,
+    SIGNATURE,
+    ...GPS_MODULES,
+] as const;
 
 const { boolean, void: none } = recordScalars;
+
+/**
+ * gps-pass.ts instruments the pin's frame graph (a task's `execute`, its
+ * encoder's `beginRenderPass`, a proxy over the pass). Natively the
+ * renderer is the frame graph: its scene pass reports whether it drew
+ * and pauses for a library's GPU work, resuming with load
+ * (library_runtime.hpp, both backends).
+ */
+const gpsPassAdapters: readonly (readonly [string, CallAdapter])[] = (
+    [
+        ["installGpsPasses", "gps_install_passes"],
+        ["gpsRefreshPasses", "gps_refresh_passes"],
+        ["gpsRenderTask", "gps_render_task"],
+        ["gpsDefersDraw", "gps_defers_draw"],
+        ["gpsPassHasDraws", "gps_pass_has_draws"],
+        ["gpsWithPassDepth", "gps_with_pass_depth"],
+    ] as const
+).map(([pinned, native]) => [
+    `${GPS_PASS}#${pinned}`,
+    {
+        // Every argument the call passes (`isRendering` is optional).
+        cpp: (argument, call) =>
+            `${RUNTIME}::${native}(${(call.arguments ?? []).map((_, index) => argument(index)).join(", ")})`,
+    },
+]);
+
+/** The point renderer's records, each its pinned declaration (gaussian-point-splatting/*). */
+const gpsRecords: readonly RecordSpec[] = [
+    // A point renderer's static target: its pinned declaration. No lowered
+    // module builds one, so a caller holds only streams.
+    librarySceneNode({
+        pinned: ["GaussianSplattingMesh"],
+        cpp: "GaussianSplattingMesh",
+        reference: true,
+        omit: new Map([
+            ["_worker", "only the classic mesh's own sort reads its worker"],
+        ]),
+    }),
+    {
+        pinned: ["GaussianSplattingGpu"],
+        cpp: "GaussianSplattingGpu",
+        reference: true,
+    },
+    {
+        pinned: ["GaussianPointSplatting"],
+        cpp: "GaussianPointSplatting",
+        reference: true,
+        accessors: new Set(["progress"]),
+    },
+    ...[
+        "GaussianPointSplattingProgress",
+        "GpsAccumulation",
+        "GpsSceneDepth",
+        "GpsReprojectionTarget",
+    ].map((name): RecordSpec => ({
+        pinned: [name],
+        cpp: name,
+        reference: true,
+    })),
+    {
+        // What a program passes `enableGaussianPointSplatting`, field by field.
+        pinned: ["GaussianPointSplattingOptions"],
+        cpp: "GaussianPointSplattingOptions",
+        reference: false,
+    },
+    ...(
+        [
+            ["gps-suppression", "Candidate", "GpsSuppressionCandidate"],
+            ["gps-suppression", "StaticWork", "GpsStaticWork"],
+            ["gps-suppression", "Tracker", "GpsSuppressionTracker"],
+            ["gps-reproject", "History", "GpsReprojectionHistory"],
+            ["gps-reproject", "Pipelines", "GpsReprojectionPipelines"],
+            ["gps-runtime", "Pipelines", "GpsPipelines"],
+            ["gps-runtime", "PixelBuffers", "GpsPixelBuffers"],
+            ["gps-runtime", "SplatBuffers", "GpsSplatBuffers"],
+            ["gps-runtime", "Readback", "GpsReadback"],
+            ["gps-runtime", "ViewState", "GpsViewState"],
+            ["gps-runtime", "DeviceCache", "GpsDeviceCache"],
+        ] as const
+    ).map(([module, pinned, cpp]): RecordSpec => ({
+        // Qualified: several of these names are declared by other modules too.
+        pinned: [`src/gaussian-point-splatting/${module}.ts#${pinned}`],
+        cpp,
+        reference: true,
+    })),
+];
 /** The library's own records, emitted from the pin's declarations. */
 const libraryRecords: readonly RecordSpec[] = [
     libraryDrawBatch("SplatStreamDrawBatch", "splat_stream", [
@@ -166,6 +277,7 @@ const libraryRecords: readonly RecordSpec[] = [
         cpp: "SplatStreamRenderPipelineEntry",
         reference: true,
     },
+    ...gpsRecords,
 ];
 
 /** The library's record model: the transport's schema with the library's own records. */
@@ -188,6 +300,7 @@ function splatStreamLibraryModel(context: LoweringContext): PinnedRecordModel {
             adapters: new Map([
                 ...transport.adapters,
                 ...libraryRuntimeAdapters,
+                ...gpsPassAdapters,
                 sceneNodeTransformAdapter(NODE),
             ]),
             unresolved: new Map(libraryRuntimeUnresolved),
@@ -206,8 +319,17 @@ export const SPLAT_STREAM_LIBRARY: LoweredLibrary = {
         ["disposeGaussianSplatStream", LOAD],
         ["loadSplatVoxelCollision", COLLISION],
         ["moveSplatVoxelCamera", COLLISION],
+        ["enableGaussianPointSplatting", GPS],
+        ["disableGaussianPointSplatting", GPS],
     ]),
-    records: [NODE, "GaussianSplatStreamStats", "GaussianSplatStreamOptions"],
+    records: [
+        NODE,
+        "GaussianSplatStreamStats",
+        "GaussianSplatStreamOptions",
+        "GaussianPointSplatting",
+        "GaussianPointSplattingOptions",
+        "GaussianPointSplattingProgress",
+    ],
     node: NODE,
     model: recordModelPerContext(splatStreamLibraryModel),
     emitted: [

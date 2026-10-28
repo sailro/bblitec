@@ -40,6 +40,7 @@ const encoder = (pinned: string): RecordSpec => ({
     handle: "GpuEncoderHandle",
     reference: true,
     native: true,
+    proxy: "bbl::GpuEncoderProxy",
     members: members([
         ["setPipeline", method(fn([gpuObject], none), "set_pipeline")],
         [
@@ -53,7 +54,26 @@ const encoder = (pinned: string): RecordSpec => ({
             "setBindGroup",
             method(fn([number, gpuObject], none), "set_bind_group"),
         ],
-        ["draw", method(fn([number, number, number, number], none), "draw")],
+        [
+            // WebGPU's defaults fill an omitted count (gpu.hpp).
+            "draw",
+            method(
+                fn(
+                    [
+                        number,
+                        optional(number),
+                        optional(number),
+                        optional(number),
+                    ],
+                    none,
+                ),
+                "draw",
+            ),
+        ],
+        [
+            "drawIndirect",
+            method(fn([record("GPUBuffer"), number], none), "draw_indirect"),
+        ],
         ["finish", method(fn([], gpuObject), "finish")],
         [
             "executeBundles",
@@ -84,7 +104,21 @@ export const gpuRecords: readonly RecordSpec[] = [
         native: true,
         members: members([
             ["destroy", method(fn([], none), "destroy")],
-            ["createView", method(fn([], gpuObject), "create_view")],
+            [
+                "createView",
+                spelled(
+                    fn(
+                        [optional(record("GPUTextureViewDescriptor"))],
+                        gpuObject,
+                    ),
+                    (owner, args) =>
+                        args.length > 0
+                            ? `bbl::gpu_texture_view(*${owner}, ${args[0]})`
+                            : `${owner}->create_view()`,
+                ),
+            ],
+            ["width", field(number, "width")],
+            ["height", field(number, "height")],
         ]),
     },
     {
@@ -105,7 +139,7 @@ export const gpuRecords: readonly RecordSpec[] = [
                 "createTexture",
                 method(
                     fn([record("GPUTextureDescriptor")], record("GPUTexture")),
-                    "create_texture",
+                    "texture",
                 ),
             ],
             [
@@ -126,285 +160,6 @@ export const gpuRecords: readonly RecordSpec[] = [
                 ),
             ],
             // The queue is the device's own.
-            ["queue", { shape: record("GPUQueue"), access: (owner) => owner }],
-        ]),
-    },
-    {
-        pinned: ["GPUQueue"],
-        cpp: "GpuDevice",
-        handle: "GpuDeviceHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "writeBuffer",
-                method(
-                    fn(
-                        [record("GPUBuffer"), number, buffer, number, number],
-                        none,
-                    ),
-                    "write_buffer",
-                ),
-            ],
-            [
-                "writeTexture",
-                method(
-                    fn(
-                        [
-                            record("GPUTexelCopyTextureInfo"),
-                            buffer,
-                            record("GPUTexelCopyBufferLayout"),
-                            record("GPUExtent3DDict"),
-                        ],
-                        none,
-                    ),
-                    "write_texture",
-                ),
-            ],
-        ]),
-    },
-    encoder("GPURenderPassEncoder"),
-    encoder("GPURenderBundleEncoder"),
-    {
-        pinned: ["GPUCommandEncoder"],
-        cpp: "GpuCommandEncoder",
-        handle: "GpuCommandEncoderHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "beginRenderPass",
-                method(
-                    fn(
-                        [record("GPURenderPassDescriptor")],
-                        record("GPURenderPassEncoder"),
-                    ),
-                    "begin_render_pass",
-                ),
-            ],
-        ]),
-    },
-    // Descriptors.
-    descriptor("GPUBufferDescriptor", "GpuBufferDescriptor", [
-        ["label", field(optional(string))],
-        ["size", field(number)],
-        ["usage", field(number)],
-    ]),
-    descriptor("GPUTextureDescriptor", "GpuTextureDescriptor", [
-        ["label", field(optional(string))],
-        ["format", field(string)],
-        ["size", field(record("GPUExtent3DDict"))],
-        ["usage", field(number)],
-    ]),
-    descriptor("GPUExtent3DDict", "GpuExtent3D", [
-        ["width", field(number)],
-        ["height", field(number)],
-        ["depthOrArrayLayers", field(number)],
-    ]),
-    descriptor("GPUBindGroupDescriptor", "GpuBindGroupDescriptor", [
-        ["label", field(optional(string))],
-        ["layout", field(gpuObject)],
-        ["entries", field(array(record("GPUBindGroupEntry")))],
-    ]),
-    descriptor("GPUBindGroupEntry", "GpuBindGroupEntry", [
-        ["binding", field(number)],
-        [
-            "resource",
-            // GPUBindingResource: a buffer binding, or a view or sampler.
-            field({
-                kind: "variant",
-                members: [record("GPUBufferBinding"), gpuObject],
-            }),
-        ],
-    ]),
-    descriptor("GPUBufferBinding", "GpuBufferBinding", [
-        ["buffer", field(record("GPUBuffer"))],
-        ["offset", field(optional(number))],
-        ["size", field(optional(number))],
-    ]),
-    descriptor("GPUTexelCopyTextureInfo", "GpuTexelCopyTextureInfo", [
-        ["texture", field(record("GPUTexture"))],
-    ]),
-    descriptor("GPUTexelCopyBufferLayout", "GpuTexelCopyBufferLayout", [
-        ["offset", field(optional(number))],
-        ["bytesPerRow", field(optional(number))],
-        ["rowsPerImage", field(optional(number))],
-    ]),
-    descriptor(
-        "GPURenderBundleEncoderDescriptor",
-        "GpuRenderBundleEncoderDescriptor",
-        [
-            ["colorFormats", field(array(string))],
-            ["sampleCount", field(optional(number))],
-        ],
-    ),
-    descriptor("GPURenderPassDescriptor", "GpuRenderPassDescriptor", [
-        [
-            "colorAttachments",
-            field(array(record("GPURenderPassColorAttachment"))),
-        ],
-    ]),
-    descriptor("GPURenderPassColorAttachment", "GpuRenderPassColorAttachment", [
-        ["view", field(gpuObject)],
-        // GPUColor: this path passes the dictionary form.
-        ["clearValue", field(optional(record("GPUColorDict")))],
-        ["loadOp", field(string)],
-        ["storeOp", field(string)],
-    ]),
-    descriptor("GPUColorDict", "Color4d", [
-        ["r", field(number)],
-        ["g", field(number)],
-        ["b", field(number)],
-        ["a", field(number)],
-    ]),
-];
-
-/** An optional trailing argument, absent when the call omits it. */
-const or = (args: readonly string[], index: number, absent = "{}"): string =>
-    args[index] ?? absent;
-const replaced = new Set([
-    "GPUBuffer",
-    "GPUDevice",
-    "GPUQueue",
-    "GPURenderPassEncoder",
-    "GPUCommandEncoder",
-    "GPUBufferDescriptor",
-]);
-
-/**
- * The WebGPU subset the pin's compute, indirect and buffer-mapping paths
- * speak (the streamed splat library), over the same device interface:
- * `gpuRecords` with the mapping members of a buffer, the device's layout,
- * module and pipeline creation and limits, the queue's typed and ranged
- * writes and its completion, and the compute and indirect encoders. The
- * text family keeps `gpuRecords`, whose spellings this does not change.
- */
-export const gpuSubsetRecords: readonly RecordSpec[] = [
-    ...gpuRecords.filter((spec) => !replaced.has(spec.pinned[0]!)),
-    {
-        pinned: ["GPUBuffer"],
-        cpp: "GpuObject",
-        handle: "GpuHandle",
-        reference: true,
-        native: true,
-        members: members([
-            ["size", { shape: number, access: (owner) => `${owner}->size` }],
-            ["destroy", method(fn([], none), "destroy")],
-            [
-                "getMappedRange",
-                spelled(
-                    fn([optional(number), optional(number)], buffer),
-                    (owner, args) =>
-                        `bbl::gpu_buffer_mapping(${owner}).get_mapped_range(${or(args, 0)}, ${or(args, 1)})`,
-                ),
-            ],
-            [
-                "unmap",
-                spelled(
-                    fn([], none),
-                    (owner) => `bbl::gpu_buffer_mapping(${owner}).unmap()`,
-                ),
-            ],
-            [
-                "mapAsync",
-                spelled(
-                    fn(
-                        [number, optional(number), optional(number)],
-                        promiseOf(none),
-                    ),
-                    (owner, args) =>
-                        `bbl::gpu_buffer_mapping(${owner}).map_async(${args[0]}, ${or(args, 1)}, ${or(args, 2)})`,
-                ),
-            ],
-            [
-                "mapState",
-                {
-                    shape: string,
-                    access: (owner) =>
-                        `bbl::gpu_buffer_mapping(${owner}).map_state()`,
-                },
-            ],
-        ]),
-    },
-    {
-        pinned: ["GPUDevice"],
-        cpp: "GpuDevice",
-        handle: "GpuDeviceHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "limits",
-                {
-                    shape: record("GPUSupportedLimits"),
-                    access: (owner) => `${owner}->limits()`,
-                },
-            ],
-            [
-                "createBuffer",
-                method(
-                    fn([record("GPUBufferDescriptor")], record("GPUBuffer")),
-                    "create_buffer",
-                ),
-            ],
-            [
-                "createTexture",
-                method(
-                    fn([record("GPUTextureDescriptor")], record("GPUTexture")),
-                    "create_texture",
-                ),
-            ],
-            [
-                "createBindGroup",
-                method(
-                    fn([record("GPUBindGroupDescriptor")], gpuObject),
-                    "create_bind_group",
-                ),
-            ],
-            [
-                "createBindGroupLayout",
-                method(
-                    fn([record("GPUBindGroupLayoutDescriptor")], gpuObject),
-                    "create_bind_group_layout",
-                ),
-            ],
-            [
-                "createSampler",
-                // `createSampler()` takes WebGPU's defaults.
-                spelled(
-                    fn([record("GPUSamplerDescriptor")], gpuObject),
-                    (owner, args) =>
-                        `${owner}->create_sampler(${or(args, 0, "bbl::GpuSamplerDescriptor{}")})`,
-                ),
-            ],
-            [
-                "createShaderModule",
-                method(
-                    fn([record("GPUShaderModuleDescriptor")], gpuObject),
-                    "create_shader_module",
-                ),
-            ],
-            [
-                "createPipelineLayout",
-                method(
-                    fn([record("GPUPipelineLayoutDescriptor")], gpuObject),
-                    "create_pipeline_layout",
-                ),
-            ],
-            [
-                "createComputePipeline",
-                method(
-                    fn([record("GPUComputePipelineDescriptor")], gpuObject),
-                    "create_compute_pipeline",
-                ),
-            ],
-            [
-                "createRenderPipeline",
-                method(
-                    fn([record("GPURenderPipelineDescriptor")], gpuObject),
-                    "create_render_pipeline",
-                ),
-            ],
             ["queue", { shape: record("GPUQueue"), access: (owner) => owner }],
         ]),
     },
@@ -451,35 +206,10 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
                         `bbl::gpu_queue_write_texture(*${owner}, ${args.join(", ")})`,
                 ),
             ],
-            [
-                "onSubmittedWorkDone",
-                method(fn([], promiseOf(none)), "on_submitted_work_done"),
-            ],
-            // A decoded ImageBitmap's upload (web-platform-schema.ts).
-            copyExternalImageToTexture,
         ]),
     },
-    {
-        pinned: ["GPURenderPassEncoder"],
-        cpp: "GpuEncoder",
-        handle: "GpuEncoderHandle",
-        reference: true,
-        native: true,
-        members: members([
-            ["setPipeline", method(fn([gpuObject], none), "set_pipeline")],
-            [
-                "setBindGroup",
-                method(fn([number, gpuObject], none), "set_bind_group"),
-            ],
-            [
-                "drawIndirect",
-                method(
-                    fn([record("GPUBuffer"), number], none),
-                    "draw_indirect",
-                ),
-            ],
-        ]),
-    },
+    encoder("GPURenderPassEncoder"),
+    encoder("GPURenderBundleEncoder"),
     {
         pinned: ["GPUCommandEncoder"],
         cpp: "GpuCommandEncoder",
@@ -488,49 +218,295 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
         native: true,
         members: members([
             [
-                "beginComputePass",
-                spelled(
-                    fn(
-                        [optional(record("GPUComputePassDescriptor"))],
-                        record("GPUComputePassEncoder"),
-                    ),
-                    (owner, args) =>
-                        `${owner}->begin_compute_pass(${or(args, 0, "bbl::GpuComputePassDescriptor{}")})`,
-                ),
-            ],
-            [
-                "copyBufferToBuffer",
+                "beginRenderPass",
                 method(
                     fn(
-                        [
-                            record("GPUBuffer"),
-                            number,
-                            record("GPUBuffer"),
-                            number,
-                            number,
-                        ],
-                        none,
+                        [record("GPURenderPassDescriptor")],
+                        record("GPURenderPassEncoder"),
                     ),
-                    "copy_buffer_to_buffer",
-                ),
-            ],
-            [
-                "clearBuffer",
-                spelled(
-                    fn(
-                        [
-                            record("GPUBuffer"),
-                            optional(number),
-                            optional(number),
-                        ],
-                        none,
-                    ),
-                    (owner, args) =>
-                        `${owner}->clear_buffer(${args[0]}, ${or(args, 1)}, ${or(args, 2)})`,
+                    "begin_render_pass",
                 ),
             ],
         ]),
     },
+    // Descriptors.
+    descriptor("GPUBufferDescriptor", "GpuBufferDescriptor", [
+        ["label", field(optional(string))],
+        ["size", field(number)],
+        ["usage", field(number)],
+        ["mappedAtCreation", field(boolean)],
+    ]),
+    descriptor("GPUTextureDescriptor", "GpuTextureDescriptor", [
+        ["label", field(optional(string))],
+        ["format", field(string)],
+        ["size", field(record("GPUExtent3DDict"))],
+        ["usage", field(number)],
+        ["sampleCount", field(optional(number))],
+    ]),
+    {
+        ...descriptor("GPUExtent3DDict", "GpuExtent3D", [
+            ["width", field(number)],
+            ["height", field(number)],
+            ["depthOrArrayLayers", field(number)],
+        ]),
+        sequence: ["width", "height", "depthOrArrayLayers"],
+    },
+    descriptor("GPUTextureViewDescriptor", "GpuTextureViewDescriptor", [
+        ["aspect", field(optional(string))],
+        ["dimension", field(optional(string))],
+    ]),
+    descriptor("GPUBindGroupDescriptor", "GpuBindGroupDescriptor", [
+        ["label", field(optional(string))],
+        ["layout", field(gpuObject)],
+        ["entries", field(array(record("GPUBindGroupEntry")))],
+    ]),
+    descriptor("GPUBindGroupEntry", "GpuBindGroupEntry", [
+        ["binding", field(number)],
+        [
+            "resource",
+            // GPUBindingResource: a buffer binding, or a view or sampler.
+            field({
+                kind: "variant",
+                members: [record("GPUBufferBinding"), gpuObject],
+            }),
+        ],
+    ]),
+    descriptor("GPUBufferBinding", "GpuBufferBinding", [
+        ["buffer", field(record("GPUBuffer"))],
+        ["offset", field(optional(number))],
+        ["size", field(optional(number))],
+    ]),
+    descriptor("GPUTexelCopyTextureInfo", "GpuTexelCopyTextureInfo", [
+        ["texture", field(record("GPUTexture"))],
+    ]),
+    descriptor("GPUTexelCopyBufferLayout", "GpuTexelCopyBufferLayout", [
+        ["offset", field(optional(number))],
+        ["bytesPerRow", field(optional(number))],
+        ["rowsPerImage", field(optional(number))],
+    ]),
+    descriptor(
+        "GPURenderBundleEncoderDescriptor",
+        "GpuRenderBundleEncoderDescriptor",
+        [
+            ["colorFormats", field(array(string))],
+            ["sampleCount", field(optional(number))],
+        ],
+    ),
+    descriptor("GPURenderPassDescriptor", "GpuRenderPassDescriptor", [
+        ["label", field(optional(string))],
+        [
+            "colorAttachments",
+            field(array(record("GPURenderPassColorAttachment"))),
+        ],
+        [
+            "depthStencilAttachment",
+            field(optional(record("GPURenderPassDepthStencilAttachment"))),
+        ],
+    ]),
+    descriptor(
+        "GPURenderPassDepthStencilAttachment",
+        "GpuRenderPassDepthStencilAttachment",
+        [
+            ["view", field(gpuObject)],
+            ["depthClearValue", field(optional(number))],
+            ["depthLoadOp", field(optional(string))],
+            ["depthStoreOp", field(optional(string))],
+        ],
+    ),
+    descriptor("GPURenderPassColorAttachment", "GpuRenderPassColorAttachment", [
+        ["view", field(gpuObject)],
+        // GPUColor: this path passes the dictionary form.
+        ["clearValue", field(optional(record("GPUColorDict")))],
+        ["loadOp", field(string)],
+        ["storeOp", field(string)],
+    ]),
+    descriptor("GPUColorDict", "Color4d", [
+        ["r", field(number)],
+        ["g", field(number)],
+        ["b", field(number)],
+        ["a", field(number)],
+    ]),
+];
+
+/** `GPUPipelineLayout | "auto"` (gpu.hpp `GpuPipelineLayoutChoice`). */
+const pipelineLayout: RecordShape = {
+    kind: "native",
+    cpp: "bbl::GpuPipelineLayoutChoice",
+};
+/** An optional trailing argument, absent when the call omits it. */
+const or = (args: readonly string[], index: number, absent = "{}"): string =>
+    args[index] ?? absent;
+/** A `gpuRecords` record with members the subset adds. */
+const extending = (
+    pinned: string,
+    added: readonly (readonly [string, MemberSpec])[],
+): RecordSpec => {
+    const base = gpuRecords.find((spec) => spec.pinned[0] === pinned);
+    if (!base) throw new Error(`No GPU record ${pinned} to extend.`);
+    return { ...base, members: members([...(base.members ?? []), ...added]) };
+};
+/** The subset's members on `gpuRecords` records, each record whole. */
+const subsetExtensions: readonly RecordSpec[] = [
+    extending("GPUBuffer", [
+        [
+            "getMappedRange",
+            spelled(
+                fn([optional(number), optional(number)], buffer),
+                (owner, args) =>
+                    `bbl::gpu_buffer_mapping(${owner}).get_mapped_range(${or(args, 0)}, ${or(args, 1)})`,
+            ),
+        ],
+        [
+            "unmap",
+            spelled(
+                fn([], none),
+                (owner) => `bbl::gpu_buffer_mapping(${owner}).unmap()`,
+            ),
+        ],
+        [
+            "mapAsync",
+            spelled(
+                fn(
+                    [number, optional(number), optional(number)],
+                    promiseOf(none),
+                ),
+                (owner, args) =>
+                    `bbl::gpu_buffer_mapping(${owner}).map_async(${args[0]}, ${or(args, 1)}, ${or(args, 2)})`,
+            ),
+        ],
+        [
+            "mapState",
+            {
+                shape: string,
+                access: (owner) =>
+                    `bbl::gpu_buffer_mapping(${owner}).map_state()`,
+            },
+        ],
+    ]),
+    extending("GPUDevice", [
+        [
+            "limits",
+            {
+                shape: record("GPUSupportedLimits"),
+                access: (owner) => `${owner}->limits()`,
+            },
+        ],
+        [
+            "createBindGroupLayout",
+            method(
+                fn([record("GPUBindGroupLayoutDescriptor")], gpuObject),
+                "create_bind_group_layout",
+            ),
+        ],
+        [
+            "createSampler",
+            // `createSampler()` takes WebGPU's defaults.
+            spelled(
+                fn([record("GPUSamplerDescriptor")], gpuObject),
+                (owner, args) =>
+                    `${owner}->create_sampler(${or(args, 0, "bbl::GpuSamplerDescriptor{}")})`,
+            ),
+        ],
+        [
+            "createShaderModule",
+            method(
+                fn([record("GPUShaderModuleDescriptor")], gpuObject),
+                "create_shader_module",
+            ),
+        ],
+        [
+            "createPipelineLayout",
+            method(
+                fn([record("GPUPipelineLayoutDescriptor")], gpuObject),
+                "create_pipeline_layout",
+            ),
+        ],
+        [
+            "createComputePipeline",
+            method(
+                fn(
+                    [record("GPUComputePipelineDescriptor")],
+                    record("GPUComputePipeline"),
+                ),
+                "compute_pipeline",
+            ),
+        ],
+        [
+            "createRenderPipeline",
+            method(
+                fn(
+                    [record("GPURenderPipelineDescriptor")],
+                    record("GPURenderPipeline"),
+                ),
+                "render_pipeline",
+            ),
+        ],
+    ]),
+    extending("GPUQueue", [
+        [
+            "onSubmittedWorkDone",
+            method(fn([], promiseOf(none)), "on_submitted_work_done"),
+        ],
+        // A decoded ImageBitmap's upload (web-platform-schema.ts).
+        copyExternalImageToTexture,
+    ]),
+    extending("GPUCommandEncoder", [
+        [
+            "beginComputePass",
+            spelled(
+                fn(
+                    [optional(record("GPUComputePassDescriptor"))],
+                    record("GPUComputePassEncoder"),
+                ),
+                (owner, args) =>
+                    `${owner}->begin_compute_pass(${or(args, 0, "bbl::GpuComputePassDescriptor{}")})`,
+            ),
+        ],
+        [
+            "copyBufferToBuffer",
+            method(
+                fn(
+                    [
+                        record("GPUBuffer"),
+                        number,
+                        record("GPUBuffer"),
+                        number,
+                        number,
+                    ],
+                    none,
+                ),
+                "copy_buffer_to_buffer",
+            ),
+        ],
+        [
+            "clearBuffer",
+            spelled(
+                fn(
+                    [record("GPUBuffer"), optional(number), optional(number)],
+                    none,
+                ),
+                (owner, args) =>
+                    `${owner}->clear_buffer(${args[0]}, ${or(args, 1)}, ${or(args, 2)})`,
+            ),
+        ],
+    ]),
+];
+
+/**
+ * The WebGPU subset the pin's compute, indirect and buffer-mapping paths
+ * speak (the streamed splat library), over the same device interface:
+ * `gpuRecords` with the mapping members of a buffer, the device's layout,
+ * module and pipeline creation and limits, the queue's typed and ranged
+ * writes and its completion, and the compute and indirect encoders. The
+ * text family keeps `gpuRecords`, whose spellings this does not change.
+ */
+export const gpuSubsetRecords: readonly RecordSpec[] = [
+    ...gpuRecords.map(
+        (spec) =>
+            subsetExtensions.find(
+                (extension) => extension.pinned[0] === spec.pinned[0],
+            ) ?? spec,
+    ),
     {
         pinned: ["GPUComputePassEncoder"],
         cpp: "GpuComputePassEncoder",
@@ -584,12 +560,6 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
         ["maxStorageBufferBindingSize", field(number)],
         ["maxComputeWorkgroupsPerDimension", field(number)],
     ]),
-    descriptor("GPUBufferDescriptor", "GpuBufferDescriptor", [
-        ["label", field(optional(string))],
-        ["size", field(number)],
-        ["usage", field(number)],
-        ["mappedAtCreation", field(boolean)],
-    ]),
     descriptor("GPUBindGroupLayoutDescriptor", "GpuBindGroupLayoutDescriptor", [
         ["label", field(optional(string))],
         ["entries", field(array(record("GPUBindGroupLayoutEntry")))],
@@ -622,9 +592,25 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
         ["label", field(optional(string))],
         ["bindGroupLayouts", field(array(gpuObject))],
     ]),
+    {
+        // One native pipeline handle, compute or render: its label (a pass
+        // named after its pipeline) and its layouts are read back.
+        pinned: ["GPUComputePipeline", "GPURenderPipeline"],
+        cpp: "GpuObject",
+        handle: "GpuHandle",
+        reference: true,
+        native: true,
+        members: members([
+            ["label", field(string, "label")],
+            [
+                "getBindGroupLayout",
+                method(fn([number], gpuObject), "get_bind_group_layout"),
+            ],
+        ]),
+    },
     descriptor("GPUComputePipelineDescriptor", "GpuComputePipelineDescriptor", [
         ["label", field(optional(string))],
-        ["layout", field(gpuObject)],
+        ["layout", field(pipelineLayout)],
         ["compute", field(record("GPUProgrammableStage"))],
     ]),
     descriptor("GPUProgrammableStage", "GpuProgrammableStage", [
@@ -640,7 +626,7 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
     ]),
     descriptor("GPURenderPipelineDescriptor", "GpuRenderPipelineDescriptor", [
         ["label", field(optional(string))],
-        ["layout", field(gpuObject)],
+        ["layout", field(pipelineLayout)],
         ["vertex", field(record("GPUVertexState"))],
         ["fragment", field(optional(record("GPUFragmentState")))],
         ["primitive", field(optional(record("GPUPrimitiveState")))],
@@ -692,8 +678,6 @@ export const gpuSubsetValues: readonly (readonly [string, RecordShape])[] = [
     ["GPUBindGroupLayout", gpuObject],
     ["GPUShaderModule", gpuObject],
     ["GPUPipelineLayout", gpuObject],
-    ["GPUComputePipeline", gpuObject],
-    ["GPURenderPipeline", gpuObject],
 ];
 
 /** `GPUMapMode`, as the specification numbers it. */
