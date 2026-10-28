@@ -34,7 +34,7 @@ import {
     pinnedLibraryGlobal,
     pinnedMember,
 } from "../pinned-program.js";
-import { declaredSymbol } from "../compiler/symbols.js";
+import { absentLiteral, declaredSymbol } from "../compiler/symbols.js";
 import {
     MATH_MEMBERS,
     mathArityAccepts,
@@ -3912,14 +3912,8 @@ export class PinnedNumericLowerer {
         // `flags !== undefined` over a value the reached slice never
         // supplies: loosely, null and undefined are equal to both; strictly,
         // only to the one the binding is.
-        const nullish = (
-            node: ts.Expression,
-        ): "undefined" | "null" | undefined =>
-            ts.isIdentifier(node) && node.text === "undefined"
-                ? "undefined"
-                : node.kind === ts.SyntaxKind.NullKeyword
-                  ? "null"
-                  : undefined;
+        const nullish = (node: ts.Expression) =>
+            absentLiteral(pinnedCheckerOf(this.file), node);
         const [absentOperand, literal] = nullish(right)
             ? [left, nullish(right)]
             : nullish(left)

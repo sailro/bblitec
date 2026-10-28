@@ -164,10 +164,13 @@ export function absenceOf(value: Value): "undefined" | "null" | undefined {
 }
 
 /** A JsonValue holding an absence: `undefined` is the empty value, `null` JSON null. */
-export function jsonAbsenceCpp(absence: "undefined" | "null"): string {
+export function jsonAbsenceCpp(
+    absence: "undefined" | "null",
+    namespace = "bbl::js",
+): string {
     return absence === "undefined"
-        ? "bbl::js::JsonValue{}"
-        : "bbl::js::JsonValue::null_value()";
+        ? `${namespace}::JsonValue{}`
+        : `${namespace}::JsonValue::null_value()`;
 }
 
 /** Which absence a value the caller knows is json-null is. */

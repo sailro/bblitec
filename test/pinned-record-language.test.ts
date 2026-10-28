@@ -22,7 +22,8 @@ const MODULE = "src/fixture/record-language.ts";
  * swap destructuring, value-selecting `||`/`&&`, a `const enum`, defaults,
  * destructured callback parameters, the array iteration methods, a Map's
  * key and entry iteration, an object literal's methods and getter over
- * `this`, and `Object.is`. `run` prints what it computed.
+ * `this`, `Object.is`, and a dynamic slot holding `null` apart from
+ * `undefined`. `run` prints what it computed.
  */
 const SOURCE = `export const enum Kind {
     Small = 1,
@@ -38,6 +39,10 @@ export interface Options {
     readonly scale?: number;
     readonly label?: string;
     readonly flag?: boolean;
+}
+
+export interface Slot {
+    held: unknown;
 }
 
 export interface Batch {
@@ -154,6 +159,40 @@ function callbacks(): number[] {
     return [...sums, big, index, found ? 1 : 0, all ? 1 : 0, some ? 1 : 0, visited, ...sorted, [1, 2, 3].includes(2) ? 1 : 0, best.left];
 }
 
+let parked: unknown = null;
+
+function hold(slot: Slot, value: number | null): void {
+    slot.held = value;
+}
+
+function fallback(value: unknown = 0): string {
+    return state({ held: value });
+}
+
+function state(slot: Slot): string {
+    return slot.held === null ? "null" : slot.held === undefined ? "undefined" : "set";
+}
+
+function clear(slot: Slot): void {
+    slot.held = null;
+}
+
+function slots(): string {
+    const slot: Slot = { held: null };
+    const states = [state(slot)];
+    slot.held = 3;
+    states.push(state(slot));
+    clear(slot);
+    states.push(state(slot));
+    slot.held = undefined;
+    states.push(state(slot));
+    hold(slot, null);
+    states.push(state(slot));
+    hold(slot, 2);
+    states.push(state(slot), state({ held: parked }), fallback(null), fallback());
+    return states.join(",");
+}
+
 export function run(document: string): string {
     const parsed: unknown = JSON.parse(document);
     const bytes = new Uint8Array([82, 73, 70, 70, 0, 87]);
@@ -177,6 +216,7 @@ export function run(document: string): string {
         maps(),
         callbacks().join(","),
         [size, total, batch.size, batch.count].join(","),
+        slots(),
     ];
     return lines.join("\\n");
 }
@@ -209,6 +249,7 @@ function lowered(source: string): string {
             records: [
                 { pinned: ["Pair"], cpp: "Pair", reference: true },
                 { pinned: ["Options"], cpp: "Options", reference: true },
+                { pinned: ["Slot"], cpp: "Slot", reference: true },
                 {
                     pinned: ["Batch"],
                     cpp: "Batch",
@@ -228,7 +269,7 @@ function lowered(source: string): string {
 #include <bblite/pinned_records.hpp>
 ${[...model.includes].map((header) => `#include <${header}>`).join("\n")}
 namespace bbl {
-${model.structs(["Pair", "Options", "Batch", ...model.literalRecords()])}
+${model.structs(["Pair", "Options", "Slot", "Batch", ...model.literalRecords()])}
 ${declarations}
 ${definitions}
 } // namespace bbl

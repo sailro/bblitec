@@ -72,6 +72,7 @@ import {
     resolvedSymbol,
     libraryName,
     aliasTarget,
+    absentLiteral,
 } from "../compiler/symbols.js";
 import { createHash } from "node:crypto";
 import {
@@ -132,8 +133,10 @@ import {
     callSignatures,
     unionMembers,
     nullability,
+    absentValueKind,
 } from "../compiler/type-facts.js";
 import { bigintFromNumberCpp } from "../compiler/bigint-values.js";
+import { jsonAbsenceCpp } from "../compiler/values/model.js";
 import { TYPED_ARRAY_KINDS } from "../compiler/data-types/typed-arrays.js";
 export type { RecordShape } from "./record-shapes.js";
 
@@ -1556,9 +1559,13 @@ export class PinnedRecordModel {
         return this.representations.cppType(shape);
     }
 
-    public absent(shape: RecordShape, site: ts.Node): string {
+    public absent(
+        shape: RecordShape,
+        site: ts.Node,
+        absence: "undefined" | "null" = "undefined",
+    ): string {
         return (
-            this.representations.absent(shape) ??
+            this.representations.absent(shape, absence) ??
             this.fail(site, "Pinned absent value has a non-optional type.")
         );
     }
@@ -3178,8 +3185,14 @@ export class PinnedRecordModel {
                         );
                     const provenance = `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), soleBindingName(variable.declaration.name), "realm state")}`;
                     const type = this.cppType(variable.shape);
+                    // A dynamic value's `null` is no value-initialized state.
+                    const start =
+                        initializer?.kind === ts.SyntaxKind.NullKeyword &&
+                        stripOptional(variable.shape).kind === "json"
+                            ? this.absent(variable.shape, initializer, "null")
+                            : "";
                     return variable.initializer === undefined
-                        ? `${provenance}\ninline thread_local ${type} ${variable.cpp}{};`
+                        ? `${provenance}\ninline thread_local ${type} ${variable.cpp}{${start}};`
                         : `${provenance}\n${lazyStaticAccessor({
                               name: variable.cpp,
                               type,
@@ -3278,7 +3291,7 @@ function jsonReflection(cpp: string, shape: RecordShape): string | undefined {
                     : jsonReflection(`(*${cpp})`, shape.value);
             return present === undefined
                 ? undefined
-                : `(${cpp} ? ${present} : bbl::js::JsonValue{})`;
+                : `(${cpp} ? ${present} : ${jsonAbsenceCpp("undefined")})`;
         }
         default:
             return undefined;
@@ -3457,7 +3470,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (!parameter.defaulted) continue;
             const local = parameter.defaulted.local;
             const argument = parameterCpp(parameter);
-            const value = `${this.presentTest(argument)} ? ${this.coerce(argument, parameter.shape, local, parameter.node)} : ${this.convert(parameter.node.initializer!, local)}`;
+            const value = `${this.presentTest(argument, parameter.shape)} ? ${this.coerce(argument, parameter.shape, local, parameter.node)} : ${this.convert(parameter.node.initializer!, local)}`;
             lines.push(
                 `${indent}${this.cpp(local)} ${this.declare(parameter.name, local)} = ${value};`,
             );
@@ -3492,9 +3505,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         );
     }
 
-    /** `value !== undefined` over an optional's native form. */
-    private presentTest(value: string): string {
-        return `bbl::pinned::truthy_object(${value})`;
+    /** `value !== undefined` over `shape`'s native form. */
+    private presentTest(value: string, shape: RecordShape): string {
+        return stripOptional(shape).kind === "json"
+            ? `!${value}.is_undefined()`
+            : `bbl::pinned::truthy_object(${value})`;
     }
 
     private get checker(): ts.TypeChecker {
@@ -3743,7 +3758,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             } else {
                 const [parameter] = this.model.parametersOf(this.entry);
                 message = parameter
-                    ? `(${this.presentTest(parameterCpp(parameter))} ? ${this.coerce(parameterCpp(parameter), parameter.shape, { kind: "string" }, declaration)} : std::string(""))`
+                    ? `(${this.presentTest(parameterCpp(parameter), parameter.shape)} ? ${this.coerce(parameterCpp(parameter), parameter.shape, { kind: "string" }, declaration)} : std::string(""))`
                     : 'std::string("")';
             }
             lines.push(
@@ -4735,7 +4750,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             let value = argument;
             if (parameter.initializer) {
                 local = stripOptional(shape);
-                value = `${this.presentTest(argument)} ? ${this.coerce(argument, shape, local, parameter)} : ${this.convert(parameter.initializer, local)}`;
+                value = `${this.presentTest(argument, shape)} ? ${this.coerce(argument, shape, local, parameter)} : ${this.convert(parameter.initializer, local)}`;
             }
             if (ts.isIdentifier(parameter.name))
                 prolog.push(
@@ -4989,13 +5004,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 expression ?? this.frame.node,
                 "Pinned async function without a promise result.",
             );
-        if (
-            !expression ||
-            this.isAbsentLiteral(unwrapTypePreserving(expression))
-        )
+        const absence = expression
+            ? this.absentLiteral(unwrapTypePreserving(expression))
+            : "undefined";
+        if (absence || !expression)
             return returns.value.kind === "void"
                 ? "co_return bbl::js::PromiseVoid{}"
-                : `co_return ${this.model.absent(returns.value, this.frame.node)}`;
+                : `co_return ${this.model.absent(returns.value, this.frame.node, absence)}`;
         if (stripOptional(this.shapeAt(expression)).kind === "promise")
             return `co_return ${this.convert(expression, returns)}`;
         if (returns.value.kind === "void")
@@ -5794,8 +5809,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 present.kind === "number" ||
                 present.kind === "string" ||
                 present.kind === "boolean"
-            )
-                return `bbl::js::json_value(${value})`;
+            ) {
+                if (from.kind !== "optional")
+                    return `bbl::js::json_value(${value})`;
+                const absence = absentValueKind(
+                    nullability(this.checker.getTypeAtLocation(site)),
+                );
+                if (absence === "either")
+                    return this.refuse(
+                        site,
+                        "A pinned value stored as a dynamic value is null or undefined.",
+                    );
+                return absence === "null"
+                    ? `bbl::js::json_value_or_null(${value})`
+                    : `bbl::js::json_value(${value})`;
+            }
         }
         // Thrown values: an authored Error instance is the error it is
         // thrown as; an error in an `unknown` slot is the dynamic value
@@ -5967,7 +5995,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             this.model.include("bblite/pinned_json.hpp");
             const result =
                 from.value.kind === "void"
-                    ? "bbl::js::JsonValue{}"
+                    ? jsonAbsenceCpp("undefined")
                     : "bbl::js::json_value(result)";
             return `${this.cpp(to)}::view(${value}, []([[maybe_unused]] const auto& result) { return ${result}; })`;
         }
@@ -6049,8 +6077,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         // A literal under `satisfies T` is built as the sink takes it: the
         // check names its type, not its storage.
         const unwrapped = unwrapTypePreserving(node);
-        if (this.isAbsentLiteral(unwrapped))
-            return this.model.absent(to, unwrapped);
+        const absence = this.absentLiteral(unwrapped);
+        if (absence) return this.model.absent(to, unwrapped, absence);
         // `undefined as unknown as T`: the pin's placeholder for a reference
         // it assigns before reading, the native empty handle.
         const placeholder = stripOptional(to);
@@ -6183,10 +6211,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private isAbsentLiteral(node: ts.Expression): boolean {
-        return (
-            node.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(node) && node.text === "undefined")
-        );
+        return this.absentLiteral(node) !== undefined;
+    }
+
+    private absentLiteral(
+        node: ts.Expression,
+    ): "null" | "undefined" | undefined {
+        return absentLiteral(this.checker, node);
     }
 
     /** Whether a variant `value` holds one of `members`. */
@@ -6394,8 +6425,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.closure(node, this.shapeAt(node), this.closureIndent());
         if (ts.isStringLiteralLike(node)) return stringLiteral(node.text);
         if (ts.isTemplateExpression(node)) return this.template(node);
-        if (this.isAbsentLiteral(node))
-            return this.model.absent(this.shapeAt(node), node);
+        const absence = this.absentLiteral(node);
+        if (absence) return this.model.absent(this.shapeAt(node), node, absence);
         if (ts.isPropertyAccessExpression(node)) return this.propertyRead(node);
         if (ts.isElementAccessExpression(node)) return this.elementRead(node);
         if (ts.isCallExpression(node)) return this.callValue(node);
@@ -7102,10 +7133,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 ? [left, right]
                 : [right, left];
         const value = this.value(json);
-        if (this.isAbsentLiteral(other)) {
+        const absence = this.absentLiteral(other);
+        if (absence) {
             if (!strict)
                 return `(${value}.is_undefined() || ${value}.is_null())`;
-            return other.kind === ts.SyntaxKind.NullKeyword
+            return absence === "null"
                 ? `${value}.is_null()`
                 : `${value}.is_undefined()`;
         }
