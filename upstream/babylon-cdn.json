@@ -1,0 +1,4 @@
+{
+  "$comment": "The Babylon.js release whose CDN files every browser page of this repository reads in place of cdn.babylonjs.com's latest (the KTX2 decoder and its transcoders the pinned Babylon Lite fetches at run time). Generation and browser references stay reproducible; bump it deliberately.",
+  "version": "9.32.1"
+}

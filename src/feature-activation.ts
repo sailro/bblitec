@@ -553,7 +553,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "light:included-meshes": {
         provenance:
             "src/light/types.ts LightBase.includedOnlyMeshIds, read by " +
-            "src/render/lights-ubo.ts affectsMesh; the id it joins on is " +
+            "src/render/mesh-light-selection.ts lightAffectsMeshId; the id it joins on is " +
             "src/mesh/mesh.ts Mesh.id",
         consumers: ["features.cmake", "variant table"],
     },

@@ -456,7 +456,10 @@ function trackDerivedTexture(base: Texture2D, derived: Texture2D): void {
 }
 `,
     );
-    // External-image capture stays unreachable while its factory has no compiler route.
+    // External-image and dynamic-texture capture stay unreachable while their
+    // factories have no compiler route. Background rebuild thunks (`c`) stamp
+    // only under mesh capture, which the scene strategy, the one native
+    // recovery, always retains.
     check(
         "device-lost-recovery-capture",
         "attachRecoveryCapture",
@@ -470,8 +473,27 @@ function attachRecoveryCapture(engine: EngineContext): void {
     };
     _setDerivedTexture2DHook(trackDerivedTexture);
     _setTextureReleaseHook(releaseCapturedTexture);
+    engine._updateCapturedDynamicTexture = updateCapturedDynamicTexture;
     engine._dlr = {
         t: stamp,
+        dt(tex, width, height, format, levels, samplerDesc): void {
+            stamp(tex, {
+                kind: "dynamic",
+                width,
+                height,
+                format,
+                levels,
+                samplerDesc,
+                source: null,
+                flipY: true,
+                premultipliedAlpha: false,
+            });
+        },
+        c(renderable, builder, ...args): void {
+            if (state._meshCaptureRefs) {
+                renderable._rebuild = () => builder(...args);
+            }
+        },
         async x(source, width, height, format, levels, samplerDesc, flipY, premultipliedAlpha, upload): Promise<Texture2D> {
             const bitmap = await createImageBitmap(source, {
                 premultiplyAlpha: premultipliedAlpha ? "premultiply" : "none",

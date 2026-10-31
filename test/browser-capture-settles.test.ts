@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import test from "node:test";
 import { waitForSceneReady, withBrowserPage } from "../src/browser-harness.js";
 import { fixedAnimationFrameScript } from "../src/capture-suite-reference.js";
+import { htmlPageServer } from "./html-page-server.js";
 
 /** A scene page whose canvases write `script` at timed steps. */
-const scenePage = (script: string): ReturnType<typeof createServer> =>
-    createServer((_request, response) => {
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end(
-            `<!doctype html><title>Settles</title><canvas id="renderCanvas"></canvas><canvas id="other"></canvas><script>${script}</script>`,
-        );
-    });
+const scenePage = (script: string): ReturnType<typeof htmlPageServer> =>
+    htmlPageServer(
+        `<!doctype html><title>Settles</title><canvas id="renderCanvas"></canvas><canvas id="other"></canvas><script>${script}</script>`,
+    );
 
 const options = { serverName: "capture settle server" } as const;
 

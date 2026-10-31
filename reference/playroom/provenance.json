@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.37.0",
-    "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986"
+    "version": "1.37.2",
+    "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4"
   },
   "reference": {
     "source": "reference/playroom/babylon-lite-golden.png",
@@ -438,7 +438,7 @@
     "uiOrientation": "landscape",
     "loadingSize": "Estimated demo assets: 26 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.37.0",
+    "engine": "Babylon Lite v1.37.2",
     "loadingDetail": "Preparing scene…",
     "gamePhase": "ready",
     "throwCount": "1",
@@ -452,7 +452,7 @@
     "ready": "true"
   },
   "browser": {
-    "version": "156.0.8078.48",
+    "version": "156.0.8078.79",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -495,6 +495,6 @@
       ]
     }
   },
-  "capturedAt": "2026-10-27T11:42:27.525Z",
+  "capturedAt": "2026-10-30T16:06:00.936Z",
   "canvasSha256": "48408eee75ba8fd01a3537d4e7ce0560899559a8703cfe57e84689f72a69fdd0"
 }

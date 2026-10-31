@@ -82,7 +82,7 @@ test("text pipeline composition retains pin shaders, packed instance layout and 
                         {
                             binding: 2,
                             visibility: 2,
-                            texture: { sampleType: "unfilterable-float" },
+                            texture: { sampleType: "uint" },
                         },
                         {
                             binding: 3,

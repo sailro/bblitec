@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, posix, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, posix, relative, resolve } from "node:path";
 import ts from "typescript";
-import { findRepositoryRoot } from "./repository-root.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 import { PinnedProgram, registerPinnedSource } from "./pinned-program.js";
 import { listFiles } from "./tooling/records.js";
 export { findRepositoryRoot } from "./repository-root.js";
@@ -43,19 +43,23 @@ export function repositoryRelativePath(
     return relative(repositoryRoot, resolve(path)).replaceAll("\\", "/");
 }
 
+/** A pin file's JSON object (`upstream/*.json`), or a refusal naming it. */
+export function readPinFile(
+    pinPath: string,
+    repositoryRoot = compilerRepositoryRoot(),
+): JsonObject {
+    const record = asObject(
+        JSON.parse(readFileSync(resolve(repositoryRoot, pinPath), "utf8")),
+    );
+    if (!record) throw new Error(`Invalid pin file: ${pinPath}.`);
+    return record;
+}
+
 export function readUpstreamPin(
-    repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    ),
+    repositoryRoot = compilerRepositoryRoot(),
     pinPath = "upstream/babylon-lite.json",
 ): UpstreamPin {
-    const value: unknown = JSON.parse(
-        readFileSync(resolve(repositoryRoot, pinPath), "utf8"),
-    );
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error(`Invalid Babylon Lite pin file: ${pinPath}.`);
-    }
-    const record = value as Record<string, unknown>;
+    const record = readPinFile(pinPath, repositoryRoot);
     if (
         typeof record.package !== "string" ||
         typeof record.version !== "string" ||
@@ -125,9 +129,7 @@ export class UpstreamSourceStore {
     private typedProgram: PinnedProgram | undefined;
 
     public constructor(
-        repositoryRoot = findRepositoryRoot(
-            dirname(fileURLToPath(import.meta.url)),
-        ),
+        repositoryRoot = compilerRepositoryRoot(),
         pinPath = "upstream/babylon-lite.json",
     ) {
         const pin = readUpstreamPin(repositoryRoot, pinPath);

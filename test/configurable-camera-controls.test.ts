@@ -12,6 +12,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 interface Input {
     button?: number;
@@ -68,7 +69,7 @@ test("configurable free controls match the pinned input, inertia and key default
         attachConfigurableFreeControl(
             camera: ReturnType<typeof makeCamera>,
             canvas: Canvas,
-            scene: { _beforeRender: Array<(delta: number) => void> },
+            scene: PinnedScene,
             options: Options,
         ): () => void;
     }>("camera/configurable-free-camera-controls.js");
@@ -96,7 +97,7 @@ test("configurable free controls match the pinned input, inertia and key default
     const expected: number[] = [];
     for (const option of options) {
         const camera = makeCamera(),
-            scene = { _beforeRender: [] as Array<(delta: number) => void> };
+            scene = await createPinnedScene();
         const events = new Map<string, (event: Input) => void>();
         const canvas: Canvas = {
             addEventListener: (name, handler) => {

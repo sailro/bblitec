@@ -993,15 +993,8 @@ inline WGPUTextureViewDimension dawn_reflected_view_dimension(std::string_view v
 
 inline WGPUTextureSampleType dawn_reflected_sample_type(std::string_view value,
                                                         std::string_view stem) {
-    static constexpr std::pair<std::string_view, WGPUTextureSampleType> types[] = {
-        {"float", WGPUTextureSampleType_Float},
-        {"unfilterable-float", WGPUTextureSampleType_UnfilterableFloat},
-        {"depth", WGPUTextureSampleType_Depth},
-        {"sint", WGPUTextureSampleType_Sint},
-        {"uint", WGPUTextureSampleType_Uint}};
-    for (const auto& [name, type] : types)
-        if (name == value)
-            return type;
+    if (const auto type = dawn_texture_sample_type(value))
+        return *type;
     dawn_error(std::string(stem) + ".slots names sample type '" + std::string(value) + "'.");
 }
 

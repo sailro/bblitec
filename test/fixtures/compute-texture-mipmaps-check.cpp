@@ -59,14 +59,14 @@ int main() {
     texture->descriptor.format = "rgba8unorm";
     texture->sampled_texture.emplace();
     texture->compute_texture = std::make_shared<bbl::ComputeTextureResource>();
-    rejects([] { bbl::create_compute_storage_texture_mipmaps_task("empty", {}); }, "#975");
+    rejects([] { bbl::create_compute_storage_texture_mipmaps_task("empty", {}); }, "#1011");
     texture->destroyed = true;
     rejects([&] { bbl::create_compute_storage_texture_mipmaps_task("destroyed", {texture}); },
-            "#976");
+            "#1012");
     texture->destroyed = false;
     texture->compute_texture.reset();
     rejects([&] { bbl::create_compute_storage_texture_mipmaps_task("missing facade", {texture}); },
-            "#976");
+            "#1012");
     texture->compute_texture = std::make_shared<bbl::ComputeTextureResource>();
     std::vector resources{texture};
     auto task = bbl::create_compute_storage_texture_mipmaps_task("mipmaps", resources);
@@ -88,7 +88,7 @@ int main() {
     assert(run() == 0 && device->executed.size() == 6);
     task->execution_enabled = true;
     texture->destroyed = true;
-    rejects(run, "#977");
+    rejects(run, "#1013");
     texture->destroyed = false;
     task->dispose();
     assert(run() == 3 && device->executed.size() == 6 && !texture->destroyed);

@@ -12,6 +12,7 @@
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_shader_path.hpp"
 #include "pal_sdl_gpu_formats.hpp"
+#include "pal_webgpu_usage.hpp"
 #include "pal_sdl_gpu_texture_ops.hpp"
 #include "pal_sdl_gpu_canvas.hpp"
 
@@ -59,9 +60,8 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
                              SDL_GPUTexture* swapchain, SDL_GPUTextureFormat format,
                              std::uint32_t width, std::uint32_t height, const std::string& path,
                              const std::string& raw_path = {}) {
-    const std::uint32_t bytes_per_pixel = format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT ? 8u
-                                          : format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT        ? 2u
-                                                                                             : 4u;
+    const auto bytes_per_pixel =
+        static_cast<std::uint32_t>(webgpu_texel_layout(sdl_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
     const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
     SDL_GPUTransferBufferCreateInfo transfer_info{};

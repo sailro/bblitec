@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_dawn_formats.hpp"
 #include "pal_dawn_resources.hpp"
 #include <bblite/pal_compute_texture.hpp>
 #include <stdexcept>
@@ -23,20 +24,6 @@ struct DawnComputeTexture final : ComputeTextureAllocation {
         sampler = {};
     }
 };
-
-inline WGPUTextureFormat dawn_compute_texture_format(std::string_view value) {
-    static constexpr std::pair<std::string_view, WGPUTextureFormat> formats[] = {
-        {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
-        {"rgba8snorm", WGPUTextureFormat_RGBA8Snorm},
-        {"rgba16float", WGPUTextureFormat_RGBA16Float},
-        {"r32float", WGPUTextureFormat_R32Float},
-        {"rg32float", WGPUTextureFormat_RG32Float},
-        {"rgba32float", WGPUTextureFormat_RGBA32Float}};
-    for (const auto& [name, format] : formats)
-        if (name == value)
-            return format;
-    throw std::runtime_error("Unrepresented Dawn compute texture format: " + std::string(value));
-}
 
 inline WGPUAddressMode dawn_compute_address(std::string_view value) {
     if (value == "repeat")
@@ -64,7 +51,7 @@ inline void create_dawn_compute_texture(WGPUDevice device, const ComputeTextureD
         throw std::runtime_error("Native compute texture views currently require 2d.");
     if (options.storage_view_dimension != "2d" && options.storage_view_dimension != "2d-array")
         throw std::runtime_error("Unrepresented compute storage view dimension.");
-    const auto format = dawn_compute_texture_format(options.format);
+    const auto format = dawn_named_texture_format(options.format);
     struct Pending {
         std::shared_ptr<DawnComputeTexture> image = std::make_shared<DawnComputeTexture>();
         ComputeTextureCreated complete;
@@ -144,12 +131,11 @@ inline void create_dawn_compute_texture(WGPUDevice device, const ComputeTextureD
                                                    WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
             entries[0].visibility = WGPUShaderStage_Compute;
             entries[0].texture.viewDimension = view.dimension;
-            if (options.sample_type == "float")
-                entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-            else if (options.sample_type == "unfilterable-float")
-                entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
-            else
+            const auto sample_type = dawn_texture_sample_type(options.sample_type);
+            if (sample_type != WGPUTextureSampleType_Float &&
+                sample_type != WGPUTextureSampleType_UnfilterableFloat)
                 throw std::runtime_error("Unrepresented native compute texture sample type.");
+            entries[0].texture.sampleType = *sample_type;
             entries[1].binding = 1;
             entries[1].visibility = WGPUShaderStage_Compute;
             if (options.sampler_type == "filtering")

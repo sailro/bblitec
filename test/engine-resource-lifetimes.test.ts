@@ -23,6 +23,31 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { createPinnedScene } from "./pinned-scene.js";
+import { pinnedError } from "./pinned-errors.js";
+const unrecordedTask = pinnedError(
+    'EffectRenderTask "${a0}" executed before record().',
+);
+const missingUniform = pinnedError(
+    'Effect "${a0}" missing uniform binding ${a1}.',
+);
+const missingTexture = pinnedError(
+    'Effect "${a0}" missing texture binding ${a1}.',
+);
+const missingSampler = pinnedError(
+    'Effect "${a0}" missing texture for sampler binding ${a1}.',
+);
+const disposedSurface = pinnedError("RenderTargetTexture has been disposed.", {
+    module: "src/texture/rtt-surface.ts",
+    name: "installSurfaceResizeSync",
+});
+const disposedResizeTarget = pinnedError(
+    "RenderTargetTexture has been disposed.",
+    {
+        module: "src/texture/rtt-surface.ts",
+        name: "onRenderTargetTextureResize",
+    },
+);
 
 /** The application's shapes around each API, over admitted surroundings. */
 const shapePrefix = `import {createEngine,createSceneContext,createFreeCamera,createSphere,addToScene,registerScene,
@@ -240,7 +265,7 @@ test("render-task mesh removal matches the pin's queued, built and refreshed rem
         enableRenderTaskMeshRefresh(this: void, task: PinTask): void;
     }>("frame-graph/render-task-mesh-refresh.js");
     const engine = { _device: { createBuffer: () => ({ destroy() {} }) } };
-    const scene = { _renderables: [], _renderableVersion: 3 };
+    const scene = await createPinnedScene({ engine });
     const rt = { _descriptor: { format: "rgba8unorm", samples: 1 } };
     const a: PinMesh = { name: "a", material: {} },
         b: PinMesh = { name: "b", material: {} };
@@ -651,9 +676,17 @@ test("effect wrapper disposal empties the pin's slots and the next bind-group bu
         pin.disposeEffectWrapper(wrapper);
         assert.throws(
             () => pin.setEffectUniforms(wrapper, new Float32Array(4)),
-            /#34/,
+            {
+                message: pinnedError(
+                    "setEffectUniforms: wrapper has no uniform binding.",
+                ),
+            },
         );
-        assert.throws(() => pin.setEffectTexture(wrapper, 0, texture), /#36/);
+        assert.throws(() => pin.setEffectTexture(wrapper, 0, texture), {
+            message: pinnedError(
+                'setEffectTexture: unknown texture binding "${a0}".',
+            ),
+        });
         try {
             codes[name] = String(task.execute());
         } catch (error) {
@@ -676,9 +709,9 @@ test("effect wrapper disposal empties the pin's slots and the next bind-group bu
             );
     }
     assert.deepEqual(codes, {
-        uniformFirst: "#40",
-        textureFirst: "#41",
-        samplerFirst: "#42",
+        uniformFirst: missingUniform,
+        textureFirst: missingTexture,
+        samplerFirst: missingSampler,
         unbound: "1",
     });
     assert.deepEqual(destroyed, ["uniformFirst-0-ubo"]);
@@ -745,7 +778,7 @@ int main() {
         // A kept renderer group binds destroyed uniform storage; texture slots keep their images.
         assert((refusal([&] { require_effect_renderer_storage(engine, wrapper); }) != "1") == (variant == 0));
     }
-    assert(codes == "#40,#41,#42,1,");
+    assert(codes == "${missingUniform},${missingTexture},${missingSampler},1,");
 }
 `,
         {
@@ -825,11 +858,15 @@ test("render-target texture disposal releases the attachments once and later bui
     rtt.disposeRenderTargetTexture(fixed);
     rtt.disposeRenderTargetTexture(fixed);
     assert.deepEqual(events, ["release1"]);
-    assert.throws(
-        () => surfaces.onRenderTargetTextureResize(fixed, () => {}),
-        /#845/,
-    );
-    assert.throws(() => fixed.rt._syncEager(engine), /#846/);
+    assert.throws(() => surfaces.onRenderTargetTextureResize(fixed, () => {}), {
+        message: disposedResizeTarget,
+    });
+    assert.throws(() => fixed.rt._syncEager(engine), {
+        message: pinnedError("RenderTargetTexture has been disposed.", {
+            module: "src/texture/rtt.ts",
+            name: "checkTargetOwnership",
+        }),
+    });
     // A surface target whose replacement still awaits delivery.
     const surface = surfaces.createSurfaceRenderTargetTexture(engine, {
         format: "rgba8unorm",
@@ -848,9 +885,11 @@ test("render-target texture disposal releases the attachments once and later bui
     assert.deepEqual(events, ["release1", "a", "release3", "release2"]);
     assert.throws(
         () => surfaces.onRenderTargetTextureResize(surface, () => {}),
-        /#845/,
+        { message: disposedResizeTarget },
     );
-    assert.throws(() => surface.rt._syncEager(engine), /#842/);
+    assert.throws(() => surface.rt._syncEager(engine), {
+        message: disposedSurface,
+    });
 
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -888,7 +927,7 @@ static pal::GpuCompletion check(pal::EventLoop& loop, std::string& events) {
     dispose_render_target_texture(engine, fixed);
     // The backend releases the attachments at its next target build.
     if (engine.render_targets[fixed.rt.value].retired && engine.render_targets_version == version + 1) add("release1");
-    assert(refusal([&] { (void)on_render_target_texture_resize(engine, fixed, [] {}); }) == "#845");
+    assert(refusal([&] { (void)on_render_target_texture_resize(engine, fixed, [] {}); }) == "${disposedResizeTarget}");
     const auto surface = create_render_target_texture(engine, {}, true);
     const auto life = engine.render_targets[surface.rt.value].lifecycle;
     (void)on_render_target_texture_resize(engine, surface, [&] { add("a"); throw std::runtime_error("retry"); });
@@ -897,9 +936,9 @@ static pal::GpuCompletion check(pal::EventLoop& loop, std::string& events) {
     dispose_render_target_texture(engine, surface);
     if (engine.render_targets[surface.rt.value].retired && engine.render_targets_version == version + 2) add("release3");
     co_await wait_for_gpu_resource_retirements(gpu);
-    assert(refusal([&] { (void)on_render_target_texture_resize(engine, surface, [] {}); }) == "#845");
-    assert(refusal([&] { life->synchronize(); }) == "#842");
-    assert(refusal([&] { life->prepare_resize(); }) == "#842");
+    assert(refusal([&] { (void)on_render_target_texture_resize(engine, surface, [] {}); }) == "${disposedResizeTarget}");
+    assert(refusal([&] { life->synchronize(); }) == "${disposedSurface}");
+    assert(refusal([&] { life->prepare_resize(); }) == "${disposedSurface}");
     loop.close(); co_return js::PromiseVoid{};
 }
 int main() { const js::RealmScope realm; pal::EventLoop loop; std::string events; loop.run([&] { check(loop, events); }); std::cout << events; }
@@ -991,10 +1030,10 @@ int main() {
     engine.render_targets[1].retired = false;
     engine.frame_tasks[1].execution_enabled = true;
     engine.frame_tasks[1].disposed = true;
-    assert(require() == "#37");
+    assert(require() == "${unrecordedTask}");
     engine.frame_tasks[1].disposed = false;
     engine.frame_tasks[1].record_state = FrameTaskRecordState::pending_build;
-    assert(require() == "#37");
+    assert(require() == "${unrecordedTask}");
     engine.frame_tasks[1].execution_enabled = false;
     engine.frame_tasks[0].record_state = FrameTaskRecordState::pending_build;
     assert(require() == "A task added to a live scene executes before buildFrameGraphTask recorded it.");

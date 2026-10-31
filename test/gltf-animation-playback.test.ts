@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
+import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -15,6 +15,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedModuleSource } from "./pinned-source.js";
 
 const groupModule = "src/animation/animation-group.ts";
 const controllerModule = "src/skeleton/skeleton-updater.ts";
@@ -142,18 +143,7 @@ const scenarios: Array<{
 ];
 
 function sourceResult(context: LoweringContext): unknown[] {
-    const printer = ts.createPrinter();
-    const text = (module: string) => {
-        const file = context.sourceFile(module);
-        return file.statements
-            .filter((statement) => !ts.isImportDeclaration(statement))
-            .map((statement) =>
-                printer
-                    .printNode(ts.EmitHint.Unspecified, statement, file)
-                    .replace(/^export /gm, ""),
-            )
-            .join("\n");
-    };
+    const text = (module: string) => pinnedModuleSource(context, module);
     const names = [
         "PATH_TRANSLATION",
         "PATH_ROTATION",
@@ -327,8 +317,13 @@ function sourceResult(context: LoweringContext): unknown[] {
 }
 
 function contexts(): LoweringContext[] {
+    const pinned = new LoweringContext();
+    const engineless = pinnedErrorCodeOf(
+        pinned,
+        "AnimationController.tick requires an EngineContext for skeleton or morph animation",
+    );
     return [
-        new LoweringContext(),
+        pinned,
         doctoredContext(
             controllerModule,
             "ctrl.time += (deltaMs / 1000) * ctrl.speedRatio",
@@ -351,7 +346,7 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             controllerModule,
-            "ThrowLiteError(728)",
+            `ThrowLiteError(${engineless})`,
             "ThrowLiteError(9999)",
         ),
     ];

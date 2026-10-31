@@ -9,6 +9,7 @@ import {
 } from "../src/pinned-csg2.js";
 import { packBakedCsgMesh, type BakedCsgMesh } from "../src/pinned-csg.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const source = (body: string): string => `
 import { createEngine, createBox, createSphere, createStandardMaterial,
@@ -216,16 +217,26 @@ test("pinned CSG2 replay preserves exact bytes and refuses missing materials and
         packBakedCsgMesh(first[0]!.geometry),
         packBakedCsgMesh(second[0]!.geometry),
     );
+    // The replay's own failure carries the pinned throw's message.
+    const reports = (message: string) => (error: unknown) =>
+        error instanceof Error && error.message.includes(pinnedError(message));
     assert.throws(
         () => bakeCsg2Meshes({ plan: box, name: "missing", materialCount: 2 }),
-        /#534/,
+        reports(
+            'createMeshesFromCsg2("${a0}") missing material for CSG2 material slot ${a1}.',
+        ),
     );
     const empty: Csg2SolidPlan = { op: "csg2Subtract", left: box, right: box };
     assert.deepEqual(
         bakeCsg2Meshes({ plan: empty, name: "empty", materialCount: 3 }),
         [],
     );
-    assert.throws(() => bakeCsg2Meshes({ plan: empty, name: "empty" }), /#533/);
+    assert.throws(
+        () => bakeCsg2Meshes({ plan: empty, name: "empty" }),
+        reports(
+            'Unable to build CSG2 mesh "${a0}". Manifold has 0 vertices for this output.',
+        ),
+    );
 });
 
 test("CSG2 refusal boundary is anchored to the pinned slot reservation and bundled WASM", () => {

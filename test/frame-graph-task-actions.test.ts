@@ -16,6 +16,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const actionsModule = "src/frame-graph/frame-graph-actions.ts";
 const prefix = `
@@ -109,7 +110,11 @@ test("task insertion lowers pinned first-identity lookup, append and duplicate b
     }
     assert.throws(
         () => Reflect.apply(addTaskAfter, undefined, [{}, tasks[0], tasks[1]]),
-        /#119/,
+        {
+            message: pinnedError(
+                "FrameGraph target does not expose a frame graph.",
+            ),
+        },
     );
     const context = new LoweringContext();
     const generated = lowerFrameGraphTaskActions(context);

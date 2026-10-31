@@ -7,7 +7,6 @@ import {
     collectionBinding,
     type PinnedBinding,
     type PinnedCallSpelling,
-    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { nestedFunctionDeclaration } from "./pinned-function-lowerer.js";
 import {
@@ -15,6 +14,10 @@ import {
     cameraPointerDeltaBindings,
 } from "./camera-mutation-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import {
+    cameraScalarWrite,
+    cameraVectorComponentWrite,
+} from "../compiler/camera-setters.js";
 import {
     cameraControlLifecycleHelpers,
     cameraControlPublication,
@@ -61,14 +64,25 @@ function freeCameraBindings(): Map<string, PinnedBinding> {
         "camera.speed": "camera.speed",
         "camera.inertia": "camera.inertia",
         "camera.angularSensitivity": "camera.angular_sensibility",
-        "camera._yaw": "camera.free_yaw",
-        "camera._pitch": "camera.free_pitch",
-        "camera.position.x": "camera.position.x",
-        "camera.position.y": "camera.position.y",
-        "camera.position.z": "camera.position.z",
         deltaMs: "delta_ms",
     }))
         bindings.set(source, { type: "scalar", cpp: native });
+    for (const [source, field] of [
+        ["camera._yaw", "free_yaw"],
+        ["camera._pitch", "free_pitch"],
+    ] as const)
+        bindings.set(source, {
+            type: "scalar",
+            cpp: `camera.${field}`,
+            store: (value) => cameraScalarWrite("camera", field, value),
+        });
+    for (const axis of ["x", "y", "z"])
+        bindings.set(`camera.position.${axis}`, {
+            type: "scalar",
+            cpp: `camera.position.${axis}`,
+            store: (value) =>
+                cameraVectorComponentWrite("camera", "position", axis, value),
+        });
     return bindings;
 }
 
@@ -85,54 +99,6 @@ function freeCameraCalls(): Map<string, PinnedCallSpelling> {
 
 function stringLiteral(node: ts.Expression): string | undefined {
     return ts.isStringLiteral(node) ? cppStringLiteral(node.text) : undefined;
-}
-
-/** Stores into the camera's accessor-backed fields, through their setters. */
-function accessorStatement(
-    context: LoweringContext,
-): NonNullable<PinnedNumericScope["statement"]> {
-    return (statement, lowerer, indent) => {
-        if (
-            !ts.isExpressionStatement(statement) ||
-            !ts.isBinaryExpression(statement.expression)
-        )
-            return undefined;
-        const assignment = statement.expression;
-        const path = context.propertyPath(assignment.left)?.join(".");
-        const field =
-            path === "camera._yaw"
-                ? "free_yaw"
-                : path === "camera._pitch"
-                  ? "free_pitch"
-                  : undefined;
-        const component = ["x", "y", "z"].find(
-            (axis) => path === `camera.position.${axis}`,
-        );
-        if (!field && !component) return undefined;
-        const operator = assignment.operatorToken.kind;
-        if (
-            ![
-                ts.SyntaxKind.EqualsToken,
-                ts.SyntaxKind.PlusEqualsToken,
-                ts.SyntaxKind.MinusEqualsToken,
-            ].includes(operator)
-        )
-            context.contractError(
-                assignment,
-                "Unsupported camera accessor assignment.",
-            );
-        const right = lowerer.expression(assignment.right);
-        const value =
-            operator === ts.SyntaxKind.EqualsToken
-                ? right
-                : `${lowerer.expression(assignment.left)} ${operator === ts.SyntaxKind.PlusEqualsToken ? "+" : "-"} (${right})`;
-        return [
-            indent +
-                (field
-                    ? `write_camera_scalar(camera, &CameraRecord::${field}, ${value});`
-                    : `write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::${component}, ${value});`),
-        ];
-    };
 }
 
 /** A factory's per-frame `update(deltaMs)`, over its closure's accumulators. */
@@ -156,8 +122,6 @@ function lowerFreeUpdate(
         bindings,
         calls,
         expression: stringLiteral,
-
-        statement: accessorStatement(context),
     });
 }
 

@@ -20,6 +20,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 interface OracleMesh {
     id: number;
@@ -37,23 +38,8 @@ interface OracleRenderable {
     packet: object;
     _lifetimeDisposers?: Array<() => void>;
 }
-interface OracleScene {
-    meshes: OracleMesh[];
-    _renderables: OracleRenderable[];
-    _groups: Map<
-        object,
-        {
-            r(
-                scene: OracleScene,
-                mesh: OracleMesh,
-                material: OracleMaterial,
-                resources: OracleResources,
-            ): OracleRenderable;
-        }
-    >;
-}
 interface OraclePopulation {
-    scene: OracleScene;
+    scene: PinnedScene<OracleMesh>;
     _renderables: OracleRenderable[];
     _pendingMeshes: Array<{ mesh: OracleMesh; material: OracleMaterial }>;
 }
@@ -71,20 +57,17 @@ async function pinnedTaskOwnership() {
         added = { id: 2 };
     const firstMaterial = { id: 1, _buildGroup: builder },
         secondMaterial = { id: 2, _buildGroup: builder };
-    const scene: OracleScene = {
-        meshes: [ordinary],
-        _renderables: [],
-        _groups: new Map([
-            [
-                builder,
-                {
-                    r(_scene, mesh, material) {
-                        return { mesh, material, packet: {} };
-                    },
-                },
-            ],
-        ]),
-    };
+    const scene = await createPinnedScene<OracleMesh>();
+    scene.meshes.push(ordinary);
+    scene._groups.set(builder, {
+        r(
+            _scene: PinnedScene<OracleMesh>,
+            mesh: OracleMesh,
+            material: OracleMaterial,
+        ): OracleRenderable {
+            return { mesh, material, packet: {} };
+        },
+    });
     const first: OraclePopulation = {
         scene,
         _renderables: [],

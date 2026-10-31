@@ -5020,9 +5020,11 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
  * chain, which no native world read represents.
  */
 inline bool imported_hierarchy_unlinked(const Engine& engine, AssetHandle owner) {
-    if (owner.value >= engine.assets.size()) return false;
+    if (owner.value >= engine.assets.size())
+        return false;
     const auto& record = engine.assets[owner.value];
-    if (record.hierarchy_linked) return false;
+    if (record.hierarchy_linked)
+        return false;
     if (record.linked_import_nodes != 0)
         throw std::runtime_error(
             "A world matrix of an imported hierarchy with only some parent links set is not "

@@ -109,13 +109,45 @@ export function lowerMaterialPublication(
                 ];
             }
             if (ts.isExpressionStatement(node)) {
+                // The caster generation keys only the shadow tasks' cached
+                // per-caster packets; native shadow passes draw their
+                // casters from the records and cache none.
                 if (
                     context.expressionMatchesShape(
                         node.expression,
-                        "mat._csmGen = -~mat._csmGen!",
+                        "mesh._renderableGen = -~mesh._renderableGen!",
                     )
-                )
+                ) {
+                    context.assertAccessedOnlyIn("_renderableGen", [
+                        [
+                            "src/material/material-rebuild.ts",
+                            "rebuildMaterialRenderables",
+                        ],
+                        [source, "processMaterialSwaps"],
+                        ["src/scene/scene-rebuild.ts", "rebuildSceneGroups"],
+                        [
+                            "src/scene/scene-runtime-mesh-build.ts",
+                            "materializeRuntimeMesh",
+                        ],
+                        [
+                            "src/shadow/csm-shadow-cache.ts",
+                            "ensureCsmShadowCacheState",
+                        ],
+                        [
+                            "src/shadow/csm-shadow-task-hooks.ts",
+                            "ensureCsmShadowTaskState",
+                        ],
+                        [
+                            "src/shadow/csm-shadow-task-hooks.ts",
+                            "_reconcileCsmCasters",
+                        ],
+                        [
+                            "src/shadow/pcf-shadow-task-hooks.ts",
+                            "ensurePcfShadowTaskState",
+                        ],
+                    ]);
                     return [];
+                }
                 if (
                     context.expressionMatchesShape(
                         node.expression,

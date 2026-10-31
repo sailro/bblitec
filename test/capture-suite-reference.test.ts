@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -11,9 +17,13 @@ import {
     flattenedBundledDemoAssetPath,
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
+    screenshotScenePage,
     suiteBrowserModule,
 } from "../src/capture-suite-reference.js";
-import { gotoScenePage } from "../src/browser-harness.js";
+import { gotoScenePage, withBrowserPage } from "../src/browser-harness.js";
+import { pngDimensions } from "../src/compiler/asset-bytes-sync.js";
+import { HOST_PRIMARY_CANVAS_ID } from "../src/host-primary-canvas.js";
+import { withEnvironment } from "../src/tooling/native-run.js";
 import {
     goldenFixedFrame,
     manifestReadyAfterEntry,
@@ -225,6 +235,97 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
         );
     } finally {
         await new Promise<void>((done) => server.close(() => done()));
+    }
+});
+
+test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper and hides the chrome", async () => {
+    const server = createSuiteSceneServer("export {};\n", {
+        hostUi: {
+            sourcePath: "ui/app-host.json",
+            styleRules: [],
+            elements: [
+                {
+                    tag: "div",
+                    attributes: { id: "wrap" },
+                    children: [
+                        {
+                            tag: "canvas",
+                            attributes: {
+                                id: HOST_PRIMARY_CANVAS_ID,
+                                // Focus decoration is retained UI.
+                                style: "outline:2px solid blue",
+                            },
+                        },
+                        { tag: "canvas", attributes: { id: "second" } },
+                    ],
+                },
+                { tag: "div", attributes: { id: "hud" }, text: "HUD" },
+            ],
+        },
+    });
+    const directory = mkdtempSync(resolve(tmpdir(), "canvas-only-"));
+    const pageFacts = (id: string) => {
+        const primary = document.getElementById(id)!;
+        const visible = (element: Element | null) =>
+            element!.checkVisibility({ visibilityProperty: true });
+        return {
+            primaries: document.querySelectorAll(`#${id}`).length,
+            parent: primary.parentElement!.id,
+            width: primary.getAttribute("width"),
+            primary: visible(primary),
+            outline: getComputedStyle(primary).outlineStyle,
+            second: visible(document.getElementById("second")),
+            hud: visible(document.getElementById("hud")),
+        };
+    };
+    try {
+        const shots = await withEnvironment("BBLITE_CAPTURE_UI", "0", () =>
+            withBrowserPage(
+                server,
+                { serverName: "canvas-only server" },
+                async (page, origin) => {
+                    await gotoScenePage(page, origin);
+                    const shots = [];
+                    // The primary canvas alone, then every canvas in place.
+                    for (const independentEngines of [undefined, 1]) {
+                        const path = resolve(
+                            directory,
+                            `${independentEngines ?? 0}.png`,
+                        );
+                        await screenshotScenePage(
+                            page,
+                            path,
+                            independentEngines === undefined
+                                ? {}
+                                : { independentEngines },
+                        );
+                        shots.push({
+                            ...(await page.evaluate(
+                                pageFacts,
+                                HOST_PRIMARY_CANVAS_ID,
+                            )),
+                            image: pngDimensions(readFileSync(path)),
+                        });
+                    }
+                    return shots;
+                },
+            ),
+        );
+        const common = {
+            primaries: 1,
+            parent: "wrap",
+            width: "1280",
+            primary: true,
+            outline: "none",
+            hud: false,
+            image: { width: 1280, height: 720 },
+        };
+        assert.deepEqual(shots, [
+            { ...common, second: false },
+            { ...common, second: true },
+        ]);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
     }
 });
 

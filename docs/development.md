@@ -291,6 +291,10 @@ generation, `npm run corpus:verify` and validation. Preview with
 - Diff the upstream `lab/` inventory between the two commits; new scenes and demos join the catalog's `staged` list until
   registered.
 - Lab files the pin fetches instead of committing come from its corpus `tooling` scripts (`src/pinned-lab-materializers.ts`).
+- Error codes (`#N`) are numbered by the package build: when a release inserts messages, remap the codes tests and
+  anchors spell, message by message, from the two packages' `lib/error-messages.js` tables.
+- Bumping [upstream/babylon-cdn.json](../upstream/babylon-cdn.json) re-runs every browser bake; recapture the references
+  whose pages fetch from the CDN (KTX2, Basis and meshopt decoders).
 
 ## API coverage
 

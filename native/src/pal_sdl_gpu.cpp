@@ -2718,7 +2718,7 @@ public:
 #if BBLITE_EXTERNAL_RENDERABLES
                         draw_opaque_bucket(draw_lists.opaque, externals, draw_list, draw_external);
 #else
-                        draw_list(draw_lists.opaque);
+                    draw_list(draw_lists.opaque);
 #endif
 #if BBLITE_HAS_BILLBOARDS
                         if (draw_scene_billboard_stages) {
@@ -2761,6 +2761,9 @@ public:
                                 order, draw_lists.transparent, draw_list,
                                 [&]([[maybe_unused]] std::size_t index) {
 #if BBLITE_HAS_BILLBOARDS
+                                    if (!block)
+                                        throw std::runtime_error(
+                                            "A billboard was ordered without its scene block.");
                                     record_billboard_pass(command, task_pass, engine,
                                                           state.billboard_passes[index], *block);
                                     bound_pipeline = nullptr;
@@ -3173,30 +3176,33 @@ public:
                                 return task_frame;
                             };
                             const ExternalRenderablePass* const task_externals =
-                                !task.render.auto_mirror ? nullptr :
-                                prepare_external_pass(
-                                    state.external_passes.task(handle), engine, graph_scene,
-                                    GpuRenderTargetSignature{
-                                        sdl_webgpu_format_name(target.color_format),
-                                        task_depth_pointer
-                                            ? js::Nullable<std::string>(sdl_webgpu_format_name(
-                                                  task.render.depth.source ==
-                                                          RenderTextureSource::geometry_depth
-                                                      ? state.depth_format
-                                                      : target.depth_format))
-                                            : js::Nullable<std::string>(),
-                                        {},
-                                        static_cast<double>(gpu_sample_count_value(
-                                            target_sample_count(state, target_record)))},
-                                    pass_blocks.task(handle),
-                                    GpuDrawUpdateContext{static_cast<double>(target.width),
-                                                         static_cast<double>(target.height),
-                                                         task_pass_camera_handle(engine, task)},
-                                    open_task_frame);
+                                !task.render.auto_mirror
+                                    ? nullptr
+                                    : prepare_external_pass(
+                                          state.external_passes.task(handle), engine, graph_scene,
+                                          GpuRenderTargetSignature{
+                                              sdl_webgpu_format_name(target.color_format),
+                                              task_depth_pointer
+                                                  ? js::Nullable<
+                                                        std::string>(sdl_webgpu_format_name(
+                                                        task.render.depth.source ==
+                                                                RenderTextureSource::geometry_depth
+                                                            ? state.depth_format
+                                                            : target.depth_format))
+                                                  : js::Nullable<std::string>(),
+                                              {},
+                                              static_cast<double>(gpu_sample_count_value(
+                                                  target_sample_count(state, target_record)))},
+                                          pass_blocks.task(handle),
+                                          GpuDrawUpdateContext{
+                                              static_cast<double>(target.width),
+                                              static_cast<double>(target.height),
+                                              task_pass_camera_handle(engine, task)},
+                                          open_task_frame);
                             if (task_frame)
                                 task_frame->encode(command);
 #else
-                            const ExternalRenderablePass* const task_externals = nullptr;
+                        const ExternalRenderablePass* const task_externals = nullptr;
 #endif
                             auto color_timing = sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(command, &target_info, 1,
@@ -3897,7 +3903,8 @@ public:
             // their batches' compute into the frame's command buffer before the pass.
             std::shared_ptr<SdlWebGpuCommandEncoder> external_frame;
             const auto open_external_frame = [&]() -> GpuCommandEncoderHandle {
-                external_frame = sdl_engine_webgpu_device(engine, state.device).frame_command_encoder();
+                external_frame =
+                    sdl_engine_webgpu_device(engine, state.device).frame_command_encoder();
                 return external_frame;
             };
             const GpuRenderTargetSignature scene_signature{

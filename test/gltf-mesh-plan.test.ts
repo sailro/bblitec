@@ -19,6 +19,7 @@ import {
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const module = "src/loader-gltf/load-gltf.ts";
 function fixture() {
@@ -286,7 +287,11 @@ test("scene recording refuses unknown resources and registration effects", async
                 "if (mesh.name === 'first')",
             ),
         ),
-        /#719/,
+        {
+            message: pinnedError(
+                'Mesh "${a0}" cannot be added: it was disposed when it left its last scene. Create a new mesh instead.',
+            ),
+        },
     );
     await packageGltfMeshPlan(document, bin);
     const plan = packagedGltfMeshPlan(document);

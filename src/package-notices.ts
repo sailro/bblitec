@@ -9,12 +9,11 @@
  * Android and iOS scripts run the command line below over their build.
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { readCacheConfiguration } from "./build-stamp.js";
 import { discoverDevelopmentTools } from "./development-tools.js";
 import { imageCodecs } from "./image-codec-manifest.js";
-import { findRepositoryRoot } from "./repository-root.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { readShippingProfile } from "./shipping-profile.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
@@ -45,8 +44,7 @@ interface PackageNotice {
     source: string;
 }
 
-const repositoryRoot = (): string =>
-    findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+const repositoryRoot = (): string => compilerRepositoryRoot();
 
 /** A vcpkg port the notice table names: its notice file and the port. */
 interface PortNotice {

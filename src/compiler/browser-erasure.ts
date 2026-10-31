@@ -74,6 +74,7 @@ import {
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
 import { nativeHostUiElements } from "../native-host-ui.js";
+import { HOST_PRIMARY_CANVAS_ID } from "../host-primary-canvas.js";
 import {
     isNullable,
     presentMembers,
@@ -210,12 +211,6 @@ interface BrowserErasureContext extends Pick<
     | "sourceFile"
     | "symbols"
 > {}
-
-/**
- * The id the host page gives its primary canvas, and so the one a program
- * finds it by when its engine canvas is not looked up by an id of its own.
- */
-const HOST_PRIMARY_CANVAS_ID = "renderCanvas";
 
 /**
  * Each program's primary canvas ids, keyed by its entry: a fact of the

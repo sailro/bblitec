@@ -28,9 +28,8 @@ import {
     statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { findRepositoryRoot } from "./repository-root.js";
+import { basename, join, relative, sep } from "node:path";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { listFiles } from "./tooling/records.js";
 
@@ -73,8 +72,7 @@ interface PatchManifest {
 }
 
 /** The checkout this module was built from. */
-const moduleRepositoryRoot = (): string =>
-    findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+const moduleRepositoryRoot = (): string => compilerRepositoryRoot();
 
 function field(
     value: Record<string, unknown>,

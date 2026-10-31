@@ -1,5 +1,15 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+let compilerRoot: string | undefined;
+
+/** The checkout this compiler runs from, whatever the working directory. */
+export function compilerRepositoryRoot(): string {
+    return (compilerRoot ??= findRepositoryRoot(
+        dirname(fileURLToPath(import.meta.url)),
+    ));
+}
 
 export function findRepositoryRoot(start = process.cwd()): string {
     let current = resolve(start);

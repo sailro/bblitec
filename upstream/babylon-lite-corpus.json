@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.37.0",
+  "version": "1.37.2",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "1a2728c6d44383ef3a79cfc680e2e761b4f1e986",
+  "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4",
   "scenes": [
     {
       "id": "scene1",
@@ -1849,6 +1849,31 @@
       "upstreamPath": "LICENSE",
       "source": "corpus/babylon-lite/LICENSE",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene316.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene316.ts",
+      "sha256": "e56505320c390b83dde267e9bf4a08bb13c09d250eba54e94117f99f66b788aa"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene317.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene317.ts",
+      "sha256": "48327ccd53a08dd345606ab9144dca6ffa1d4e3995be748162ab169cf76e99c3"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene318.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene318.ts",
+      "sha256": "f3286c9b282c96f2cabd4d006ea54dbe2bb60ae385dff8f4ea7203c89fff1ad4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene319.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene319.ts",
+      "sha256": "ccfdcd2018eea441b55e212309309c8d668f9936b6c7e6ac52e644d6f94e75ba"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene320.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene320.ts",
+      "sha256": "07b9de654248d11b7196193018660329220abd1b48bab69b51480f6819bed2ac"
     }
   ],
   "tooling": [
@@ -2807,7 +2832,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/platformer/input.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/input.ts",
-          "sha256": "00199af34f4a29df9d1b1b3309dd9dc6593fce2e0a0546e3e87b649d6d17d917"
+          "sha256": "e2c4eeb360c9ba4cb63359328494d80a3965dd0d799711ab826e3f29f9421dfc"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/juice.ts",
@@ -3682,7 +3707,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "5df03d43f6a686c1d51b9c0771b9b228048615043c4fbbc46023b23db0936135"
+          "sha256": "8abb4cf94b350376929cc7ddc71b519bd9ab633a50fca8686589d29e36cffb90"
         }
       },
       "files": [
@@ -4573,7 +4598,7 @@
         "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "928c3f27c6cbd5551592290c269e6c3bcd820eb5b1701487ae7f41d083a2f722"
+          "sha256": "21186b046fd36d2018187fe71f20001ad851a2e127f1d3801e6cae6dc04e9927"
         }
       },
       "files": [

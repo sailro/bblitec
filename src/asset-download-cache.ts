@@ -30,7 +30,8 @@ import { dirname, resolve } from "node:path";
 
 const directory = resolve(".cache", "assets");
 
-function entryPath(url: string): string {
+/** Where the bytes behind a URL are cached; a seed writes them here. */
+export function cachedDownloadPath(url: string): string {
     return resolve(
         directory,
         createHash("sha256").update(url).digest("hex").slice(0, 32),
@@ -54,7 +55,7 @@ export async function downloadCached(url: string): Promise<Uint8Array> {
  * unverifiable rather than failing on the first fetch.
  */
 export function readCachedDownload(url: string): Uint8Array | undefined {
-    const path = entryPath(url);
+    const path = cachedDownloadPath(url);
     return existsSync(path) ? new Uint8Array(readFileSync(path)) : undefined;
 }
 
@@ -70,7 +71,7 @@ export function readCachedDownload(url: string): Uint8Array | undefined {
 export async function downloadCachedResource(
     url: string,
 ): Promise<{ bytes: Uint8Array; contentType?: string }> {
-    const path = entryPath(url);
+    const path = cachedDownloadPath(url);
     if (existsSync(path)) {
         const type = existsSync(`${path}.type`)
             ? readFileSync(`${path}.type`, "utf8").trim()

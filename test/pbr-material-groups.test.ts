@@ -20,6 +20,8 @@ import {
 import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { sceneContextSource } from "./pinned-scene.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 const pbrModule = "src/material/pbr/pbr-renderable.ts";
@@ -231,10 +233,7 @@ function sourceOracle(
     lazyPbrCaps: (mesh: unknown) => number,
 ): (input: Scenario) => Promise<unknown> {
     const declaration = (module: string, name: string) =>
-        context
-            .functionDeclaration(module, name)
-            .declaration.getText()
-            .replace(/^export /, "");
+        pinnedDeclaration(context, module, name);
     const add = context.functionDeclaration(
         sceneModule,
         "joinMaterialGroup",
@@ -289,11 +288,10 @@ function sourceOracle(
         declared("loadCaps").getText(),
         following(declared("loadCaps")).getText(),
     ].join("\n");
-    const rebuildFile = context.sourceFile("src/scene/scene-rebuild.ts");
-    const rebuildSource = rebuildFile.statements
-        .filter((node) => !ts.isImportDeclaration(node))
-        .map((node) => node.getText().replace(/^export /, ""))
-        .join("\n");
+    const rebuildSource = pinnedModuleSource(
+        context,
+        "src/scene/scene-rebuild.ts",
+    );
     const runtimeModule = "src/scene/scene-runtime-mesh-build.ts";
     const code = transpileCommonJs(
         `
@@ -306,6 +304,7 @@ function sourceOracle(
         ${declaration("src/scene/scene-material-swap.ts", "processMaterialSwaps")}
         ${["A", "B", "C", "X", "moveRuntimeMeshToGroup"].map((name) => declaration(runtimeModule, name)).join("\n")}
         ${declaration("src/mesh/thin-instance.ts", "buildRuntimeThinMesh")}
+        ${sceneContextSource(context)}
         ${declaration(sceneModule, "buildScene")}
         ${declaration(sceneModule, "joinMaterialGroup")}
         ${rebuildSource}
@@ -324,9 +323,7 @@ function sourceOracle(
         }
         return async function(input) {
             const events = [], failures = [];
-            const scene = {meshes: [], _groups: new Map(), _materialSwapQueue: [], _deferredBuilders: [],
-                _renderables: [], _uniformUpdaters: [], _disposables: [], _meshDisposables: new Map(),
-                _frameGraph: {build() {}}, surface: {engine: {}}, _built: false};
+            const scene = createSceneContext({engine: {}}, {defaultRenderTask: false});
             const builder = Object.assign(async (scene, meshes) => {
                 ${widening}
                 events.push(meshes.map(mesh => mesh.id));

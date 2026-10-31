@@ -8,6 +8,8 @@ TypeScript + reached modules → typed lowering + asset/shader composition
 Assets, closed producers and shader composition run at generation; state, input, animation and rendering run natively.
 Source pin: [upstream/babylon-lite.json](../upstream/babylon-lite.json). `upstream-source.ts` reads package source maps,
 `pinned-program.ts` type-checks them as one program, `pinned-wgsl-build.ts` applies the shader transform.
+Browser pages read cdn.babylonjs.com (the KTX2 decoder and transcoders) from the release
+[upstream/babylon-cdn.json](../upstream/babylon-cdn.json) pins (`pinned-babylon-cdn.ts`), never the CDN's latest.
 
 ## Ownership
 

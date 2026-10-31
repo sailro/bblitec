@@ -1,11 +1,11 @@
 #!/usr/bin/env node
+import { compilerRepositoryRoot } from "./repository-root.js";
 
 // First, so the modules evaluated after it are compiled through the cache.
 import "./tooling/compile-cache.js";
 import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
     CompileAsset,
@@ -1769,9 +1769,7 @@ ${imageCodecLines || '    ""'}
     // source, so neither is a file to list. `scene -- compile` skips a
     // scene whose listed inputs are unchanged, so a read added here that
     // is not listed is a read that skip cannot see.
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
+    const repositoryRoot = compilerRepositoryRoot();
     const listInput = (path: string): void => {
         result.manifest.inputs.push(
             repositoryRelativePath(repositoryRoot, path),

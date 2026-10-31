@@ -152,12 +152,32 @@ inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
     return 1u;
 }
 
+/**
+ * The WebGPU names of the formats SDL_GPU creates sampled and storage
+ * textures in by name (compute textures, text atlases).
+ */
+inline SDL_GPUTextureFormat sdl_named_texture_format(std::string_view value) {
+    static constexpr std::pair<std::string_view, SDL_GPUTextureFormat> formats[] = {
+        {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
+        {"rgba8snorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM},
+        {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
+        {"r32float", SDL_GPU_TEXTUREFORMAT_R32_FLOAT},
+        {"rg32float", SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT},
+        {"rg32uint", SDL_GPU_TEXTUREFORMAT_R32G32_UINT},
+        {"rgba32float", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT}};
+    for (const auto& [name, format] : formats)
+        if (value == name)
+            return format;
+    throw std::runtime_error("Unrepresented SDL texture format: " + std::string(value));
+}
+
 /** The WebGPU names of the formats SDL_GPU render targets use (WebGPU subset, text). */
 inline constexpr std::pair<std::string_view, SDL_GPUTextureFormat> sdl_webgpu_formats[] = {
     {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
     {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
     {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
     {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
+    {"r16float", SDL_GPU_TEXTUREFORMAT_R16_FLOAT},
     {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
     {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
     {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},

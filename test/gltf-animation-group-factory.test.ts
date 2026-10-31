@@ -14,6 +14,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 
 const module = "src/animation/animation-group.ts";
 const contexts = () => [
@@ -55,10 +56,11 @@ test("glTF group initialization follows actual factory values and source mutatio
         ),
     );
     const cases = variants.map((context) => {
-        const body = context
-            .functionDeclaration(module, "createAnimationGroups")
-            .declaration.getText()
-            .replace(/^export /, "");
+        const body = pinnedDeclaration(
+            context,
+            module,
+            "createAnimationGroups",
+        );
         const frameRate = context
             .moduleScopeConstant(
                 context.sourceFile(module),

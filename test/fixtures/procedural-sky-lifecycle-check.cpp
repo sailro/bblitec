@@ -218,7 +218,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            disposed_update = std::string(value.what()) == "#169";
+                            disposed_update = std::string(value.what()) == "#201";
                         }
                         disposal.close();
                     });
@@ -228,7 +228,7 @@ int main() {
                !world.scene.state->environment_identity && !world.scene.environment.specular_gpu);
         assert(world.device->counters.images == 0 && world.device->counters.buffers == 0 &&
                !procedural_sky_generation(world.scene));
-        rejects([&] { assert_procedural_sky_environment_active(environment); }, "#169");
+        rejects([&] { assert_procedural_sky_environment_active(environment); }, "#201");
     }
     for (const std::string path : {"corrupt", "missing"}) {
         World world;
@@ -290,7 +290,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#175";
+                            cancelled = std::string(value.what()) == "#207";
                         }
                         loop.close();
                     });
@@ -316,7 +316,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#175";
+                            cancelled = std::string(value.what()) == "#207";
                         }
                         loop.close();
                     });
@@ -326,7 +326,7 @@ int main() {
                           try {
                               std::rethrow_exception(error);
                           } catch (const std::exception& value) {
-                              duplicate = std::string(value.what()) == "#174";
+                              duplicate = std::string(value.what()) == "#206";
                           }
                       });
             loop.post([&] { world.dispose(); });

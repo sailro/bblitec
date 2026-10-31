@@ -8,11 +8,7 @@ import {
     meshCompositionRowsCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
-import {
-    isAsyncFunction,
-    sameSource,
-    soleBindingName,
-} from "../compiler/syntax.js";
+import { isAsyncFunction, sameSource } from "../compiler/syntax.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -197,10 +193,12 @@ ${body}
         );
         const statements = declaration.body!.statements;
         const first = statements[0];
+        this.context.assertParameterNames(
+            declaration,
+            ["surface", "widthPx", "heightPx"],
+            "setSurfaceSize",
+        );
         if (
-            declaration.parameters
-                .map((parameter) => soleBindingName(parameter.name))
-                .join(",") !== "surface,widthPx,heightPx" ||
             !first ||
             !ts.isVariableStatement(first) ||
             first.declarationList.declarations.length !== 1 ||

@@ -8,6 +8,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("compute storage texture reach retains asynchronous resource identity", () => {
     const result = compileSource(`
@@ -78,7 +79,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> check(bbl::pal::EventLoop& loop, std::sha
     auto render_lease=std::make_shared<bbl::GpuTextureLease>(sampled.data.gpu_source);
     assert(sampled.data.gpu_source->owners==2);
     bool rejected=false;
-    try {bbl::dispose_compute_storage_texture(texture);} catch(const std::exception& e) {rejected=std::string(e.what())=="#1047";}
+    try {bbl::dispose_compute_storage_texture(texture);} catch(const std::exception& e) {rejected=std::string(e.what())=="${pinnedError("ComputeStorageTexture2D cannot be disposed while sampled facades are still owned.")}";}
     assert(rejected && !texture->destroyed && image->destroys==0);
     render_lease.reset();
     assert(sampled.data.gpu_source->owners==1);
@@ -86,18 +87,18 @@ bbl::js::Promise<bbl::js::PromiseVoid> check(bbl::pal::EventLoop& loop, std::sha
     bbl::dispose_compute_storage_texture(texture);
     assert(texture->destroyed && texture->compute_texture->destroyed && image->destroys==1 && engine->resource_epoch==1);
     rejected=false;
-    try {bbl::validate_compute_texture_resource(compute);} catch(const std::exception& e) {rejected=std::string(e.what())=="#999";}
+    try {bbl::validate_compute_texture_resource(compute);} catch(const std::exception& e) {rejected=std::string(e.what())=="${pinnedError("ComputeBindingSet contains an invalid texture resource.", { module: "src/compute/compute-texture-resource.ts", name: "_validateComputeTextureResource" })}";}
     assert(rejected && sampled.data.gpu_source->owners==0);
     for(int mode=1;mode<3;++mode) {
         device->mode=mode; rejected=false;
         try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {
-            rejected=std::string(e.what()).find(mode==1 ? "#1039" : "allocation failure")!=std::string::npos;
+            rejected=std::string(e.what()).find(mode==1 ? "${pinnedError("createComputeStorageTexture: unsupported format, dimension, or access combination: ${a0}")}" : "allocation failure")!=std::string::npos;
         }
         assert(rejected && device->last->destroys==1);
     }
     device->mode=0;
     options.width=33; rejected=false;
-    try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {rejected=std::string(e.what()).find("#1032")!=std::string::npos;}
+    try {(void)co_await bbl::create_compute_storage_texture(engine, options);} catch(const std::exception& e) {rejected=std::string(e.what()).find("${pinnedError("ComputeStorageTexture: ${a0} must be a positive integer no larger than ${a1}, received ${a2}.")}")!=std::string::npos;}
     assert(rejected && device->calls==3);
     options.width=4;
     texture=co_await bbl::create_compute_storage_texture(engine, options);

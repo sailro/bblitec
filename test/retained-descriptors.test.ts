@@ -8,6 +8,7 @@ import {
     createRecordingDevice,
     RecordedTexture,
 } from "../src/recording-device.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 const setup = `const engine=await createEngine(document.getElementById('renderCanvas') as HTMLCanvasElement);const scene=createSceneContext(engine);`;
 const splatImports = `import {createEngine,createSceneContext,loadSplat,type GsShaderFragment} from '@babylonjs/lite';`;
@@ -215,7 +216,7 @@ test("pinned recovery re-reads retained probe geometry while stable owners keep 
             maxCandidates: number;
         }): Promise<void>;
         createPbrLocalEnvironmentProbeSet(
-            scene: object,
+            scene: PinnedScene,
             options: object,
         ): {
             _ensureDevice(): void;
@@ -225,7 +226,7 @@ test("pinned recovery re-reads retained probe geometry while stable owners keep 
     }>("material/pbr/enable-pbr-local-cubemap.js");
     await pin.enablePbrLocalCubemap({ maxCandidates: 2 });
     const set = pin.createPbrLocalEnvironmentProbeSet(
-        { surface: { engine }, _disposables: [] },
+        await createPinnedScene({ engine }),
         {
             probes: [probe],
             voxelGrid: {
