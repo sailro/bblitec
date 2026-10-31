@@ -8,6 +8,7 @@
 #include <bblite/features/render_target_disposal.hpp>
 
 #include <bblite/pal.hpp>
+#include "pal_gpu_samples.hpp"
 #include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_POST_PROCESS
@@ -377,9 +378,7 @@ public:
         if (engine.frame_graph_contexts().empty() || !engine.frame_graph_contexts().front())
             throw std::runtime_error("Frame-graph renderer requires a registered context.");
         context = engine.frame_graph_contexts().front();
-        state.samples = frame_options.single_sample
-                            ? 1u
-                            : upstream::preferred_sample_count(engine.options.msaa_samples);
+        state.samples = surface_sample_count(frame_options, engine.options.msaa_samples);
         const DeviceOptions device_options = frame_device_options(frame_options);
         presentation.open(offscreen, engine, frame_options.screenshot_path, device_options, state);
 #if BBLITE_HAS_POST_PROCESS

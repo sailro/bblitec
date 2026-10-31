@@ -22,8 +22,14 @@ test("source styles lower direct parent tags with child classes and interaction 
     assert.equal(rules.length, 4);
     for (const rule of rules)
         assert.match(rule, /UiStyleSelectorKind::TagChildClass/);
-    assert.match(rules[1]!, /"body", true,/);
-    assert.match(rules[3]!, /"cursor", "visible", "html"/);
+    assert.match(
+        rules[1]!,
+        /\.tag = "body", \.style = "[^"]*", \.hover = true/,
+    );
+    assert.match(
+        rules[3]!,
+        /\.primary = "cursor", \.secondary = "visible", \.tag = "html"/,
+    );
 });
 
 test("native direct-child selectors preserve parent scope, specificity and live reparenting", (t) => {

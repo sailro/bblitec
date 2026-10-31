@@ -64,6 +64,7 @@
 #include "pal_ui_text.hpp"
 #include "pal_ui_svg.hpp"
 #include "pal_system_preferences.hpp"
+#include "pal_input_capabilities.hpp"
 
 #include <algorithm>
 #include <array>
@@ -77,6 +78,7 @@
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -149,13 +151,7 @@ void require_tree_tab_order(std::optional<std::int32_t> order) {
                                      "NotSupportedError");
 }
 
-std::string_view trim_css_token(std::string_view value) {
-    const std::size_t first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string_view::npos)
-        return {};
-    const std::size_t last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
+using pal::detail::trim_css_token;
 
 /** A declaration value without its trailing `!important`, and whether it carried one. */
 std::pair<std::string_view, bool> split_css_important(std::string_view value) {
@@ -853,8 +849,7 @@ js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_
 UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
     if (const auto found = ui_find_element_by_id(engine, id))
         return *found;
-    throw std::runtime_error("Audited native host UI element id was not materialized: " +
-                             std::string(id));
+    throw std::runtime_error("Host page element id was not materialized: " + std::string(id));
 }
 
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
@@ -1896,8 +1891,10 @@ void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string 
     if (class_name.empty()) {
         throw std::runtime_error("Native UI class style name cannot be empty.");
     }
-    ui_add_style_rule(engine, stylesheet, UiStyleSelectorKind::Class, std::move(class_name), {}, {},
-                      false, -1.0, std::move(style));
+    ui_add_style_rule(engine, stylesheet,
+                      {.selector = UiStyleSelectorKind::Class,
+                       .primary = std::move(class_name),
+                       .style = std::move(style)});
 }
 
 void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet) {
@@ -1916,49 +1913,22 @@ void ui_add_id_style(Engine& engine, UiElementHandle stylesheet, std::string id,
     if (id.empty()) {
         throw std::runtime_error("Native UI id style name cannot be empty.");
     }
-    ui_add_style_rule(engine, stylesheet, UiStyleSelectorKind::Id, std::move(id), {}, {}, false,
-                      -1.0, std::move(style));
+    ui_add_style_rule(
+        engine, stylesheet,
+        {.selector = UiStyleSelectorKind::Id, .primary = std::move(id), .style = std::move(style)});
 }
 
-void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleSelectorKind selector,
-                       std::string primary, std::string secondary, std::string tag, bool hover,
-                       double max_width, std::string style, UiScrollbarPart scrollbar,
-                       bool focus_visible, bool active, UiMotionPreference motion,
-                       std::vector<UiSelectorStep> sequence, UiGeneratedPart generated,
-                       std::optional<UiGeneratedContent> content, UiRangePart range,
-                       double container_max_width, UiOrientation orientation) {
+void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleRule rule) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error("A native UI stylesheet rule must belong to a <style> element.");
     }
-    if (primary.empty() || (style.empty() && !content)) {
+    if (rule.primary.empty() || (rule.style.empty() && !rule.content)) {
         throw std::runtime_error(
             "A native UI stylesheet rule must have a target and declarations.");
     }
-    owner.style_rules.push_back({selector, std::move(primary), std::move(secondary), std::move(tag),
-                                 std::move(style), max_width, hover, focus_visible, active,
-                                 scrollbar, motion, std::move(sequence), generated,
-                                 std::move(content), range, container_max_width, orientation});
+    owner.style_rules.push_back(std::move(rule));
     mark_ui_changed(engine, owner);
-}
-
-void ui_add_host_style_rule(Engine& engine, UiStyleSelectorKind selector, std::string primary,
-                            std::string secondary, std::string tag, bool hover, double max_width,
-                            std::string style, bool focus_visible, bool active,
-                            UiScrollbarPart scrollbar, UiMotionPreference motion,
-                            std::vector<UiSelectorStep> sequence, UiGeneratedPart generated,
-                            std::optional<UiGeneratedContent> content, UiRangePart range,
-                            double container_max_width, UiOrientation orientation) {
-    if (primary.empty() || (style.empty() && !content)) {
-        throw std::runtime_error(
-            "A native host UI style rule must have a target and declarations.");
-    }
-    engine.ui_host_style_rules.push_back(
-        {selector, std::move(primary), std::move(secondary), std::move(tag), std::move(style),
-         max_width, hover, focus_visible, active, scrollbar, motion, std::move(sequence), generated,
-         std::move(content), range, container_max_width, orientation});
-    ++engine.ui_style_revision;
-    mark_ui_changed(engine);
 }
 
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
@@ -3464,10 +3434,7 @@ void load_rml_font(const SystemFontFace& face, std::string_view registered_famil
     }
 }
 
-bool css_identifier_character(char character) {
-    return std::isalnum(static_cast<unsigned char>(character)) || character == '-' ||
-           character == '_';
-}
+using pal::detail::css_identifier_character;
 
 void replace_css_identifier(std::string& text, std::string_view identifier,
                             std::string_view replacement) {
@@ -3485,13 +3452,35 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
     }
 }
 
+/** The time longhands a transition or animation shorthand resets. */
+std::span<const std::string_view> ui_time_longhands(std::string_view shorthand) {
+    static constexpr std::string_view transition[] = {"transition-delay"};
+    static constexpr std::string_view animation[] = {"animation-delay", "animation-duration"};
+    if (ascii_iequals(shorthand, "transition"))
+        return transition;
+    if (ascii_iequals(shorthand, "animation"))
+        return animation;
+    return {};
+}
+
+/** A transition or animation shorthand, or a time longhand it resets. */
+bool is_ui_motion_property(std::string_view name) {
+    for (const std::string_view shorthand : {"transition", "animation"})
+        if (ascii_iequals(name, shorthand) ||
+            std::ranges::any_of(ui_time_longhands(shorthand), [&](std::string_view longhand) {
+                return ascii_iequals(name, longhand);
+            }))
+            return true;
+    return false;
+}
+
 /**
- * RmlUi's transition-delay, animation-delay and animation-duration replace the times their shorthand
- * lists, and a CSS shorthand declaration resets its longhands: follow each transition/animation
- * declaration of a declaration list or sheet with its time longhands' 'auto', which keeps the
- * shorthand's times.
+ * RmlUi's time longhands replace the times their shorthand lists, and a CSS
+ * shorthand declaration resets its longhands: follows each transition or
+ * animation declaration of a declaration list or sheet with its longhands'
+ * 'auto', which keeps the shorthand's times.
  */
-std::string rml_css_time_resets(std::string_view source) {
+std::string rml_css_time_longhand_resets(std::string_view source) {
     std::string result;
     std::size_t copied = 0;
     for_each_css_declaration(
@@ -3501,21 +3490,18 @@ std::string rml_css_time_resets(std::string_view source) {
             if (colon == std::string_view::npos)
                 return;
             const auto name = trim_css_token(declaration.substr(0, colon));
-            const bool transition = ascii_iequals(name, "transition");
-            if (!transition && !ascii_iequals(name, "animation"))
+            const auto resets = ui_time_longhands(name);
+            if (resets.empty())
                 return;
             result.append(source.substr(copied, end - copied));
             const bool important = split_css_important(declaration.substr(colon + 1)).second;
-            const auto reset = [&](std::string_view longhand) {
+            for (const std::string_view reset : resets) {
                 result += ';';
-                result += longhand;
+                result += reset;
                 result += ":auto";
                 if (important)
                     result += " !important";
-            };
-            reset(transition ? "transition-delay" : "animation-delay");
-            if (!transition)
-                reset("animation-duration");
+            }
             copied = end;
         },
         true);
@@ -3577,66 +3563,6 @@ std::string rml_css_filter_arguments(std::string value) {
     return value;
 }
 
-std::string rml_css_color_alpha(std::string value, bool clamp_channels = false) {
-    // RmlUi's legacy rgba() parser expects all four channels in 0..255,
-    // while browser CSS uses a fractional alpha. Translate only that alpha
-    // and leave the rest of the declaration untouched. Computed filter channels
-    // also clamp to CSS ranges after arithmetic resolves.
-    std::size_t position = 0;
-    while ((position = value.find("rgba(", position)) != std::string::npos) {
-        const std::size_t end = value.find(')', position + 5);
-        if (end == std::string::npos)
-            break;
-        const std::string function = value.substr(position, end - position + 1);
-        double red = 0.0;
-        double green = 0.0;
-        double blue = 0.0;
-        double alpha = 0.0;
-        if (std::sscanf(function.c_str(), "rgba(%lf,%lf,%lf,%lf)", &red, &green, &blue, &alpha) ==
-                4 &&
-            (clamp_channels || (alpha >= 0.0 && alpha <= 1.0))) {
-            if (clamp_channels) {
-                red = std::clamp(red, 0.0, 255.0);
-                green = std::clamp(green, 0.0, 255.0);
-                blue = std::clamp(blue, 0.0, 255.0);
-                alpha = std::clamp(alpha, 0.0, 1.0);
-            }
-            char translated[80]{};
-            std::snprintf(translated, sizeof(translated), "rgba(%d,%d,%d,%d)",
-                          static_cast<int>(std::lround(red)), static_cast<int>(std::lround(green)),
-                          static_cast<int>(std::lround(blue)),
-                          static_cast<int>(std::lround(alpha * 255.0)));
-            value.replace(position, function.size(), translated);
-            position += std::char_traits<char>::length(translated);
-        } else {
-            position = end + 1;
-        }
-    }
-    return value;
-}
-
-/** rgb()/rgba() over var() keep CSS channel ranges until var() substitution resolves them. */
-std::string rml_css_variable_colors(std::string value) {
-    constexpr std::string_view marker = "bbl-css-color";
-    for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
-        const bool alpha = value.compare(position, 5, "rgba(") == 0;
-        const std::size_t open = position + (alpha ? 4 : 3);
-        if ((!alpha && value.compare(position, 4, "rgb(") != 0) ||
-            (position && css_identifier_character(value[position - 1]))) {
-            position += 3;
-            continue;
-        }
-        const std::size_t end = pal::detail::css_function_end(value, open);
-        if (std::string_view(value).substr(open, end - open).find("var(") == std::string::npos) {
-            position = end;
-            continue;
-        }
-        value.replace(position, open - position, marker);
-        position += marker.size();
-    }
-    return value;
-}
-
 /**
  * One CSS rgb()/rgba() argument in RmlUi's 0..255 range: a channel (a number, or a percentage of
  * 255), or with `alpha` the opacity (a number, or a percentage of 1); empty when it is neither.
@@ -3656,51 +3582,79 @@ std::optional<long> css_rgb_argument(std::string_view argument, bool alpha) {
 }
 
 /**
- * CSS Color 4's space-separated rgb()/rgba() (`rgb(21 22 38 / 88%)`) in the comma form RmlUi
- * parses, channels and alpha in 0..255. A function it cannot read is left for RmlUi to refuse.
+ * An rgb()/rgba() argument list (between its parentheses) as the comma form RmlUi parses,
+ * `rgba(r,g,b,a)` in 0..255: three comma-separated channels and an optional alpha, or CSS Color
+ * 4's space-separated channels and optional `/ alpha`; empty when it is neither.
  */
-std::string rml_css_space_colors(std::string value) {
+std::optional<std::string> rml_rgba(std::string_view body) {
     constexpr std::string_view space = " \t\n\r\f";
+    std::vector<std::string_view> arguments;
+    if (body.find(',') != std::string_view::npos) {
+        for (std::size_t start = 0;;) {
+            const std::size_t comma = body.find(',', start);
+            arguments.push_back(body.substr(start, comma - start));
+            if (comma == std::string_view::npos)
+                break;
+            start = comma + 1;
+        }
+    } else {
+        const std::size_t slash = body.find('/');
+        const std::string_view channels = body.substr(0, slash);
+        for (std::size_t start = channels.find_first_not_of(space);
+             start != std::string_view::npos;) {
+            const std::size_t stop =
+                std::min(channels.find_first_of(space, start), channels.size());
+            arguments.push_back(channels.substr(start, stop - start));
+            start = channels.find_first_not_of(space, stop);
+        }
+        if (slash != std::string_view::npos && arguments.size() == 3)
+            arguments.push_back(body.substr(slash + 1));
+    }
+    if (arguments.size() != 3 && arguments.size() != 4)
+        return std::nullopt;
+    std::string resolved = "rgba(";
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto converted = index < arguments.size()
+                                   ? css_rgb_argument(arguments[index], index == 3)
+                                   : std::optional<long>{255};
+        if (!converted)
+            return std::nullopt;
+        resolved += std::to_string(*converted);
+        resolved += index == 3 ? ")" : ",";
+    }
+    return resolved;
+}
+
+/**
+ * Each CSS rgb()/rgba() of `value` in the comma form RmlUi parses, channels and alpha in 0..255
+ * and clamped as CSS clamps them (`rml_rgba`). One over var() keeps CSS ranges until the
+ * substitution resolves it (`rml_css_resolve_variable_colors`); one it cannot read is left for
+ * RmlUi to refuse.
+ */
+std::string rml_css_colors(std::string value) {
+    constexpr std::string_view marker = "bbl-css-color";
     for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
-        const bool alpha_name = value.compare(position, 5, "rgba(") == 0;
-        const std::size_t open = position + (alpha_name ? 5 : 4);
-        const std::size_t end = value.find(')', open);
-        if ((!alpha_name && value.compare(position, 4, "rgb(") != 0) ||
-            (position > 0 && css_identifier_character(value[position - 1])) ||
-            end == std::string::npos) {
+        const bool alpha = value.compare(position, 5, "rgba(") == 0;
+        const std::size_t open = position + (alpha ? 4 : 3);
+        if ((!alpha && value.compare(position, 4, "rgb(") != 0) ||
+            (position && css_identifier_character(value[position - 1]))) {
             position += 3;
             continue;
         }
-        const std::string_view body(value.data() + open, end - open);
-        const std::size_t slash = body.find('/');
-        const std::string_view channel_text = body.substr(0, slash);
-        std::vector<std::string_view> channels;
-        for (std::size_t start = channel_text.find_first_not_of(space);
-             start != std::string_view::npos;) {
-            const std::size_t stop =
-                std::min(channel_text.find_first_of(space, start), channel_text.size());
-            channels.push_back(channel_text.substr(start, stop - start));
-            start = channel_text.find_first_not_of(space, stop);
-        }
-        const std::optional<long> alpha = slash == std::string_view::npos
-                                              ? std::optional<long>{255}
-                                              : css_rgb_argument(body.substr(slash + 1), true);
-        bool readable =
-            body.find_first_of(",(") == std::string_view::npos && channels.size() == 3 && alpha;
-        std::string resolved = "rgba(";
-        for (const std::string_view channel : channels) {
-            const auto converted = readable ? css_rgb_argument(channel, false) : std::nullopt;
-            readable = converted.has_value();
-            if (readable)
-                resolved += std::to_string(*converted) + ",";
-        }
-        if (!readable) {
-            position = end + 1;
+        const std::size_t end = pal::detail::css_function_end(value, open);
+        const std::string_view body = std::string_view(value).substr(open + 1, end - open - 1);
+        if (body.find("var(") != std::string_view::npos) {
+            value.replace(position, open - position, marker);
+            position += marker.size();
             continue;
         }
-        resolved += std::to_string(*alpha) + ")";
-        value.replace(position, end + 1 - position, resolved);
-        position += resolved.size();
+        const auto resolved = end < value.size() ? rml_rgba(body) : std::nullopt;
+        if (!resolved) {
+            position = end;
+            continue;
+        }
+        value.replace(position, end + 1 - position, *resolved);
+        position += resolved->size();
     }
     return value;
 }
@@ -3719,20 +3673,11 @@ std::string rml_css_resolve_variable_colors(std::string value) {
         };
         if (end == std::string::npos)
             refuse();
-        Rml::StringList arguments;
-        Rml::StringUtilities::ExpandString(arguments, value.substr(open, end - open), ',');
-        if (arguments.size() != 3 && arguments.size() != 4)
+        const auto resolved = rml_rgba(std::string_view(value).substr(open, end - open));
+        if (!resolved)
             refuse();
-        std::string resolved = arguments.size() == 4 ? "rgba(" : "rgb(";
-        for (std::size_t index = 0; index < arguments.size(); ++index) {
-            const auto channel = css_rgb_argument(arguments[index], index == 3);
-            if (!channel)
-                refuse();
-            resolved += std::to_string(*channel);
-            resolved += index + 1 == arguments.size() ? ")" : ",";
-        }
-        value.replace(position, end + 1 - position, resolved);
-        position += resolved.size();
+        value.replace(position, end + 1 - position, *resolved);
+        position += resolved->size();
     }
     return value;
 }
@@ -3813,7 +3758,7 @@ class UiResolvedFilter final : public Rml::Filter {
             }
         }
         value = rml_css_length_math(std::move(value), 0, 0);
-        value = rml_css_color_alpha(std::move(value), true);
+        value = rml_css_colors(std::move(value));
         if (name == "drop-shadow") {
             Rml::StringList tokens;
             Rml::StringUtilities::ExpandString(tokens, value, ' ', '(', ')', true);
@@ -4025,9 +3970,6 @@ std::string ui_style_rule_selector(const UiStyleRule& rule, bool origin_only = f
         selector =
             rule.tag + " > ." + rule.primary + (rule.secondary.empty() ? "" : "." + rule.secondary);
         break;
-    case UiStyleSelectorKind::TagAttribute:
-        selector = rule.tag + "[" + rule.primary + "=\"" + rule.secondary + "\"]";
-        break;
     case UiStyleSelectorKind::IdDescendantClass:
         selector = "#" + rule.primary + " ." + rule.secondary;
         break;
@@ -4110,7 +4052,6 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
         break;
     case UiStyleSelectorKind::ClassDescendantTag:
     case UiStyleSelectorKind::TagClass:
-    case UiStyleSelectorKind::TagAttribute:
         ++classes;
         ++tags;
         break;
@@ -5344,9 +5285,11 @@ void substitute_css(const Rml::String& property, Rml::String& value);
 
 struct UiRmlRuntime {
     UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
-                 bool (*read_motion_preference)() = system_reduced_motion)
+                 bool (*read_motion_preference)() = system_reduced_motion,
+                 InputCapabilities (*read_input_capabilities)() = platform_input_capabilities)
         : engine(engine), window(window), system_interface(window), viewport_width(width),
-          viewport_height(height), motion_preference_reader(read_motion_preference) {
+          viewport_height(height), motion_preference_reader(read_motion_preference),
+          input_capabilities_reader(read_input_capabilities) {
         UiProjectionScope projection_scope(projecting);
         try {
             Rml::SetSystemInterface(&system_interface);
@@ -5498,6 +5441,7 @@ struct UiRmlRuntime {
             }
             system_interface.context = context;
             update_density_ratio();
+            update_safe_area();
             context->SetDocumentsBaseTag("html");
             document = context->CreateDocument();
             if (!document) {
@@ -5511,7 +5455,7 @@ struct UiRmlRuntime {
             context->Update();
             root_font_size = document->GetComputedValues().font_size() / density_ratio;
             sync_style_sheet();
-            sync_motion_preference();
+            sync_media_themes();
             document->Show(Rml::ModalFlag::None, Rml::FocusFlag::None, Rml::ScrollFlag::None);
             sync_tree();
             context->Update();
@@ -5648,13 +5592,51 @@ struct UiRmlRuntime {
         return true;
     }
 
+    /**
+     * The insets env() reads: the window's safe area in CSS px under `viewport-fit=cover`, none
+     * otherwise (the page's viewport is then the safe rectangle). Read once a value uses env().
+     */
+    UiSafeAreaInsets read_safe_area() const {
+        if (!engine.ui_viewport_fit_cover)
+            return {};
+        SDL_Rect safe{};
+        int width = 0, height = 0;
+        if (!SDL_GetWindowSafeArea(window, &safe) || !SDL_GetWindowSize(window, &width, &height))
+            throw std::runtime_error(std::string("SDL window safe area: ") + SDL_GetError());
+        const double scale = engine.canvas_window_to_client_scale;
+        return {safe.y * scale, (width - safe.x - safe.w) * scale,
+                (height - safe.y - safe.h) * scale, safe.x * scale};
+    }
+
+    /** Re-reads the safe area of a page that used env(); true when it changed. */
+    bool update_safe_area() {
+        if (!safe_area_insets)
+            return false;
+        const UiSafeAreaInsets next = read_safe_area();
+        if (next == *safe_area_insets)
+            return false;
+        safe_area_insets = next;
+        return true;
+    }
+
+    /** env() and CSS math of a projected value: the safe area and the viewport's lengths. */
+    std::string project_css_math(std::string value, std::string_view property) const {
+        if (value.find("env(") != std::string::npos) {
+            if (!safe_area_insets)
+                safe_area_insets = read_safe_area();
+            value = rml_css_environment(std::move(value), *safe_area_insets);
+        }
+        return rml_css_length_math(std::move(value), viewport_width / density_ratio,
+                                   viewport_height / density_ratio, root_font_size, property);
+    }
+
     std::string project_css(std::string value, std::string_view property = {}) const {
         static_cast<void>(take_css_declaration(value, "resize"));
         if (property == "filter")
             return value;
         if (property.empty())
             return project_css_outside_filters(
-                rml_css_time_resets(value),
+                rml_css_time_longhand_resets(value),
                 [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
@@ -5667,10 +5649,9 @@ struct UiRmlRuntime {
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_font_families(std::move(value), property);
         value = rml_css_filter_arguments(std::move(value));
-        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
-                                    viewport_height / density_ratio, root_font_size, property);
+        value = project_css_math(std::move(value), property);
         value = rml_css_density_units(std::move(value));
-        return rml_css_space_colors(rml_css_color_alpha(rml_css_variable_colors(std::move(value))));
+        return rml_css_colors(std::move(value));
     }
 
     /** Completes the math and colours the projection left over var() once it is substituted. */
@@ -5678,8 +5659,7 @@ struct UiRmlRuntime {
         // Filter arguments resolve their own arithmetic (UiResolvedFilter).
         if (property == "filter" || property == "backdrop-filter")
             return value;
-        value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
-                                    viewport_height / density_ratio, root_font_size, property);
+        value = project_css_math(std::move(value), property);
         return rml_css_resolve_variable_colors(rml_css_density_units(std::move(value)));
     }
 
@@ -5707,12 +5687,12 @@ struct UiRmlRuntime {
 
     void set_projected_property(Rml::Element& element, const std::string& name,
                                 const std::string& value) const {
-        if (name == "transition" || name == "animation") {
-            // The shorthand resets its delay longhand; 'auto' keeps the shorthand's own delays.
+        // The shorthand resets its time longhands; 'auto' keeps the shorthand's own times.
+        for (const std::string_view longhand : ui_time_longhands(name)) {
             if (value.empty())
-                element.RemoveProperty(name + "-delay");
+                element.RemoveProperty(std::string(longhand));
             else
-                element.SetProperty(name + "-delay", "auto");
+                element.SetProperty(std::string(longhand), "auto");
         }
         // Author writes: a property the element's transition list covers animates (RmlUi patch 0044).
         if (value.empty()) {
@@ -5731,9 +5711,7 @@ struct UiRmlRuntime {
             name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
             name == "accent-color" || name == "color-scheme" || name == "text-decoration";
         // Motion values keep their case (keyframes names) and refuse rather than drop.
-        const bool motion = name == "transition" || name == "animation" ||
-                            name == "transition-delay" || name == "animation-delay" ||
-                            name == "animation-duration";
+        const bool motion = is_ui_motion_property(name);
         const bool accepted = element.SetInlineProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
@@ -5837,9 +5815,6 @@ struct UiRmlRuntime {
     }
 
     template <typename Callback> void for_each_active_style_rule(Callback&& callback) const {
-        for (const UiStyleRule& rule : engine.ui_host_style_rules) {
-            callback(rule);
-        }
         for_each_active_style_element([&callback](const UiElementRecord& record) {
             for (const UiStyleRule& rule : record.style_rules) {
                 callback(rule);
@@ -5854,24 +5829,50 @@ struct UiRmlRuntime {
                (rule.max_width < 0.0 ||
                 static_cast<double>(viewport_width) / std::max(1.0f, density_ratio) <=
                     rule.max_width) &&
-               (rule.motion == UiMotionPreference::Any ||
-                reduced_motion == (rule.motion == UiMotionPreference::Reduce));
+               rule.media.matches(media_device);
     }
 
-    static const char* motion_theme(bool reduced) {
-        return reduced ? "bbl-motion-reduce" : "bbl-motion-no-preference";
+    /**
+     * The media features RmlUi cannot read from the device: reduced motion,
+     * hover and pointer. RmlUi takes one theme per query, so each distinct
+     * condition of the sheet names one theme, active while it holds.
+     */
+    struct MediaTheme {
+        UiMediaCondition condition;
+        std::string name;
+        bool operator==(const MediaTheme&) const = default;
+    };
+
+    /** Whether a media theme of the sheet names the reduced-motion preference. */
+    bool observes_motion_preference() const {
+        return std::any_of(media_themes.begin(), media_themes.end(), [](const auto& theme) {
+            return theme.condition.reduced_motion.has_value();
+        });
+    }
+    /** Whether a media theme of the sheet names the hover or pointer feature. */
+    bool observes_input_capabilities() const {
+        return std::any_of(media_themes.begin(), media_themes.end(),
+                           [](const auto& theme) { return theme.condition.names_input(); });
     }
 
-    bool sync_motion_preference() {
-        if (!observes_motion_preference)
+    /**
+     * Reads the device state the sheet's media themes name (or takes the one
+     * the host supplied) and activates the themes that hold; true when one may
+     * have changed.
+     */
+    bool sync_media_themes() {
+        bool changed = std::exchange(media_themes_changed, false);
+        UiMediaDevice next = supplied_media_device.value_or(media_device);
+        if (!supplied_media_device && observes_motion_preference())
+            next.reduced_motion = motion_preference_reader();
+        if (!supplied_media_device && observes_input_capabilities())
+            next.input = input_capabilities_reader();
+        changed = changed || next != media_device;
+        media_device = next;
+        if (!changed)
             return false;
-        const bool next = motion_preference_reader();
-        if (motion_preference_initialized && next == reduced_motion)
-            return false;
-        reduced_motion = next;
-        motion_preference_initialized = true;
-        context->ActivateTheme(motion_theme(true), reduced_motion);
-        context->ActivateTheme(motion_theme(false), !reduced_motion);
+        for (const MediaTheme& theme : media_themes)
+            context->ActivateTheme(theme.name, theme.condition.matches(media_device));
         return true;
     }
 
@@ -5905,14 +5906,18 @@ struct UiRmlRuntime {
             "html{width:100%;height:100%;font-family:" + css_font_family +
             ";font-size:16dp;line-height:normal;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         std::vector<Rml::String> selectors;
-        observes_motion_preference = false;
+        std::vector<MediaTheme> themes;
         observes_focus_within = false;
         observes_generated_content = false;
         focus_within_revision = std::numeric_limits<std::uint64_t>::max();
-        const auto append_rule = [&source, &selectors, this](const UiStyleRule& rule) {
+        const auto append_rule = [&source, &selectors, &themes, this](const UiStyleRule& rule) {
             selectors.push_back(ui_style_rule_selector(rule, true));
-            const bool motion = rule.motion != UiMotionPreference::Any;
-            observes_motion_preference = observes_motion_preference || motion;
+            auto theme = std::find_if(themes.begin(), themes.end(), [&](const auto& candidate) {
+                return candidate.condition == rule.media;
+            });
+            if (!rule.media.empty() && theme == themes.end())
+                theme = themes.insert(themes.end(),
+                                      {rule.media, "bbl-media-" + std::to_string(themes.size())});
             observes_focus_within =
                 observes_focus_within ||
                 ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
@@ -5923,27 +5928,18 @@ struct UiRmlRuntime {
             // presentation adaptations and content-only generated parts.
             if (public_style.empty() && rule.container_max_width < 0.0)
                 return;
-            const bool orientation = rule.orientation != UiOrientation::Any;
-            const bool media = rule.max_width >= 0.0 || motion || orientation;
-            if (media)
-                source += "@media ";
-            if (rule.max_width >= 0.0) {
-                source += "(max-width:";
-                source += std::to_string(rule.max_width);
-                source += "px)";
-                if (motion || orientation)
-                    source += " and ";
-            }
-            if (motion)
-                source += std::string("(theme:") +
-                          motion_theme(rule.motion == UiMotionPreference::Reduce) + ")";
-            if (orientation) {
-                if (motion)
-                    source += " and ";
-                source += std::string("(orientation:") +
-                          (rule.orientation == UiOrientation::Portrait ? "portrait" : "landscape") +
-                          ")";
-            }
+            std::vector<std::string> conditions;
+            if (rule.max_width >= 0.0)
+                conditions.push_back("(max-width:" + std::to_string(rule.max_width) + "px)");
+            if (!rule.media.empty())
+                conditions.push_back("(theme:" + theme->name + ")");
+            if (rule.orientation != UiOrientation::Any)
+                conditions.push_back(
+                    std::string("(orientation:") +
+                    (rule.orientation == UiOrientation::Portrait ? "portrait" : "landscape") + ")");
+            const bool media = !conditions.empty();
+            for (std::size_t index = 0; index < conditions.size(); ++index)
+                source += (index ? " and " : "@media ") + conditions[index];
             if (media)
                 source += "{";
             source += ui_style_rule_selector(rule);
@@ -5956,6 +5952,10 @@ struct UiRmlRuntime {
         };
         for_each_active_style_rule(append_rule);
         style_selectors.set(selectors);
+        if (themes != media_themes) {
+            media_themes = std::move(themes);
+            media_themes_changed = true;
+        }
         for_each_active_style_element(
             [&source](const UiElementRecord& record) { source += keyframes_from(record.text); });
         source = project_css(std::move(source));
@@ -7403,7 +7403,7 @@ struct UiRmlRuntime {
             const Rml::Style::ComputedValues& values = element->GetComputedValues();
             if (values.has_local_transform() || values.has_local_perspective())
                 refuse("under a transform");
-            if (values.opacity() < 1)
+            if (values.group_opacity() < 1)
                 refuse("under opacity");
             if (values.has_filter() || values.has_backdrop_filter() || values.has_mask_image())
                 refuse("under a filter or mask");
@@ -7796,18 +7796,23 @@ struct UiRmlRuntime {
     std::uint64_t projected_style_revision = 0;
     std::size_t projected_container_query_revision = 0;
     float density_ratio = 0.0f;
+    /** The safe area env() read, absent until a value of the page uses env(). */
+    mutable std::optional<UiSafeAreaInsets> safe_area_insets;
     std::uint32_t viewport_width = 0;
     double root_font_size = 0;
     std::uint32_t viewport_height = 0;
     bool (*const motion_preference_reader)();
-    bool observes_motion_preference = false;
+    InputCapabilities (*const input_capabilities_reader)();
+    /** The device state a host read for this frame, which the readers then leave unread. */
+    std::optional<UiMediaDevice> supplied_media_device;
     bool observes_focus_within = false;
     bool observes_generated_content = false;
     bool has_generated_content = false;
     std::uint64_t focus_within_revision = std::numeric_limits<std::uint64_t>::max();
     Rml::Element* focus_within_target = nullptr;
-    bool motion_preference_initialized = false;
-    bool reduced_motion = false;
+    std::vector<MediaTheme> media_themes;
+    bool media_themes_changed = false;
+    UiMediaDevice media_device{};
     bool default_prevented = false;
     bool projecting = false;
     bool native_focus_pending = false;
@@ -8027,6 +8032,10 @@ void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) 
     runtime.system_interface.time_ms = milliseconds;
 }
 
+void supply_ui_rml_media_device(UiRmlRuntime& runtime, const UiMediaDevice& device) {
+    runtime.supplied_media_device = device;
+}
+
 std::optional<UiRmlNextUpdate> ui_rml_next_update(const UiRmlRuntime& runtime) {
     if (!runtime.system_interface.time_ms)
         return std::nullopt;
@@ -8049,7 +8058,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     runtime.context->SetDimensions(
         Rml::Vector2i{static_cast<int>(width), static_cast<int>(height)});
     const bool density_changed = runtime.update_density_ratio();
-    const bool viewport_changed = dimensions_changed || density_changed;
+    const bool safe_area_changed = runtime.update_safe_area();
+    const bool viewport_changed = dimensions_changed || density_changed || safe_area_changed;
     const bool tree_changed = runtime.projected_revision != runtime.engine.ui_revision;
     if (tree_changed || viewport_changed)
         runtime.style_trace_written = false;
@@ -8057,10 +8067,10 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         ++cpu.sample.changed;
     if (tree_changed || viewport_changed)
         runtime.sync_style_sheet(viewport_changed);
-    const bool motion_changed = runtime.sync_motion_preference();
+    const bool media_changed = runtime.sync_media_themes();
     const bool text_only =
-        tree_changed && !motion_changed && !viewport_changed && runtime.sync_text_updates();
-    if ((tree_changed && !text_only) || motion_changed || viewport_changed) {
+        tree_changed && !media_changed && !viewport_changed && runtime.sync_text_updates();
+    if ((tree_changed && !text_only) || media_changed || viewport_changed) {
         if (cpu.enabled)
             ++cpu.sample.full;
         runtime.sync_tree();
@@ -8100,8 +8110,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         root_font_changed = runtime.sync_root_font_math() || root_font_changed;
     }
     bool generated_changed = false;
-    if (tree_changed || motion_changed || dimensions_changed || density_changed ||
-        root_font_changed || focus_changed || hover_changed || containers_changed) {
+    if (tree_changed || media_changed || viewport_changed || root_font_changed || focus_changed ||
+        hover_changed || containers_changed) {
         generated_changed = runtime.sync_generated_content();
         if (generated_changed) {
             runtime.context->Update();
@@ -8115,8 +8125,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         runtime.context->Update();
     if (runtime.select_top_layer.sync(*runtime.context))
         runtime.context->Update();
-    if (focus_changed || hover_changed || motion_changed || dimensions_changed || density_changed ||
-        generated_changed || containers_changed) {
+    if (focus_changed || hover_changed || media_changed || viewport_changed || generated_changed ||
+        containers_changed) {
         runtime.invalidate_gradient_text();
     }
     if (runtime.sync_svg_current_colors()) {
@@ -8126,9 +8136,9 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         runtime.context->Update();
     if (runtime.background_styles.sync(*runtime.document))
         runtime.context->Update();
-    const bool layout_changed = tree_changed || density_changed || dimensions_changed ||
-                                root_font_changed || motion_changed || generated_changed ||
-                                containers_changed || hover_changed;
+    const bool layout_changed = tree_changed || viewport_changed || root_font_changed ||
+                                media_changed || generated_changed || containers_changed ||
+                                hover_changed;
     cpu.split(cpu.sample.decorations, checkpoint);
     if (layout_changed)
         runtime.update_intrinsic_widths();

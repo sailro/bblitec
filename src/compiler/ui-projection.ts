@@ -55,7 +55,6 @@ import {
     uiCssSyntaxIndices,
 } from "../ui-css-syntax.js";
 import {
-    isUiGeneratedPart,
     parseUiGeneratedContent,
     uiGeneratedContentCpp,
     uiGeneratedPartCpp,
@@ -68,7 +67,6 @@ import {
     splitUiSelectorList,
     uiSelectorSequenceCss,
     uiSelectorSequenceCpp,
-    type UiSelectorStep,
 } from "../ui-selector.js";
 import {
     isUiLayoutProperty,
@@ -76,22 +74,20 @@ import {
     uiLogicalSpacingProperties,
 } from "../ui-layout.js";
 import {
-    nativeHostUiStyleRules,
-    uiStyleSelector,
     uiStyleSelectorCppKind,
-    uiStyleSelectorDescriptor,
     uiStyleInteractionStateCount,
     uiStyleRuleNeedsRuntimeMatch,
     uiStyleRuleHasConditions,
-    uiMotionPreferenceCpp,
+    parseUiMediaQuery,
+    uiPointerPrecisionCpp,
     isUiScrollbarPart,
     uiScrollbarPartCpp,
-    isUiRangePart,
     uiRangePartCpp,
+    type UiRuleConditions,
     type UiStyleSelectorShape,
     type UiStyleSelectorKind,
 } from "../ui-style-rule.js";
-import { nativeHostUiElements } from "../native-host-ui.js";
+import { nativeHostUiElements } from "./types.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine, linkNavigationCpp } from "./window-events.js";
@@ -171,21 +167,17 @@ export interface UiAssigned {
     readonly value?: Value;
 }
 
-interface LoweredUiStyleRule extends UiStyleSelectorShape {
-    // Preserve source selector and declaration metadata through native emission.
-    kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
-    hover: boolean;
-    maxWidth?: number;
-    containerMaxWidth?: number;
-    reducedMotion?: boolean;
-    orientation?: "portrait" | "landscape";
-    style: string;
-    selector: string;
-    site?: ts.Node;
-    ownerId?: number;
-    sequence?: UiSelectorStep[];
-    content?: UiGeneratedContent;
-}
+type LoweredUiStyleRule = UiStyleSelectorShape &
+    UiRuleConditions & {
+        // Preserve source selector and declaration metadata through native emission.
+        kind: UiStyleSelectorKind;
+        hover: boolean;
+        style: string;
+        selector: string;
+        site?: ts.Node;
+        ownerId?: number;
+        content?: UiGeneratedContent;
+    };
 
 interface UiStaticMarkupNode {
     id: number;
@@ -493,43 +485,47 @@ export class UiProjection {
      */
     private uiMarkupPrefetched = false;
 
-    private uiRuleSuffix(
-        rule: Pick<
-            LoweredUiStyleRule,
-            "pseudo" | "content" | "range" | "containerMaxWidth" | "orientation"
-        > & { sequence?: readonly UiSelectorStep[] },
-    ): string {
+    /**
+     * A lowered rule as the native `bbl::UiStyleRule` value: its selector kind
+     * and non-default members, designated in member order.
+     */
+    private uiStyleRuleCpp(rule: LoweredUiStyleRule): string {
         const cppString = (value: string) => this.context.cppString(value);
-        const slots: [boolean, string][] = [
-            [
-                rule.sequence !== undefined,
-                uiSelectorSequenceCpp(rule.sequence ?? [], cppString),
-            ],
-            [
-                Boolean(rule.pseudo),
-                `bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, cppString)}`,
-            ],
-            [
-                Boolean(rule.range),
-                `bbl::UiRangePart::${uiRangePartCpp(rule.range)}`,
-            ],
-            [
-                rule.containerMaxWidth !== undefined,
-                doubleLiteral(rule.containerMaxWidth ?? -1),
-            ],
-            [
-                rule.orientation !== undefined,
-                `bbl::UiOrientation::${rule.orientation === "portrait" ? "Portrait" : "Landscape"}`,
-            ],
-        ];
-        let last = slots.length - 1;
-        while (last >= 0 && !slots[last]![0]) --last;
-        return last < 0
-            ? ""
-            : `, ${slots
-                  .slice(0, last + 1)
-                  .map(([, value]) => value)
-                  .join(", ")}`;
+        const media = [
+            rule.reducedMotion !== undefined &&
+                `.reduced_motion = ${rule.reducedMotion}`,
+            rule.mediaHover !== undefined && `.hover = ${rule.mediaHover}`,
+            rule.mediaPointer !== undefined &&
+                `.pointer = bbl::PointerPrecision::${uiPointerPrecisionCpp(rule.mediaPointer)}`,
+        ].filter((member) => member !== false);
+        const members = [
+            `.selector = bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}`,
+            `.primary = ${cppString(rule.primary)}`,
+            Boolean(rule.secondary) &&
+                `.secondary = ${cppString(rule.secondary!)}`,
+            Boolean(rule.tag) && `.tag = ${cppString(rule.tag!)}`,
+            `.style = ${cppString(rule.style)}`,
+            rule.maxWidth !== undefined &&
+                `.max_width = ${doubleLiteral(rule.maxWidth)}`,
+            rule.hover && ".hover = true",
+            rule.focusVisible === true && ".focus_visible = true",
+            rule.active === true && ".active = true",
+            rule.scrollbar !== undefined &&
+                `.scrollbar = bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}`,
+            rule.sequence !== undefined &&
+                `.sequence = ${uiSelectorSequenceCpp(rule.sequence, cppString)}`,
+            Boolean(rule.pseudo) &&
+                `.generated = bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ` +
+                    `.content = ${uiGeneratedContentCpp(rule.content, cppString)}`,
+            rule.range !== undefined &&
+                `.range = bbl::UiRangePart::${uiRangePartCpp(rule.range)}`,
+            rule.containerMaxWidth !== undefined &&
+                `.container_max_width = ${doubleLiteral(rule.containerMaxWidth)}`,
+            rule.orientation !== undefined &&
+                `.orientation = bbl::UiOrientation::${rule.orientation === "portrait" ? "Portrait" : "Landscape"}`,
+            media.length > 0 && `.media = {${media.join(", ")}}`,
+        ].filter((member) => member !== false);
+        return `bbl::UiStyleRule{${members.join(", ")}}`;
     }
 
     /** `new Image()`: a created img element of the Window document, detached. */
@@ -1009,7 +1005,7 @@ export class UiProjection {
     /**
      * The values an image source expression can take, when generation knows
      * them all: string literals, conditionals over them, and dataset reads of
-     * a host companion element whose data attribute the program never writes.
+     * a host-page element whose data attribute the program never writes.
      */
     private uiImageSourceCandidates(
         expression: ts.Expression,
@@ -1035,7 +1031,7 @@ export class UiProjection {
                 ? undefined
                 : [
                       ...nativeHostUiElements(
-                          this.context.options.nativeHostUi?.elements ?? [],
+                          this.context.options.hostPage?.hostUi?.elements ?? [],
                       ),
                   ].find((element) => element.attributes?.id === id);
         const source = host?.attributes?.[attribute];
@@ -1922,7 +1918,7 @@ export class UiProjection {
 
     /**
      * The reviewed retained-UI style surface (AP-3). Every property here was
-     * reached by the pinned applications, the audited host companions, or the
+     * reached by the pinned applications, the host pages, or the
      * registered corpus scenes, and lowers with browser-equivalent meaning
      * (directly or through the compatibility rewrites below). A property in
      * none of the four sets refuses at generation naming itself, so an
@@ -3711,18 +3707,7 @@ export class UiProjection {
                           `${styleElement}, ` +
                           `${this.context.cppString(rule.primary)}, ` +
                           `${this.context.cppString(rule.style)});`
-                    : `bbl::ui_add_style_rule(${engine}, ${styleElement}, ` +
-                          `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}, ` +
-                          `${this.context.cppString(rule.primary)}, ` +
-                          `${this.context.cppString(rule.secondary ?? "")}, ` +
-                          `${this.context.cppString(rule.tag ?? "")}, ` +
-                          `${rule.hover ? "true" : "false"}, ` +
-                          `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                          `${this.context.cppString(rule.style)}` +
-                          `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
-                          `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
-                          `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                          `${this.uiRuleSuffix(rule)});`,
+                    : `bbl::ui_add_style_rule(${engine}, ${styleElement}, ${this.uiStyleRuleCpp(rule)});`,
             );
         }
         return statements;
@@ -3759,7 +3744,7 @@ export class UiProjection {
                 "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
                 "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
                 "scrollbar and range thumb/track pseudo-elements, " +
-                "'@media (max-width:Npx)', '@media (orientation:portrait|landscape)', '@media (prefers-reduced-motion:reduce|no-preference)', '@container (max-width:Npx)', and '@keyframes' blocks.";
+                "'@media' conjunctions of (max-width:Npx), (orientation:portrait|landscape), (prefers-reduced-motion:reduce|no-preference), (hover:hover|none) and (pointer:none|coarse|fine), '@container (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
@@ -3769,10 +3754,7 @@ export class UiProjection {
 
         const parseBlocks = (
             text: string,
-            inheritedMaxWidth?: number,
-            inheritedReducedMotion?: boolean,
-            inheritedContainerMaxWidth?: number,
-            inheritedOrientation?: "portrait" | "landscape",
+            inherited: UiRuleConditions = {},
         ): void => {
             let cursor = 0;
             while (cursor < text.length) {
@@ -3791,56 +3773,15 @@ export class UiProjection {
                 cursor = end;
 
                 if (/^@media\b/i.test(header)) {
-                    if (
-                        inheritedMaxWidth !== undefined ||
-                        inheritedReducedMotion !== undefined ||
-                        inheritedOrientation !== undefined
-                    ) {
-                        refuseSelector(header);
-                    }
-                    const orientation =
-                        /^@media\s*\(\s*orientation\s*:\s*(portrait|landscape)\s*\)$/i
-                            .exec(header)?.[1]
-                            ?.toLowerCase();
-                    if (
-                        orientation === "portrait" ||
-                        orientation === "landscape"
-                    ) {
-                        parseBlocks(
-                            body,
-                            undefined,
-                            undefined,
-                            inheritedContainerMaxWidth,
-                            orientation,
-                        );
-                        continue;
-                    }
-                    const motion =
-                        /^@media\s*\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)$/i.exec(
-                            header,
-                        );
-                    if (motion) {
-                        parseBlocks(
-                            body,
-                            undefined,
-                            motion[1]!.toLowerCase() === "reduce",
-                            inheritedContainerMaxWidth,
-                        );
-                        continue;
-                    }
-                    const media = header.match(
-                        /^@media\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i,
-                    );
-                    const maxWidth = Number(media?.[1]);
-                    if (!media || !Number.isFinite(maxWidth) || maxWidth < 0) {
-                        refuseSelector(header);
-                    }
-                    parseBlocks(
-                        body,
-                        maxWidth,
-                        undefined,
-                        inheritedContainerMaxWidth,
-                    );
+                    const { containerMaxWidth, ...media } = inherited;
+                    if (Object.keys(media).length) refuseSelector(header);
+                    parseBlocks(body, {
+                        ...(parseUiMediaQuery(header) ??
+                            refuseSelector(header)),
+                        ...(containerMaxWidth !== undefined
+                            ? { containerMaxWidth }
+                            : {}),
+                    });
                     continue;
                 }
                 if (/^@container\b/i.test(header)) {
@@ -3856,13 +3797,13 @@ export class UiProjection {
                         width > 3.4028234663852886e38
                     )
                         refuseSelector(header);
-                    parseBlocks(
-                        body,
-                        inheritedMaxWidth,
-                        inheritedReducedMotion,
-                        Math.min(inheritedContainerMaxWidth ?? Infinity, width),
-                        inheritedOrientation,
-                    );
+                    parseBlocks(body, {
+                        ...inherited,
+                        containerMaxWidth: Math.min(
+                            inherited.containerMaxWidth ?? Infinity,
+                            width,
+                        ),
+                    });
                     continue;
                 }
                 if (header.startsWith("@")) refuseSelector(header);
@@ -3935,15 +3876,7 @@ export class UiProjection {
                     if (rule.range)
                         this.validateUiPartStyle(style, "range", site);
                     if (content) rule.content = content;
-                    if (inheritedMaxWidth !== undefined) {
-                        rule.maxWidth = inheritedMaxWidth;
-                    }
-                    if (inheritedReducedMotion !== undefined)
-                        rule.reducedMotion = inheritedReducedMotion;
-                    if (inheritedContainerMaxWidth !== undefined)
-                        rule.containerMaxWidth = inheritedContainerMaxWidth;
-                    if (inheritedOrientation !== undefined)
-                        rule.orientation = inheritedOrientation;
+                    Object.assign(rule, inherited);
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (
@@ -6582,7 +6515,7 @@ export class UiProjection {
                 this.context.checker,
                 this.context.sourceFiles(),
                 new Set([field]),
-                this.context.options.nativeHostUi,
+                this.context.options.hostPage?.hostUi,
                 (node) =>
                     ts.isPropertyAccessExpression(node) &&
                     node.name.text === field &&
@@ -6629,7 +6562,7 @@ export class UiProjection {
         if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
         const tags = new EmissionMap<string, string>();
         for (const element of nativeHostUiElements(
-            this.context.options.nativeHostUi?.elements ?? [],
+            this.context.options.hostPage?.hostUi?.elements ?? [],
         )) {
             const id = element.attributes?.id;
             if (id !== undefined) tags.set(id, element.tag.toLowerCase());
@@ -6749,7 +6682,8 @@ export class UiProjection {
     }
 
     public compileHostUi(startup?: (fileName: string) => string[]): string[] {
-        const hostUi = this.context.options.nativeHostUi;
+        const page = this.context.options.hostPage;
+        const hostUi = page?.hostUi;
         const primaryIds =
             this.context.options.workers &&
             !this.context.options.workers.namespace &&
@@ -6773,19 +6707,17 @@ export class UiProjection {
             : this.context.defaultEngine();
         if (!engine) {
             this.context.failAtFile(
-                "A native host UI companion requires a scene engine.",
+                "A native host page requires a scene engine.",
             );
         }
-        // The reaching "site" is the audited companion file itself: a
-        // companion-only scene has no call in its own source to name, and
-        // leaving the site empty would attribute the activation to the
-        // compiled scene TypeScript. A scene-source reach recorded during
+        // The reaching "site" is the host page itself: a scene whose UI is
+        // only its page has no call in its own source to name, and leaving
+        // the site empty would attribute the activation to the compiled
+        // scene TypeScript. A scene-source reach recorded during
         // the walk still wins, by `reachFeature`'s first-reach rule.
         this.context.reachFeature(
             "ui:rml",
-            hostUi
-                ? `${hostUi.sourcePath} (host UI companion)`
-                : this.context.sourceFile,
+            page?.hostUi ? `${page.path} (host page)` : this.context.sourceFile,
         );
         const indent = "    ".repeat(2);
         const emitted = primaryIds.map(
@@ -6793,131 +6725,13 @@ export class UiProjection {
                 `${indent}static_cast<void>(bbl::ui_primary_canvas(${engine}, ${this.context.cppString(id)}));`,
         );
         const ids = new EmissionSet<string>(primaryIds);
-        for (const rule of hostUi ? nativeHostUiStyleRules(hostUi) : []) {
-            if (
-                rule.scrollbar !== undefined &&
-                !isUiScrollbarPart(rule.scrollbar)
-            ) {
-                this.context.failAtFile(
-                    "Native host UI rule has an unsupported scrollbar part.",
-                );
-            }
-            if (
-                rule.range !== undefined &&
-                (!isUiRangePart(rule.range) ||
-                    rule.scrollbar !== undefined ||
-                    rule.pseudo !== undefined)
-            )
-                this.context.failAtFile(
-                    "Native host UI range rule requires an exclusive thumb or track target.",
-                );
-            if (
-                rule.pseudo !== undefined &&
-                (!isUiGeneratedPart(rule.pseudo) ||
-                    rule.scrollbar !== undefined)
-            )
-                this.context.failAtFile(
-                    "Native host UI generated content requires a before/after target without a scrollbar part.",
-                );
-            const { style: declarations, content } =
-                this.lowerUiRuleDeclarations(rule.style);
-            if (rule.range) this.validateUiPartStyle(declarations, "range");
-            if (rule.pseudo)
-                this.validateUiPartStyle(declarations, rule.pseudo);
-            if (content && rule.pseudo !== "before" && rule.pseudo !== "after")
-                this.context.failAtFile(
-                    "Native host UI content lists require a before/after target.",
-                );
-            const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-            const sequence =
-                rule.kind === "sequence"
-                    ? parseUiSelectorSequence(rule.primary)
-                    : undefined;
-            if (
-                rule.kind === "sequence"
-                    ? !sequence
-                    : !identifier.test(rule.primary)
-            ) {
-                this.context.failAtFile(
-                    `Native host UI style target '${rule.primary}' is not valid.`,
-                );
-            }
-            const descriptor = uiStyleSelectorDescriptor(rule.kind);
-            if (
-                descriptor.needsSecondary !== Boolean(rule.secondary) ||
-                (rule.secondary !== undefined &&
-                    !identifier.test(rule.secondary))
-            ) {
-                this.context.failAtFile(
-                    `Native host UI ${rule.kind} rule has invalid secondary target.`,
-                );
-            }
-            if (
-                descriptor.needsTag !== Boolean(rule.tag) ||
-                (rule.tag !== undefined &&
-                    !/^[A-Za-z][A-Za-z0-9-]*$/.test(rule.tag))
-            ) {
-                this.context.failAtFile(
-                    `Native host UI ${rule.kind} rule has invalid tag target.`,
-                );
-            }
-            if (
-                rule.maxWidth !== undefined &&
-                (!Number.isFinite(rule.maxWidth) || rule.maxWidth <= 0)
-            ) {
-                this.context.failAtFile(
-                    "Native host UI style maxWidth must be a positive finite number.",
-                );
-            }
-            const selected =
-                rule.pseudo || rule.range
-                    ? UiProjection.parseUiSelector(
-                          uiStyleSelector(rule),
-                          declarations,
-                      )
-                    : rule;
-            if (!selected)
-                this.context.failAtFile(
-                    "Native host UI pseudo-element has an unsupported originating selector.",
-                );
-            if (
-                rule.containerMaxWidth !== undefined &&
-                (!Number.isFinite(rule.containerMaxWidth) ||
-                    rule.containerMaxWidth < 0 ||
-                    rule.containerMaxWidth > 3.4028234663852886e38)
-            )
-                this.context.failAtFile(
-                    "Native host UI containerMaxWidth must be a non-negative finite native number.",
-                );
-            const selectedSequence = selected.sequence ?? sequence;
-            emitted.push(
-                `${indent}bbl::ui_add_host_style_rule(${engine}, ` +
-                    `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(selected.kind)}, ` +
-                    `${this.context.cppString(selected.primary)}, ` +
-                    `${this.context.cppString(selected.secondary ?? "")}, ` +
-                    `${this.context.cppString(selected.tag ?? "")}, ` +
-                    `${selected.hover ? "true" : "false"}, ` +
-                    `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                    `${this.context.cppString(declarations)}` +
-                    `, ${selected.focusVisible ? "true" : "false"}, ${selected.active ? "true" : "false"}, ` +
-                    `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
-                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                    `${this.uiRuleSuffix({
-                        ...rule,
-                        ...(selectedSequence
-                            ? { sequence: selectedSequence }
-                            : {}),
-                        ...(content ? { content } : {}),
-                    })});`,
-            );
-        }
 
         // The document's own sheets precede its markup, as a page's head does.
         // Its rules are lowered here; the PAL reads only its keyframes.
-        const sheets = hostUi
-            ? (hostUi.styleSheets ?? []).map((sheet) => ({
+        const sheets = page?.hostUi
+            ? (page.hostUi.styleSheets ?? []).map((sheet) => ({
                   text: sheet.text,
-                  origin: { file: hostUi.sourcePath, line: sheet.line },
+                  origin: { file: page.path, line: sheet.line },
               }))
             : [];
         for (const { text, origin } of sheets) {
@@ -6944,6 +6758,8 @@ export class UiProjection {
                 `${indent}bbl::ui_append_child(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::Head), ${handle});`,
             );
         }
+        if (hostUi?.viewportFitCover)
+            emitted.push(`${indent}${engine}.ui_viewport_fit_cover = true;`);
         for (const [part, attributes] of [
             ["Html", hostUi?.htmlAttributes],
             ["Body", hostUi?.bodyAttributes],

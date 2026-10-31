@@ -13,11 +13,11 @@ import {
     configureAdHocScenes,
     getScene,
     referenceSettleEnvironment,
+    registrySceneCompileOptions,
     resolveScene,
     sceneReferencePage,
     scenes,
 } from "../src/scene-registry.js";
-import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import { validateReferenceCapture } from "../src/parity-scene.js";
 
 test("registers unique generated scene targets", () => {
@@ -416,10 +416,13 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("break-meshes").parity?.maxFullMad, 0.001);
     assert.equal(getScene("break-meshes").parity?.maxForegroundMad, 0.001);
     assert.equal(getScene("racer").parity?.referenceFrame, 180);
-    assert.equal(getScene("racer").nativeHostUi, "ui/racer-host.json");
     assert.equal(
-        getScene("antigravity-racer").nativeHostUi,
-        "ui/antigravity-racer-host.json",
+        getScene("racer").page?.path,
+        "corpus/babylon-lite/lab/lite/demo-racer.html",
+    );
+    assert.equal(
+        getScene("antigravity-racer").page?.path,
+        "corpus/babylon-lite/lab/lite/demo-antigravity-racer.html",
     );
     assert.equal(
         getScene("racer").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
@@ -438,10 +441,20 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
     assert.equal(
-        getScene("littlest-tokyo").nativeHostUi,
-        "ui/littlest-tokyo-host.json",
+        getScene("littlest-tokyo").page?.path,
+        "corpus/babylon-lite/lab/lite/demo-littlest-tokyo.html",
     );
-    assert.equal(getScene("bath-day").nativeHostUi, "ui/bath-day-host.json");
+    assert.equal(
+        getScene("bath-day").page?.path,
+        "corpus/babylon-lite/lab/lite/demo-bath-day.html",
+    );
+    // A lab page's site serves the lab's public files, in both captures.
+    assert.deepEqual(sceneReferencePage(getScene("scene227")), {
+        hostPage: "corpus/babylon-lite/lab/lite/scene227.html",
+        documentMarkers: true,
+        siteRoot: resolve("corpus/babylon-lite/lab"),
+        publicDir: "corpus/babylon-lite/lab/public",
+    });
     assert.equal(getScene("freeciv").parity?.referenceFrame, 180);
     assert.equal(getScene("freeciv").parity?.maxFullMad, 0.2);
     assert.equal(getScene("freeciv").parity?.maxForegroundMad, 0.2);
@@ -641,7 +654,7 @@ test("an HTML page is a scene source hosting the entry it names", () => {
         registered,
     );
     assert.equal(
-        registrySceneCompileOptions(registered).nativeHostUi?.sourcePath,
+        registrySceneCompileOptions(registered).hostPage?.path,
         registered.page?.path,
     );
     assert.deepEqual(sceneReferencePage(registered), {
@@ -695,6 +708,11 @@ test("an ad-hoc page outside the repository keeps its site root and public direc
         assert.equal(scene.id, "outside-page");
         assert.equal(resolve(scene.source), resolve(site, "src/main.ts"));
         assert.equal(resolve(scene.publicDir ?? ""), resolve(site, "public"));
+        // The page's site serves the same public directory.
+        assert.equal(
+            resolve(scene.page?.publicDir ?? ""),
+            resolve(site, "public"),
+        );
         const reference = sceneReferencePage(scene);
         assert.equal(resolve(reference.siteRoot ?? ""), site);
         assert.equal(

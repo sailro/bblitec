@@ -73,9 +73,10 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
 test("keeps registered Babylon Lite support modules byte-identical to the pin", () => {
     const manifest = readBabylonLiteCorpus();
     for (const module of manifest.modules ?? []) {
+        // A scene page's own scripts include the lab's public directory.
         assert.match(
             module.upstreamPath,
-            /^lab\/lite\/(?:src\/(?:demos|shared|_shared|lite)\/|scene\d+\.html$)/,
+            /^lab\/(?:lite\/(?:src\/(?:demos|shared|_shared|lite)\/|scene\d+\.html$)|public\/)/,
         );
         assert.equal(
             module.source,

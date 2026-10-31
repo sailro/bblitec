@@ -2,6 +2,7 @@
 
 #include "pal_dawn_offscreen.hpp"
 #include "pal_dawn_sprite_ui.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_gpu_vertex.hpp"
 #include <deque>
 
@@ -93,7 +94,7 @@ public:
             return &binding->texture;
         };
         render_sprite_ui_dawn_frame(state_, encoder, target.texture, view, ui_, ui,
-                                    external_texture);
+                                    external_texture, ui_samples_);
         DawnSurfaceCapture snapshot;
         if (!capture.empty())
             snapshot =
@@ -168,6 +169,14 @@ private:
     DawnDevice state_;
     std::optional<DawnOffscreenDevice> shared_;
     SpriteUiDawnResources ui_;
+    /**
+     * The page UI's multisampled layer (`FrameOptions::page_ui_sample_count`); WebGPU guarantees
+     * 4x sampling of the RGBA8 layer.
+     */
+    const std::optional<std::uint32_t> ui_samples_ = [] {
+        const std::uint32_t samples = read_frame_options().page_ui_sample_count();
+        return samples > 1 ? std::optional<std::uint32_t>{samples} : std::nullopt;
+    }();
     std::unordered_map<OffscreenImage*, std::unique_ptr<SamplingBinding>> bindings_;
     std::deque<InFlight> in_flight_;
 };

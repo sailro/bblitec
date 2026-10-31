@@ -9122,6 +9122,8 @@ function checkInRealm(name: string, source: string): void {
                 close: () => (closed = true),
                 setTimeout,
                 clearTimeout,
+                setInterval,
+                clearInterval,
                 queueMicrotask,
                 structuredClone,
                 DOMException,
@@ -9146,6 +9148,49 @@ function checkInRealm(name: string, source: string): void {
         );
     });
 }
+
+// The scheduler runs the callback only after it returns, when the `var`
+// holds the id: a stale read would leave the interval running.
+checkInRealm(
+    "a-var-read-by-the-callback-its-own-initializer-schedules",
+    `
+    void (async () => {
+        await Promise.resolve();
+        let ticks = 0;
+        var poll = setInterval(() => {
+            ticks++;
+            if (ticks === 2) {
+                clearInterval(poll);
+                setTimeout(() => {
+                    if (ticks !== 2) throw new Error("the interval read its own id");
+                    globalThis.close();
+                }, 5);
+            }
+        }, 0);
+    })();
+`,
+);
+
+// A function read before the assignment sees `undefined`: cancelling it
+// clears nothing, as JavaScript's `clearTimeout(undefined)`.
+checkInRealm(
+    "a-var-a-function-reads-before-its-assignment-holds-undefined",
+    `
+    void (async () => {
+        await Promise.resolve();
+        let ticks = 0;
+        function tick(): void { ticks++; clearTimeout(t); }
+        tick();
+        if (ticks === 1) {
+            var t = setTimeout(tick, 0);
+        }
+        setTimeout(() => {
+            if (ticks !== 2) throw new Error("the timer read its own id");
+            globalThis.close();
+        }, 5);
+    })();
+`,
+);
 
 checkInRealm(
     "async-returns-of-a-promise-or-a-record-branch",

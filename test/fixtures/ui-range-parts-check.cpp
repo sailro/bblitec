@@ -29,10 +29,11 @@ int main() try {
         ui_append_to_root(engine, sheet);
         const auto rule = [&](std::string owner, UiRangePart part, std::string style,
                               bool hover = false) {
-            ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, std::move(owner), {}, {},
-                              hover, -1, std::move(style), UiScrollbarPart::None, false, false,
-                              UiMotionPreference::Any, {}, UiGeneratedPart::None, std::nullopt,
-                              part);
+            ui_add_style_rule(engine, sheet,
+                              {.primary = std::move(owner),
+                               .style = std::move(style),
+                               .hover = hover,
+                               .range = part});
         };
         rule(
             "level", UiRangePart::Thumb,

@@ -52,6 +52,7 @@ import {
     uiQuerySelectorCpp,
 } from "./ui-query-selectors.js";
 import { valueKindOf } from "./type-facts.js";
+import { receiverType } from "./dynamic-binding-storage.js";
 import { knownCondition } from "./values/model.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
@@ -113,6 +114,7 @@ interface PlatformCallContext
         Pick<
             LoweringServices,
             | "absenceTags"
+            | "dynamicBindings"
             | "assets"
             | "assetOutputs"
             | "assetPayloads"
@@ -418,8 +420,7 @@ export class PlatformCalls {
         const unwrappedCallee = this.context.unwrap(call.expression);
         const callee = namedMember(this.context.checker, unwrappedCallee);
         if (callee) {
-            const typeName = this.context.checker
-                .getTypeAtLocation(callee.expression)
+            const typeName = receiverType(this.context, callee.expression)
                 .getSymbol()
                 ?.getName();
             if (

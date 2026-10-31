@@ -21,6 +21,7 @@ import {
     createJavaScriptFunction,
 } from "../src/typescript-transpile.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
@@ -9100,16 +9101,16 @@ test("lowers a tag.class sheet selector beside its tag-descendant base rule", ()
     // browser cascade.
     assert.match(
         result.cpp,
-        /UiStyleSelectorKind::ClassDescendantTag,\s*"controls",\s*"",\s*"button",\s*false/,
+        /UiStyleSelectorKind::ClassDescendantTag, \.primary = "controls", \.tag = "button", \.style = "[^"]*"[,}]/,
     );
     assert.match(
         result.cpp,
-        /UiStyleSelectorKind::TagClass,\s*"disabled",\s*"",\s*"button",\s*false/,
+        /UiStyleSelectorKind::TagClass, \.primary = "disabled", \.tag = "button", \.style = "[^"]*"[,}]/,
     );
     assert.match(result.cpp, /ui_toggle_class[^\n]*"disabled", true/);
 });
 
-test("accepts a tag.class host companion rule", () => {
+test("accepts a tag.class rule from the host page's sheet", () => {
     const result = compileSource(
         `
             import { createEngine, startEngine } from "@babylonjs/lite";
@@ -9123,30 +9124,22 @@ test("accepts a tag.class host companion rule", () => {
 
             void main();
         `,
-        {
-            nativeHostUi: {
-                sourcePath: "ui/test-host.json",
-                styleRules: [
-                    {
-                        kind: "tag-class",
-                        tag: "button",
-                        primary: "disabled",
-                        style: "color:#929bb2;",
-                    },
-                ],
-                elements: [
-                    {
-                        tag: "button",
-                        attributes: { id: "toggle" },
-                    },
-                ],
-            },
-        },
+        hostUiOptions({
+            styleSheets: [
+                { text: "button.disabled { color: #929bb2; }", line: 1 },
+            ],
+            elements: [
+                {
+                    tag: "button",
+                    attributes: { id: "toggle" },
+                },
+            ],
+        }),
     );
 
     assert.match(
         result.cpp,
-        /ui_add_host_style_rule[^\n]*UiStyleSelectorKind::TagClass[^\n]*"disabled"[^\n]*"button"[^\n]*"color:#929bb2;"/,
+        /ui_add_style_rule[^\n]*UiStyleSelectorKind::TagClass[^\n]*"disabled"[^\n]*"button"[^\n]*"color:#929bb2;?"/,
     );
 });
 
@@ -9468,12 +9461,10 @@ test("normalizes uppercase retained canvas tags", () => {
             }
             void main();
         `,
-        {
-            nativeHostUi: {
-                sourcePath: "ui/uppercase-host.json",
-                elements: [{ tag: "CANVAS" }],
-            },
-        },
+        hostUiOptions(
+            { elements: [{ tag: "CANVAS" }] },
+            { path: "uppercase.html" },
+        ),
     );
     assert.match(host.cpp, /ui_create_element\([^\n]*"canvas"\)/);
     assert.doesNotMatch(host.cpp, /ui_create_element\([^\n]*"CANVAS"\)/);
@@ -9749,14 +9740,19 @@ test("refuses a hoisted var read while it can be undefined its type cannot hold"
             ),
         /The `var` 'y' is read where its assignment runs through a ClassDeclaration, which the definite-assignment analysis does not follow/,
     );
-    // A function lowered before the walk reached an assignment.
-    assert.throws(
-        () =>
-            compileSource(
-                "function f(): number { const get = (): number => w; const before = get(); var w = 7; return before; } console.log(f());",
-            ),
-        /A function reads the `var` 'w' where it can still be undefined/,
-    );
+    // A function lowered before the walk reached an assignment, or one its
+    // own initializer's call may run before returning (only a scheduler, an
+    // observer or a reaction runs it later), reads storage that holds
+    // undefined until the assignment; a read that needs the value then
+    // throws.
+    for (const source of [
+        "function f(): number { const get = (): number => w; const before = get(); var w = 7; return before; } console.log(f());",
+        "function run(g: () => number): number { return g(); } function f(): number { var w = run(() => w); return w; } console.log(f());",
+    ])
+        assert.match(
+            compileSource(source).cpp,
+            /bbl::js::Nullable<double> v_bblite_var_w_\d+\{\};/,
+        );
     // One binding with a parameter is not a storage of its own.
     assert.throws(
         () =>
@@ -9815,7 +9811,7 @@ test("imports simple retained stylesheet id and class rules", () => {
     assert.match(result.cpp, /ui_add_id_style[^\n]*"labels"/);
     assert.match(result.cpp, /position:absolute/);
     assert.match(result.cpp, /UiStyleSelectorKind::IdDescendantClass/);
-    assert.match(result.cpp, /"labels", "label"/);
+    assert.match(result.cpp, /\.primary = "labels", \.secondary = "label"/);
     assert.match(result.cpp, /background-color:\s*rgba\(1,2,3,.5\)/);
     // The @keyframes block is not a rule: it rides ui_set_text and the PAL
     // projects it from there, so its percentage blocks emit no rules and
@@ -10164,11 +10160,11 @@ test("retains class-tag descendants and hover without leaking to unrelated tags"
 
     assert.match(
         result.cpp,
-        /UiStyleSelectorKind::ClassDescendantTag,\s*"panel",\s*"",\s*"button",\s*false/,
+        /UiStyleSelectorKind::ClassDescendantTag, \.primary = "panel", \.tag = "button", \.style = "[^"]*"}/,
     );
     assert.match(
         result.cpp,
-        /UiStyleSelectorKind::ClassDescendantTag,\s*"panel",\s*"",\s*"button",\s*true/,
+        /UiStyleSelectorKind::ClassDescendantTag, \.primary = "panel", \.tag = "button", \.style = "[^"]*", \.hover = true}/,
     );
     assert.doesNotMatch(result.cpp, /ui_add_class_style[^\n]*"button"/);
     assert.match(
@@ -10261,7 +10257,7 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
     `);
 
     assert.match(result.cpp, /UiStyleSelectorKind::CompoundClass/);
-    assert.match(result.cpp, /"tool", "active"/);
+    assert.match(result.cpp, /\.primary = "tool", \.secondary = "active"/);
     assert.equal([...result.cpp.matchAll(/ui_toggle_class/g)].length, 3);
     assert.match(result.cpp, /"active", true/);
     assert.match(result.cpp, /"active", false/);
@@ -10534,7 +10530,7 @@ test("retains max-width media cascade and auto resets for live resize", () => {
 
     assert.match(
         result.cpp,
-        /UiStyleSelectorKind::Class,\s*"panel",\s*"",\s*"",\s*false,\s*768\.0/,
+        /UiStyleSelectorKind::Class, \.primary = "panel", \.style = "[^"]*", \.max_width = 768\.0/,
     );
     assert.match(result.cpp, /right:\s*auto;\s*bottom:\s*auto/);
     const palUi = palUiRmlSource;
@@ -10569,9 +10565,11 @@ test("recomputes retained UI intrinsic width without overriding responsive width
     assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
     assert.doesNotMatch(result.cpp, /min-width:180px;?width:180px/);
     const projection = palUiRmlSource;
+    // A resized viewport lays out again, which recomputes intrinsic widths.
+    assert.match(projection, /viewport_changed = dimensions_changed/);
     assert.match(
         projection,
-        /dimensions_changed[\s\S]{0,900}update_intrinsic_widths/,
+        /layout_changed = [^;]*viewport_changed[^;]*;[\s\S]{0,200}if \(layout_changed\)\s+runtime\.update_intrinsic_widths\(\);/,
     );
     const intrinsic = projection.slice(
         projection.indexOf("bool has_active_authored_width"),
@@ -11579,7 +11577,7 @@ test("records reached degraded style properties in the UI adaptation", () => {
     assert.match(result.cpp, /ui_set_style_property/);
 });
 
-test("emits the UI adaptation for a companion-only scene with its degradations", () => {
+test("emits the UI adaptation for a page-only scene with its degradations", () => {
     const result = compileSource(
         `
             import { createEngine, startEngine } from "@babylonjs/lite";
@@ -11591,9 +11589,8 @@ test("emits the UI adaptation for a companion-only scene with its degradations",
 
             void main();
         `,
-        {
-            nativeHostUi: {
-                sourcePath: "ui/test-host.json",
+        hostUiOptions(
+            {
                 elements: [
                     {
                         tag: "div",
@@ -11604,7 +11601,8 @@ test("emits the UI adaptation for a companion-only scene with its degradations",
                     },
                 ],
             },
-        },
+            { path: "test.html" },
+        ),
     );
 
     const adaptation = result.manifest.adaptations.find(
@@ -11978,7 +11976,7 @@ test("lowers boolean data-field assignment expression callbacks", () => {
     assert.match(result.cpp, /v_state->left = true/);
 });
 
-test("projects an audited native host-page UI companion without changing scene source", () => {
+test("projects host page chrome without changing scene source", () => {
     const result = compileSource(
         `
             import { createEngine, startEngine } from "@babylonjs/lite";
@@ -11990,51 +11988,40 @@ test("projects an audited native host-page UI companion without changing scene s
 
             void main();
         `,
-        {
-            nativeHostUi: {
-                sourcePath: "ui/test-host.json",
-                styleRules: [
-                    {
-                        kind: "class",
-                        primary: "touch-controls",
-                        style: "display:none;",
+        hostUiOptions({
+            styleSheets: [
+                {
+                    text: ".touch-controls { display: none; } .title span { display: block; color: #7fe0ff; }",
+                    line: 1,
+                },
+            ],
+            elements: [
+                {
+                    tag: "div",
+                    text: "Keyboard help",
+                    attributes: {
+                        class: "controls-hint",
+                        style: "position:fixed;background:rgba(0,0,0,0.5);",
                     },
-                    {
-                        kind: "class-descendant-tag",
-                        primary: "title",
-                        tag: "span",
-                        style: "display:block;color:#7fe0ff;",
-                    },
-                ],
-                elements: [
-                    {
-                        tag: "div",
-                        text: "Keyboard help",
-                        attributes: {
-                            class: "controls-hint",
-                            style: "position:fixed;background:rgba(0,0,0,0.5);",
-                        },
-                    },
-                ],
-            },
-        },
+                },
+            ],
+        }),
     );
 
     assert.ok(result.manifest.features.includes("ui:rml"));
-    // A companion-only scene's activation names the companion file, not
-    // the compiled scene TypeScript.
+    // A scene whose UI is only its page names the page, not the compiled
+    // scene TypeScript.
     assert.equal(
         result.manifest.featureSites["ui:rml"],
-        "ui/test-host.json (host UI companion)",
+        "fixture.html (host page)",
     );
     assert.match(
         result.cpp,
-        /ui_add_host_style_rule[^\n]*UiStyleSelectorKind::Class[^\n]*"touch-controls"[^\n]*"display:none;[^"]*--bbl-authored-display:1;"/,
+        /ui_add_(?:class_style|style_rule)\([^\n]*"touch-controls"[^\n]*"display:none;[^"]*--bbl-authored-display:1;"/,
     );
-    assert.doesNotMatch(result.cpp, /ui_add_host_class_style/);
     assert.match(
         result.cpp,
-        /ui_add_host_style_rule[^\n]*ClassDescendantTag[^\n]*"title"[^\n]*"span"[^\n]*"display:block;color:#7fe0ff;[^"]*--bbl-authored-display:1;"/,
+        /ui_add_style_rule[^\n]*ClassDescendantTag[^\n]*"title"[^\n]*"span"[^\n]*"display:block;color:#7fe0ff;[^"]*--bbl-authored-display:1;"/,
     );
     assert.match(result.cpp, /ui_create_element[^\n]*"div"/);
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
@@ -12065,9 +12052,8 @@ test("resolves audited host UI ids before unchanged scene setup binds listeners"
 
             void main();
         `,
-        {
-            nativeHostUi: {
-                sourcePath: "ui/test-host.json",
+        hostUiOptions(
+            {
                 elements: [
                     {
                         tag: "button",
@@ -12079,7 +12065,8 @@ test("resolves audited host UI ids before unchanged scene setup binds listeners"
                     },
                 ],
             },
-        },
+            { path: "test.html" },
+        ),
     );
 
     const create = result.cpp.indexOf("ui_create_element");

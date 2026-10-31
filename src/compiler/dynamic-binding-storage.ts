@@ -28,6 +28,11 @@ export type DynamicBindingStorage =
     | "array"
     | "error-array"
     | "callback"
+    /**
+     * A hoisted `var` a function may read before its assignment: its
+     * declared type, undefined until assigned.
+     */
+    | "unassigned"
     | { nativeHandle: DataType<"handle"> }
     | { callable: NativeRecordStorageDemand }
     | { nativeType: ts.Type; node: ts.Expression };
@@ -152,6 +157,13 @@ export function demandedStorageType(
         });
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
+    if (storage === "unassigned") {
+        const declared = dataTypes.fromStoredTsType(source, declaration);
+        return (
+            declared &&
+            heldAsBinding(context, declaration, source, declared, true)
+        );
+    }
     if (typeof storage === "object") {
         if ("nativeHandle" in storage)
             return dataTypes.nullableType(storage.nativeHandle);
@@ -172,10 +184,7 @@ export function demandedStorageType(
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
         }
-        const absent = nullability(source);
-        return mapped && (absent.null || absent.undefined)
-            ? dataTypes.nullableType(mapped, !absent.null)
-            : mapped;
+        return mapped && heldAsBinding(context, declaration, source, mapped);
     }
     // A fresh authored record may share an annotation with an unrelated
     // native view. Its one-object demand retains the literal's actual
@@ -204,6 +213,29 @@ export function demandedStorageType(
     );
 }
 
+/**
+ * `stored` as `declaration` holds it, nullable for the absent values the
+ * binding can hold: its type's (`source`), its initializer's where
+ * TypeScript types it `any` (`var observer = null` holds null until
+ * assigned), and undefined while it is `unassigned`.
+ */
+function heldAsBinding(
+    context: DemandedStorageContext,
+    declaration: ts.VariableDeclaration,
+    source: ts.Type,
+    stored: DataType,
+    unassigned = false,
+): DataType {
+    const absent = nullability(
+        isAnyTyped(source) && declaration.initializer
+            ? context.checker.getTypeAtLocation(declaration.initializer)
+            : source,
+    );
+    return absent.null || absent.undefined || unassigned
+        ? context.dataTypes.nullableType(stored, !absent.null)
+        : stored;
+}
+
 /** The initialized variable declaration a name reads, whose storage a demand can retype. */
 export function initializedVariableDeclaration(
     checker: ts.TypeChecker,
@@ -225,6 +257,85 @@ export function requireDynamicBindingStorage(
     const declaration = initializedVariableDeclaration(checker, target);
     if (declaration)
         throw new DynamicBindingStorageRequired(declaration, storage);
+}
+
+/**
+ * Whether a type is `any`: an auto-typed `var observer = null` (or
+ * `let`) is wherever no assignment reaches, a closure's read included.
+ */
+function isAnyTyped(type: ts.Type): boolean {
+    return (type.flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** What retyping an auto-typed binding from its assignments reads. */
+export interface AssignedStorageContext extends DemandedStorageContext {
+    readonly dynamicBindings: ReadonlyMap<
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined
+    >;
+}
+
+/**
+ * An assignment of a value with native storage to an auto-typed binding
+ * that holds no storage yet (its `null` initializer is generation-known):
+ * the binding is stored as the assigned type, nullable as its initializer.
+ */
+export function requireAssignedBindingStorage(
+    context: AssignedStorageContext,
+    target: ts.Identifier,
+    value: ts.Expression,
+): void {
+    const { checker } = context;
+    const declaration = initializedVariableDeclaration(checker, target);
+    if (
+        !declaration ||
+        context.dynamicBindings.has(declaration) ||
+        !isAnyTyped(checker.getTypeAtLocation(declaration.name))
+    )
+        return;
+    const nativeType = checker.getNonNullableType(
+        checker.getTypeAtLocation(value),
+    );
+    if (
+        !isAnyTyped(nativeType) &&
+        context.dataTypes.fromStoredTsType(nativeType, value)
+    )
+        throw new DynamicBindingStorageRequired(declaration, {
+            nativeType,
+            node: value,
+        });
+}
+
+/**
+ * The type the value `receiver` reads holds, which member dispatch keys
+ * on: the checker's, except where it is `any` -- an auto-typed binding
+ * read outside the flow that assigned it holds the type its storage was
+ * demanded for (`requireAssignedBindingStorage`), and a property read off
+ * such a value (`c.signal`) the property's type there.
+ */
+export function receiverType(
+    context: Pick<AssignedStorageContext, "checker" | "dynamicBindings">,
+    receiver: ts.Expression,
+): ts.Type {
+    const { checker } = context;
+    const type = checker.getTypeAtLocation(receiver);
+    if (!isAnyTyped(type)) return type;
+    const node = unwrapExpression(receiver);
+    if (ts.isPropertyAccessExpression(node)) {
+        const owner = receiverType(context, node.expression);
+        const property =
+            !isAnyTyped(owner) &&
+            checker.getNonNullableType(owner).getProperty(node.name.text);
+        return property
+            ? checker.getTypeOfSymbolAtLocation(property, node)
+            : type;
+    }
+    const declaration =
+        ts.isIdentifier(node) && initializedVariableDeclaration(checker, node);
+    const storage = declaration && context.dynamicBindings.get(declaration);
+    return typeof storage === "object" && "nativeType" in storage
+        ? storage.nativeType
+        : type;
 }
 
 /** What deciding a declaration's one object reads of the compiler. */

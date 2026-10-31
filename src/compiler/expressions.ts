@@ -57,6 +57,7 @@ import {
     isEngineScopedHandleKind,
 } from "./data-types/handles.js";
 import {
+    receiverType,
     requireHeldRecordStorage,
     requireOneObject,
 } from "./dynamic-binding-storage.js";
@@ -1590,6 +1591,22 @@ export class ExpressionLowerer {
             const logical =
                 this.context.dataLowerer.compileRecordLogicalValue(unwrapped);
             if (logical) return logical;
+        }
+        // A short circuit TypeScript types `any` takes the storage its
+        // operands lower to, each lowered once.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
+            (this.context.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.Any) !==
+                0
+        ) {
+            const untyped = this.context.probeEmission(() =>
+                this.context.dataLowerer.compileUntypedLogicalValue(unwrapped),
+            );
+            if (untyped) return untyped;
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
@@ -7048,7 +7065,7 @@ export class ExpressionLowerer {
             memberName === "bind" &&
             callSignatures(
                 this.context.checker,
-                this.context.checker.getTypeAtLocation(callee.expression),
+                receiverType(this.context, callee.expression),
                 "exact",
             ).length > 0
         ) {
@@ -7186,7 +7203,7 @@ export class ExpressionLowerer {
                 if (objectCall) return objectCall;
                 const callable = callSignatures(
                     this.context.checker,
-                    this.context.checker.getTypeAtLocation(callee.expression),
+                    receiverType(this.context, callee.expression),
                     "exact",
                 ).length
                     ? this.compileFunctionObject(callee.expression)
@@ -7275,9 +7292,8 @@ export class ExpressionLowerer {
         }
         if (
             memberName === "toLocaleString" &&
-            valueKindOf(
-                this.context.checker.getTypeAtLocation(callee.expression),
-            ) === "number"
+            valueKindOf(receiverType(this.context, callee.expression)) ===
+                "number"
         ) {
             const owner = this.numberMethodReceiver(callee.expression);
             if (owner.kind !== "number")
@@ -7453,7 +7469,7 @@ export class ExpressionLowerer {
         if (staticContainerMethod) return staticContainerMethod;
         const regexpExpression = this.context.unwrap(callee.expression);
         const regexpType = this.context.checker.getNonNullableType(
-            this.context.checker.getTypeAtLocation(callee.expression),
+            receiverType(this.context, callee.expression),
         );
         const boundRegexp = ts.isIdentifier(regexpExpression)
             ? this.context.bindings.lookupOptional(regexpExpression)
@@ -7559,7 +7575,7 @@ export class ExpressionLowerer {
             compilePhysicsMethodCall(this.context, call, member),
         );
         if (physics) return physics;
-        const method = mayCompileDataMethodCall(this.context.checker, member)
+        const method = mayCompileDataMethodCall(this.context, member)
             ? this.context.probeEmission(() =>
                   this.context.dataLowerer.compileDataMethodCall(call),
               )

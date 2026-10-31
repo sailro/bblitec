@@ -103,8 +103,9 @@ int main() try {
              {"style", "display:block;width:202px;height:16px;margin:0;"}});
         const auto link = add(light, "a", {{"href", "#credit"}, {"class", "credit"}});
         ui_set_text(engine, link, "credit");
-        ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "credit", "", "", false, -1,
-                               "color:#eaf1f5;text-decoration:none;");
+        const auto sheet = ui_create_element(engine, "style");
+        ui_add_class_style(engine, sheet, "credit", "color:#eaf1f5;text-decoration:none;");
+        ui_append_to_root(engine, sheet);
 
         UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&] { update_ui_rml_runtime(runtime, 640, 480); };

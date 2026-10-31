@@ -158,22 +158,8 @@ void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string 
                         std::string style);
 void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet);
 void ui_add_id_style(Engine& engine, UiElementHandle stylesheet, std::string id, std::string style);
-void ui_add_style_rule(
-    Engine& engine, UiElementHandle stylesheet, UiStyleSelectorKind selector, std::string primary,
-    std::string secondary, std::string tag, bool hover, double max_width, std::string style,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None, bool focus_visible = false,
-    bool active = false, UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {}, UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt, UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0, UiOrientation orientation = UiOrientation::Any);
-void ui_add_host_style_rule(
-    Engine& engine, UiStyleSelectorKind selector, std::string primary, std::string secondary,
-    std::string tag, bool hover, double max_width, std::string style, bool focus_visible = false,
-    bool active = false, UiScrollbarPart scrollbar = UiScrollbarPart::None,
-    UiMotionPreference motion = UiMotionPreference::Any, std::vector<UiSelectorStep> sequence = {},
-    UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt, UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0, UiOrientation orientation = UiOrientation::Any);
+/** Appends `rule` to the `<style>` element `stylesheet`. */
+void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleRule rule);
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
                                           std::string_view class_name);
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
@@ -444,6 +430,11 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
  * follow `performance_milliseconds()`.
  */
 void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds);
+/**
+ * The device state the media features read, as a host read it for its frame:
+ * the runtime then reads none itself.
+ */
+void supply_ui_rml_media_device(UiRmlRuntime& runtime, const UiMediaDevice& device);
 /**
  * When time-driven UI work (animations, transitions, caret blink, scrolling,
  * animated gradient text) next changes the document after an update at a set

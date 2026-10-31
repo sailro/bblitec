@@ -154,8 +154,11 @@ export interface BooleanOptionsSpelling {
     readonly forms: string;
     /** The temporaries' name stem. */
     readonly temporary: string;
-    /** Defaults for undefined members; other members use boolean conversion. */
-    readonly undefinedDefaults?: Readonly<Record<string, boolean>>;
+    /**
+     * Defaults for undefined members, constant or a C++ condition; other
+     * members use boolean conversion.
+     */
+    readonly undefinedDefaults?: Readonly<Record<string, boolean | string>>;
     /** Additional typed dictionary members read after ordinary object evaluation. */
     readonly consume?: Readonly<
         Record<string, (value: Value, present?: string) => void>

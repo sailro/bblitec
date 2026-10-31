@@ -1025,6 +1025,8 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUTextureFormat frame_color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+    /** The page UI's layer sample count (`sprite_ui_sdl_gpu_layer_samples`). */
+    SDL_GPUSampleCount ui_samples = SDL_GPU_SAMPLECOUNT_1;
 #if BBLITE_HAS_BILLBOARDS
     /** One pass per system the scene draws, in its order (`sync_billboard_passes`). */
     std::vector<BillboardPass> billboard_passes;

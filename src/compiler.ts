@@ -625,9 +625,6 @@ function compileSourceApplication(
             ...(options.hostPage && !workers?.namespace
                 ? { hostPage: options.hostPage }
                 : {}),
-            ...(options.nativeHostUi && !workers?.namespace
-                ? { nativeHostUi: options.nativeHostUi }
-                : {}),
             ...(input.loaderFile && options.hostPage?.loader
                 ? {
                       pageLoader: {
@@ -1294,14 +1291,14 @@ class Compiler implements LoweringServices {
         };
     }
 
-    /**
-     * Materialize an audited host-page companion into the same retained UI IR
-     * as scene-created DOM. The registered scene supplies this data because
-     * the immutable TypeScript module cannot observe elements owned by its
-     * browser HTML host in a native process.
-     */
+    /** Host page element lookups bound before the engine exists, declared once it does. */
     public readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
+    /**
+     * Materialize the host page's markup into the same retained UI IR as
+     * scene-created DOM: the TypeScript module cannot observe elements its
+     * HTML page owns in a native process.
+     */
     private emitNativeHostUi(): void {
         const startup = this.options.pageStartup;
         const script = startup
@@ -1319,9 +1316,9 @@ class Compiler implements LoweringServices {
                   });
               }
             : undefined;
-        const host = this.options.nativeHostUi;
-        const emitted = host
-            ? this.attributeRefusalsTo({ file: host.sourcePath, line: 1 }, () =>
+        const page = this.options.hostPage;
+        const emitted = page?.hostUi
+            ? this.attributeRefusalsTo({ file: page.path, line: 1 }, () =>
                   this.ui.compileHostUi(script),
               )
             : this.ui.compileHostUi(script);
@@ -1333,7 +1330,7 @@ class Compiler implements LoweringServices {
 
     /**
      * A host lookup becomes native only when its literal id is present in the
-     * audited companion, including explicitly represented canvas elements.
+     * host page, including its canvas elements.
      */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         return this.ui.isNativeHostUiLookup(call);
@@ -10064,8 +10061,8 @@ class Compiler implements LoweringServices {
      * name.
      *
      * `site` is the scene-source node that reached the feature, or — for a
-     * feature an audited companion file reaches with no call in the scene
-     * to name — the already-formatted location of that file.
+     * feature the host page reaches with no call in the scene to name —
+     * the already-formatted location of that page.
      */
     public reachFeature(
         feature: Feature,

@@ -4,11 +4,6 @@ const UI_GENERATED_PARTS = {
     placeholder: "Placeholder",
 } as const;
 export type UiGeneratedPart = keyof typeof UI_GENERATED_PARTS;
-export function isUiGeneratedPart(value: unknown): value is UiGeneratedPart {
-    return (
-        typeof value === "string" && Object.hasOwn(UI_GENERATED_PARTS, value)
-    );
-}
 interface UiContentPart {
     kind: "text" | "attribute";
     value: string;

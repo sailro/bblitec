@@ -399,12 +399,14 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(pass, ui.indices, WGPUIndexFormat_Uint32, 0,
                                                 WGPU_WHOLE_SIZE);
+            UiReachedRect reached;
             for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
                 const UiRenderDraw& draw = frame.draws[draw_index];
                 const std::optional<UiScissorRect> scissor =
                     clamped_ui_scissor(draw, frame.width, frame.height);
                 if (!scissor)
                     continue;
+                reached.add(frame, draw, *scissor);
                 wgpuRenderPassEncoderSetScissorRect(pass, static_cast<std::uint32_t>(scissor->left),
                                                     static_cast<std::uint32_t>(scissor->top),
                                                     static_cast<std::uint32_t>(scissor->width),
@@ -431,7 +433,8 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
             }
             wgpuRenderPassEncoderEnd(pass);
             pass.reset();
-            if (!layer_samples)
+            const std::optional<UiScissorRect> composited = reached.rect();
+            if (!layer_samples || !composited)
                 return;
 
             WGPURenderPassColorAttachment composite_attachment =
@@ -451,7 +454,12 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
                                                  WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(composite_pass, ui.indices, WGPUIndexFormat_Uint32,
                                                 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetScissorRect(composite_pass, 0, 0, frame.width, frame.height);
+            // The composite covers only what the segment's draws reached.
+            wgpuRenderPassEncoderSetScissorRect(composite_pass,
+                                                static_cast<std::uint32_t>(composited->left),
+                                                static_cast<std::uint32_t>(composited->top),
+                                                static_cast<std::uint32_t>(composited->width),
+                                                static_cast<std::uint32_t>(composited->height));
             count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, composite_pass, 6, 1,
                            frame.composite_first_index, 0, 0);
             wgpuRenderPassEncoderEnd(composite_pass);

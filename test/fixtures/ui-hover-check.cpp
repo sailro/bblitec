@@ -18,12 +18,15 @@ int main() {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
         ui_add_class_style(engine, sheet, "menu_entry", "background-color:#123456;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "menu_entry", "", "", true, -1,
-                          "background-color:#abcdef;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "menu_entry", "", "", false,
-                          -1, "background-color:#edab12;", UiScrollbarPart::None, false, true);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "menu_entry", "", "", false,
-                          -1, "background-color:#1122ff;", UiScrollbarPart::None, true, false);
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "menu_entry", .style = "background-color:#abcdef;", .hover = true});
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "menu_entry", .style = "background-color:#edab12;", .active = true});
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "menu_entry", .style = "background-color:#1122ff;", .focus_visible = true});
         ui_append_to_root(engine, sheet);
         const auto panel = ui_create_element(engine, "div");
         ui_set_attribute(engine, panel, "class", "menu_entry");

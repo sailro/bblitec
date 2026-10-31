@@ -1829,6 +1829,11 @@
       "sha256": "6439bd8aee64fc1a3cd3f3ef100671af84fe88dedbd689ab62258905e77f5f3e"
     },
     {
+      "upstreamPath": "lab/public/loader.js",
+      "source": "corpus/babylon-lite/lab/public/loader.js",
+      "sha256": "0f2838bedb6571a17fc260c19a1d586e6973ab2e51aae406cfef8317c22d553d"
+    },
+    {
       "upstreamPath": "lab/lite/scene181.html",
       "source": "corpus/babylon-lite/lab/lite/scene181.html",
       "sha256": "c5eb1e8486ce360b7c8c2faf278878aa79301d0361dfaf2e84786e5ead0ed468"

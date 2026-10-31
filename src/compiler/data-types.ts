@@ -1,5 +1,8 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    isEngineScopedHandleKind,
+    isWindowHandleKind,
+} from "./data-types/handles.js";
 import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
 import {
     EngineOwnerStorageRequired,
@@ -31,6 +34,7 @@ import {
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
 export {
     isHandleKind,
+    isWindowHandleKind,
     handleCppType,
     resourceValueCppType,
 } from "./data-types/handles.js";
@@ -797,6 +801,7 @@ export function platformHandleKind(
 ):
     | "gamepad"
     | "gamepad-button"
+    | "touch"
     | "gpu-device"
     | "gpu-texture"
     | "custom-event"
@@ -810,12 +815,23 @@ export function platformHandleKind(
     if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
     if (libraryName(type) === "Gamepad") return "gamepad";
     if (libraryName(type) === "GamepadButton") return "gamepad-button";
+    if (libraryName(type) === "Touch") return "touch";
     if (libraryName(type) === "CustomEvent") return "custom-event";
     // Only a generation-executed producer makes one (executed-video-function.ts).
     if (libraryName(type) === "HTMLVideoElement") return "video";
     if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
+}
+
+/** Whether a type is the DOM's TouchList, a TouchEvent's read-only list of Touch values. */
+export function isTouchListType(type: ts.Type): boolean {
+    return libraryName(type) === "TouchList";
+}
+
+/** A TouchList's storage: a snapshot vector (`bbl::dom_touch_list`). */
+export function touchListDataType(): DataType {
+    return { kind: "vector", element: { kind: "handle", handle: "touch" } };
 }
 
 export function borrowedPlatformEventKind(
@@ -827,6 +843,7 @@ export function borrowedPlatformEventKind(
         [
             "Event",
             "TransitionEvent",
+            "TouchEvent",
             "DragEvent",
             "DataTransfer",
             "StorageEvent",
@@ -4236,6 +4253,7 @@ export class DataTypeRegistry {
         // found from its identity (`bbl::js::template_raw`).
         if (libraryName(type) === "TemplateStringsArray")
             return { kind: "vector", element: { kind: "string" } };
+        if (isTouchListType(type)) return touchListDataType();
         const uninhabited =
             declaredInDomLibrary(type.symbol) &&
             UNINHABITED_DOM_OBJECTS.find((name) => name === type.symbol.name);
@@ -9177,11 +9195,7 @@ export class DataTypeRegistry {
     }
 
     private isWindowType(type: DataType): boolean {
-        return (
-            type.kind === "handle" &&
-            (type.handle === "worker-media-query" ||
-                type.handle === "worker-mutation-observer")
-        );
+        return type.kind === "handle" && isWindowHandleKind(type.handle);
     }
 
     public usesWindowStorage(): boolean {

@@ -163,11 +163,11 @@ struct DocumentSnapshot {
     std::vector<UiElementRecord> elements;
     std::vector<ListenerNames> listeners;
     std::vector<UiElementHandle> roots;
-    std::vector<UiStyleRule> styles;
     std::uint64_t style_revision = 0;
     UiElementHandle focused_element{};
     std::uint64_t focus_revision = 0;
     bool focus_visible = true;
+    bool viewport_fit_cover = false;
     UiElementHandle text_selection{};
     std::uint64_t text_selection_revision = 0;
     /** The realm's scroll requests since the last published snapshot. */
@@ -625,11 +625,11 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
     }
     snapshot->roots = engine.ui_root_children;
     snapshot->document_roots = engine.ui_document_roots;
-    snapshot->styles = engine.ui_host_style_rules;
     snapshot->style_revision = engine.ui_style_revision;
     snapshot->focused_element = engine.ui_focused_element;
     snapshot->focus_revision = engine.ui_focus_revision;
     snapshot->focus_visible = engine.ui_focus_visible;
+    snapshot->viewport_fit_cover = engine.ui_viewport_fit_cover;
     snapshot->text_selection = engine.ui_text_selection;
     snapshot->text_selection_revision = engine.ui_text_selection_revision;
     if (engine.dom_input) {
@@ -657,11 +657,11 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
     engine.ui_elements = std::move(snapshot.elements);
     engine.ui_root_children = std::move(snapshot.roots);
     engine.ui_document_roots = snapshot.document_roots;
-    engine.ui_host_style_rules = std::move(snapshot.styles);
     engine.ui_style_revision = snapshot.style_revision;
     engine.ui_focused_element = snapshot.focused_element;
     engine.ui_focus_revision = snapshot.focus_revision;
     engine.ui_focus_visible = snapshot.focus_visible;
+    engine.ui_viewport_fit_cover = snapshot.viewport_fit_cover;
     engine.ui_text_selection = snapshot.text_selection;
     engine.ui_text_selection_revision = snapshot.text_selection_revision;
     if (snapshot.pointer_captures)
@@ -1787,19 +1787,15 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                    [services](std::unique_ptr<ExternalEvent> event) {
                                        services->post_input(std::move(event));
                                    });
+                // One read of the device per frame, for the page and the realm.
+                next_layout.input = platform_input_capabilities();
+                supply_ui_rml_media_device(*ui, {system_reduced_motion(), next_layout.input});
                 update_ui_rml_runtime(*ui, width, height);
                 const auto next_update = ui_rml_next_update(*ui);
                 next_layout.width = width;
                 next_layout.height = height;
                 const auto density = SDL_GetWindowDisplayScale(window.get());
                 next_layout.pixel_ratio = density > 0 ? density : 1;
-                if (SDL_HasMouse()) {
-                    next_layout.input = {PointerPrecision::Fine, true};
-                } else {
-                    next_layout.input = {touch_device_count() > 0 ? PointerPrecision::Coarse
-                                                                  : PointerPrecision::None,
-                                         false};
-                }
                 const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
                 update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
                                              pixel_density > 0 ? pixel_density : 1);

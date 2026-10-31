@@ -16,11 +16,15 @@ import {
     isDeclaredInside,
     isEvaluationContainer,
     isValueReference,
+    outermostWrapper,
+    valueConsumer,
     variableKind,
     writeSiteOf,
     type EvaluationContainer,
     type WriteSite,
 } from "./syntax.js";
+import { runsArgumentAfterReturn } from "./schedulers.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
 
@@ -194,12 +198,7 @@ function servedInPlace(
     if (repeated && !eachIteration && !root.initializer) return false;
     return references.every((reference) => {
         if (!isDeclaredInside(reference, container)) return false;
-        // The function directly in this scope the reference is read in.
-        const nested = ts.findAncestor(reference, (node) =>
-            node === scope
-                ? "quit"
-                : isVarScope(node) && varScopeOf(node) === scope,
-        );
+        const nested = functionIn(scope, reference);
         if (nested && repeated) return false;
         if (nested && ts.isFunctionDeclaration(nested)) return true;
         const site = nested ?? reference;
@@ -207,6 +206,43 @@ function servedInPlace(
             ? isDeclaredInside(site, statement.statement)
             : site.getStart() >= root.end;
     });
+}
+
+/**
+ * Whether a nested function's read of a `var` runs only once the `var`
+ * holds its own initializer's value: the function the read lies in is an
+ * argument of the call that initializer is (`var poll = setInterval(f)`),
+ * and that call runs it only after returning, when the declaration assigns.
+ */
+function runsAfterOwnAssignment(
+    checker: ts.TypeChecker,
+    symbol: ts.Symbol,
+    scope: VarScope,
+    read: ts.Identifier,
+): boolean {
+    const created = functionIn(scope, read);
+    if (!created || !ts.isExpression(created)) return false;
+    const argument = valueConsumer(outermostWrapper(created));
+    if (
+        argument.kind !== "argument" ||
+        !runsArgumentAfterReturn(checker, argument.call, argument.index)
+    )
+        return false;
+    const initialized = valueConsumer(outermostWrapper(argument.call));
+    return (
+        initialized.kind === "initializer" &&
+        ts.isIdentifier(initialized.declaration.name) &&
+        valueSymbolOf(checker, initialized.declaration.name) === symbol
+    );
+}
+
+/** The function directly in `scope` that `node` lies in, if any. */
+function functionIn(scope: VarScope, node: ts.Node): ts.Node | undefined {
+    return ts.findAncestor(node, (candidate) =>
+        candidate === scope
+            ? "quit"
+            : isVarScope(candidate) && varScopeOf(candidate) === scope,
+    );
 }
 
 function placementOf(
@@ -259,6 +295,7 @@ type VarBindingsContext = Pick<
     | "compileValue"
     | "dataLowerer"
     | "declarations"
+    | "dynamicBindings"
     | "fail"
     | "sharedClosures"
     | "symbols"
@@ -354,7 +391,8 @@ export class VarBindings {
         const type = this.context.checker.getTypeAtLocation(name);
         if (
             !nullability(type).undefined &&
-            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+            this.context.dynamicBindings.get(root) !== "unassigned"
         )
             this.context.bindings.markVarUnassigned(symbol);
     }
@@ -415,6 +453,16 @@ export class VarBindings {
         if (!symbol || !declaration) return;
         const scope = varScopeOf(declaration);
         const own = varScopeOf(identifier) === scope;
+        if (
+            !own &&
+            runsAfterOwnAssignment(
+                this.context.checker,
+                symbol,
+                scope,
+                identifier,
+            )
+        )
+            return;
         const assigned =
             own &&
             definitelyAssignedAt(
@@ -429,6 +477,14 @@ export class VarBindings {
                 identifier,
                 `The \`var\` '${identifier.text}' is read where its assignment runs through a ${ts.SyntaxKind[assigned.unsupported.kind]}, which the definite-assignment analysis does not follow. Assign it before, or declare it with \`| undefined\`.`,
             );
+        // A function that may run before the assignment reads the `var` as
+        // JavaScript does: from storage that holds undefined until assigned.
+        if (
+            !own &&
+            ts.isVariableDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name)
+        )
+            throw new DynamicBindingStorageRequired(declaration, "unassigned");
         this.context.fail(
             identifier,
             own

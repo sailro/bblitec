@@ -40,8 +40,6 @@ export interface SceneParityDefinition {
     referenceSettle?: ReferenceSettle;
     /** Number of independently frozen engine timelines, across any realms. */
     independentEngines?: number;
-    /** Exact upstream host HTML used for the reference page. */
-    referenceHostPage?: string;
     /** Capture authored overflow with visible browser scrollbars. */
     referenceScrollbars?: boolean;
     /**
@@ -100,20 +98,19 @@ export interface SceneDefinition {
     output: string;
     title: string;
     buildDirectory: string;
-    /** Audited host-page UI that exists outside the immutable scene module. */
-    nativeHostUi?: string;
     /** Compile registered missing APIs the source reaches as throwing boundaries (docs/features.md). */
     deferredCapabilities?: CompileOptions["deferredCapabilities"];
     /**
-     * The HTML page hosting `source`: its markup is the native host and the
-     * browser reference is captured from it.
+     * The HTML page hosting `source`, and its site: its markup is the native
+     * host and the browser reference is captured from it.
      */
     page?: HostPageProgram;
     /** Root used to serve an ad-hoc source and its relative modules. */
     siteRoot?: string;
     /**
-     * An ad-hoc source's public directory: root-relative asset URLs resolve
-     * beneath it at generation and in the reference capture.
+     * An ad-hoc source's public directory (`--public-dir`): root-relative
+     * asset URLs resolve beneath it at generation, and a module's reference
+     * capture serves it.
      */
     publicDir?: string;
     parity?: SceneParityDefinition;
@@ -135,7 +132,8 @@ export function configureAdHocScenes(options: AdHocSceneOptions): void {
 /**
  * The browser page a scene's reference is captured from, when it has one,
  * and where its URLs resolve: a page outside the repository is served from
- * its site root, an ad-hoc source's public directory beside it.
+ * its site root, and a page's site serves its public directory, an ad-hoc
+ * module the deployment's.
  */
 export function sceneReferencePage(scene: SceneDefinition): {
     hostPage?: string;
@@ -143,7 +141,8 @@ export function sceneReferencePage(scene: SceneDefinition): {
     publicDir?: string;
     documentMarkers?: true;
 } {
-    const page = scene.page?.path ?? scene.parity?.referenceHostPage;
+    const page = scene.page?.path;
+    const publicDir = scene.page ? scene.page.publicDir : scene.publicDir;
     const sourcePath = relative(resolve("."), resolve(scene.source));
     const outside = sourcePath.startsWith(`..${sep}`) || isAbsolute(sourcePath);
     const siteRoot =
@@ -157,9 +156,25 @@ export function sceneReferencePage(scene: SceneDefinition): {
         ...(page === undefined ? {} : { hostPage: page }),
         ...(scene.page ? { documentMarkers: true as const } : {}),
         ...(siteRoot === undefined ? {} : { siteRoot }),
-        ...(scene.publicDir !== undefined
-            ? { publicDir: scene.publicDir }
-            : {}),
+        ...(publicDir !== undefined ? { publicDir } : {}),
+    };
+}
+
+/** Registry generation options, including the runtime Window's live startup. */
+export function registrySceneCompileOptions(
+    scene: SceneDefinition,
+): CompileOptions {
+    const page = scene.page && readHostPage(scene.page);
+    if (page && page.entry !== resolve(scene.source))
+        throw new Error(
+            `Scene '${scene.id}' page '${scene.page?.path}' loads '${page.entry}', not its source.`,
+        );
+    return {
+        ...(page ? hostPageCompileOptions(page) : {}),
+        fileName: resolve(scene.source),
+        title: scene.title,
+        search: scene.parity?.referenceSearch ?? "",
+        initialSearch: "",
     };
 }
 
@@ -180,6 +195,47 @@ interface SceneInput extends Omit<
         outputDirectory?: string;
     };
 }
+
+/** The pinned lab: its pages' site root, which serves its `public` directory first. */
+const LAB_ROOT = "corpus/babylon-lite/lab";
+
+/** A lab page and its site. */
+function labPage(path: string): HostPageProgram {
+    return { path, root: LAB_ROOT, publicDir: `${LAB_ROOT}/public` };
+}
+
+/** A lab scene (`lite/<id>.html`), whose module script loads its source. */
+function labScene(id: string): Pick<SceneInput, "source" | "page"> {
+    return {
+        source: `${LAB_ROOT}/lite/src/lite/${id}.ts`,
+        page: labPage(`${LAB_ROOT}/lite/${id}.html`),
+    };
+}
+
+/**
+ * A lab demo (`lite/demo-<name>.html`), whose module script loads the lab
+ * bundle built from its source; the page loads the source in its place.
+ */
+function labDemo(name: string): Pick<SceneInput, "source" | "page"> {
+    const source = `${LAB_ROOT}/lite/src/demos/${name}.ts`;
+    return {
+        source,
+        page: {
+            ...labPage(`${LAB_ROOT}/lite/demo-${name}.html`),
+            entry: source,
+        },
+    };
+}
+
+/**
+ * The lab loader overlay (`lab/public/loader.js`) fades over 0.4 s from
+ * data-ready and leaves at its transitionend: both captures hold past it.
+ */
+const loaderOverlaySettle: ReferenceSettle = {
+    key: "ready",
+    values: ["true"],
+    settleMilliseconds: 1000,
+};
 
 const sceneInputs: readonly SceneInput[] = [
     {
@@ -3162,12 +3218,8 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "scene180",
         name: "Scene 180 - Standalone Text Renderer",
-        source: "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
+        ...labScene("scene180"),
         title: "Babylon Lite Native - Standalone Text Renderer",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/scene180.html",
-            root: "corpus/babylon-lite/lab",
-        },
         parity: {
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
@@ -3179,12 +3231,8 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "scene181",
         name: "Scene 181 - Live Text Editor",
-        source: "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
+        ...labScene("scene181"),
         title: "Babylon Lite Native - Live Text Editor",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/scene181.html",
-            root: "corpus/babylon-lite/lab",
-        },
         parity: {
             canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             maxFullMad: 0.025,
@@ -4717,11 +4765,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "scene227",
         name: "Scene 227 - Shared Scene Surfaces",
-        source: "corpus/babylon-lite/lab/lite/src/lite/scene227.ts",
+        ...labScene("scene227"),
         title: "Babylon Lite Native - Shared Scene Surfaces",
-        nativeHostUi: "ui/scene227-host.json",
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene227.html",
+            referenceSettle: loaderOverlaySettle,
             // Full-page label rasterization; the canvases match exactly.
             maxFullMad: 0.18,
             maxForegroundMad: 0.24,
@@ -4733,11 +4780,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "scene228",
         name: "Scene 228 - Independent Scene Surfaces",
-        source: "corpus/babylon-lite/lab/lite/src/lite/scene228.ts",
+        ...labScene("scene228"),
         title: "Babylon Lite Native - Independent Scene Surfaces",
-        nativeHostUi: "ui/scene228-host.json",
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/scene228.html",
+            referenceSettle: loaderOverlaySettle,
             // Full-page labels; canvas MAD is below 0.000002 on both backends.
             maxFullMad: 0.2,
             maxForegroundMad: 0.18,
@@ -4900,14 +4946,9 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "offscreen",
         name: "Offscreen (Worker)",
-        source: "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
+        ...labDemo("offscreen"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Offscreen (Worker)",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/demo-offscreen.html",
-            root: "corpus/babylon-lite/lab",
-            entry: "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
-        },
         parity: {
             referenceFrame: 180,
             independentEngines: 2,
@@ -5028,12 +5069,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "racer",
         name: "Racer",
-        source: "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
+        ...labDemo("racer"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Racer",
-        nativeHostUi: "ui/racer-host.json",
         parity: {
-            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-racer.html",
             referenceFrame: 180,
             // Measured 0.179 / 0.179 on both backends, all of it retained
             // HUD text (the canvas-only lane below is 0.004).
@@ -5051,13 +5090,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "antigravity-racer",
         name: "Antigravity Racer",
-        source: "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer.ts",
+        ...labDemo("antigravity-racer"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Antigravity Racer",
-        nativeHostUi: "ui/antigravity-racer-host.json",
         parity: {
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-antigravity-racer.html",
             referenceFrame: 180,
             // Measured 1.018 full / 1.035 foreground on both backends. The
             // residual is retained text rasterization; the canvas-only lane
@@ -5076,13 +5112,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "littlest-tokyo",
         name: "Littlest Tokyo",
-        source: "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+        ...labDemo("littlest-tokyo"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Littlest Tokyo",
-        nativeHostUi: "ui/littlest-tokyo-host.json",
         parity: {
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-littlest-tokyo.html",
             referenceFrame: 180,
             maxFullMad: 0.2,
             maxForegroundMad: 0.2,
@@ -5094,13 +5127,10 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "bath-day",
         name: "Bath Day",
-        source: "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
+        ...labDemo("bath-day"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Bath Day",
-        nativeHostUi: "ui/bath-day-host.json",
         parity: {
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-bath-day.html",
             referenceFrame: 180,
             maxFullMad: 0.2,
             maxForegroundMad: 0.2,
@@ -5130,14 +5160,9 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "ocean",
         name: "Ocean",
-        source: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+        ...labDemo("ocean"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Ocean",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/demo-ocean.html",
-            root: "corpus/babylon-lite/lab",
-            entry: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
-        },
         parity: {
             neutralityPartition: {
                 width: 1280,
@@ -5186,14 +5211,9 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "playroom",
         name: "The Playroom",
-        source: "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
+        ...labDemo("playroom"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - The Playroom",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/demo-playroom.html",
-            root: "corpus/babylon-lite/lab",
-            entry: "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
-        },
         parity: {
             referenceFrame: 180,
             // Not qualified: the canvas itself differs at the
@@ -5258,14 +5278,9 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "screen-space-effects",
         name: "Screen-Space Effects",
-        source: "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
+        ...labDemo("screen-space-effects"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Screen-Space Effects",
-        page: {
-            path: "corpus/babylon-lite/lab/lite/demo-screen-space-effects.html",
-            root: "corpus/babylon-lite/lab",
-            entry: "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
-        },
         parity: {
             // Both temporal effects accumulate 64 samples from a stable
             // view, so the convention's frame 180 is well past convergence
@@ -5329,23 +5344,18 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "calculator",
         name: "Calculator",
-        source: "corpus/babylon-lite/lab/lite/src/demos/calculator.ts",
+        ...labDemo("calculator"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Calculator",
-        nativeHostUi: "ui/calculator-host.json",
         parity: {
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-calculator.html",
             // The graph's onStart cascade runs on the first before-render
             // tick and the demo's auto-rotate turns the camera a fixed
             // angle per frame, so the pose is a frame count from a fixed
             // clock. The canvas is byte-exact on both backends (canvas-only
-            // pixel-perfect); the full-page residual is the retained chrome
-            // (the same companion as Bath Day's over a longer credit):
-            // the boxes match the golden to the pixel and the 11.52 px
-            // credit text runs 8 px narrower, so it is glyph rasterization,
-            // not layout. Both backends measure the same, so one gate pair
-            // covers both.
+            // pixel-perfect); the full-page residual is the page's chrome,
+            // whose boxes match Chromium's within 0.02 px, so it is glyph
+            // rasterization, not layout. Both backends measure the same, so
+            // one gate pair covers both.
             referenceFrame: 180,
             maxFullMad: 0.25,
             maxForegroundMad: 1.05,
@@ -5358,10 +5368,9 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "trogir-streaming",
         name: "Trogir Gaussian Splat Streaming",
-        source: "corpus/babylon-lite/lab/lite/src/demos/trogir-streaming.ts",
+        ...labDemo("trogir-streaming"),
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Trogir Gaussian Splat Streaming",
-        nativeHostUi: "ui/trogir-streaming-host.json",
         // The HUD's point-sampling toggle reaches the pin's Gaussian point
         // splatting, which the demo catches to keep classic rendering.
         deferredCapabilities: "runtime-throw",
@@ -5390,8 +5399,6 @@ const sceneInputs: readonly SceneInput[] = [
                     },
                 ],
             },
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-trogir-streaming.html",
             // The splats stream from the public dataset at run time, so the
             // state the capture compares arrives at a different frame on
             // every run: both captures wait for the stream to settle.
@@ -5414,16 +5421,11 @@ const sceneInputs: readonly SceneInput[] = [
     {
         id: "mesh-lod",
         name: "MeshLoD Statue Streaming",
-        source: "corpus/babylon-lite/lab/lite/src/demos/mesh-lod.ts",
-        sourceOrigin: "babylon-lite-application",
-        title: "Babylon Lite Native - MeshLoD Statue Streaming",
         // The lab page around the demo: its HUD, its loading overlay and
         // error banner, which its own classic scripts drive.
-        page: {
-            path: "corpus/babylon-lite/lab/lite/demo-mesh-lod.html",
-            root: "corpus/babylon-lite/lab",
-            entry: "corpus/babylon-lite/lab/lite/src/demos/mesh-lod.ts",
-        },
+        ...labDemo("mesh-lod"),
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - MeshLoD Statue Streaming",
         parity: {
             neutralityPartition: {
                 width: 1280,
@@ -5692,11 +5694,15 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         );
     };
     // A page's source is the entry its module script names.
+    // Its site serves the deployment's public directory.
     const page = isHostPagePath(absoluteSource)
         ? {
               path: repositoryPath(absoluteSource),
               ...(siteRoot !== undefined
                   ? { root: repositoryPath(resolve(siteRoot)) }
+                  : {}),
+              ...(publicDir !== undefined
+                  ? { publicDir: repositoryPath(resolve(publicDir)) }
                   : {}),
           }
         : undefined;
@@ -5747,8 +5753,10 @@ export function resolveScene(idOrSource: string): SceneDefinition {
 import { existsSync, statSync } from "node:fs";
 import type { CompileOptions, HostPageProgram } from "./compiler/types.js";
 import {
+    hostPageCompileOptions,
     hostPageRoot,
     isHostPagePath,
+    readHostPage,
     readHostPageEntry,
 } from "./host-page.js";
 import {

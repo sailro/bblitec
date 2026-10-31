@@ -64,7 +64,10 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    isEngineScopedHandleKind,
+    isInputSnapshotHandleKind,
+} from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
@@ -3584,8 +3587,7 @@ export class UserFunctionLowerer {
                         } as const;
                     const platformHandle =
                         inner?.kind === "handle" &&
-                        (inner.handle === "gamepad" ||
-                            inner.handle === "gamepad-button");
+                        isInputSnapshotHandleKind(inner.handle);
                     return mapped &&
                         mapped.kind !== "function" &&
                         (!context.dataTypes.carriesHandle(mapped) ||

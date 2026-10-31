@@ -4,12 +4,6 @@
 
 namespace bbl::pal {
 
-enum class PointerPrecision { None, Coarse, Fine };
-struct InputCapabilities {
-    PointerPrecision pointer = PointerPrecision::None;
-    bool hover = false;
-    bool operator==(const InputCapabilities&) const = default;
-};
 class ResizeObserver {
 public:
     using Callback = js::Callback<void()>;
@@ -50,15 +44,13 @@ public:
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(listeners_); }
 
 private:
-    enum class Feature { Resolution, ReducedMotion, Input };
-    Feature feature_ = Feature::Resolution;
     std::string media_;
-    double resolution_ = 0;
-    bool reduce_ = false;
+    /** `(resolution: Ndppx)`, which only a query of it alone names. */
+    std::optional<double> resolution_;
+    UiMediaCondition condition_;
     double (*read_pixel_ratio_)();
     bool (*read_motion_preference_)();
     InputCapabilities (*read_input_capabilities_)();
-    std::vector<std::variant<PointerPrecision, bool>> input_conditions_;
     bool matches_ = false;
     PlatformEventListeners<void()> listeners_;
 };

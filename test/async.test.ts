@@ -197,3 +197,43 @@ test("an erased awaited declaration and `await null` take the same void suspensi
         /erased_await_\d+ = co_await bbl::js::Promise<bbl::js::PromiseVoid>/,
     );
 });
+
+test("an unread await of a non-thenable takes a void turn in the Window realm", () => {
+    // `container.flowGraphRuntimes` is read under its await as the asset's
+    // own list, which a promise cannot hold; an await nothing reads (a
+    // statement, `void`, a comma's left) still takes its turn. A read of
+    // the settled list keeps refusing.
+    const source = (statement: string) => `
+        import { createEngine, createSceneContext, enableFlowGraphPointerPicking, loadGltf } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            const asset = await loadGltf(engine, "model.glb");
+            ${statement}
+            await enableFlowGraphPointerPicking(scene);
+        }
+        void main();
+        new MutationObserver(() => {}).disconnect();
+    `;
+    for (const statement of [
+        "await asset.flowGraphRuntimes;",
+        "void await asset.flowGraphRuntimes;",
+        "await asset.flowGraphRuntimes, 0;",
+    ]) {
+        const result = compileSource(source(statement));
+        assert.match(result.cpp, /run_window_application/);
+        assert.match(
+            result.cpp,
+            /load_realm_gltf\([^\n]*\n[^\n]*\n[^\n]*= co_await bbl::js::Promise<bbl::js::PromiseVoid>::resolved\(bbl::js::PromiseVoid\{\}\);/,
+        );
+    }
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "const runtimes = await asset.flowGraphRuntimes; console.log(runtimes.length);",
+                ),
+            ),
+        /Promise result 'handle-collection' has no owned asynchronous representation/,
+    );
+});

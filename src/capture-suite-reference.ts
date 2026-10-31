@@ -4,11 +4,10 @@ import {
     type ServerResponse,
 } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { extname, relative, resolve, sep } from "node:path";
 import type { Page } from "playwright-core";
-import type { NativeHostUi } from "./compiler/types.js";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 import type { ReferenceSettle } from "./scene-registry.js";
 import { applyCaptureAnimationPose } from "./capture-animation-pose.js";
@@ -17,11 +16,10 @@ import {
     engineFrameCaptureModule,
     waitForCapturedEngines,
 } from "./capture-engine-frames.js";
-import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
 import ts from "typescript";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
-import { pinnedLabPublicFile } from "./pinned-lab-materializers.js";
+import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -207,14 +205,7 @@ export function flattenedBundledDemoAssetPath(
     const parts = relativePath.slice(prefix.length).split("/");
     for (let omitted = 1; omitted < parts.length; omitted += 1) {
         const candidate = `${prefix}${parts.slice(omitted).join("/")}`;
-        const candidatePath = resolve(root, candidate);
-        if (
-            candidatePath.startsWith(`${root}${sep}`) &&
-            existsSync(candidatePath) &&
-            statSync(candidatePath).isFile()
-        ) {
-            return candidate;
-        }
+        if (servedFile(root, candidate) !== undefined) return candidate;
     }
     return undefined;
 }
@@ -546,14 +537,12 @@ interface SuiteCaptureOptions {
      * so the native scene takes the branch the reference page takes.
      */
     search?: string;
-    /** Audited host-page elements that surround the immutable scene module. */
-    hostUi?: NativeHostUi;
     /**
      * The directory `/` paths name, for a page outside the repository: its
      * modules and files are served from it before the repository's.
      */
     siteRoot?: string;
-    /** The public directory root-relative asset URLs are served from first. */
+    /** The directory the site serves at "/" ahead of its root, as Vite does. */
     publicDir?: string;
     /**
      * The program starts no engine and writes no canvas readiness: it is
@@ -570,59 +559,6 @@ export function captureUiEnabled(
     environment: NodeJS.ProcessEnv = process.env,
 ): boolean {
     return environment.BBLITE_CAPTURE_UI !== "0";
-}
-
-function hostUiBootstrapScript(
-    hostUi: NonNullable<SuiteCaptureOptions["hostUi"]>,
-): string {
-    const payload = JSON.stringify({ elements: hostUi.elements }).replaceAll(
-        "</script",
-        "<\\/script",
-    );
-    const styleSheet = nativeHostUiStyleRules(hostUi)
-        .map((rule) => {
-            let body = `${uiStyleSelector(rule)}{${rule.style}}`;
-            if (rule.containerMaxWidth !== undefined)
-                body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
-            if (rule.orientation !== undefined)
-                body = `@media(orientation:${rule.orientation}){${body}}`;
-            if (rule.reducedMotion !== undefined)
-                body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
-            return rule.maxWidth === undefined
-                ? body
-                : `@media(max-width:${rule.maxWidth}px){${body}}`;
-        })
-        .join("\n");
-    const stylePayload = JSON.stringify(styleSheet).replaceAll(
-        "</script",
-        "<\\/script",
-    );
-    return `<script>(() => {
-const hostUi = ${payload};
-const hostStyleSheet = ${stylePayload};
-if (hostStyleSheet) {
-    const style = document.createElement("style");
-    style.textContent = hostStyleSheet;
-    document.head.appendChild(style);
-}
-// The page's canvas takes the place the host UI gives the primary canvas, as
-// on the upstream page and the native host: one primary canvas, in its wrapper.
-const primary = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)});
-const create = (record) => {
-    if (record.tag === undefined) return document.createTextNode(record.text);
-    const element =
-        record.attributes?.id === primary.id
-            ? primary
-            : document.createElement(record.tag);
-    for (const [name, value] of Object.entries(record.attributes ?? {})) {
-        element.setAttribute(name, value);
-    }
-    if (record.text !== undefined) element.textContent = record.text;
-    for (const child of record.children ?? []) element.appendChild(create(child));
-    return element;
-};
-for (const element of hostUi.elements) document.body.appendChild(create(element));
-})();</script>\n`;
 }
 
 /**
@@ -701,13 +637,10 @@ export function createSuiteSceneServer(
         options.independentEngines !== undefined
             ? ""
             : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
-    const hostUiScript = options.hostUi
-        ? hostUiBootstrapScript(options.hostUi)
-        : "";
     let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
 </style></head><body><canvas id="${HOST_PRIMARY_CANVAS_ID}" width="${width}" height="${height}"></canvas>
-${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
+${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
         html = hostPageWithEntry(original, entryPath).replace(
@@ -806,14 +739,13 @@ ${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${en
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+        // The site's public files serve first, untransformed, as Vite
+        // serves them; then its root's.
         const publicPath =
-            publicDir === undefined ? undefined : resolve(publicDir, relative);
-        if (
-            publicPath !== undefined &&
-            publicPath.startsWith(`${publicDir}${sep}`) &&
-            existsSync(publicPath) &&
-            statSync(publicPath).isFile()
-        ) {
+            publicDir === undefined
+                ? undefined
+                : servedFile(publicDir, relative);
+        if (publicPath !== undefined) {
             serveLocalFile(
                 response,
                 publicPath,
@@ -823,27 +755,24 @@ ${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${en
             return;
         }
         for (const servedRoot of servedRoots) {
-            const path = resolve(servedRoot, relative);
+            const path = url.pathname.endsWith(".ts")
+                ? undefined
+                : servedFile(servedRoot, relative);
             // Local TypeScript modules transpile on demand. Corpus scenes
             // write both specifier styles: the ESM ".js" one the demo build
             // rewrites, and the bare extensionless one bundlers resolve (the
             // sprite scenes import `../_shared/sprite-atlas-image`), so the
             // sibling to compile is found either way.
-            if (
-                url.pathname.endsWith(".ts") ||
-                !existsSync(path) ||
-                !statSync(path).isFile()
-            ) {
-                const typescriptPath = url.pathname.endsWith(".ts")
-                    ? path
-                    : url.pathname.endsWith(".js")
-                      ? `${path.slice(0, -3)}.ts`
-                      : `${path}.ts`;
-                if (
-                    typescriptPath.startsWith(`${servedRoot}${sep}`) &&
-                    existsSync(typescriptPath) &&
-                    statSync(typescriptPath).isFile()
-                ) {
+            if (path === undefined) {
+                const typescriptPath = servedFile(
+                    servedRoot,
+                    url.pathname.endsWith(".ts")
+                        ? relative
+                        : url.pathname.endsWith(".js")
+                          ? `${relative.slice(0, -3)}.ts`
+                          : `${relative}.ts`,
+                );
+                if (typescriptPath !== undefined) {
                     const sourceText = readFileSync(typescriptPath, "utf8");
                     const fixedFrameSource =
                         options.fixedAnimationFrame === undefined ||
@@ -870,12 +799,7 @@ ${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${en
                     );
                     return;
                 }
-            }
-            if (
-                path.startsWith(`${servedRoot}${sep}`) &&
-                existsSync(path) &&
-                statSync(path).isFile()
-            ) {
+            } else {
                 serveLocalFile(
                     response,
                     path,
@@ -891,13 +815,8 @@ ${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${en
             const bundledPath =
                 bundledRelative === undefined
                     ? undefined
-                    : resolve(servedRoot, bundledRelative);
-            if (
-                bundledPath !== undefined &&
-                bundledPath.startsWith(`${servedRoot}${sep}`) &&
-                existsSync(bundledPath) &&
-                statSync(bundledPath).isFile()
-            ) {
+                    : servedFile(servedRoot, bundledRelative);
+            if (bundledPath !== undefined) {
                 response.writeHead(200, {
                     "Content-Type": mimeType(bundledPath),
                 });

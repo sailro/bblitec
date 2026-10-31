@@ -7,9 +7,11 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -61,6 +63,21 @@ inline void require_window_filling_engine_canvas(const Engine& engine, std::uint
                                  "only while it fills the window.");
 }
 #endif
+
+/**
+ * A registered scene that runs its own frame graph -- a surface scene, or
+ * one with tasks -- is no utility layer of the scene pass before it: it
+ * clears and presents through its own tasks.
+ */
+inline bool scene_runs_own_graph(const Scene& scene) {
+    return scene.surface_canvas || scene.has_frame_passes();
+}
+
+/** Whether any of `scenes` runs a frame graph, which the task resources serve. */
+inline bool scenes_run_frame_graphs(std::span<const std::shared_ptr<Scene>> scenes) {
+    return std::any_of(scenes.begin(), scenes.end(),
+                       [](const auto& scene) { return scene->has_frame_passes(); });
+}
 
 /**
  * The equal pane of `scene` among the primary scene and the unplaced

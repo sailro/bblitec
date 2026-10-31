@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -65,6 +66,47 @@ inline std::size_t css_function_end(std::string_view value, std::size_t open) {
             break;
     }
     return end;
+}
+
+inline std::string_view trim_css_token(std::string_view value) {
+    const std::size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos)
+        return {};
+    const std::size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+inline bool css_identifier_character(char character) {
+    return std::isalnum(static_cast<unsigned char>(character)) || character == '-' ||
+           character == '_';
+}
+
+/** Whether the CSS function `name` (its parenthesis included) starts at `index`, not within an identifier. */
+inline bool css_function_at(std::string_view value, std::size_t index, std::string_view name) {
+    return value.substr(index).starts_with(name) &&
+           (index == 0 || !css_identifier_character(value[index - 1]));
+}
+
+/**
+ * Visits each index of a CSS value outside escapes, quoted strings and url() arguments, where a
+ * token may start; `visit(index)` may rewrite `value` and returns the index to resume after.
+ */
+template <typename Visit> void scan_css_value(std::string& value, Visit&& visit) {
+    char quote = 0;
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const char token = value[index];
+        if (token == '\\') {
+            ++index;
+        } else if (quote) {
+            quote = token == quote ? 0 : quote;
+        } else if (token == '\'' || token == '"') {
+            quote = token;
+        } else if (css_function_at(value, index, "url(")) {
+            index = css_function_end(value, index + 3);
+        } else {
+            index = visit(index);
+        }
+    }
 }
 
 } // namespace detail
@@ -250,24 +292,10 @@ public:
 inline std::string rml_css_length_math(std::string value, double width, double height,
                                        std::optional<double> root_font = std::nullopt,
                                        std::string_view property_name = {}) {
-    char quote = 0;
     std::string property(property_name);
     std::size_t declaration_start = 0;
-    for (std::size_t index = 0; index < value.size(); ++index) {
+    detail::scan_css_value(value, [&](std::size_t index) {
         const char token = value[index];
-        if (token == '\\') {
-            ++index;
-            continue;
-        }
-        if (quote) {
-            if (token == quote)
-                quote = 0;
-            continue;
-        }
-        if (token == '\'' || token == '"') {
-            quote = token;
-            continue;
-        }
         if (token == ';' || token == '{' || token == '}') {
             declaration_start = index + 1;
             property = property_name;
@@ -278,27 +306,17 @@ inline std::string rml_css_length_math(std::string value, double width, double h
             property = first == std::string::npos ? "" : property.substr(first, last - first + 1);
         }
         const auto tail = std::string_view(value).substr(index);
-        if (tail.starts_with("url(")) {
-            const auto end = value.find(')', index + 4);
-            if (end == std::string::npos)
-                break;
-            index = end;
-            continue;
-        }
-        if (index &&
-            ((value[index - 1] >= 'a' && value[index - 1] <= 'z') || value[index - 1] == '-'))
-            continue;
-        if (!tail.starts_with("calc(") && !tail.starts_with("min(") && !tail.starts_with("max(") &&
-            !tail.starts_with("clamp("))
-            continue;
+        if (!detail::css_function_at(value, index, "calc(") &&
+            !detail::css_function_at(value, index, "min(") &&
+            !detail::css_function_at(value, index, "max(") &&
+            !detail::css_function_at(value, index, "clamp("))
+            return index;
         const std::size_t end = detail::css_function_end(value, value.find('(', index));
         // Math over var() resolves once the style engine substitutes the variables; clip-path math keeps its
         // percentages for the shape to resolve against its reference box.
         if (property == "clip-path" ||
-            std::string_view(value).substr(index, end - index).find("var(") != std::string::npos) {
-            index = end;
-            continue;
-        }
+            std::string_view(value).substr(index, end - index).find("var(") != std::string::npos)
+            return end;
         UiLengthMath math(tail, width, height, root_font);
         const auto [replacement, consumed] = math.resolve();
         if (math.uses_root_font() &&
@@ -306,8 +324,47 @@ inline std::string rml_css_length_math(std::string value, double width, double h
             throw std::runtime_error(
                 "Root-relative CSS math in font sizing or custom properties is not represented.");
         value.replace(index, consumed, replacement);
-        index += replacement.size() - 1;
-    }
+        return index + replacement.size() - 1;
+    });
+    return value;
+}
+
+/** The window's safe-area insets in CSS px: the edges the display obscures (a notch, rounded corners). */
+struct UiSafeAreaInsets {
+    double top = 0, right = 0, bottom = 0, left = 0;
+    bool operator==(const UiSafeAreaInsets&) const = default;
+};
+
+/**
+ * Substitutes CSS `env()`: a `safe-area-inset-*` variable is the window's
+ * inset, read at run time; another name takes its fallback, and refuses
+ * without one.
+ */
+inline std::string rml_css_environment(std::string value, const UiSafeAreaInsets& insets) {
+    detail::scan_css_value(value, [&](std::size_t index) {
+        if (!detail::css_function_at(value, index, "env("))
+            return index;
+        const std::size_t end = detail::css_function_end(value, index + 3);
+        if (end == value.size())
+            throw std::runtime_error("UI CSS env() is unclosed: " + value);
+        const auto arguments = std::string_view(value).substr(index + 4, end - index - 4);
+        const auto comma = arguments.find(',');
+        const auto name = detail::trim_css_token(arguments.substr(0, comma));
+        const double* inset = name == "safe-area-inset-top"      ? &insets.top
+                              : name == "safe-area-inset-right"  ? &insets.right
+                              : name == "safe-area-inset-bottom" ? &insets.bottom
+                              : name == "safe-area-inset-left"   ? &insets.left
+                                                                 : nullptr;
+        if (!inset && comma == std::string_view::npos)
+            throw std::runtime_error(
+                "UI CSS env() names a variable the native host does not define: " + value);
+        const std::string replacement =
+            inset ? std::to_string(*inset) + "px"
+                  : rml_css_environment(
+                        std::string(detail::trim_css_token(arguments.substr(comma + 1))), insets);
+        value.replace(index, end + 1 - index, replacement);
+        return index + replacement.size() - 1;
+    });
     return value;
 }
 } // namespace bbl::pal

@@ -15,7 +15,7 @@ test("max-width rules share ordinary retained declaration admission", () => {
     `);
     assert.match(
         result.cpp,
-        /false, 480\.0, "flex-wrap:wrap;margin-left:14px;text-align:right;/,
+        /"flex-wrap:wrap;margin-left:14px;text-align:right;[^"]*", \.max_width = 480\.0/,
     );
     for (const condition of [
         "max-width:480px",
@@ -61,7 +61,7 @@ test("stable scrollbar gutters share static, media and live style admission", ()
         ".panel{overflow-y:auto;scrollbar-gutter:stable;scrollbar-width:thin}@media(max-width:480px){.panel{scrollbar-gutter:auto}}",
     );
     assert.match(result.cpp, /scrollbar-gutter:stable/);
-    assert.match(result.cpp, /480\.0, "scrollbar-gutter:auto"/);
+    assert.match(result.cpp, /"scrollbar-gutter:auto", \.max_width = 480\.0/);
     assert.throws(
         () => compileSheet(".panel{scrollbar-gutter:stable both-edges}"),
         /style property/,

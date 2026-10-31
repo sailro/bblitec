@@ -38,7 +38,6 @@ import {
 import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
-import { readNativeHostUi } from "./native-host-ui.js";
 import {
     hostPageCompileOptions,
     isHostPagePath,
@@ -146,8 +145,9 @@ interface CliOptions {
     publicUrl?: string;
     siteUrl?: string;
     environment: Record<string, string>;
-    hostUi?: string;
     siteRoot?: string;
+    /** An HTML page's site public directory, when not `publicDir`. */
+    sitePublicDir?: string;
     /** The module an HTML page's module script loads in place of its URL. */
     pageEntry?: string;
     idDiagnostics: boolean;
@@ -175,8 +175,8 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--public-url", value: "<url>" },
     { flag: "--site-url", value: "<url>" },
     { flag: "--env", value: "<NAME=value>" },
-    { flag: "--host-ui", value: "<json>" },
     { flag: "--site-root", value: "<directory>" },
+    { flag: "--site-public-dir", value: "<directory>" },
     { flag: "--page-entry", value: "<module.ts>" },
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
@@ -221,8 +221,8 @@ function parseArguments(arguments_: string[]): CliOptions {
     let publicUrl: string | undefined;
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
-    let hostUi: string | undefined;
     let siteRoot: string | undefined;
+    let sitePublicDir: string | undefined;
     let pageEntry: string | undefined;
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
@@ -279,14 +279,14 @@ function parseArguments(arguments_: string[]): CliOptions {
                 initialSearch = value;
                 index += 1;
                 break;
-            case "--host-ui":
-                if (!value) usage();
-                hostUi = value;
-                index += 1;
-                break;
             case "--site-root":
                 if (!value) usage();
                 siteRoot = value;
+                index += 1;
+                break;
+            case "--site-public-dir":
+                if (!value) usage();
+                sitePublicDir = value;
                 index += 1;
                 break;
             case "--page-entry":
@@ -360,8 +360,8 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(publicDir ? { publicDir } : {}),
         ...(publicUrl ? { publicUrl } : {}),
         ...(siteUrl ? { siteUrl } : {}),
-        ...(hostUi ? { hostUi } : {}),
         ...(siteRoot ? { siteRoot } : {}),
+        ...(sitePublicDir ? { sitePublicDir } : {}),
         ...(pageEntry ? { pageEntry } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
@@ -653,8 +653,8 @@ async function materializeAsset(
  * worktree records the same bytes. A file outside the repository keeps
  * the relative path that reaches it from the root, or its absolute path
  * where none exists (another drive). A name that is not an absolute path
- * -- a host-UI companion's registry path, a virtual entry name -- is
- * already machine-independent and is recorded as given.
+ * -- a virtual entry name -- is already machine-independent and is
+ * recorded as given.
  */
 function recordedManifest(
     manifest: CompileResult["manifest"],
@@ -926,20 +926,21 @@ async function main(): Promise<void> {
     // fan-out's children already run under their parent's lock and take
     // nothing here.
     holdDistLock(`generate ${options.input}`);
-    // An HTML page names its entry and is that entry's host UI.
+    // An HTML page names its entry and is that entry's host UI. Its site
+    // serves the deployment's public files unless given its own.
+    const sitePublicDir = options.sitePublicDir ?? options.publicDir;
     const page = isHostPagePath(options.input)
         ? readHostPage({
               path: options.input,
               ...(options.siteRoot ? { root: options.siteRoot } : {}),
+              ...(sitePublicDir ? { publicDir: sitePublicDir } : {}),
               ...(options.pageEntry ? { entry: options.pageEntry } : {}),
           })
         : undefined;
-    if (page && options.hostUi)
-        throw new Error(
-            "--host-ui describes a TypeScript entry's host; an HTML page is its own host.",
-        );
     if (!page && options.siteRoot)
         throw new Error("--site-root applies to an HTML page input.");
+    if (!page && options.sitePublicDir)
+        throw new Error("--site-public-dir applies to an HTML page input.");
     if (!page && options.pageEntry)
         throw new Error("--page-entry applies to an HTML page input.");
     const inputPath = resolve(page?.entry ?? options.input);
@@ -961,9 +962,6 @@ async function main(): Promise<void> {
         ...(options.publicDir ? { publicDir: options.publicDir } : {}),
         ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
         ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
-        ...(options.hostUi
-            ? { nativeHostUi: readNativeHostUi(options.hostUi) }
-            : {}),
         ...(options.sourceProfile
             ? { sourceProfile: options.sourceProfile }
             : {}),
@@ -1845,19 +1843,18 @@ ${imageCodecLines || '    ""'}
     }))
         tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the
-    // compiler) plus what this run read beside them -- the host-UI
-    // companion and every asset materialized from a repository path. A
-    // remote asset is pinned by URL and a data URL carries its bytes in the
-    // source, so neither is a file to list. `scene -- compile` skips a
-    // scene whose listed inputs are unchanged, so a read added here that
-    // is not listed is a read that skip cannot see.
+    // compiler) plus what this run read beside them -- every asset
+    // materialized from a repository path. A remote asset is pinned by URL
+    // and a data URL carries its bytes in the source, so neither is a file
+    // to list. `scene -- compile` skips a scene whose listed inputs are
+    // unchanged, so a read added here that is not listed is a read that
+    // skip cannot see.
     const repositoryRoot = compilerRepositoryRoot();
     const listInput = (path: string): void => {
         result.manifest.inputs.push(
             repositoryRelativePath(repositoryRoot, path),
         );
     };
-    if (options.hostUi) listInput(options.hostUi);
     for (const asset of result.manifest.assets) {
         const local = localAssetPath(asset.source, inputPath);
         if (local !== undefined) listInput(local);

@@ -1,6 +1,7 @@
 import type { LoweringServices } from "./lowering-services.js";
 // Web Storage references and the supported key/value methods.
 import ts from "typescript";
+import { receiverType } from "./dynamic-binding-storage.js";
 
 import type { DataType } from "./data-types.js";
 import { libraryName, namedMember } from "./symbols.js";
@@ -9,6 +10,7 @@ import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 /** The narrow slice of the expression context this lowering needs. */
 interface WebStorageContext extends Pick<
     LoweringServices,
+    | "dynamicBindings"
     | "unwrap"
     | "fail"
     | "libraryGlobal"
@@ -120,7 +122,7 @@ export function compileWebStorageCall(
     const global = storageGlobal(context, callee.expression);
     if (!global && !STORAGE_METHODS.has(callee.name)) {
         const type = context.checker.getNonNullableType(
-            context.checker.getTypeAtLocation(callee.expression),
+            receiverType(context, callee.expression),
         );
         if (libraryName(type) !== "Storage") return undefined;
     }

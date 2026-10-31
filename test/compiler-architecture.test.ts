@@ -1446,7 +1446,7 @@ test("a Promise reaction call is recognized by promises.ts", () => {
         "src/compiler/async.ts",
         "src/compiler/compressed-json.ts",
         "src/compiler/pending-activations.ts",
-        "src/compiler/shared-closure-analysis.ts",
+        "src/compiler/schedulers.ts",
     ])
         assert.ok(sourceFacts(path).calls.has("promiseReactionOf"), path);
 });

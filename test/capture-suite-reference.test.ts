@@ -166,111 +166,28 @@ test("derives the instrumented capture's fixed frame exactly as the golden captu
     );
 });
 
-test("serves the host UI bootstrap ahead of the scene module script", async () => {
-    const server = createSuiteSceneServer("export {};\n", {
-        hostUi: {
-            sourcePath: "ui/app-host.json",
-            styleRules: [
-                { kind: "class", primary: "hud", style: "color: red" },
-                {
-                    kind: "class",
-                    primary: "entry",
-                    focusVisible: true,
-                    style: "outline: 2px solid cyan",
-                },
-                {
-                    kind: "class",
-                    primary: "compact",
-                    maxWidth: 800,
-                    reducedMotion: true,
-                    containerMaxWidth: 320,
-                    style: "width:40px",
-                },
-            ],
-            elements: [
-                {
-                    tag: "div",
-                    attributes: { id: "hud" },
-                    text: "HUD",
-                },
-                {
-                    tag: "a",
-                    children: [{ tag: "b", text: "Title" }, { text: " tail" }],
-                },
-            ],
-        },
-    });
-    try {
-        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-        const address = server.address();
-        assert.ok(address && typeof address !== "string");
-        const html = await (
-            await fetch(`http://127.0.0.1:${address.port}/scene.html`)
-        ).text();
-        const bootstrapIndex = html.indexOf("const hostStyleSheet");
-        const moduleIndex = html.indexOf('<script type="module"');
-        assert.ok(bootstrapIndex >= 0, "host UI bootstrap script missing");
-        assert.ok(moduleIndex >= 0, "scene module script missing");
-        // The bootstrap is inline HTML ahead of the module script: an
-        // instrumented capture's addInitScript hooks run before either,
-        // so injecting the UI cannot disturb hook timing.
-        assert.ok(
-            bootstrapIndex < moduleIndex,
-            "host UI must be served ahead of the scene module",
-        );
-        assert.match(html, /\.hud\{color: red\}/);
-        assert.match(
-            html,
-            /@media\(max-width:800px\)\{@media\(prefers-reduced-motion:reduce\)\{@container\(max-width:320px\)\{\.compact\{width:40px\}\}\}\}/,
-        );
-        // Plain class rules and generic selector flags share one sheet.
-        // Dropping focus-visible paints every button as selected in the
-        // reference.
-        assert.match(html, /\.entry:focus-visible\{outline: 2px solid cyan\}/);
-        // Text nodes keep their place among their element siblings.
-        assert.match(html, /\{"tag":"b","text":"Title"\},\{"text":" tail"\}/);
-        assert.match(
-            html,
-            /if \(record\.tag === undefined\) return document\.createTextNode\(record\.text\);/,
-        );
-    } finally {
-        await new Promise<void>((done) => server.close(() => done()));
-    }
-});
-
-test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper and hides the chrome", async () => {
+test("a canvas-only screenshot keeps the host page's primary canvas in its wrapper and hides the chrome", async () => {
     // Engine canvases (here handed to a worker engine) stay; a Canvas2D or
     // never-drawn canvas is UI, as natively.
     const scene =
         `for (const id of [${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}, "second"])` +
         " document.getElementById(id).transferControlToOffscreen();\n" +
         'document.getElementById("minimap").getContext("2d");\n';
-    const server = createSuiteSceneServer(scene, {
-        hostUi: {
-            sourcePath: "ui/app-host.json",
-            styleRules: [],
-            elements: [
-                {
-                    tag: "div",
-                    attributes: { id: "wrap" },
-                    children: [
-                        {
-                            tag: "canvas",
-                            attributes: {
-                                id: HOST_PRIMARY_CANVAS_ID,
-                                // Focus decoration is retained UI.
-                                style: "outline:2px solid blue",
-                            },
-                        },
-                        { tag: "canvas", attributes: { id: "second" } },
-                        { tag: "canvas", attributes: { id: "minimap" } },
-                        { tag: "canvas", attributes: { id: "blank" } },
-                    ],
-                },
-                { tag: "div", attributes: { id: "hud" }, text: "HUD" },
-            ],
-        },
-    });
+    const site = mkdtempSync(resolve(tmpdir(), "canvas-only-page-"));
+    const hostPage = resolve(site, "page.html");
+    // The primary canvas's focus decoration is retained UI.
+    writeFileSync(
+        hostPage,
+        `<!doctype html><html><head><title>Canvas only</title>
+        <style>html,body{margin:0}canvas{display:block}</style></head><body>
+        <div id="wrap">
+            <canvas id="${HOST_PRIMARY_CANVAS_ID}" width="1280" height="720" style="outline:2px solid blue"></canvas>
+            <canvas id="second"></canvas><canvas id="minimap"></canvas><canvas id="blank"></canvas>
+        </div>
+        <div id="hud">HUD</div>
+        <script type="module" src="/main.ts"></script></body></html>`,
+    );
+    const server = createSuiteSceneServer(scene, { hostPage });
     const directory = mkdtempSync(resolve(tmpdir(), "canvas-only-"));
     const pageFacts = (id: string) => {
         const primary = document.getElementById(id)!;
@@ -338,6 +255,7 @@ test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper
         ]);
     } finally {
         rmSync(directory, { recursive: true, force: true });
+        rmSync(site, { recursive: true, force: true });
     }
 });
 

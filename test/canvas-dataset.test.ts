@@ -5,11 +5,12 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { writesUnobservedCanvasMetadata } from "../src/compiler/canvas-instrumentation.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const nativeHostUi = {
-    sourcePath: "test/canvas-dataset.test.ts",
     elements: [{ tag: "canvas", attributes: { id: "renderCanvas" } }],
 };
+const hostPage = { path: "test/canvas-dataset.test.ts" };
 
 function instrumentationSource(captures: string, effects: string, size = "1") {
     return `
@@ -129,30 +130,31 @@ test("retained host canvas keeps unobserved asset instrumentation outside native
         void main();
     `;
     const canvas = { tag: "canvas", attributes: { id: "renderCanvas" } };
-    const result = compileSource(source, {
-        nativeHostUi: {
-            sourcePath: "test/canvas-dataset.test.ts",
-            elements: [canvas],
-        },
-    });
+    const result = compileSource(
+        source,
+        hostUiOptions({ elements: [canvas] }, hostPage),
+    );
     assert.match(result.cpp, /ui_create_element\([^\n]+"canvas"/);
     assert.doesNotMatch(result.cpp, /engineSize|loadingSize|original/);
     assert.throws(
         () =>
-            compileSource(source, {
-                nativeHostUi: {
-                    sourcePath: "test/canvas-dataset.test.ts",
-                    elements: [
-                        {
-                            ...canvas,
-                            attributes: {
-                                ...canvas.attributes,
-                                "data-loading-size": "pending",
+            compileSource(
+                source,
+                hostUiOptions(
+                    {
+                        elements: [
+                            {
+                                ...canvas,
+                                attributes: {
+                                    ...canvas.attributes,
+                                    "data-loading-size": "pending",
+                                },
                             },
-                        },
-                    ],
-                },
-            }),
+                        ],
+                    },
+                    hostPage,
+                ),
+            ),
         /Browser-dependent condition cannot be determined/,
         "Observed metadata must retain its helper and refuse an unanswered browser value",
     );
@@ -165,7 +167,10 @@ test("metadata helpers retain captured scalar and object mutations used by nativ
         "counter",
     );
     assert.equal(admitsInstrumentation(scalar), false);
-    const scalarResult = compileSource(scalar, { nativeHostUi });
+    const scalarResult = compileSource(
+        scalar,
+        hostUiOptions(nativeHostUi, hostPage),
+    );
     assert.match(scalarResult.cpp, /v_counter\+\+/);
     assert.match(scalarResult.cpp, /create_box\([^\n]+v_counter/);
 
@@ -175,7 +180,10 @@ test("metadata helpers retain captured scalar and object mutations used by nativ
         "state.size",
     );
     assert.equal(admitsInstrumentation(object), false);
-    const objectResult = compileSource(object, { nativeHostUi });
+    const objectResult = compileSource(
+        object,
+        hostUiOptions(nativeHostUi, hostPage),
+    );
     assert.match(objectResult.cpp, /(?:v_state|v_alias)[^\n]*size[^\n]*\+\+/);
     assert.match(objectResult.cpp, /create_box\([^\n]+v_state/);
 });
@@ -284,7 +292,7 @@ test("the pinned fetch-progress helper proves its local and browser effects befo
         }
         void main();
     `;
-    const result = compileSource(source, { nativeHostUi });
+    const result = compileSource(source, hostUiOptions(nativeHostUi, hostPage));
     assert.match(result.cpp, /ui_create_element\([^\n]+"canvas"/);
     assert.doesNotMatch(
         result.cpp,

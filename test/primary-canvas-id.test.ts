@@ -8,9 +8,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import type { CompileOptions } from "../src/compiler/types.js";
+import type { NativeHostUi } from "../src/compiler/types.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 import { hostPageCompileOptions, readHostPage } from "../src/host-page.js";
+import { hostUiOptions } from "./host-page-fixture.js";
+
+const hostPath = "test/primary-canvas-id.test.ts";
 
 const program = (engineId: string, drawnId: string): string => `
     import { createEngine } from "@babylonjs/lite";
@@ -60,19 +63,16 @@ test("the native primary canvas is created under the id the program finds it by"
 });
 
 /** A program finding its engine canvas, and a host button before and after the engine, by `find`. */
-const compileFound = (
-    find: (id: string) => string,
-    nativeHostUi?: CompileOptions["nativeHostUi"],
-) =>
+const compileFound = (find: (id: string) => string, hostUi?: NativeHostUi) =>
     compileSource(
         `
         import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
         const canvas = ${find("app")} as HTMLCanvasElement | null;
         if (!canvas) throw new Error("canvas is missing");
-        ${nativeHostUi ? `const before = ${find("go")} as HTMLButtonElement;` : ""}
+        ${hostUi ? `const before = ${find("go")} as HTMLButtonElement;` : ""}
         const engine = await createEngine(canvas);
         ${
-            nativeHostUi
+            hostUi
                 ? `registerScene(createSceneContext(engine));
                    const after = ${find("go")} as HTMLButtonElement;
                    before.addEventListener("click", () => { after.textContent = "Clicked"; });
@@ -80,7 +80,9 @@ const compileFound = (
                 : "console.log(engine !== undefined);"
         }
     `,
-        { fileName: "found.ts", ...(nativeHostUi ? { nativeHostUi } : {}) },
+        hostUi
+            ? hostUiOptions(hostUi, { path: hostPath, fileName: "found.ts" })
+            : { fileName: "found.ts" },
     );
 const byId = (id: string) => `document.getElementById(${JSON.stringify(id)})`;
 const bySelector = (selector: string) =>
@@ -93,9 +95,8 @@ test("an ID-selector query finds the primary canvas as its id lookup does", () =
     );
 });
 
-test("an ID-selector query finds a host companion element as its id lookup does", () => {
-    const companion = {
-        sourcePath: "test/primary-canvas-id.test.ts",
+test("an ID-selector query finds a host-page element as its id lookup does", () => {
+    const page = {
         elements: [
             {
                 tag: "button",
@@ -105,8 +106,8 @@ test("an ID-selector query finds a host companion element as its id lookup does"
         ],
     };
     assert.equal(
-        compileFound((id) => bySelector(`#${id}`), companion).cpp,
-        compileFound(byId, companion).cpp,
+        compileFound((id) => bySelector(`#${id}`), page).cpp,
+        compileFound(byId, page).cpp,
     );
 });
 
@@ -162,12 +163,13 @@ test("bare selectors with authored canvases or stored Documents retain ordinary 
         const canvas = ${lookup} as HTMLCanvasElement | null;
         if (canvas) await createEngine(canvas);
     `;
-    const explicit = compileSource(source('document.querySelector("canvas")'), {
-        nativeHostUi: {
-            sourcePath: "test/primary-canvas-id.test.ts",
-            elements: [{ tag: "section", children: [{ tag: "canvas" }] }],
-        },
-    });
+    const explicit = compileSource(
+        source('document.querySelector("canvas")'),
+        hostUiOptions(
+            { elements: [{ tag: "section", children: [{ tag: "canvas" }] }] },
+            { path: hostPath },
+        ),
+    );
     const stored = compileSource(source('docs[0]!.querySelector("canvas")'));
     for (const result of [explicit, stored]) {
         assert.ok(result.manifest.features.includes("platform:window"));

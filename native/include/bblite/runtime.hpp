@@ -186,15 +186,19 @@ struct EngineOptions {
     std::vector<std::pair<std::string, double>> required_limits{};
 };
 
-/** Browser-neutral keyboard data delivered by the platform event loop. */
-struct PlatformKeyboardEvent : PlatformEventFlags {
-    std::string code{};
-    std::string key{};
-    bool repeat = false;
+/** The modifier keys a keyboard, mouse or touch event reports. */
+struct PlatformModifierKeys {
     bool shift_key = false;
     bool ctrl_key = false;
     bool alt_key = false;
     bool meta_key = false;
+};
+
+/** Browser-neutral keyboard data delivered by the platform event loop. */
+struct PlatformKeyboardEvent : PlatformEventFlags, PlatformModifierKeys {
+    std::string code{};
+    std::string key{};
+    bool repeat = false;
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
@@ -212,7 +216,7 @@ struct PlatformTransitionEvent : PlatformEventFlags {
 /** Browser-neutral mouse data delivered by the platform event loop. */
 enum class DomInputEventKind { Event, Mouse, Pointer, Input };
 
-struct PlatformMouseEvent : PlatformEventFlags {
+struct PlatformMouseEvent : PlatformEventFlags, PlatformModifierKeys {
     double button = 0.0;
     double buttons = 0.0;
     double client_x = 0.0;
@@ -223,10 +227,6 @@ struct PlatformMouseEvent : PlatformEventFlags {
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;
-    bool shift_key = false;
-    bool ctrl_key = false;
-    bool alt_key = false;
-    bool meta_key = false;
     double screen_x = 0.0;
     double screen_y = 0.0;
     double pressure = 0.0;
@@ -3892,8 +3892,6 @@ enum class UiStyleSelectorKind : std::uint8_t {
     IdDescendantClass,
     /** `tag.class`, the element's own tag gated on one of its classes. */
     TagClass,
-    /** `tag[attribute="identifier"]`, with a statically validated value. */
-    TagAttribute,
     /** `tag > .class`, an immediate parent tag and child class. */
     TagChildClass,
 };
@@ -3901,7 +3899,40 @@ enum class UiStyleSelectorKind : std::uint8_t {
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
 enum class UiRangePart : std::uint8_t { None, Thumb, Track };
 enum class UiOrientation : std::uint8_t { Any, Portrait, Landscape };
-enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
+/** A pointing device's precision, as the pointer media feature names it. */
+enum class PointerPrecision : std::uint8_t { None, Coarse, Fine };
+
+/** The primary pointing device, as the pointer and hover media features report it. */
+struct InputCapabilities {
+    PointerPrecision pointer = PointerPrecision::None;
+    bool hover = false;
+    bool operator==(const InputCapabilities&) const = default;
+};
+
+/** The device state the preference and input media features read. */
+struct UiMediaDevice {
+    bool reduced_motion = false;
+    InputCapabilities input{};
+    bool operator==(const UiMediaDevice&) const = default;
+};
+
+/**
+ * A media query's device features, each absent when the query does not
+ * name it: `prefers-reduced-motion` (true: reduce), `hover` and `pointer`.
+ */
+struct UiMediaCondition {
+    std::optional<bool> reduced_motion{};
+    std::optional<bool> hover{};
+    std::optional<PointerPrecision> pointer{};
+    bool operator==(const UiMediaCondition&) const = default;
+    [[nodiscard]] bool empty() const { return !reduced_motion && !hover && !pointer; }
+    [[nodiscard]] bool names_input() const { return hover || pointer; }
+    [[nodiscard]] bool matches(const UiMediaDevice& device) const {
+        return (!reduced_motion || *reduced_motion == device.reduced_motion) &&
+               (!hover || *hover == device.input.hover) &&
+               (!pointer || *pointer == device.input.pointer);
+    }
+};
 
 enum class UiSelectorTestKind : std::uint8_t {
     Tag,
@@ -3959,20 +3990,20 @@ struct UiGeneratedContent {
  * The typed selector is deliberately smaller than CSS. It is sufficient to
  * serialize an exact RmlUi selector and to inspect private structural
  * adaptation metadata without adding a browser selector engine to the PAL.
+ * Every member has a default, so a rule designates only its own.
  */
 struct UiStyleRule {
     UiStyleSelectorKind selector = UiStyleSelectorKind::Class;
-    std::string primary;
-    std::string secondary;
-    std::string tag;
-    std::string style;
+    std::string primary{};
+    std::string secondary{};
+    std::string tag{};
+    std::string style{};
     /** A negative value means the rule is not inside a max-width query. */
     double max_width = -1.0;
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
     UiScrollbarPart scrollbar = UiScrollbarPart::None;
-    UiMotionPreference motion = UiMotionPreference::Any;
     std::vector<UiSelectorStep> sequence{};
     UiGeneratedPart generated = UiGeneratedPart::None;
     std::optional<UiGeneratedContent> content{};
@@ -3980,6 +4011,8 @@ struct UiStyleRule {
     /** A negative value means no containing-block size query. */
     double container_max_width = -1.0;
     UiOrientation orientation = UiOrientation::Any;
+    /** The device features of the rule's media query. */
+    UiMediaCondition media{};
 };
 
 /** One event's listeners on a retained element, shared so a dispatch outlives storage growth. */
@@ -4529,6 +4562,8 @@ struct Engine {
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
+    /** The page's `viewport-fit=cover`: its layout spans the window's unsafe edges, which env() reports. */
+    bool ui_viewport_fit_cover = false;
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;
@@ -4542,8 +4577,6 @@ struct Engine {
         UiElementHandle html, head, body;
         [[nodiscard]] bool active() const noexcept { return html.value != invalid_handle; }
     } ui_document_roots;
-    /** Audited host-page rules, preceding scene-created sheets in cascade. */
-    std::vector<UiStyleRule> ui_host_style_rules;
     std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
     /** A Window display's details `open` change goes to the realm, whose change fires `toggle`. */
     std::function<void(UiElementHandle)> ui_details_toggled;

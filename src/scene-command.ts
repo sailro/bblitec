@@ -292,6 +292,9 @@ function compilerArguments(scene: SceneDefinition): string[] {
             ? [
                   scene.page.path,
                   ...(scene.page.root ? ["--site-root", scene.page.root] : []),
+                  ...(scene.page.publicDir
+                      ? ["--site-public-dir", scene.page.publicDir]
+                      : []),
                   ...(scene.page.entry
                       ? ["--page-entry", scene.page.entry]
                       : []),
@@ -308,9 +311,6 @@ function compilerArguments(scene: SceneDefinition): string[] {
     if (scene.parity?.referenceSearch !== undefined) {
         arguments_.push("--search", scene.parity.referenceSearch);
         arguments_.push("--initial-search", "");
-    }
-    if (scene.nativeHostUi !== undefined) {
-        arguments_.push("--host-ui", scene.nativeHostUi);
     }
     if (scene.deferredCapabilities !== undefined) {
         arguments_.push("--deferred-capabilities", scene.deferredCapabilities);

@@ -50,7 +50,6 @@ import type {
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
-import type { NativeHostUiStyleSource } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -63,7 +62,7 @@ import { knownCondition } from "./values/model.js";
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
     tag: string;
-    /** Inline classic script to execute at this parser position. */
+    /** The classic script (`PageStartupScript.fileName`) to execute at this parser position. */
     startupScript?: string;
     /** Text before the children. */
     text?: string;
@@ -79,17 +78,24 @@ export interface NativeHostUiText {
 
 export type NativeHostUiNode = NativeHostUiElement | NativeHostUiText;
 
+/** The elements of host nodes, depth first, past their text nodes. */
+export function* nativeHostUiElements(
+    nodes: readonly NativeHostUiNode[],
+): Generator<NativeHostUiElement> {
+    for (const node of nodes) {
+        if (node.tag === undefined) continue;
+        yield node;
+        yield* nativeHostUiElements(node.children ?? []);
+    }
+}
+
 /**
  * Browser host-page chrome that is not present in the immutable scene module:
- * a reviewed companion file, or the markup of the HTML page that loads it.
+ * the markup of the HTML page that loads it.
  */
-export interface NativeHostUi extends NativeHostUiStyleSource {
-    /**
-     * The audited companion file the elements came from, recorded as
-     * `ui:rml`'s activation site: a companion-only scene has no reaching
-     * call in its own source, so the attribution must name this file.
-     */
-    sourcePath: string;
+export interface NativeHostUi {
+    /** A viewport meta's `viewport-fit=cover`: the layout spans the window's unsafe edges. */
+    viewportFitCover?: true;
     /** A page's `<html>` and `<body>` attributes. */
     htmlAttributes?: Record<string, string>;
     bodyAttributes?: Record<string, string>;
@@ -122,16 +128,21 @@ export interface PageLoaderProgram {
     specifier: string;
 }
 
+/** A classic body script the page runs at its parser position. */
 export interface PageStartupScript {
+    /** An external script's file, or a synthesized path beside the page. */
     fileName: string;
-    source: string;
+    /** An inline script's text, on the page's own lines; an external script is its file. */
+    source?: string;
 }
 
-/** The HTML page that hosts the entry. */
+/** The HTML page that hosts the entry, and the site serving it. */
 export interface HostPageProgram {
     path: string;
     /** The site root "/" names; the page's own directory by default. */
     root?: string;
+    /** The directory the site serves at "/" ahead of its root (Vite's `publicDir`); none unless given. */
+    publicDir?: string;
     /**
      * The module the page's one `src` module script loads in place of its
      * URL (a lab bundle built from this source), as its reference capture
@@ -142,6 +153,15 @@ export interface HostPageProgram {
     entryUrl?: string;
     loader?: PageLoaderModule;
     startup?: PageStartupScript[];
+}
+
+/** A read host page: its entry, title and host model. */
+export interface HostPage extends HostPageProgram {
+    title?: string;
+    /** The module the page's module script evaluates. */
+    entry: string;
+    /** Absent for a page without markup, sheets or attributes. */
+    hostUi?: NativeHostUi;
 }
 
 /** A host file line a refusal points at when no source node does. */
@@ -156,7 +176,7 @@ export interface CompileOptions extends DeploymentOptions {
     /** Emit explicit typed runtime failures for registered missing capabilities. */
     deferredCapabilities?: "runtime-throw";
     fileName?: string;
-    hostPage?: HostPageProgram;
+    hostPage?: HostPage;
     title?: string;
     width?: number;
     height?: number;
@@ -164,8 +184,6 @@ export interface CompileOptions extends DeploymentOptions {
     search?: string;
     /** Initial query for a runtime Window; defaults to the generation query. */
     initialSearch?: string;
-    /** Optional audited host-page UI companion for a registered native scene. */
-    nativeHostUi?: NativeHostUi;
     /** Source functions whose native bodies open a CPU profile scope (`--source-profile`). */
     sourceProfile?: readonly string[];
 }
@@ -177,7 +195,7 @@ export interface CompileManifest {
     /**
      * Every local file this generation read, as sorted forward-slash
      * paths relative to the repository root: the entry and the modules it
-     * imports (the compiler's half), plus the host-UI companion and any
+     * imports (the compiler's half), plus the host page and any
      * local asset the CLI materialized. `scene -- compile` hashes exactly
      * these to prove a scene's inputs unchanged and skip regenerating it, so
      * a read that is not listed here is a read the skip cannot see.
@@ -197,8 +215,8 @@ export interface CompileManifest {
      * wins and regeneration is stable. Features that are reached
      * without a source node (the seeded "core") and features the asset
      * join (`asset-feature-join.ts`) adds carry no entry. One site is not
-     * a call site: `ui:rml` reached only by a host-page companion names
-     * the companion JSON file, since no scene line exists to name.
+     * a call site: `ui:rml` reached only by a host page names the page,
+     * since no scene line exists to name.
      * manifest.json records the sites repository-relative.
      */
     featureSites: Record<string, string>;
@@ -1640,6 +1658,7 @@ export type ValueKind =
     | "hierarchy-instance-pool"
     | "gamepad"
     | "gamepad-button"
+    | "touch"
     | "storage-buffer"
     | "compute-storage-texture"
     | "compute-texture-resource"
@@ -2382,7 +2401,7 @@ export interface ValueFields {
     >;
     /** Generation-known tag for scene-created retained DOM elements. */
     uiTag?: string;
-    /** Audited host lookup whose native storage is initialized after engine creation. */
+    /** Host-page lookup whose native storage is initialized after engine creation. */
     uiHostId?: string;
     /** ID provenance of a nullable document lookup, without an existence proof. */
     uiLookupId?: string;
@@ -3544,7 +3563,7 @@ export interface WorkerCompilation {
 export interface ResolvedCompileOptions extends DeploymentOptions {
     readAssetBytes?: CompileOptions["readAssetBytes"];
     /** An authored page replaces the default host, including its implicit canvas. */
-    hostPage?: HostPageProgram;
+    hostPage?: HostPage;
     deferredCapabilities?: CompileOptions["deferredCapabilities"];
     workers?: WorkerCompilation;
     /** Reached query mutation requires native identities throughout this realm. */
@@ -3562,6 +3581,5 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     height: number;
     search: string;
     initialSearch?: string;
-    nativeHostUi?: NativeHostUi;
     sourceProfile?: readonly string[];
 }

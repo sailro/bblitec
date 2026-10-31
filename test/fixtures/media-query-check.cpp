@@ -8,8 +8,8 @@ bool reduced = false;
 double ratio = 1;
 bool read_motion() { return reduced; }
 double read_ratio() { return ratio; }
-bbl::pal::InputCapabilities device_capabilities{bbl::pal::PointerPrecision::Fine, true};
-bbl::pal::InputCapabilities read_input() { return device_capabilities; }
+bbl::InputCapabilities device_capabilities{bbl::PointerPrecision::Fine, true};
+bbl::InputCapabilities read_input() { return device_capabilities; }
 std::vector<std::shared_ptr<bbl::pal::MediaQueryList>> queries;
 } // namespace
 
@@ -66,14 +66,22 @@ int main() {
     MediaQueryList mouse("(pointer: fine) and (hover: hover)", read_ratio, read_motion, read_input);
     assert(!touch.matches() && mouse.matches());
     assert(touch.media() == "(hover: none) and (pointer: coarse)");
-    device_capabilities = {bbl::pal::PointerPrecision::Coarse, false};
+    device_capabilities = {bbl::PointerPrecision::Coarse, false};
     assert(touch.matches() && !mouse.matches());
-    device_capabilities = {bbl::pal::PointerPrecision::None, false};
+    device_capabilities = {bbl::PointerPrecision::None, false};
     assert(!touch.matches() && !mouse.matches());
+    // The device features join as a sheet's @media joins them, bare forms included.
+    MediaQueryList combined("(prefers-reduced-motion) and (HOVER)", read_ratio, read_motion,
+                            read_input);
+    assert(combined.media() == "(prefers-reduced-motion) and (hover)");
+    assert(!combined.matches());
+    device_capabilities = {bbl::PointerPrecision::Fine, true};
+    assert(combined.matches() == reduced);
     for (const auto* query :
          {"(width: 600px)", "(prefers-reduced-motion: sometimes)", "(resolution: 2dpi)",
           "screen and (resolution: 2dppx)", "(hover: coarse)", "(pointer: hover)",
-          "(pointer: fine) or (hover: none)"}) {
+          "(pointer: fine) or (hover: none)", "(pointer)", "(hover: hover) and (hover: none)",
+          "(resolution: 1dppx) and (hover)"}) {
         bool refused = false;
         try {
             const MediaQueryList unsupported(query, read_ratio, read_motion, read_input);
@@ -84,6 +92,6 @@ int main() {
     }
     reduced = false;
     ratio = 1;
-    device_capabilities = {bbl::pal::PointerPrecision::Fine, true};
+    device_capabilities = {bbl::PointerPrecision::Fine, true};
     assert(generated_main() == 0);
 }

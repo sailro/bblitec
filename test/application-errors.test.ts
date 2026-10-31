@@ -77,6 +77,8 @@ test("application errors dispatch before engine creation with native cancellatio
         window.removeEventListener("error", registry.onError);
         window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
             if (errors !== 1 || recovered !== 1 || event.reason.message !== "rejected") throw new Error("rejection payload");
+            // \`reason\` is \`any\`: the short circuit selects between strings.
+            if ((event.reason && event.reason.message || String(event.reason) || "none") !== "rejected") throw new Error("reason text");
             event.preventDefault();
             globalThis.close();
         });

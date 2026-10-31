@@ -1,5 +1,6 @@
 /**
- * Lab public files the pin materializes instead of committing.
+ * The files a directory serves, lab public files the pin materializes
+ * instead of committing included.
  *
  * The pinned lab runs `scripts/fetch-flight-helmet.ts` before it serves
  * (`lab/package.json`): the script downloads scene 112's KTX2 fixture from an
@@ -11,8 +12,9 @@
  * digest, cache hits included.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import ts from "typescript";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { runCaptured } from "./tooling/logged-process.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 
@@ -83,16 +85,14 @@ export function pinnedLabMaterializedDirectories(
 const materialized = new Set<string>();
 
 /**
- * Run, once per process, the pinned script that writes `publicPath` (a path
- * beneath `lab/public`), before the file is read.
+ * Run, once per process, the pinned script that writes `file` (a corpus
+ * path beneath a directory one writes), before the file is read.
  */
-function materializePinnedLabPublic(
-    repositoryRoot: string,
-    publicPath: string,
-): void {
-    const path = `lab/public/${publicPath.replace(/^\/+/, "")}`;
+function materializePinnedLabFile(file: string): void {
+    const repositoryRoot = compilerRepositoryRoot();
     for (const { script, output } of materializers(repositoryRoot)) {
-        if (materialized.has(script) || !path.startsWith(`${output}/`))
+        const directory = resolve(repositoryRoot, CORPUS_ROOT, output);
+        if (materialized.has(script) || !file.startsWith(`${directory}${sep}`))
             continue;
         // Node strips the script's types; its ROOT is the corpus root.
         runCaptured(
@@ -102,7 +102,7 @@ function materializePinnedLabPublic(
                 "--no-warnings",
                 resolve(repositoryRoot, script),
             ],
-            `Pinned ${script} failed to materialize ${path}`,
+            `Pinned ${script} failed to materialize ${file}`,
             { cwd: resolve(repositoryRoot, CORPUS_ROOT) },
         );
         materialized.add(script);
@@ -110,19 +110,35 @@ function materializePinnedLabPublic(
 }
 
 /**
- * The pinned lab's own copy of a public file, beneath the corpus
- * `lab/public`, once any pinned script that writes it has run.
+ * The file `directory` serves at a decoded URL path (`/models/a.glb`): its
+ * own, once any pinned script that writes it has run; undefined for none or
+ * a path outside it.
  */
+export function servedFile(
+    directory: string,
+    path: string,
+): string | undefined {
+    const root = resolve(directory);
+    const file = resolve(root, `./${path.replace(/^\/+/, "")}`);
+    const inside = relative(root, file);
+    if (
+        !inside ||
+        isAbsolute(inside) ||
+        inside === ".." ||
+        inside.startsWith(`..${sep}`)
+    )
+        return undefined;
+    materializePinnedLabFile(file);
+    return existsSync(file) && statSync(file).isFile() ? file : undefined;
+}
+
+/** The pinned lab's own copy of a public file, beneath the corpus `lab/public`. */
 export function pinnedLabPublicFile(
     repositoryRoot: string,
     publicPath: string,
 ): string | undefined {
-    materializePinnedLabPublic(repositoryRoot, publicPath);
-    const directory = resolve(repositoryRoot, CORPUS_ROOT, "lab/public");
-    const path = resolve(directory, `./${publicPath.replace(/^\/+/, "")}`);
-    return path.startsWith(`${directory}${sep}`) &&
-        existsSync(path) &&
-        statSync(path).isFile()
-        ? path
-        : undefined;
+    return servedFile(
+        resolve(repositoryRoot, CORPUS_ROOT, "lab/public"),
+        publicPath,
+    );
 }

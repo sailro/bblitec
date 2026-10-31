@@ -13,7 +13,6 @@ import {
     captureSuiteReference,
     captureUiEnabled,
 } from "./capture-suite-reference.js";
-import { readNativeHostUi } from "./native-host-ui.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
     applicationScenes,
@@ -1012,7 +1011,7 @@ async function runSceneParity(
     const browserReferenceFrame = goldenFixedFrame(scene);
     validateReferenceCapture(scene, reference, recaptureReference);
     // What both browser captures share: the seeded-random stub, the
-    // companion DOM and the registry's pose search. The DOM is present in
+    // host page's DOM and the registry's pose search. The DOM is present in
     // a canvas-only capture too -- the harness hides it from the canvas
     // screenshot, and a page script that binds to it (the screen-space
     // toggles) would otherwise throw before the scene starts.
@@ -1026,9 +1025,6 @@ async function runSceneParity(
             ? {}
             : { independentEngines: config.independentEngines }),
         ...sceneReferencePage(scene),
-        ...(scene.nativeHostUi
-            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
-            : {}),
         ...(config.referenceSearch !== undefined
             ? { search: config.referenceSearch }
             : {}),
@@ -1252,7 +1248,7 @@ async function runSceneParity(
         );
         mkdirSync(canvasDirectory, { recursive: true });
         // The reference reproduces the attribution run exactly — the
-        // companion DOM present but hidden, the canvas screenshot
+        // page's DOM present but hidden, the canvas screenshot
         // excluding the page, at the golden's own fixed frame — and
         // follows the committed golden's lifecycle: captured when
         // missing, recaptured only with --recapture-reference.

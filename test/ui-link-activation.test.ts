@@ -3,6 +3,7 @@ import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 import type { NativeHostUiNode } from "../src/compiler/types.js";
 import { runRmlUiFixture } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const program = (body: string): string => `
     import { createEngine, startEngine } from "@babylonjs/lite";
@@ -57,15 +58,18 @@ test("a host link to this browsing context installs the navigation once; another
         attributes: { href, ...(target !== undefined ? { target } : {}) },
     });
     const compiled = (elements: NativeHostUiNode[]): string =>
-        compileSource(source, {
-            nativeHostUi: {
-                sourcePath: "test/ui-link-activation.test.ts",
-                elements: [
-                    { tag: "canvas", attributes: { id: "renderCanvas" } },
-                    ...elements,
-                ],
-            },
-        }).cpp;
+        compileSource(
+            source,
+            hostUiOptions(
+                {
+                    elements: [
+                        { tag: "canvas", attributes: { id: "renderCanvas" } },
+                        ...elements,
+                    ],
+                },
+                { path: "test/ui-link-activation.test.ts" },
+            ),
+        ).cpp;
     const links = compiled([
         anchor("./reference.html"),
         anchor("?quality=low", "_top"),

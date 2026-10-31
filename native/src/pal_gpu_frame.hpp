@@ -87,6 +87,12 @@ struct FrameOptions {
     // frame timestamps are; see `FrameClock::advance`.
     double frame_delta_ms = 0.0;
 
+    /**
+     * The page UI's sample count, whatever the engine surface's: a browser antialiases the
+     * page's edges and rounded corners in every frame; 1 for a BBLITE_MSAA=1 diagnostic run.
+     */
+    [[nodiscard]] std::uint32_t page_ui_sample_count() const { return single_sample ? 1u : 4u; }
+
     [[nodiscard]] bool skip_copy_task(const CopyTaskOptions& copy) const {
         return !copy_task_filter.empty() && copy.has_viewport &&
                copy.name.find("-impostor-") != std::string::npos && copy.name != copy_task_filter;

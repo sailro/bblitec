@@ -78,6 +78,36 @@ test("abort listeners settle realm promises", () => {
     });
 });
 
+test("an auto-typed binding dispatches its stored AbortController's signal", () => {
+    // `var c = null` is `any` inside `stop`: the signal's listener call
+    // dispatches on the type the binding's storage holds.
+    const result = compileSource(
+        `
+        var aborted = 0;
+        var c = null;
+        c = new AbortController();
+        function stop() {
+            c.signal.addEventListener("abort", function () { aborted++; });
+            c.abort();
+        }
+        setTimeout(function () {
+            stop();
+            if (aborted !== 1) throw new Error("abort listener");
+            globalThis.close();
+        }, 0);
+    `,
+        { fileName: "abort-signals-any.js" },
+    );
+    assert.equal(result.cpp.split("abort_receiver").length - 1, 4);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools, "Native fixture compiler required");
+    runGeneratedProgram(tools, "abort-signals/any", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        expectedOutput: "",
+        timeoutMs: 15000,
+    });
+});
+
 test("abort forms without a native representation refuse", () => {
     for (const [source, message] of [
         [

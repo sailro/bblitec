@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { uiStyleSelector } from "../src/ui-style-rule.js";
 
 function compileStyle(style: string) {
     return compileSource(`
@@ -41,20 +40,11 @@ test("retained scrollbar styling preserves standard properties and typed pseudo-
     }
     assert.match(
         result.cpp,
-        /"history", "", "", true, -1[^\n]*UiScrollbarPart::Thumb/,
+        /\.primary = "history", \.style = "[^"]*", \.hover = true, \.scrollbar = bbl::UiScrollbarPart::Thumb/,
     );
     assert.match(
         result.cpp,
         /ui_add_style_rule[^\n]*background-clip:padding-box/,
-    );
-    assert.equal(
-        uiStyleSelector({
-            kind: "class",
-            primary: "history",
-            scrollbar: "thumb",
-            hover: true,
-        }),
-        ".history::-webkit-scrollbar-thumb:hover",
     );
 });
 

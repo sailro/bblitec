@@ -1013,7 +1013,6 @@ test(
             "void ui_set_inner_rml(",
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
-            "void ui_add_host_style_rule(",
             "void require_insertable(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
@@ -1051,7 +1050,7 @@ test(
             assert(engine.ui_style_revision == 5);
             ui_append_to_root(engine, first);
             assert(engine.ui_style_revision == 5);
-            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;", UiScrollbarPart::None);
+            ui_add_style_rule(engine, first, {.primary = "item", .style = "color:red;"});
             assert(engine.ui_style_revision == 6);
             ui_clear_style_rules(engine, first);
             ui_clear_style_rules(engine, first);
@@ -1065,8 +1064,6 @@ test(
             assert(after_remove > before_replace);
             ui_remove(engine, first);
             assert(engine.ui_style_revision == after_remove);
-            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false, UiScrollbarPart::None);
-            assert(engine.ui_style_revision == after_remove + 1);
         }
     `,
             ["/DBBLITE_HAS_UI=1"],
@@ -1142,7 +1139,7 @@ test(
             ui_set_text(source, UiElementHandle{0}, "text-only update");
             auto text_snapshot = pal::snapshot_document(source, text_since);
             assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
-            assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
+            assert(text_snapshot->elements.empty());
             pal::apply_document(target, std::move(*text_snapshot), post);
             assert(target.ui_elements[0].text == "text-only update");
             assert(target.ui_style_revision == 8);

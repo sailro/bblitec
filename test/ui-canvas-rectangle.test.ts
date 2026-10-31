@@ -9,6 +9,7 @@ import {
     runNativeFixtureCompiler,
     runRmlUiFixture,
 } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 test("compiler retains dynamic Canvas2D rectangles between path operations", () => {
     const result = compileSource(`
@@ -41,15 +42,14 @@ test("compiler retains dynamic Canvas2D rectangles between path operations", () 
 });
 
 test("a host canvas draws through its 2D context, sized by its attributes", () => {
-    const nativeHostUi = {
-        sourcePath: "host.json",
+    const page = hostUiOptions({
         elements: [
             {
                 tag: "canvas",
                 attributes: { id: "view", width: "320", height: " 120px" },
             },
         ],
-    };
+    });
     const result = compileSource(
         `
         const view = document.getElementById("view") as HTMLCanvasElement | null;
@@ -62,7 +62,7 @@ test("a host canvas draws through its 2D context, sized by its attributes", () =
             if (context) draw(context);
         });
     `,
-        { nativeHostUi },
+        page,
     );
     assert.match(result.cpp, /ui_canvas_set_width\([^;]*, 320\.0\)/);
     assert.match(result.cpp, /ui_canvas_set_height\([^;]*, 120\.0\)/);
@@ -83,7 +83,7 @@ test("a host canvas draws through its 2D context, sized by its attributes", () =
                 const engine = await createEngine(view);
                 view.getContext("2d");
             `,
-                { nativeHostUi },
+                page,
             ),
         /primary canvas already belongs to a Babylon engine/,
     );
@@ -92,12 +92,9 @@ test("a host canvas draws through its 2D context, sized by its attributes", () =
     for (const id of ["view", "renderCanvas"]) {
         const chained = compileSource(
             `document.getElementById("${id}")!.getContext("2d")!.fillRect(0, 0, 4, 4);`,
-            {
-                nativeHostUi: {
-                    sourcePath: "host.json",
-                    elements: [{ tag: "canvas", attributes: { id } }],
-                },
-            },
+            hostUiOptions({
+                elements: [{ tag: "canvas", attributes: { id } }],
+            }),
         ).cpp;
         assert.match(
             chained,

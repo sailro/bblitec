@@ -24,12 +24,15 @@ int main() {
     {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "width:40px;background-color:#123456;", UiScrollbarPart::None, false,
-                          false, UiMotionPreference::NoPreference);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "width:80px;background-color:#abcdef;animation:none;transition:none;",
-                          UiScrollbarPart::None, false, false, UiMotionPreference::Reduce);
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "panel",
+                           .style = "width:40px;background-color:#123456;",
+                           .media = {.reduced_motion = false}});
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "panel",
+             .style = "width:80px;background-color:#abcdef;animation:none;transition:none;",
+             .media = {.reduced_motion = true}});
         ui_append_to_root(engine, sheet);
         const auto panel = ui_create_element(engine, "div");
         ui_set_attribute(engine, panel, "class", "panel");
@@ -53,12 +56,13 @@ int main() {
         check(40, 0x12);
         ui_clear_style_rules(engine, sheet);
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(!runtime.observes_motion_preference);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "--bbl-intrinsic-min-width:10px;", UiScrollbarPart::None, false, false,
-                          UiMotionPreference::Reduce);
+        assert(!runtime.observes_motion_preference());
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "panel",
+                           .style = "--bbl-intrinsic-min-width:10px;",
+                           .media = {.reduced_motion = true}});
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(runtime.observes_motion_preference);
+        assert(runtime.observes_motion_preference());
         assert(runtime.projected_elements.at(panel.value).intrinsic_min_width.empty());
         reduced = true;
         pal::update_ui_rml_runtime(runtime, 640, 480);

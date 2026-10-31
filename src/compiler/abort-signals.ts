@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { receiverType } from "./dynamic-binding-storage.js";
 import { absenceOf } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
@@ -213,6 +214,7 @@ export type WebPlatformCallContext = Pick<
     | "cppString"
     | "dataLowerer"
     | "dataTypes"
+    | "dynamicBindings"
     | "emit"
     | "emitDiscardedValue"
     | "expectArgumentCount"
@@ -243,8 +245,8 @@ export function compileAbortListenerCall(
             callee.name !== "removeEventListener")
     )
         return undefined;
-    const receiverType = context.checker.getTypeAtLocation(callee.expression);
-    if (libraryName(receiverType) !== "AbortSignal") return undefined;
+    if (libraryName(receiverType(context, callee.expression)) !== "AbortSignal")
+        return undefined;
     const owner = context.dataLowerer.narrowOptional(
         context.compileValue(callee.expression),
         callee.expression,

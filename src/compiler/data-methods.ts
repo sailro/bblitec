@@ -54,7 +54,10 @@ import {
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 import { pinOperand } from "./evaluation-order.js";
-import { requireMutableTupleStorage } from "./dynamic-binding-storage.js";
+import {
+    receiverType,
+    requireMutableTupleStorage,
+} from "./dynamic-binding-storage.js";
 
 import {
     dataTypesEqual,
@@ -377,11 +380,12 @@ const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
  * `new Array(n).fill(v)` chain.
  */
 export function mayCompileDataMethodCall(
-    checker: ts.TypeChecker,
+    context: Parameters<typeof receiverType>[0],
     callee: NamedMember,
 ): boolean {
+    const { checker } = context;
     const owner = checker.getNonNullableType(
-        checker.getTypeAtLocation(callee.expression),
+        receiverType(context, callee.expression),
     );
     // Handle methods belong to their platform adapter. Plain records may
     // contain stored callbacks and still need the data-method dispatcher.
@@ -1573,7 +1577,7 @@ function compileKnownDataMethod(
         const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
         const iteratorType = lowerer.context.checker.getNonNullableType(
             lowerer.context.dataTypes.resolveTypeParameter(
-                lowerer.context.checker.getTypeAtLocation(callee.expression),
+                receiverType(lowerer.context, callee.expression),
             ),
         );
         const yieldedType = isTypeReference(iteratorType)
@@ -3583,7 +3587,7 @@ function compileArrayRemoval(
     const elementType = callee
         ? arrayElementType(
               lowerer.context.checker,
-              lowerer.context.checker.getTypeAtLocation(callee.expression),
+              receiverType(lowerer.context, callee.expression),
           )
         : undefined;
     if (!elementType || !slotHoldsOnlyNull(elementType))
@@ -3753,7 +3757,7 @@ function compileMapDataMethod(
         // was there (`Value.slotFoundCpp`), reading the key once for both.
         let slotFoundCpp: string | undefined;
         const mapType = lowerer.context.checker.getNonNullableType(
-            lowerer.context.checker.getTypeAtLocation(callee.expression),
+            receiverType(lowerer.context, callee.expression),
         );
         const storedType =
             method === "get" && isTypeReference(mapType)

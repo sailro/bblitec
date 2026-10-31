@@ -48,6 +48,9 @@ int main() try {
         check(colour(sheet.color(), 255, 128, 0, 255), "sheet channel percentages");
         check(colour(element("inline")->GetComputedValues().background_color(), 10, 20, 30, 128),
               "inline write with a numeric alpha");
+        const auto& comma = element("comma")->GetComputedValues();
+        check(colour(comma.background_color(), 1, 2, 3, 128), "comma form, percentage alpha");
+        check(colour(comma.color(), 255, 0, 128, 255), "comma form channels clamp");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

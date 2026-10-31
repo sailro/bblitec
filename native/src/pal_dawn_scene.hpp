@@ -835,6 +835,8 @@ struct DawnState : DawnDevice {
      * multisampled one.
      */
     std::uint32_t sample_count = 4;
+    /** The page UI's layer sample count (`FrameOptions::page_ui_sample_count`). */
+    std::uint32_t ui_samples = 1;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
     SpriteUiDawnResources ui;
 #endif

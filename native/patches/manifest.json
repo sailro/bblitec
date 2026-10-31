@@ -373,6 +373,20 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0048-collapsible-white-space.patch",
+      "purpose": "White space collapses as CSS does: collapsible spaces ending a line are removed (pre-wrap ones hang), one space remains between inline boxes, and lines of it do not block margin collapsing",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0049-group-opacity.patch",
+      "purpose": "CSS group opacity: an element below opacity 1 paints itself and its descendants into a layer composited at that opacity",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

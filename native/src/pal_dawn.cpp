@@ -5,6 +5,7 @@
 // through are their own files (pal_dawn_scene_<family>.cpp), compiled with it
 // as one translation unit (pal_dawn_scene_all.cpp).
 #include <bblite/upstream/pinned_surface.hpp>
+#include "pal_gpu_samples.hpp"
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_frame.hpp"
 #include "pal_gpu_textures.hpp"
@@ -1095,9 +1096,7 @@ public:
         // pin's own surface declaration, not a re-typed 4; there is no
         // capability probe here because WebGPU guarantees 4x support on the
         // surface formats this backend renders to, where SDL_GPU must ask.
-        state.sample_count = frame_options.single_sample
-                                 ? 1u
-                                 : upstream::preferred_sample_count(engine.options.msaa_samples);
+        state.sample_count = surface_sample_count(frame_options, engine.options.msaa_samples);
 
         DeviceOptions device_options = frame_device_options(frame_options);
         device_options.max_vertex_attributes = scene_vertex_attribute_limit();
@@ -1145,6 +1144,8 @@ public:
         height = state.surface_height;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime.reset(create_ui_rml_runtime(engine, state.window, width, height));
+        // WebGPU guarantees 4x sampling of the UI's RGBA8 layer.
+        state.ui_samples = frame_options.page_ui_sample_count();
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -2007,7 +2008,7 @@ public:
         pass_scene = &scene;
         pass_meshes = &state.meshes;
 
-        if (scene.has_frame_passes()) {
+        if (scenes_run_frame_graphs(data_.active_registered_scenes)) {
 #if !BBLITE_HAS_TAA
             for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
                  ++graph_layer) {
@@ -2520,7 +2521,8 @@ public:
             }
             return drew;
         };
-        if (!scene.has_frame_passes()) {
+        const bool whole_frame_graph = scene.has_frame_passes();
+        if (!whole_frame_graph) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
             write_material_uniforms(render_plan.draw_lists.transparent,
@@ -2815,7 +2817,8 @@ public:
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
                 Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
-                if (!overlay_scene)
+                // A scene with its own graph runs it after this pass.
+                if (!overlay_scene || scene_runs_own_graph(*overlay_scene))
                     continue;
                 if (layer < overlay_topology_versions.size() &&
                     overlay_scene->render_topology_version != overlay_topology_versions[layer]) {
@@ -2891,9 +2894,12 @@ public:
             if (transmission) {
                 encode_image_processing(state, encoder, surface_view, scene);
             }
-        } else {
-            // Frame-graph execution replaces the main pass entirely,
-            // mirroring the SDL task loop.
+        }
+        // Frame-graph execution replaces the main pass entirely, mirroring the
+        // SDL task loop; after a direct pass, the scenes that run their own
+        // graph run it, presenting into that pass's image.
+        if (whole_frame_graph ||
+            scenes_run_frame_graphs(std::span(data_.active_registered_scenes).subspan(1))) {
             // The task encoding now: every target lookup below resolves
             // through `pal::resolve_render_target` naming it.
             pal::TargetUser target_user = pal::frame_pass_target_user;
@@ -3541,7 +3547,7 @@ public:
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                                     const Scene& utility =
                                         *data_.active_registered_scenes[layer + 1];
-                                    if (utility.surface_canvas || utility.has_frame_passes())
+                                    if (scene_runs_own_graph(utility))
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
@@ -4117,10 +4123,10 @@ public:
                     }
                 }
 #if BBLITE_HAS_TAA
-                if (frame_graph_presented)
+                if (whole_frame_graph && frame_graph_presented)
                     retain_temporal_presentation(state, encoder, surface_texture.texture, width,
                                                  height);
-            } else if (state.temporal_presented) {
+            } else if (whole_frame_graph && state.temporal_presented) {
                 present_stopped_temporal_frame(state, encoder, surface_view);
                 frame_graph_presented = true;
             }
@@ -4207,7 +4213,7 @@ public:
         const bool ui_after_capture_copy = capture_frame && !capture_ui;
         if (!ui_after_capture_copy) {
             render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
-                                        state.ui, ui_frame, nullptr, state.sample_count);
+                                        state.ui, ui_frame, nullptr, state.ui_samples);
             if (capture_frame && capture_ui) {
                 capture_source = surface_texture.texture;
             }
@@ -4252,7 +4258,7 @@ public:
             // uses in one submission can leave Dawn's map future unresolved.
             DawnCommandEncoder ui_encoder{wgpuDeviceCreateCommandEncoder(state.device, nullptr)};
             render_sprite_ui_dawn_frame(state, ui_encoder, surface_texture.texture, surface_view,
-                                        state.ui, ui_frame, nullptr, state.sample_count);
+                                        state.ui, ui_frame, nullptr, state.ui_samples);
             DawnCommandBuffer ui_command{wgpuCommandEncoderFinish(ui_encoder, nullptr)};
             submit_dawn_command(state.queue, ui_command);
             ui_command.reset();

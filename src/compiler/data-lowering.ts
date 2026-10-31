@@ -49,6 +49,7 @@ import {
     belongsToEntryEngine,
     handleCppType,
     isEngineScopedHandleKind,
+    isInputSnapshotList,
     storesOneHandle,
 } from "./data-types/handles.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
@@ -4298,7 +4299,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * A member call `run` lowers on its evaluated receiver `owner`: under
      * the chain's guard when the call is `owner?.m()` or continues a chain
      * whose absence reached `owner` (`a?.b.stream.getTracks()`), else on
-     * the receiver narrowed present.
+     * the receiver narrowed present: one no type narrows (a JavaScript
+     * source's) is read as a member access reads it, throwing when absent.
      */
     public chainReceiverCall(
         owner: Value,
@@ -4309,7 +4311,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return callee.questionDotToken ||
             (ts.isOptionalChain(callee) && owner.dataType?.kind === "optional")
             ? this.optionalAccess(owner, call, run)
-            : run(this.narrowOptional(owner, callee.expression));
+            : run(
+                  this.presentForAccess(
+                      this.narrowOptional(owner, callee.expression),
+                  ),
+              );
     }
 
     public narrowOptional(
@@ -15384,9 +15390,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         type: DataType,
         label: string,
         unselected: (left: Value, condition: string) => string,
+        evaluated = this.context.compileValue(expression.left),
     ): string {
         const left = this.context.bindings.pinValueToTemporary(
-            this.context.compileValue(expression.left),
+            evaluated,
             "logical_left",
             expression.left,
         );
@@ -15415,6 +15422,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
         });
         return result;
+    }
+
+    /**
+     * `left || right` / `left && right` TypeScript types `any` (a JavaScript
+     * source's reads of an `any` value): the left lowers once, and a
+     * settled truth test selects an operand at generation; otherwise the
+     * selection holds the storage the left lowers to, which the right, run
+     * only where the left selects it, must lower to as well. Numbers are
+     * the numeric lowering's (undefined here), as is a left without storage.
+     */
+    public compileUntypedLogicalValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        const left = this.context.compileValue(expression.left);
+        const known = knownCondition(this.truthinessCondition(left));
+        const isAnd =
+            expression.operatorToken.kind ===
+            ts.SyntaxKind.AmpersandAmpersandToken;
+        if (known !== undefined)
+            return known === isAnd
+                ? this.context.compileValue(expression.right)
+                : left;
+        const type =
+            left.dataType ??
+            (isStringValue(left)
+                ? ({ kind: "string" } as const)
+                : left.kind === "boolean"
+                  ? ({ kind: "boolean" } as const)
+                  : undefined);
+        if (!type || type.kind === "number") return undefined;
+        return this.leafValue(
+            this.compileLogicalSelection(
+                expression,
+                type,
+                "logical_value",
+                (value) =>
+                    this.compileKnownValueForSink(value, type, expression.left),
+                left,
+            ),
+            type,
+        );
     }
 
     /**
@@ -19758,7 +19806,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   (knownTuple
                       ? this.materializeKnownTuple(expression, knownTuple)
                       : undefined) ??
-                  (this.dataTypeAt(expression)?.kind === "string"
+                  // A string, or a TouchEvent's list (`bbl::dom_touch_list`).
+                  (this.dataTypeAt(expression)?.kind === "string" ||
+                  isInputSnapshotList(this.dataTypeAt(expression))
                       ? this.context.compileValue(expression)
                       : undefined));
         const value =

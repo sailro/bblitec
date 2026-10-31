@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
+import { receiverType } from "./dynamic-binding-storage.js";
 import { undefinedValue } from "./values/model.js";
 import { argumentAt } from "./syntax.js";
 import {
@@ -98,6 +99,7 @@ interface AudioCallContext
         Pick<
             LoweringServices,
             | "checker"
+            | "dynamicBindings"
             | "expectKind"
             | "expectArgumentCount"
             | "allocateTemporaryCppName"
@@ -440,7 +442,7 @@ export function compileAudioMethodCall(
     if (callee.access.questionDotToken) {
         const kind = domAudioHandleKind(
             context.checker.getNonNullableType(
-                context.checker.getTypeAtLocation(callee.expression),
+                receiverType(context, callee.expression),
             ),
         );
         if (!kind || !AUDIO_KINDS.has(kind)) return undefined;
