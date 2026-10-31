@@ -64,7 +64,6 @@
 import type { Server } from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
-import { routePinnedBabylonCdn } from "./pinned-babylon-cdn.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
@@ -165,17 +164,19 @@ export async function withBrowserPage<T>(
                   deviceScaleFactor: options.deviceScaleFactor ?? 1,
               }
             : undefined;
-        // Closing a shared connection closes the context opened through it,
-        // and only that: the page's own crash or failure stays its own.
-        browser = options.shared
-            ? await chromium.connect(await generationBrowserEndpoint(launch), {
-                  timeout: 60_000,
-              })
-            : await chromium.launch(launchOptions(launch));
-        const context = await browser.newContext(pageOptions);
-        // The run-time decoders the pin fetches come from one Babylon.js release.
-        await routePinnedBabylonCdn(context);
-        const page = await context.newPage();
+        let page: Page;
+        if (options.shared) {
+            // Closing this connection closes the context opened through it,
+            // and only that: the page's own crash or failure stays its own.
+            browser = await chromium.connect(
+                await generationBrowserEndpoint(launch),
+                { timeout: 60_000 },
+            );
+            page = await (await browser.newContext(pageOptions)).newPage();
+        } else {
+            browser = await chromium.launch(launchOptions(launch));
+            page = await browser.newPage(pageOptions);
+        }
         const pageErrorPrefix = options.pageErrorPrefix;
         if (pageErrorPrefix !== undefined) {
             page.on("pageerror", (error) => {

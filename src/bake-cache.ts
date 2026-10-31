@@ -136,19 +136,6 @@ export function browserIdentity(): string | undefined {
     }
 }
 
-/**
- * A browser bake's browser component: the browser, and the Babylon.js CDN
- * release its pages read run-time decoders from (loaded lazily, as the pin is).
- */
-function browserBakeIdentity(): string | undefined {
-    const browser = browserIdentity();
-    if (browser === undefined) return undefined;
-    const { pinnedBabylonCdnVersion } = createRequire(import.meta.url)(
-        "./pinned-babylon-cdn.js",
-    ) as typeof import("./pinned-babylon-cdn.js");
-    return `${browser}|cdn:${pinnedBabylonCdnVersion()}`;
-}
-
 export interface BakeKey {
     /** `hdr-prefilter`, `basis-transcode`, `node-particle`,
      *  `executed-module`, `ibl-brdf-lut`, `browser-generated-string`,
@@ -187,7 +174,7 @@ function canonicalJson(value: unknown): string {
  *  computed (no browser for a browser bake) or the cache is disabled. */
 export function bakeIdentity(key: BakeKey): string | undefined {
     if (!cacheEnabled()) return undefined;
-    const browser = key.browser ? browserBakeIdentity() : "cpu";
+    const browser = key.browser ? browserIdentity() : "cpu";
     if (browser === undefined) return undefined;
     const payload = [
         `kind:${key.kind}`,
