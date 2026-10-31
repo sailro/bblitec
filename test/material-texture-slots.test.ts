@@ -402,7 +402,7 @@ test("an unlowered texture type is refused, not bound as a near neighbour", () =
     // non-array counterparts, and everything else through the trailing
     // `texture_` catch-all onto a 2D lane.
     for (const type of [
-        "texture_2d_array<f32>",
+        "texture_2d_array<u32>",
         "texture_depth_cube",
         "texture_depth_multisampled_2d",
         "texture_3d<f32>",
@@ -446,6 +446,14 @@ test("the reached array texture and the plain kinds still reflect", () => {
     assert.deepEqual(
         cascaded.map(({ binding, name, kind }) => [binding, name, kind]),
         [[7, "shadowMap", "textureDepth2dArray"]],
+    );
+    // The rect-area emission array: one float layer per processed image.
+    assert.deepEqual(
+        variantBindings(
+            "@fragment fn main() {}",
+            "@group(1) @binding(6) var areaEmission : texture_2d_array<f32>;",
+        ).map(({ name, kind }) => [name, kind]),
+        [["areaEmission", "texture2dArray"]],
     );
     const plain = variantBindings(
         "@fragment fn main() {}",

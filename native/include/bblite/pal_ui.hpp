@@ -137,6 +137,14 @@ bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string na
                          std::optional<bool> force = std::nullopt);
 std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name, std::string value);
+/**
+ * A reflected `property` write through an element of statically unknown tag: its content attribute
+ * `name` when the element is one of `tags`; on another element the write would add an expando
+ * property, which throws NotSupportedError.
+ */
+void ui_set_declared_attribute(Engine& engine, UiElementHandle element,
+                               std::initializer_list<std::string_view> tags,
+                               std::string_view property, std::string name, std::string value);
 void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
                            std::string value);
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name);

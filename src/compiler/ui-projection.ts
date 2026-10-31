@@ -25,6 +25,7 @@ import {
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import {
     unrepresentedUiAnimation,
+    unrepresentedUiAnimationDuration,
     unrepresentedUiEasing,
 } from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
@@ -108,7 +109,7 @@ import {
     isDocumentReceiver,
     isDomReceiver,
 } from "./dom-targets.js";
-import { registerUiImageAsset } from "./assets.js";
+import { documentAssetSource, registerUiImageAsset } from "./assets.js";
 import { packagedUrlAssets } from "./static-fetch.js";
 import {
     canvasContextIds,
@@ -415,6 +416,8 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
             },
         ],
         ["htmlFor", { attribute: "for", readable: true, tags: ["label"] }],
+        // Its getter is the URL resolved against the document, not lowered.
+        ["href", { attribute: "href", readable: false, tags: ["a", "area"] }],
         // Its getter is the IDL-exposed autofill value, which is not lowered.
         [
             "autocomplete",
@@ -1940,6 +1943,7 @@ export class UiProjection {
             "align-self",
             "animation",
             "animation-delay",
+            "animation-duration",
             "background",
             "background-color",
             "background-clip",
@@ -2490,6 +2494,11 @@ export class UiProjection {
                         ? unrepresentedUiAnimation(literalValue)
                         : undefined);
                 if (reason) this.uiStyleRefusal(site, property, reason);
+            }
+            if (property === "animation-duration") {
+                const reason = unrepresentedUiAnimationDuration(literalValue);
+                if (reason) this.uiStyleRefusal(site, property, reason);
+                return;
             }
             if (property === "scale") {
                 if (
@@ -3062,9 +3071,13 @@ export class UiProjection {
         ["border", [["border-image", "none"]]],
     ]);
 
-    private static uiShorthandResetStyle(property: string): string {
+    /** The longhands a shorthand resets; a CSS-wide `keyword` is each one's value. */
+    private static uiShorthandResetStyle(
+        property: string,
+        keyword?: string,
+    ): string {
         return (UiProjection.UI_SHORTHAND_RESETS.get(property) ?? [])
-            .map(([name, value]) => `${name}:${value};`)
+            .map(([name, value]) => `${name}:${keyword ?? value};`)
             .join("");
     }
 
@@ -3353,6 +3366,14 @@ export class UiProjection {
                 "background-color:transparent;background-image:none;background-position:center center;background-size:$1;background-repeat:no-repeat;background-origin:padding-box;background-attachment:scroll;background-clip:border-box;",
             )
             .replace(
+                /\bbackground\s*:\s*(inherit|initial|unset)\s*(?=;|$)/gi,
+                (_match, keyword: string) =>
+                    UiProjection.uiShorthandResetStyle(
+                        "background",
+                        keyword.toLowerCase(),
+                    ) + `background-color:${keyword.toLowerCase()}`,
+            )
+            .replace(
                 /\bbackground\s*:/gi,
                 `${UiProjection.uiShorthandResetStyle("background")}background-color:`,
             )
@@ -3506,7 +3527,7 @@ export class UiProjection {
                 if (source !== undefined)
                     literal = JSON.stringify(
                         this.context.assetRegistry.registerAsset(
-                            source,
+                            documentAssetSource(this.context, source),
                             "texture",
                         ).output,
                     );
@@ -6256,12 +6277,27 @@ export class UiProjection {
             )
         )
             return;
-        const attribute = this.reflectedUiAttribute(
-            element,
-            property,
-            receiver,
-            site,
-        )?.attribute;
+        // An element whose tag neither its value nor its declared type knows
+        // (a lookup a classic page script makes) is checked when written.
+        const declared = UI_REFLECTED_ATTRIBUTES.get(property);
+        const checkedTags =
+            declared?.tags !== undefined &&
+            element.uiTag === undefined &&
+            unionMembers(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(receiver),
+                ),
+            ).every(
+                (member) =>
+                    elementInterfaceTag(member.getSymbol()?.name ?? "") ===
+                    undefined,
+            )
+                ? declared.tags
+                : undefined;
+        const attribute = checkedTags
+            ? declared?.attribute
+            : this.reflectedUiAttribute(element, property, receiver, site)
+                  ?.attribute;
         if (attribute) {
             if (attribute === "class" || attribute === "id") {
                 this.recordUiStaticAttribute(
@@ -6271,12 +6307,19 @@ export class UiProjection {
                     assigned.value && (assigned.value.staticString ?? null),
                 );
             }
+            const value = this.uiStringCpp(
+                assigned.site,
+                `UI ${property}`,
+                assigned.value,
+            );
             this.context.emit({
                 kind: "expression",
-                code:
-                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
-                    `${this.context.cppString(attribute)}, ` +
-                    `${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)});`,
+                code: checkedTags
+                    ? `bbl::ui_set_declared_attribute(${engine}, ${element.cpp}, ` +
+                      `{${checkedTags.map((tag) => this.context.cppString(tag)).join(", ")}}, ` +
+                      `${this.context.cppString(property)}, ${this.context.cppString(attribute)}, ${value});`
+                    : `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
+                      `${this.context.cppString(attribute)}, ${value});`,
             });
             return;
         }

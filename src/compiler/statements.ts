@@ -5211,6 +5211,26 @@ export class StatementLowerer {
         target: Value,
         transform: SceneNodeTransformDescriptor,
     ): boolean {
+        if (target.kind === "light") {
+            // `createLightBase` gives every light the SceneNode TRS lanes, and
+            // `light_world_matrix` composes them with the rest of the
+            // SceneNode transform, so a lane with a light setter is the same
+            // write a node takes.
+            if (!transform.lightSetter) return false;
+            const vector = `${transform.cppType}{${this.setCallComponents(
+                context,
+                call,
+                transform.components.length,
+                `${transform.sourceProperty}.set`,
+                transform.precision,
+            ).join(", ")}}`;
+            context.reachFeature("light:hierarchy", call);
+            context.emit({
+                kind: "expression",
+                code: `bbl::${transform.lightSetter}(${context.requireEngine(target, call)}, ${target.cpp}, ${vector});`,
+            });
+            return true;
+        }
         if (target.kind === "asset-root") {
             context.assetRegistry.assertAssetRootWritable(target, call);
             const components = this.setCallComponents(
@@ -5305,6 +5325,15 @@ export class StatementLowerer {
         target: Value,
     ): boolean {
         const property = owner.name;
+        const transform = sceneNodeTransformDescriptor(property);
+        if (transform?.lightSetter) {
+            return this.emitSceneNodeVectorSet(
+                context,
+                call,
+                target,
+                transform,
+            );
+        }
         if (property !== "position" && property !== "direction") {
             return false;
         }

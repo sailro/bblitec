@@ -239,7 +239,13 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
 });
 
 test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper and hides the chrome", async () => {
-    const server = createSuiteSceneServer("export {};\n", {
+    // Engine canvases (here handed to a worker engine) stay; a Canvas2D or
+    // never-drawn canvas is UI, as natively.
+    const scene =
+        `for (const id of [${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}, "second"])` +
+        " document.getElementById(id).transferControlToOffscreen();\n" +
+        'document.getElementById("minimap").getContext("2d");\n';
+    const server = createSuiteSceneServer(scene, {
         hostUi: {
             sourcePath: "ui/app-host.json",
             styleRules: [],
@@ -257,6 +263,8 @@ test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper
                             },
                         },
                         { tag: "canvas", attributes: { id: "second" } },
+                        { tag: "canvas", attributes: { id: "minimap" } },
+                        { tag: "canvas", attributes: { id: "blank" } },
                     ],
                 },
                 { tag: "div", attributes: { id: "hud" }, text: "HUD" },
@@ -275,6 +283,8 @@ test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper
             primary: visible(primary),
             outline: getComputedStyle(primary).outlineStyle,
             second: visible(document.getElementById("second")),
+            minimap: visible(document.getElementById("minimap")),
+            blank: visible(document.getElementById("blank")),
             hud: visible(document.getElementById("hud")),
         };
     };
@@ -317,6 +327,8 @@ test("a canvas-only screenshot keeps the host UI's primary canvas in its wrapper
             width: "1280",
             primary: true,
             outline: "none",
+            minimap: false,
+            blank: false,
             hud: false,
             image: { width: 1280, height: 720 },
         };
@@ -532,6 +544,7 @@ test("relocates demo bundle assets and the shared Havok binary to pinned lab/pub
         "/bundle/demos/",
         "/lite/bundle/demos/",
         "/corpus/babylon-lite/lab/lite/src/demos/",
+        "/lite/src/demos/",
     ])
         assert.equal(
             pinnedLabPublicAssetPath(`${prefix}nested/image.png`),

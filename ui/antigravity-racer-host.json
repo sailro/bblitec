@@ -24,7 +24,7 @@
     {
       "kind": "class",
       "primary": "ag-btn",
-      "style": "border:1px solid rgba(150,200,255,0.22);border-radius:12px;padding:14px 22px;font:600 0.95rem/1 system-ui,sans-serif;letter-spacing:0.01em;color:#eaf0ff;background:rgba(255,255,255,0.06);backdrop-filter:blur(8px);cursor:pointer;text-align:left;"
+      "style": "border:1px solid rgba(150,200,255,0.22);border-radius:12px;padding:14px 22px;font:600 0.95rem/1 system-ui,sans-serif;letter-spacing:0.01em;color:#eaf0ff;background:rgba(255,255,255,0.06);backdrop-filter:blur(8px);cursor:pointer;transition:background 0.15s ease,transform 0.15s ease,border-color 0.15s ease;text-align:left;"
     },
     {
       "kind": "class",
@@ -124,7 +124,7 @@
     {
       "kind": "class",
       "primary": "ag-attract-btn",
-      "style": "display:flex;align-items:center;gap:8px;border:1px solid rgba(150,200,255,0.22);border-radius:999px;padding:10px 18px;font:600 0.82rem/1 system-ui,sans-serif;color:#eaf0ff;background:rgba(10,8,20,0.6);backdrop-filter:blur(8px);cursor:pointer;"
+      "style": "display:flex;align-items:center;gap:8px;border:1px solid rgba(150,200,255,0.22);border-radius:999px;padding:10px 18px;font:600 0.82rem/1 system-ui,sans-serif;color:#eaf0ff;background:rgba(10,8,20,0.6);backdrop-filter:blur(8px);cursor:pointer;transition:background 0.15s ease,border-color 0.15s ease;"
     },
     {
       "kind": "class",
@@ -152,9 +152,9 @@
       "style": "font-size:0.72rem;color:#9aa0c0;line-height:1.4;margin-bottom:14px;"
     },
     {
-      "kind": "class",
-      "primary": "ag-editor-buttons",
-      "style": "display:flex;flex-direction:column;gap:10px;width:100%;"
+      "kind": "sequence",
+      "primary": ".ag-editor-buttons .ag-btn",
+      "style": "padding:10px 14px;font-size:0.85rem;"
     },
     {
       "kind": "class",
@@ -166,7 +166,7 @@
       "kind": "class",
       "primary": "ag-btn-primary",
       "hover": true,
-      "style": "background:linear-gradient(135deg,#6a5cff 0%,#34d1ff 100%);"
+      "style": "filter:brightness(1.08);background:linear-gradient(135deg,#6a5cff 0%,#34d1ff 100%);"
     },
     {
       "kind": "class",
@@ -185,6 +185,18 @@
       "primary": "ag-attract-btn",
       "focusVisible": true,
       "style": "outline:2px solid #7fe0ff;outline-offset:2px;"
+    },
+    {
+      "kind": "class",
+      "primary": "ag-btn",
+      "active": true,
+      "style": "transform:scale(0.98);"
+    },
+    {
+      "kind": "class",
+      "primary": "ag-attract-btn",
+      "active": true,
+      "style": "transform:scale(0.98);"
     },
     {
       "kind": "class-descendant-tag",

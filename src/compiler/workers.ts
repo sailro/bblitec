@@ -362,6 +362,23 @@ function messageDataType(
     );
 }
 
+/**
+ * A `location` member the Window realm answers at run time: navigation, and
+ * the query a runtime Window application reads (`runtimeLocationSearch`).
+ */
+export function isRuntimeLocationMember(
+    context: Pick<WorkerLoweringContext, "options" | "libraryGlobal">,
+    member: { name: string; expression: ts.Expression },
+): boolean {
+    return (
+        (member.name === "reload" ||
+            member.name === "assign" ||
+            (context.options.runtimeLocationSearch === true &&
+                (member.name === "search" || member.name === "href"))) &&
+        context.libraryGlobal(member.expression) === "location"
+    );
+}
+
 export function isNativeWorkerExpression(
     context: WorkerLoweringContext,
     expression: ts.Expression,
@@ -393,15 +410,7 @@ export function isNativeWorkerExpression(
         if (inner?.kind === "handle" && inner.handle === "worker-media-query")
             return true;
     }
-    if (
-        member &&
-        (member.name === "reload" ||
-            member.name === "assign" ||
-            (context.options.runtimeLocationSearch &&
-                (member.name === "search" || member.name === "href"))) &&
-        context.libraryGlobal(member.expression) === "location"
-    )
-        return true;
+    if (member && isRuntimeLocationMember(context, member)) return true;
     const globalMember = context.libraryGlobal(node);
     if (
         globalMember !== undefined &&

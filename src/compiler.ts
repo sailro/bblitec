@@ -120,6 +120,7 @@ import {
 import {
     compileWorkerValue,
     isNativeWorkerExpression,
+    isRuntimeLocationMember,
 } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
 import {
@@ -1108,13 +1109,20 @@ class Compiler implements LoweringServices {
             this.staticConstants,
             this.checker,
             (identifier) => this.symbols.valueSymbol(identifier),
+            // A location member the realm answers at run time has no
+            // generation-known value.
             (expression) =>
-                compileCanvasValue(this, expression) ??
-                this.canvasSizeValue(expression) ??
-                this.enumMemberValue(expression) ??
-                this.dataLowerer.compileDataPath(expression, "read") ??
-                this.propertyAccess.lookupRecordProperty(expression) ??
-                this.propertyAccess.compilePropertyAccess(expression),
+                isRuntimeLocationMember(this, {
+                    name: expression.name.text,
+                    expression: expression.expression,
+                })
+                    ? undefined
+                    : (compileCanvasValue(this, expression) ??
+                      this.canvasSizeValue(expression) ??
+                      this.enumMemberValue(expression) ??
+                      this.dataLowerer.compileDataPath(expression, "read") ??
+                      this.propertyAccess.lookupRecordProperty(expression) ??
+                      this.propertyAccess.compilePropertyAccess(expression)),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),

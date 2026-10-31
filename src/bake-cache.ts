@@ -139,7 +139,8 @@ export function browserIdentity(): string | undefined {
 export interface BakeKey {
     /** `hdr-prefilter`, `basis-transcode`, `node-particle`,
      *  `executed-module`, `ibl-brdf-lut`, `browser-generated-string`,
-     *  `dds-package`, `splat-ply`, `executed-csg-solid`. */
+     *  `dds-package`, `splat-ply`, `executed-csg-solid`,
+     *  `area-light-texture`. */
     kind: string;
     /** Bumped when the bake's contract changes. */
     version: string;

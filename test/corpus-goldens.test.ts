@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { scenes } from "../src/scene-registry.js";
+import { sceneReferencePage, scenes } from "../src/scene-registry.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import {
@@ -101,7 +101,7 @@ test("keeps external golden applications byte-identical to their manifests", () 
                 capture.independentEngines,
                 scene.parity.independentEngines,
             );
-            assert.equal(capture.hostPage, scene.parity.referenceHostPage);
+            assert.equal(capture.hostPage, sceneReferencePage(scene).hostPage);
             assert.equal(capture.hostPageSha256, sha256(capture.hostPage));
             assert.equal(
                 capture.moduleSha256,
@@ -154,8 +154,8 @@ test("Ocean reference preserves the pinned frozen pose and reached source graph"
     };
     assert.deepEqual(provenance.pin, readUpstreamPin());
     assert.equal(provenance.entry, scene.source);
-    assert.equal(provenance.hostPage, scene.parity.referenceHostPage);
-    assert.equal(scene.nativeHostUi, "ui/ocean-host.json");
+    // The page the reference was captured from is the native host.
+    assert.equal(provenance.hostPage, scene.page?.path);
     assert.equal(scene.parity.referenceScrollbars, true);
     assert.equal(provenance.browser.showScrollbars, true);
     assert.deepEqual(provenance.pose, {
@@ -221,9 +221,9 @@ test("Playroom reference retains its unchanged host, source graph and capture po
     };
     assert.deepEqual(provenance.pin, readUpstreamPin());
     assert.equal(provenance.entry, scene.source);
-    assert.equal(provenance.hostPage, scene.parity.referenceHostPage);
+    // The page the reference was captured from is the native host.
+    assert.equal(provenance.hostPage, scene.page?.path);
     assert.equal(provenance.hostPageSha256, sha256(provenance.hostPage));
-    assert.equal(scene.nativeHostUi, "ui/playroom-host.json");
     assert.deepEqual(provenance.pose, {
         search: "",
         width: 1280,

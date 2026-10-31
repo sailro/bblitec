@@ -110,6 +110,11 @@ import { lowerUniformBuffer } from "./lowering/uniform-buffer-lowerer.js";
 import { lowerConfigurableCameraControls } from "./lowering/configurable-camera-controls.js";
 import { lowerClusteredLights } from "./lowering/clustered-light-runtime.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
+import {
+    lowerLightHierarchy,
+    RectAreaLightLowerer,
+} from "./lowering/rect-area-light-lowerer.js";
+import { reachedRectAreaLightings } from "./pinned-rect-area-lights.js";
 import { lightParameterHeader } from "./lowering/light-parameters.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { FrameGraphContextLowerer } from "./lowering/frame-graph-context-lowerer.js";
@@ -198,6 +203,7 @@ import type {
     ComposedScreenSpaceTask,
 } from "./pinned-screen-space.js";
 import type { ScreenSpaceTaskManifest } from "./compiler/types.js";
+import { lightKindFacts, reachedLightKinds } from "./compiler/types.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { VatLowerer } from "./lowering/vat-lowerer.js";
 import { SkeletonLowerer } from "./lowering/skeleton-lowerer.js";
@@ -234,6 +240,7 @@ import {
     lightUniformsBlock,
     pinnedPbrVariantsHeader,
     pinnedSharedVariantDecls,
+    lightKindsHeader,
     pinnedStandardVariantsHeader,
     sceneUniformsStruct,
 } from "./pinned-pbr-variant-cpp.js";
@@ -250,6 +257,7 @@ import {
     pinnedStandardSupportBlock,
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
+    type StandardSceneComposition,
 } from "./pinned-standard-variants.js";
 import type { MaterialPluginSamplerManifest } from "./pinned-material-plugins.js";
 import type {
@@ -293,14 +301,6 @@ function sceneUboBytes(context: LoweringContext): number {
     );
 }
 
-/** The light kinds the pin writes an entry for, in its own order. */
-const pinnedLightKinds = [
-    "hemispheric",
-    "directional",
-    "point",
-    "spot",
-] as const;
-
 /**
  * The pinned per-pass blocks, hoisted into whichever family header is emitted
  * first.
@@ -324,9 +324,7 @@ function sharedPinnedMirrors(
     features: readonly string[],
     meshFragmentWgsl?: string,
 ): string {
-    const reachedKinds = pinnedLightKinds.filter((kind) =>
-        features.includes(`light:${kind}`),
-    );
+    const reachedKinds = reachedLightKinds(features);
     return `
 // ---------------------------------------------------------------------------
 // The shared pinned per-pass blocks, hoisted for a scene whose earlier family
@@ -633,6 +631,13 @@ export interface UpstreamEmitOptions {
      * Absent for a scene whose plugins declare no samplers.
      */
     standardPluginBindings?: readonly (readonly MaterialPluginSamplerManifest[])[];
+    /**
+     * The Standard composition's executed area context bits per installed
+     * lighting, and `writeStdMaterialData`'s reached extension writers
+     * (`StandardSceneComposition`).
+     */
+    standardAreaMaterialFeatures?: StandardSceneComposition["areaMaterialFeatures"];
+    standardExtensionWriters?: StandardSceneComposition["extensionWriters"];
     /**
      * The pin's own composed node graphs — one module per graph, emitted as
      * `node_variants.hpp` plus the two stages each deploys under. Absent when
@@ -1011,6 +1016,7 @@ class GeneratedSourceWriter {
             options.pinnedStandardVariants ?? [],
         );
         const pbrBindingNames = composedMaterials.pbrBindingNames;
+        const rectAreaLightings = reachedRectAreaLightings(features);
         // The shadow family's five defines, derived once: they are not
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
@@ -1188,6 +1194,7 @@ class GeneratedSourceWriter {
                     clusteredLights: pbrBindingNames.has("clusteredLights"),
                     vat: pbrBindingNames.has("vatSampler"),
                     vatInstances: pbrBindingNames.has("vatInstanceTex"),
+                    ...(rectAreaLightings ? { rectAreaLightings } : {}),
                 },
                 options.pinnedVariants ?? [],
                 "src/pinned-pbr-variant-cpp.ts materialTextureSlotsHeader",
@@ -1251,7 +1258,11 @@ ${lowerThinInstanceSync(context)}
         if (features.includes("light:parameters"))
             this.tree.write(
                 "upstream/include/bblite/upstream/light_parameters.hpp",
-                lightParameterHeader(context),
+                lightParameterHeader(
+                    context,
+                    reachedLightKinds(features),
+                    features.includes("light:hierarchy"),
+                ),
             );
         if (this.reaches("upstream/src/procedural_sky_atmosphere.cpp")) {
             const atmosphere = lowerProceduralSkyAtmosphere(context);
@@ -1371,6 +1382,11 @@ ${lowerThinInstanceSync(context)}
                 worldMatrixProviders: features.includes(
                     "mesh:world-matrix-provider",
                 ),
+                lightChildren: features.includes("light:hierarchy"),
+                lightingValidation: reachedLightKinds(features).some(
+                    (kind) => lightKindFacts[kind].validatesLighting,
+                ),
+                rectAreaLighting: features.includes("light:rect-area-lighting"),
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
                 nodeMaterials: nodeVariantList.length > 0,
@@ -1418,16 +1434,46 @@ ${lowerThinInstanceSync(context)}
         this.emitEnvironment(features, context, generated);
         this.emitLights(context, generated);
         emitReached("upstream/src/light_hemispheric.cpp", () =>
-            new LightLowerer(context).lowerFactory(),
+            new LightLowerer(
+                context,
+                features.includes("light:hierarchy"),
+            ).lowerFactory(),
         );
         emitReached("upstream/src/light_directional.cpp", () =>
-            new LightLowerer(context).lowerDirectionalFactory(),
+            new LightLowerer(
+                context,
+                features.includes("light:hierarchy"),
+            ).lowerDirectionalFactory(),
         );
         emitReached("upstream/src/light_point.cpp", () =>
-            new LightLowerer(context).lowerPointFactory(),
+            new LightLowerer(
+                context,
+                features.includes("light:hierarchy"),
+            ).lowerPointFactory(),
         );
         emitReached("upstream/src/light_spot.cpp", () =>
-            new LightLowerer(context).lowerSpotFactory(),
+            new LightLowerer(
+                context,
+                features.includes("light:hierarchy"),
+            ).lowerSpotFactory(),
+        );
+        emitReached("upstream/src/light_rect_area.cpp", () =>
+            new RectAreaLightLowerer(
+                context,
+                features.includes("light:rect-area-emission"),
+                features.includes("light:hierarchy"),
+                (options.nodeVariants ?? []).map(
+                    (variant) => variant.composed.usesLightsUbo,
+                ),
+            ).lower(),
+        );
+        emitReached("upstream/src/light_validation.cpp", () =>
+            new LightLowerer(context).lowerLightingValidation(
+                reachedLightKinds(features),
+            ),
+        );
+        emitReached("upstream/src/light_hierarchy.cpp", () =>
+            lowerLightHierarchy(context),
         );
         emitReached(
             "upstream/src/clustered_light.cpp",
@@ -1893,7 +1939,12 @@ ${lowerThinInstanceSync(context)}
         // no family's presence decides where another finds them -- the node
         // graphs' receiver rows are the same shape in the graph's own group
         // 1, and read through the same per-row builders.
-        this.emitSharedVariantBindings(options, nodeVariantList, context);
+        this.emitSharedVariantBindings(
+            options,
+            nodeVariantList,
+            context,
+            features,
+        );
         this.emitPbrVariants(options, context, features);
         for (const variant of options.pinnedVariants ?? []) {
             composedShaders.push({
@@ -2031,6 +2082,12 @@ ${lowerThinInstanceSync(context)}
         shadows: ReturnType<typeof shadowCapabilities>,
         nodeGeometryViewList: ReturnType<typeof nodeGeometryVariants>,
     ): void {
+        // Every PAL names light kinds (selection, capture), so the table's
+        // spelling is emitted for every scene, lit or not.
+        this.tree.write(
+            "upstream/include/bblite/upstream/light_kinds.hpp",
+            lightKindsHeader(),
+        );
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -2138,6 +2195,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // Presence gates; runtime counts come from the external variant tables.
 #define BBLITE_PBR_VARIANTS ${(options.pinnedVariants?.length ?? 0) > 0 ? 1 : 0}
 #define BBLITE_LOCAL_CUBEMAP ${features.includes("material:local-cubemap") ? 1 : 0}
+// A scene can draw under area lighting: the per-scene area lane of every
+// variant key, and the two LTC texture-sampler pairs its composed PBR and
+// Standard variants bind from the decoded tables.
+#define BBLITE_RECT_AREA_LIGHTS ${reachedRectAreaLightings(features) ? 1 : 0}
+// A scene can draw under the textured area lighting: the emission array,
+// sampler and slot block, bound from the scene's emission snapshot.
+#define BBLITE_RECT_AREA_EMISSION ${reachedRectAreaLightings(features)?.includes("textured") ? 1 : 0}
 
 // The Standard family's composed variants, the same way. Zero until the
 // scene composes them, which also skips standard_variants.hpp.
@@ -3079,6 +3143,7 @@ ${wgsl}`,
                     worldMatrixProviders: features.includes(
                         "mesh:world-matrix-provider",
                     ),
+                    lightParents: features.includes("light:hierarchy"),
                     transformNodes: features.includes("mesh:transform-node"),
                     // Whether a geometry task's draw list admits the node
                     // family. Keyed on the composed views rather than on
@@ -3854,6 +3919,7 @@ ${shadow.blurFragmentWgsl}`,
         options: UpstreamEmitOptions,
         nodeVariantList: readonly NodeVariantManifestEntry[],
         context: LoweringContext,
+        features: readonly string[],
     ): void {
         if (
             (options.pinnedVariants ?? []).length > 0 ||
@@ -3866,6 +3932,7 @@ ${shadow.blurFragmentWgsl}`,
                 pinnedSharedVariantDecls(
                     context,
                     "src/pinned-pbr-variant-cpp.ts pinnedSharedVariantDecls",
+                    reachedRectAreaLightings(features),
                 ),
             );
         }
@@ -3887,13 +3954,12 @@ ${shadow.blurFragmentWgsl}`,
                     pinnedMaxLights(context),
                     "src/pinned-pbr-variant-cpp.ts pinnedPbrVariantsHeader",
                     options.pinnedVariants!,
-                    ["hemispheric", "directional", "point", "spot"].filter(
-                        (kind) => features.includes(`light:${kind}`),
-                    ),
+                    reachedLightKinds(features),
                     options.renderableMeshFeatures ?? [],
                     options.runtimeMeshFeatures,
                     options.pinnedMaterialCount,
                     options.scenePbrMaterialIndices,
+                    reachedRectAreaLightings(features),
                 ),
             );
         }
@@ -3906,6 +3972,7 @@ ${shadow.blurFragmentWgsl}`,
         composedShaders: ComposedShader[],
     ): void {
         if ((options.pinnedStandardVariants ?? []).length > 0) {
+            const rectAreaLightings = reachedRectAreaLightings(features);
             // The mesh mirror must cover every composed variant's declaration:
             // the LINEAR_VELOCITY geometry arm appends previousWorld and
             // velocityEnabled after the light indices, and binding the base
@@ -3954,9 +4021,20 @@ ${shadow.blurFragmentWgsl}`,
                         "pinnedStandardVariantsHeader",
                     options.pinnedStandardVariants!,
                     features.includes("material:standard-uv-offset"),
+                    options.standardExtensionWriters ?? [],
                 ),
                 sharedMirrors,
                 pinnedStandardSupportBlock(context, {
+                    ...(rectAreaLightings
+                        ? {
+                              rectAreaLighting: {
+                                  lightings: rectAreaLightings,
+                                  materialFeatures:
+                                      options.standardAreaMaterialFeatures ??
+                                      {},
+                              },
+                          }
+                        : {}),
                     skeleton: features.includes("material:standard-skeleton"),
                     vertexAlpha:
                         features.includes("mesh:vertex-alpha") &&

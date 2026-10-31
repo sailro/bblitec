@@ -20,6 +20,8 @@ import { sameSource } from "../compiler/syntax.js";
 export function assetRootTransformSource(
     context: LoweringContext,
     nodeHierarchy = false,
+    /** `light:hierarchy`: lights registered under the root follow its edits. */
+    lightChildren = false,
 ): string {
     const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
     let observables = "";
@@ -93,6 +95,10 @@ ${pinnedQuaternionMath(context)}
 }
 
 void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {${
+        lightChildren
+            ? "\n    mark_parented_lights_dirty(engine, root.parented_lights);"
+            : ""
+    }${
         nodeHierarchy
             ? `
     if (root.root_node.value != invalid_handle) {
@@ -160,15 +166,6 @@ std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset)
         .position = root.root_position,
         .has_rotation_quaternion = true,
         .rotation_quaternion = root.root_rotation_quaternion});
-}
-void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent) {
-    auto& record = ${recordAt("engine.lights", "light")};
-    if (parent.value == invalid_handle) {
-        record.parent_world_matrix = {};
-    } else {
-        (void)${recordAt("engine.assets", "parent")};
-        record.parent_world_matrix = [&engine, parent] { return asset_root_world_matrix(engine, parent); };
-    }
 }
 `;
 }

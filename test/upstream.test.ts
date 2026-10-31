@@ -10,7 +10,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 import { lightSetter } from "../src/compiler/assignments.js";
-import type { LightKind } from "../src/compiler/types.js";
+import { nativeLightKind, type LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { subtreeVisibilityHeader } from "../src/lowering/subtree-visibility.js";
@@ -29,6 +29,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import { RectAreaLightLowerer } from "../src/lowering/rect-area-light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
@@ -700,6 +701,8 @@ test("light vector setters update the source transform lanes", () => {
         directional: lightLowerer.lowerDirectionalFactory().source,
         point: lightLowerer.lowerPointFactory().source,
         spot: lightLowerer.lowerSpotFactory().source,
+        rectArea: new RectAreaLightLowerer(new LoweringContext()).lower()
+            .source,
     };
     for (const kind of Object.keys(sources) as LightKind[]) {
         for (const vector of ["position", "direction"]) {
@@ -712,7 +715,7 @@ test("light vector setters update the source transform lanes", () => {
             )
                 continue;
             const body = sources[kind]
-                .split(`void set_${kind}_light_${vector}(`)[1]
+                .split(`void set_${nativeLightKind(kind)}_light_${vector}(`)[1]
                 ?.split("}")[0];
             assert.ok(body);
             assert.ok(body.includes(`record.${vector} = value;`));

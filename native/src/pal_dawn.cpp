@@ -760,6 +760,14 @@ class DawnSceneRun {
             const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
             DawnDrawState& standard_state =
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
+#if BBLITE_RECT_AREA_EMISSION
+            // A new emission snapshot of the draw's scene stales the held
+            // group, which the encode then rebuilds over the new one.
+            if (track_area_light_scene(state, standard_state, scene) && standard_state.group) {
+                wgpuBindGroupRelease(standard_state.group);
+                standard_state.group = nullptr;
+            }
+#endif
             // The bind group builds at encode: a depth-sampled emissive render
             // texture's view resolves only after the frame-graph textures exist.
             standard_state.group_key =
@@ -812,7 +820,7 @@ class DawnSceneRun {
         return {variant,
                 &ensure_pinned_draw_bindings(state, mesh, draw.item.material.value, variant,
                                              handle_find(engine.materials, draw.item.material),
-                                             /*build_group=*/frame)};
+                                             /*build_group=*/frame, scene)};
 #else
         if (frame)
             dawn_error("PBR draw in a build with no composed variant table; the transcribed "
@@ -1276,6 +1284,11 @@ public:
             environment_jobs.emplace_back([&] {
                 upload_environment(state, environment);
                 upload_brdf(state, environment);
+#if BBLITE_RECT_AREA_LIGHTS
+                // The startup scene's area resources, read and uploaded
+                // here rather than on its first frame.
+                prepare_area_lighting(state, scene, engine);
+#endif
                 state.reflection_cubes.reserve(reflection_cubes.size());
                 state.reflection_cube_views.reserve(reflection_cubes.size());
                 for (const auto& cube : reflection_cubes) {
@@ -1958,6 +1971,9 @@ public:
                                                     sizeof(overlay_scene_block));
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
+#if BBLITE_RECT_AREA_LIGHTS
+            prepare_area_lighting(state, *overlay_scene, engine);
+#endif
             DawnGpuDevice{state.queue}.write_buffer(overlay.lights_uniforms, 0,
                                                     overlay_lights.data(), overlay_lights.size());
         }
@@ -2375,6 +2391,9 @@ public:
                     if (!standard_state.group) {
                         const MaterialRecord* standard_material =
                             handle_find(engine.materials, draw.item.material);
+#if BBLITE_RECT_AREA_EMISSION
+                        bind_area_light_draw(state, standard_state);
+#endif
                         standard_state.group = build_standard_draw_group(
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,

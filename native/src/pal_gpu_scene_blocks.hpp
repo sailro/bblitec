@@ -124,19 +124,13 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
                       block.lc;
                   }) {
         std::uint32_t count = 0;
-        std::uint32_t light_index = 0;
-        for (const LightHandle handle : scene.lights) {
-            if (light_index >= upstream::pinned_max_lights)
-                break;
-            const LightRecord* light = handle_find(engine.lights, handle);
-            if (!light)
-                continue;
-            if (upstream::light_affects_mesh(*light, mesh)) {
-                block.li[count / 4][count % 4] = light_index;
-                ++count;
-            }
-            ++light_index;
-        }
+        for_each_packed_light(scene, engine, upstream::pinned_max_lights,
+                              [&](const LightRecord& light, std::size_t slot) {
+                                  if (!upstream::light_affects_mesh(light, mesh))
+                                      return;
+                                  block.li[count / 4][count % 4] = static_cast<std::uint32_t>(slot);
+                                  ++count;
+                              });
         block.lc = count;
     }
 }

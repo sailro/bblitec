@@ -892,6 +892,47 @@ enum class LightKind {
     hemispheric,
     point,
     spot,
+    // src/light/rect-area-light.ts: a single-sided rectangle emitting along
+    // its local -Z.
+    rect_area,
+};
+
+/**
+ * src/light/area-light-ltc.ts decodeAreaLightLtc: the LTC1 and LTC2 tables,
+ * square rgba16float images of raw half-float words in texel order -- what
+ * the pin's `queue.writeTexture` uploads. Their extent and row pitch are the
+ * pin's own, written by the generated `enable_rect_area_lights`.
+ */
+struct AreaLightLtcTables {
+    std::uint32_t size = 0;
+    std::uint32_t row_bytes = 0;
+    std::vector<std::uint8_t> ltc1;
+    std::vector<std::uint8_t> ltc2;
+};
+
+/**
+ * src/light/process-area-light-texture.ts processAreaLightTexture's result:
+ * a square rgba8unorm image and its whole mip chain, packaged by generation
+ * at `path` (`for_each_area_light_image_level` reads its layout), which the
+ * backend uploading it reads and drops. Each call is a distinct image, as
+ * each pinned call allocates its own texture. An image with no path is a
+ * texture the processor did not produce (`unprocessed_area_light_image`).
+ */
+struct AreaLightImage {
+    std::uint32_t size = 0;
+    std::uint32_t levels = 0;
+    std::string path;
+};
+
+/**
+ * src/light/area-light-emission.ts prepareAreaLightEmission's scene
+ * snapshot: one array layer per distinct image among the packed lights, in
+ * first-use order, and per packed light slot its layer plus one (zero for
+ * solid emission), padded to whole vec4<u32> rows.
+ */
+struct AreaLightEmission {
+    std::vector<std::shared_ptr<const AreaLightImage>> layers;
+    std::vector<std::uint32_t> slots;
 };
 
 enum class MaterialAlphaMode {
@@ -2422,6 +2463,8 @@ struct TransformNodeRecord {
      */
     std::vector<MeshHandle> parented_meshes;
     std::vector<TransformNodeHandle> parented_nodes;
+    /** Lights whose `parent` is this node, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /** Bumped by every transform write, which is what a child's world recomposes against. */
     std::uint64_t transform_version = 0;
 };
@@ -2525,6 +2568,15 @@ struct MeshRecord {
     std::optional<double> provider_seen_version;
     /** The provider's world read when its version last moved (the pin's cached world). */
     std::optional<std::array<float, 16>> provider_world_snapshot;
+    /**
+     * `mesh.parent = light` (`set_mesh_light_parent`): the world composes
+     * under the light's, read live through `light_world_matrix`. Upstream a
+     * light is a tagged host that pushes invalidation, which the light's own
+     * writes do here (`mark_light_children_dirty`).
+     */
+    LightHandle light_parent{};
+    /** Lights whose `parent` is this mesh, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /**
      * `cloneMeshNode` left the imported hierarchy behind: the clone keeps
      * its source's local lanes but no longer inherits the root mirror the
@@ -2913,6 +2965,10 @@ struct MaterialRecord {
     // Written by each Standard factory (createStandardMaterial, both .babylon
     // arms) from the pin's own literal; no other family reads it.
     float specular_power = 0.0f;
+    // StandardMaterialProps.roughness, the LTC lookup roughness the
+    // rect-area extension writes into material float 22; unset reads as its
+    // writer's `?? 0`.
+    float standard_roughness = 0.0f;
     float diffuse_level = 1.0f;
     float opacity_level = 1.0f;
     float ambient_level = 1.0f;
@@ -3247,6 +3303,21 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
 struct LightRecord {
     LightKind kind = LightKind::directional;
     double parameter_version = 0.0;
+    /**
+     * A rectangular light's local width and height: JavaScript numbers its
+     * `_writeLightUbo` halves and scales by the world axes.
+     */
+    double width = 0.0;
+    double height = 0.0;
+    /**
+     * The node `light.parent` names (`set_light_parent`), whose
+     * `parented_lights` registers this light; an invalid handle for none.
+     */
+    SceneNodeHandle parent_node{AssetHandle{}};
+    /** Meshes whose `parent` is this light (`MeshRecord::light_parent`). */
+    std::vector<MeshHandle> parented_meshes;
+    /** A rectangular light's `emissionTexture`: a processed image, or null. */
+    std::shared_ptr<const AreaLightImage> emission_texture;
     Vec3 position{};
     Vec3 rotation{};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
@@ -3585,6 +3656,8 @@ struct AssetRecord {
     // A cloned root shares the indices and maps them to its own mesh handles.
     std::shared_ptr<const AssetMeshWalks> source_mesh_walks{};
     std::vector<LightHandle> lights;
+    /** Lights whose `parent` is this imported root, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
      * referencing glTF node in node order — `AssetContainer.cameras`.
@@ -4575,6 +4648,18 @@ struct Engine {
     /** Creation-ordered handles retained for source values that escape scope. */
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
+    /**
+     * src/light/area-light-ltc.ts: the two decoded LTC tables, loaded by the
+     * first `enableRectAreaLights` and shared by every scene the way the
+     * pin's one pixel request is. Each backend uploads them once per device.
+     */
+    std::shared_ptr<const AreaLightLtcTables> area_light_ltc;
+    /**
+     * A processAreaLightTexture call ran (`_installRectAreaEmission`), so
+     * `enableRectAreaLights` hands a packed light's texture to the emission
+     * snapshot instead of refusing it.
+     */
+    bool area_light_emission_installed = false;
     std::vector<TransformNodeRecord> transform_nodes;
     /** Reclaimed transform-node slots `create_transform_node` reuses. */
     std::vector<std::uint32_t> free_transform_node_slots;
@@ -5260,14 +5345,19 @@ inline void reclaim_mesh_names(Engine& engine) {
 
 /**
  * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
- * parent `record` names, a transform node or a mesh, which is the pin's
+ * parent `record` names, a transform node, a mesh or a light, which is the pin's
  * `_removeChild` in the parent setter. The traversal `children` lists are
  * the pin's own arrays and keep their entries.
  */
-inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
+inline void unregister_from_parents(Engine& engine, MeshRecord& record, MeshHandle mesh) {
     if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
         std::erase(node->parented_meshes, mesh);
     }
+    // A light parent's lane is only its handle, so it is dropped here too.
+    if (LightRecord* light = handle_find(engine.lights, record.light_parent)) {
+        std::erase(light->parented_meshes, mesh);
+    }
+    record.light_parent = LightHandle{};
     if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
         std::erase(parent->parented_meshes, mesh);
         offer_retired_mesh_slot(engine, record.parent);
@@ -5888,6 +5978,18 @@ struct SceneState {
      * carries is only the per-scene watcher.
      */
     bool mirrored_meshes = false;
+    /**
+     * `enableRectAreaLights` installed this scene's lighting extension
+     * (`scene._lighting`): its PBR and Standard renderables compose the area
+     * arms, and its rectangular lights pass `_validateLighting`.
+     */
+    bool rect_area_lighting = false;
+    /**
+     * The textured emission snapshot `enableRectAreaLights` prepared, or
+     * null when no packed light carries a processed image (the scene's
+     * area lighting then stays solid).
+     */
+    std::shared_ptr<const AreaLightEmission> area_light_emission;
     Color4 clear_color{};
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
@@ -6673,6 +6775,58 @@ template <typename Values>
     return matrix;
 }
 
+/**
+ * The tables `enableRectAreaLights` loaded, for a backend's lazy per-device
+ * upload: a scene drawn with area lighting enabled it, so they are loaded.
+ */
+inline const AreaLightLtcTables& required_area_light_ltc(const Engine& engine) {
+    if (!engine.area_light_ltc)
+        throw std::runtime_error(
+            "A scene draws with rect-area lighting, but enableRectAreaLights loaded no LTC "
+            "tables.");
+    return *engine.area_light_ltc;
+}
+
+/**
+ * The pin's packed-light walk (`fillLightsData`, `writeMeshLightSelection`,
+ * the emission `snapshot`): the scene's lights in order, every native kind
+ * writing a lights-block entry, until `capacity` (MAX_LIGHTS) are packed.
+ * `visit` receives each packed light and its slot.
+ */
+template <typename Visit>
+inline void for_each_packed_light(const Scene& scene, const Engine& engine, std::size_t capacity,
+                                  Visit&& visit) {
+    std::size_t slot = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (slot >= capacity)
+            break;
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
+            continue;
+        visit(*light, slot);
+        ++slot;
+    }
+}
+
+/**
+ * A light's world moved: every mesh under it re-bakes, the push upstream's
+ * tagged host makes to its children. Lights under one of those meshes follow
+ * through `mark_mesh_dirty`.
+ */
+inline void mark_light_children_dirty(Engine& engine, const LightRecord& light) {
+    const std::vector<MeshHandle> children = light.parented_meshes;
+    for (const MeshHandle child : children)
+        mark_mesh_dirty(engine, child);
+}
+
+/** Every light registered under a node (`parented_lights`) follows it. */
+inline void mark_parented_lights_dirty(Engine& engine, const std::vector<LightHandle>& lights) {
+    for (const LightHandle light : lights) {
+        if (const LightRecord* record = handle_find(engine.lights, light))
+            mark_light_children_dirty(engine, *record);
+    }
+}
+
 /** Drops a provider parent: a node parent, or none, takes the field. */
 inline void clear_mesh_world_matrix_provider(MeshRecord& record) {
     record.provider_world = {};
@@ -6972,6 +7126,45 @@ LightHandle create_directional_light(Engine& engine, Vec3 direction, double inte
 LightHandle create_point_light(Engine& engine, Vec3 position, double intensity = 1.0);
 LightHandle create_spot_light(Engine& engine, Vec3 position, Vec3 direction, double angle,
                               float exponent, double intensity = 1.0);
+// src/light/rect-area-light.ts createRectAreaLight, with its validateSize
+// checks; width, height and intensity are validating accessors upstream.
+LightHandle create_rect_area_light(Engine& engine, Vec3 position, double width, double height,
+                                   double intensity);
+void set_rect_area_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_rect_area_light_width(Engine& engine, LightHandle light, double width);
+void set_rect_area_light_height(Engine& engine, LightHandle light, double height);
+void set_rect_area_light_intensity(Engine& engine, LightHandle light, double intensity);
+// The same accessors on the record, which the generic setLightIntensity
+// store reaches.
+void set_rect_area_light_width(LightRecord& light, double width);
+void set_rect_area_light_height(LightRecord& light, double height);
+void set_rect_area_light_intensity(LightRecord& light, double intensity);
+// src/light/enable-rect-area-lights.ts enableRectAreaLights: the scene's
+// half of the opt-in (generation registered the extensions and decoded the
+// LTC tables this loads).
+void enable_rect_area_lights(Scene& scene, const std::string& ltc1, const std::string& ltc2);
+// The scene half of enableRectAreaLights again, as every build's
+// `_lighting._prepare()` re-runs it.
+void refresh_rect_area_lighting(Scene& scene);
+// src/light/process-area-light-texture.ts processAreaLightTexture: the
+// packaged levels of the image generation processed.
+std::shared_ptr<const AreaLightImage> process_area_light_texture(Engine& engine,
+                                                                 const std::string& path);
+// A texture the processor did not produce, as `emissionTexture` accepts it.
+std::shared_ptr<const AreaLightImage> unprocessed_area_light_image();
+// rect-area-light.ts's `emissionTexture` accessor.
+void set_rect_area_light_emission(Engine& engine, LightHandle light,
+                                  std::shared_ptr<const AreaLightImage> image);
+// scene-core.ts buildScene's `light._validateLighting?.(scene._lighting)`,
+// dispatched by kind to each hooked kind's own validation.
+void validate_scene_lighting(const Scene& scene);
+void validate_rect_area_light_lighting(const Scene& scene, const LightRecord& light);
+// A light's SceneNode hierarchy (src/light/light-base.ts createLightBase):
+// its parent, a node under it, and its quaternion.
+// `light.parent = node`: a mesh, a transform node, an imported root, or none.
+void set_light_parent(Engine& engine, LightHandle light, SceneNodeHandle parent);
+void set_mesh_light_parent(Engine& engine, MeshHandle mesh, LightHandle light);
+void set_light_rotation_quaternion(Engine& engine, LightHandle light, Vec4 rotation);
 // Per-kind ObservableVec3 setters. Lighting and shadow fits read these fields;
 // light_world_matrix recomposes the current transform when consumed.
 void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
@@ -7404,7 +7597,6 @@ void set_asset_root_rotation_quaternion_component(Engine& engine, AssetHandle as
                                                   std::size_t component, double value);
 Vec3d asset_root_rotation(Engine& engine, AssetHandle asset);
 std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset);
-void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent);
 
 // A retained SceneNode may be a mesh, a transform node, or an imported root.
 MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& node);

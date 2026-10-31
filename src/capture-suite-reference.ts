@@ -155,7 +155,9 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
         relative === "HavokPhysics.wasm"
         ? "HavokPhysics.wasm"
         : relative.replace(
-              /^(?:.*\/)?(?:lab\/lite\/src\/demos|(?:lite\/)?bundle\/demos)\//,
+              // A page served from the lab root requests its demo modules
+              // beneath `lite/src/demos/`.
+              /^(?:.*\/)?(?:lite\/src\/demos|(?:lite\/)?bundle\/demos)\//,
               "",
           );
 }
@@ -171,7 +173,8 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
  */
 export function bundledDemoAssetPath(requestPath: string): string | undefined {
     const relative = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
-    const marker = "lab/lite/src/demos/";
+    // The lab's demo modules, beneath the repository or the lab root.
+    const marker = "lite/src/demos/";
     const markerIndex = relative.indexOf(marker);
     if (markerIndex < 0) return undefined;
     const prefix = relative.slice(0, markerIndex + marker.length);
@@ -197,7 +200,7 @@ export function flattenedBundledDemoAssetPath(
     root = resolve("."),
 ): string | undefined {
     const relativePath = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
-    const marker = "lab/lite/src/demos/";
+    const marker = "lite/src/demos/";
     const markerIndex = relativePath.indexOf(marker);
     if (markerIndex < 0) return undefined;
     const prefix = relativePath.slice(0, markerIndex + marker.length);
@@ -487,6 +490,27 @@ const seededRandomScript =
     " return ((t ^ (t >>> 14)) >>> 0) / 4294967296;" +
     " }; })();";
 
+/** Where a capture page records its engine canvases. */
+const engineCanvasRecordKey = "bblite.capture.engine-canvases";
+
+/**
+ * Records each engine canvas -- one given a WebGPU context, or handed to a
+ * worker engine -- from before any page script runs: the canvas-only
+ * screenshot keeps them alone (`screenshotScenePage`), and asking a canvas
+ * for a context afterwards would create one on a canvas that has none.
+ */
+const engineCanvasRecorderScript =
+    "(() => { const engines = new WeakSet();" +
+    ` Object.defineProperty(window, Symbol.for(${JSON.stringify(engineCanvasRecordKey)}), { value: engines });` +
+    " const getContext = HTMLCanvasElement.prototype.getContext;" +
+    " HTMLCanvasElement.prototype.getContext = function (type, ...rest) {" +
+    " const context = getContext.call(this, type, ...rest);" +
+    ' if (context && type === "webgpu") engines.add(this);' +
+    " return context; };" +
+    " const transfer = HTMLCanvasElement.prototype.transferControlToOffscreen;" +
+    " HTMLCanvasElement.prototype.transferControlToOffscreen = function () {" +
+    " engines.add(this); return transfer.call(this); }; })();";
+
 interface SuiteCaptureOptions {
     /** Preserve browser scrollbars, including their layout width. */
     showScrollbars?: boolean;
@@ -666,9 +690,12 @@ export function createSuiteSceneServer(
               .join("/")
               .replace(/\.ts$/, ".js")}`
         : "/scene.js";
-    const seedScript = options.seededRandom
-        ? `<script>${seededRandomScript}</script>\n`
-        : "";
+    // Plain scripts that run before every page script.
+    const startScripts =
+        `<script>${engineCanvasRecorderScript}</script>\n` +
+        (options.seededRandom
+            ? `<script>${seededRandomScript}</script>\n`
+            : "");
     const fixedFrameScript =
         options.fixedAnimationFrame === undefined ||
         options.independentEngines !== undefined
@@ -680,12 +707,12 @@ export function createSuiteSceneServer(
     let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
 </style></head><body><canvas id="${HOST_PRIMARY_CANVAS_ID}" width="${width}" height="${height}"></canvas>
-${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
+${startScripts}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
         html = hostPageWithEntry(original, entryPath).replace(
             "<head>",
-            `<head>${seedScript}${fixedFrameScript}`,
+            `<head>${startScripts}${fixedFrameScript}`,
         );
     }
     const capturedEngines = new Set<string>();
@@ -858,34 +885,40 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 return;
             }
         }
-        const bundledRelative = bundledDemoAssetPath(relative);
-        const bundledPath =
-            bundledRelative === undefined
-                ? undefined
-                : resolve(root, bundledRelative);
-        if (
-            bundledPath !== undefined &&
-            bundledPath.startsWith(`${root}${sep}`) &&
-            existsSync(bundledPath) &&
-            statSync(bundledPath).isFile()
-        ) {
-            response.writeHead(200, {
-                "Content-Type": mimeType(bundledPath),
-            });
-            response.end(readFileSync(bundledPath));
-            return;
-        }
-        const flattenedRelative = flattenedBundledDemoAssetPath(relative, root);
-        const flattenedPath =
-            flattenedRelative === undefined
-                ? undefined
-                : resolve(root, flattenedRelative);
-        if (flattenedPath !== undefined) {
-            response.writeHead(200, {
-                "Content-Type": mimeType(flattenedPath),
-            });
-            response.end(readFileSync(flattenedPath));
-            return;
+        // A demo module's bundle-relative asset, beneath the root serving it.
+        for (const servedRoot of servedRoots) {
+            const bundledRelative = bundledDemoAssetPath(relative);
+            const bundledPath =
+                bundledRelative === undefined
+                    ? undefined
+                    : resolve(servedRoot, bundledRelative);
+            if (
+                bundledPath !== undefined &&
+                bundledPath.startsWith(`${servedRoot}${sep}`) &&
+                existsSync(bundledPath) &&
+                statSync(bundledPath).isFile()
+            ) {
+                response.writeHead(200, {
+                    "Content-Type": mimeType(bundledPath),
+                });
+                response.end(readFileSync(bundledPath));
+                return;
+            }
+            const flattenedRelative = flattenedBundledDemoAssetPath(
+                relative,
+                servedRoot,
+            );
+            const flattenedPath =
+                flattenedRelative === undefined
+                    ? undefined
+                    : resolve(servedRoot, flattenedRelative);
+            if (flattenedPath !== undefined) {
+                response.writeHead(200, {
+                    "Content-Type": mimeType(flattenedPath),
+                });
+                response.end(readFileSync(flattenedPath));
+                return;
+            }
         }
         // Pinned lab/public assets back every scene source: corpus
         // scenes and project-owned gates share the demo asset roots.
@@ -1209,10 +1242,12 @@ export async function captureSuiteReference(
  * capture both take it, so they cannot disagree about what it contains.
  *
  * Canvas-only hides every element (hidden ancestors keep their layout) and
- * keeps the canvases visible without their focus outline, which is retained
- * UI rather than a canvas pixel; the rules outrank the page's own. A host
- * page or independent engines keep every canvas at its authored position
- * over black; otherwise the primary canvas is shot alone. A scene whose
+ * keeps the engine canvases visible without their focus outline, which is
+ * retained UI rather than a canvas pixel; the rules outrank the page's own.
+ * A host page or independent engines keep every engine canvas at its
+ * authored position over black, as the native canvas-only frame does; any
+ * other canvas is UI there. Otherwise the primary canvas is shot alone. A
+ * scene whose
  * frame depends on DOM the port does not reproduce (a control that must be
  * clicked first) is out of scope -- see docs/fidelity.md.
  */
@@ -1228,12 +1263,32 @@ export async function screenshotScenePage(
     const everyCanvas =
         options.hostPage !== undefined ||
         options.independentEngines !== undefined;
-    const kept = everyCanvas ? "canvas" : `#${HOST_PRIMARY_CANVAS_ID}`;
+    const primary = `#${HOST_PRIMARY_CANVAS_ID}`;
     await page.addStyleTag({
         content:
-            `body *{visibility:hidden!important}${kept}{visibility:visible!important;outline:none!important}` +
-            (everyCanvas ? "html,body{background:#000!important}" : ""),
+            "body *{visibility:hidden!important}canvas{outline:none!important}" +
+            (everyCanvas
+                ? "html,body{background:#000!important}"
+                : `${primary}{visibility:visible!important}`),
     });
-    if (everyCanvas) await page.screenshot({ path });
-    else await page.locator(kept).screenshot({ path });
+    if (everyCanvas) {
+        await page.evaluate((key) => {
+            const engines: unknown = Reflect.get(window, Symbol.for(key));
+            if (!(engines instanceof WeakSet)) {
+                throw new Error(
+                    "The capture page did not record its engine canvases.",
+                );
+            }
+            for (const canvas of document.querySelectorAll("canvas")) {
+                if (engines.has(canvas)) {
+                    canvas.style.setProperty(
+                        "visibility",
+                        "visible",
+                        "important",
+                    );
+                }
+            }
+        }, engineCanvasRecordKey);
+        await page.screenshot({ path });
+    } else await page.locator(primary).screenshot({ path });
 }

@@ -299,6 +299,8 @@ export class RendererLowerer {
             mirroredMeshes?: boolean;
             /** A mesh parent can be an IWorldMatrixProvider record. */
             worldMatrixProviders?: boolean;
+            /** A mesh parent can be a light (`light:hierarchy`). */
+            lightParents?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             /**
@@ -943,6 +945,8 @@ ${
             mirroredMeshes?: boolean;
             /** A mesh parent can be an IWorldMatrixProvider record. */
             worldMatrixProviders?: boolean;
+            /** A mesh parent can be a light (`light:hierarchy`). */
+            lightParents?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             publicCameraMatrices?: boolean;
@@ -1485,6 +1489,8 @@ PbrUniforms build_pbr_uniforms(
             mirroredMeshes?: boolean;
             /** A mesh parent can be an IWorldMatrixProvider record. */
             worldMatrixProviders?: boolean;
+            /** A mesh parent can be a light (`light:hierarchy`). */
+            lightParents?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             /** The scene composed a node-material geometry-output view. */
@@ -1531,6 +1537,7 @@ PbrUniforms build_pbr_uniforms(
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
+${options.lightParents ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}\
 ${options.gpuInstancing ? "#include <bblite/upstream/pinned_mesh_features.hpp>\n#if BBLITE_NODE_VARIANTS > 0\n#include <bblite/upstream/node_variants.hpp>\n#endif\n" : ""}\
 
 #include <algorithm>
@@ -2196,6 +2203,17 @@ std::array<float, 16> mesh_world_matrix(
         return matrix_product(
             mesh.provider_world_snapshot ? *mesh.provider_world_snapshot : mesh.provider_world(),
             local);
+    }${
+        options.lightParents
+            ? `
+    if (mesh.light_parent.value < engine.lights.size()) {
+        // A light is a tagged host: its child composes the light's world
+        // as it is now, and the light's own writes push the invalidation.
+        return matrix_product(
+            light_world_matrix(${recordAt("engine.lights", "mesh.light_parent")}),
+            local);
+    }`
+            : ""
     }
     const std::optional<std::array<float, 16>> root = mesh_root_world(mesh);
     return root ? matrix_product(*root, local) : local;

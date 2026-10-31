@@ -331,6 +331,29 @@ DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRe
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER)
+// The Dawn twin of SDL_GPU's `upload_2d_texture`: one sampled level,
+// TEXTURE_BINDING | COPY_DST, written from tight `row_bytes` rows.
+WGPUTexture upload_dawn_2d_texture(WGPUDevice device, WGPUQueue queue, const void* bytes,
+                                   std::size_t byte_size, std::uint32_t width, std::uint32_t height,
+                                   std::uint32_t row_bytes, WGPUTextureFormat format,
+                                   const char* label) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = {width, height, 1};
+    descriptor.format = format;
+    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    if (!texture)
+        dawn_error((std::string("wgpuDeviceCreateTexture ") + label).c_str());
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = row_bytes;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, 1};
+    DawnGpuDevice{queue}.write_texture(&destination, bytes, byte_size, &layout, &size);
+    return texture;
+}
+
 WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
                                 const EnvironmentState& environment) {
     std::vector<std::uint16_t> half_pixels;
@@ -356,22 +379,9 @@ WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
         width = static_cast<std::uint32_t>(lut_width);
         height = static_cast<std::uint32_t>(lut_height);
     }
-    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    descriptor.size = {width, height, 1};
-    descriptor.format = WGPUTextureFormat_RGBA16Float;
-    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
-    if (!texture)
-        dawn_error("wgpuDeviceCreateTexture brdf");
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = texture;
-    WGPUTexelCopyBufferLayout layout{};
-    layout.bytesPerRow = width * 8;
-    layout.rowsPerImage = height;
-    const WGPUExtent3D size{width, height, 1};
-    DawnGpuDevice{queue}.write_texture(&destination, half_pixels.data(),
-                                       half_pixels.size() * sizeof(std::uint16_t), &layout, &size);
-    return texture;
+    return upload_dawn_2d_texture(device, queue, half_pixels.data(),
+                                  half_pixels.size() * sizeof(std::uint16_t), width, height,
+                                  width * 8, WGPUTextureFormat_RGBA16Float, "brdf");
 }
 
 void upload_brdf(DawnState& state, const EnvironmentState& environment) {
@@ -382,6 +392,126 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
         wgpuTextureRelease(state.brdf_texture);
     state.brdf_texture = texture;
     state.brdf_view = create_dawn_texture_view(texture, nullptr);
+}
+#endif
+
+#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_RECT_AREA_LIGHTS
+void upload_area_light_ltc(DawnState& state, const AreaLightLtcTables& tables) {
+    // area-light-ltc.ts upload: one level, rgba16float, the raw half-float
+    // words in the pin's extent and row pitch.
+    const std::array<const std::vector<std::uint8_t>*, 2> sources{&tables.ltc1, &tables.ltc2};
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const std::vector<std::uint8_t>& table = *sources[index];
+        WGPUTexture texture = upload_dawn_2d_texture(
+            state.device, state.queue, table.data(), table.size(), tables.size, tables.size,
+            tables.row_bytes, WGPUTextureFormat_RGBA16Float, "rect-area LTC");
+        if (state.area_light_ltc_views[index])
+            wgpuTextureViewRelease(state.area_light_ltc_views[index]);
+        if (state.area_light_ltc[index])
+            wgpuTextureRelease(state.area_light_ltc[index]);
+        state.area_light_ltc[index] = texture;
+        state.area_light_ltc_views[index] = create_dawn_texture_view(texture, nullptr);
+    }
+}
+#endif
+
+#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_RECT_AREA_EMISSION
+namespace {
+// area-light-emission.ts prepareAreaLightEmission: an rgba8unorm 2D array of
+// the images' extent and level count, one layer per image, TEXTURE_BINDING |
+// COPY_DST, each level copied whole and viewed as "2d-array". The images
+// were processed at generation, so the copy is an upload of each one's
+// packaged levels, read here and dropped.
+std::unique_ptr<DawnAreaLightEmission>
+upload_area_light_emission(DawnState& state,
+                           const std::shared_ptr<const AreaLightEmission>& emission) {
+    const AreaLightImage& first = *emission->layers.front();
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = {first.size, first.size, gpu_u32(emission->layers.size())};
+    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+    descriptor.mipLevelCount = first.levels;
+    WGPUTexture texture = wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture)
+        dawn_error("wgpuDeviceCreateTexture rect-area emission");
+    for (std::size_t layer = 0; layer < emission->layers.size(); ++layer) {
+        const AreaLightImage& image = *emission->layers[layer];
+        const DecodedImage atlas = decode_image(read_binary_file(image.path));
+        for_each_area_light_image_level(
+            image, atlas, [&](std::uint32_t level, std::uint32_t extent, std::size_t offset) {
+                WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+                destination.texture = texture;
+                destination.mipLevel = level;
+                destination.origin = {0, 0, gpu_u32(layer)};
+                WGPUTexelCopyBufferLayout layout{};
+                layout.offset = offset;
+                layout.bytesPerRow = image.size * 4;
+                layout.rowsPerImage = extent;
+                const WGPUExtent3D size{extent, extent, 1};
+                DawnGpuDevice{state.queue}.write_texture(&destination, atlas.rgba.data(),
+                                                         atlas.rgba.size(), &layout, &size);
+            });
+    }
+    WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    view.dimension = WGPUTextureViewDimension_2DArray;
+    auto gpu = std::make_unique<DawnAreaLightEmission>();
+    gpu->source = emission;
+    gpu->id = ++state.area_light_emission_ids;
+    gpu->array = texture;
+    gpu->view = create_dawn_texture_view(texture, &view);
+    gpu->slots = create_buffer(state, WGPUBufferUsage_Uniform, emission->slots.data(),
+                               emission->slots.size() * sizeof(std::uint32_t));
+    return gpu;
+}
+
+const DawnAreaLightEmission* area_light_emission_for(const DawnState& state, const Scene& scene) {
+    for (const auto& gpu : state.area_light_emissions) {
+        if (gpu->source == scene.state->area_light_emission)
+            return gpu.get();
+    }
+    return nullptr;
+}
+} // namespace
+
+bool track_area_light_scene(const DawnState& state, DawnDrawResources& draw, const Scene& scene) {
+    const DawnAreaLightEmission* gpu = area_light_emission_for(state, scene);
+    const std::uint64_t id = gpu ? gpu->id : 0;
+    draw.area_light_emission = gpu;
+    return std::exchange(draw.area_light_emission_id, id) != id;
+}
+
+void bind_area_light_draw(DawnState& state, const DawnDrawResources& draw) {
+    state.area_light_emission = draw.area_light_emission;
+}
+
+const DawnAreaLightEmission& area_light_emission_binding(const DawnState& state) {
+    if (!state.area_light_emission)
+        dawn_error("a textured rect-area variant draws in a scene whose packed lights carry no "
+                   "processed image.");
+    return *state.area_light_emission;
+}
+#endif
+
+#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_RECT_AREA_LIGHTS
+void prepare_area_lighting(DawnState& state, const Scene& scene, const Engine& engine) {
+    if (!scene.state->rect_area_lighting)
+        return;
+    if (!state.area_light_ltc[0])
+        upload_area_light_ltc(state, required_area_light_ltc(engine));
+#if BBLITE_RECT_AREA_EMISSION
+    // A snapshot only this backend still holds belongs to no scene; a group
+    // built over it keeps its own references.
+    std::erase_if(state.area_light_emissions, [](const auto& gpu) {
+        if (gpu->source.use_count() > 1)
+            return false;
+        release_area_light_emission(*gpu);
+        return true;
+    });
+    if (scene.state->area_light_emission && !area_light_emission_for(state, scene)) {
+        state.area_light_emissions.push_back(
+            upload_area_light_emission(state, scene.state->area_light_emission));
+    }
+#endif
 }
 #endif
 

@@ -177,6 +177,16 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         field: "specular_power",
         value: "number",
     },
+    {
+        // StandardMaterialProps.roughness: no composition key, only the
+        // value rectAreaStdExt._writeUbo stores at material float 22.
+        kind: "material",
+        materialFamily: "standard",
+        property: "roughness",
+        collection: "materials",
+        field: "standard_roughness",
+        value: "number",
+    },
     ...(
         [
             ["lightmapLevel", "lightmap_level", "number"],
@@ -340,11 +350,8 @@ const commonLightProperties: Readonly<
     },
 };
 
-/** The colour pair every positional kind writes. */
-const positionalLightProperties: Readonly<
-    Record<string, DirectPropertyAssignment>
-> = {
-    ...commonLightProperties,
+/** The colour pair every positional kind and the rectangular kind write. */
+const lightColorPair: Readonly<Record<string, DirectPropertyAssignment>> = {
     diffuse: {
         collection: "lights",
         nativeProperty: "diffuse_color",
@@ -357,6 +364,13 @@ const positionalLightProperties: Readonly<
         valueKind: "color3",
         supportsCompound: false,
     },
+};
+
+const positionalLightProperties: Readonly<
+    Record<string, DirectPropertyAssignment>
+> = {
+    ...commonLightProperties,
+    ...lightColorPair,
 };
 
 /** `_writeLightUbo` packs it into the same lane for point and spot alike. */
@@ -419,6 +433,10 @@ const lightProperties: Readonly<
         range: lightRangeProperty,
         exponent: lightExponentProperty,
     },
+    // `rect-area-light.ts` installs `width`, `height` and `intensity` as
+    // validating accessors, so they lower through `lightScalars` below; the
+    // colour pair is a whole-tuple write here, as for the positional kinds.
+    rectArea: lightColorPair,
 };
 
 function directPropertyAssignment(
@@ -431,39 +449,18 @@ function directPropertyAssignment(
     return lightProperties[owner.lightKind][property];
 }
 
-/** Writable ObservableVec3 properties, with setters emitted beside each factory. */
-const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
-    hemispheric: ["position", "direction"],
-    point: ["position"],
-    directional: ["position", "direction"],
-    spot: ["position", "direction"],
-};
-
-/**
- * The light scalars whose write is more than one record store, and the
- * emitted entry point each takes.
- *
- * A spot's `angle` is the one such property in the pinned light family: the
- * factory installs it with `Object.defineProperty`, and its setter recomputes
- * the `_cosHalfAngle` the UBO writer actually packs. The record holds both
- * (`LightRecord::angle` beside `cos_half_angle`, because a spot shadow
- * projection reads the angle itself), so a write that stored one of them
- * would leave the pair disagreeing. `LightLowerer` emits the setter from the
- * pin's own `Math.cos(angle * 0.5)` for the same reason the factory does.
- */
-const lightScalars: Readonly<Record<LightKind, readonly string[]>> = {
-    hemispheric: [],
-    directional: [],
-    point: [],
-    spot: ["angle"],
-};
-
 /**
  * The emitted entry point for a light property write, if there is one:
  * `light.<vector>.set(...)` for the `vector` family and `light.<scalar> =
  * ...` for the `scalar` family. Both families spell the same
- * `set_<kind>_light_<property>` symbol; which properties each light kind
- * offers is the only difference between them.
+ * `set_<kind>_light_<property>` symbol, out of `lightKindFacts`.
+ *
+ * Every kind's `position`, and a directed kind's `direction`, is an
+ * ObservableVec3 with a setter emitted beside its factory. A scalar is one
+ * the factory installs as an accessor: a spot's `angle` recomputes the
+ * `_cosHalfAngle` the UBO writer packs (the record holds both, so a store of
+ * one would leave the pair disagreeing), and a rectangle's extent and
+ * intensity run the pin's `validateSize` before they store.
  */
 export function lightSetter(
     owner: Value,
@@ -473,9 +470,13 @@ export function lightSetter(
     if (owner.kind !== "light" || !owner.lightKind) {
         return undefined;
     }
-    const properties = family === "vector" ? lightVectors : lightScalars;
-    return properties[owner.lightKind].includes(property)
-        ? `set_${owner.lightKind}_light_${property}`
+    const facts = lightKindFacts[owner.lightKind];
+    const properties =
+        family === "vector"
+            ? ["position", ...(facts.direction ? ["direction"] : [])]
+            : facts.accessors;
+    return properties.includes(property)
+        ? `set_${facts.native}_light_${property}`
         : undefined;
 }
 
@@ -547,6 +548,7 @@ export interface AssignmentContext
             | "sceneManifest"
             | "engineLifecycle"
             | "hasRegisteredScene"
+            | "hasFeature"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
             | "bindings"
@@ -2529,6 +2531,7 @@ import {
     isTrsVectorName,
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
+import { lightKindFacts } from "./types.js";
 import type { Feature, LightKind, Value } from "./types.js";
 import {
     absenceOfNull,
@@ -3218,35 +3221,84 @@ function emitTargetPropertyAssignment(
             context.unwrap(expression.right).kind === ts.SyntaxKind.NullKeyword
                 ? undefined
                 : context.compileValue(expression.right);
+        // `createLightBase` gives every light the SceneNode world-matrix
+        // state, so `parent` composes the light's world under the node's
+        // exactly as it does for a mesh child; null is an invalid handle.
         if (parent) {
-            if (parent.kind !== "asset-root")
+            if (
+                parent.kind !== "mesh" &&
+                parent.kind !== "transform-node" &&
+                parent.kind !== "asset-root"
+            )
                 context.fail(
                     expression.right,
-                    "A light parent currently requires an imported transform root or null.",
+                    "A light parent requires a mesh, a transform node, an imported transform root or null.",
                 );
             context.expectSameEngine(target, parent, expression);
-            context.assetRegistry.assertAssetRootWritable(parent, expression);
+            if (parent.kind === "asset-root")
+                context.assetRegistry.assertAssetRootWritable(
+                    parent,
+                    expression,
+                );
         }
+        context.reachFeature("light:hierarchy", expression);
         context.emit({
             kind: "expression",
-            code: `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
+            code: `bbl::set_light_parent(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::SceneNodeHandle{${parent ? parent.cpp : "bbl::AssetHandle{}"}});`,
         });
         return true;
     }
 
+    if (
+        target.kind === "light" &&
+        target.lightKind === "rectArea" &&
+        property === "emissionTexture"
+    ) {
+        // rect-area-light.ts's `emissionTexture` accessor: store, and bump
+        // the light version on a change. Any Texture2D is accepted, as the
+        // pin's accessor accepts it; one processAreaLightTexture did not
+        // produce is marked unprocessed, which `enableRectAreaLights`'s
+        // guards refuse natively once a scene packs it.
+        requireSimpleAssignment(context, expression, "light emissionTexture");
+        const image =
+            context.unwrap(expression.right).kind === ts.SyntaxKind.NullKeyword
+                ? undefined
+                : context.compileValue(expression.right);
+        if (image) {
+            if (image.kind !== "area-light-image")
+                context.expectKind(image, "texture", expression.right);
+            context.expectSameEngine(target, image, expression);
+        }
+        const value = !image
+            ? "nullptr"
+            : image.kind === "area-light-image"
+              ? image.cpp
+              : `(static_cast<void>(${image.cpp}), bbl::unprocessed_area_light_image())`;
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_rect_area_light_emission(${context.requireEngine(target, expression)}, ${target.cpp}, ${value});`,
+        });
+        return true;
+    }
     const scalarSetter = lightSetter(target, property, "scalar");
     if (scalarSetter) {
-        requireSimpleAssignment(context, expression, `light ${property}`);
         // The pin recomputes the cone cosine from the JavaScript-number
         // angle and rounds only at its own UBO store, so the value stays
-        // double across this boundary exactly as it does at creation.
+        // double across this boundary exactly as it does at creation. A
+        // compound write reads the accessor's getter, which returns the
+        // stored double, then runs its setter.
+        const engine = context.requireEngine(target, expression);
         context.emit({
             kind: "expression",
             code:
-                `bbl::${scalarSetter}(` +
-                `${context.requireEngine(target, expression)}, ` +
-                `${target.cpp}, ` +
-                `${context.compileNumber(expression.right, "double")});`,
+                `bbl::${scalarSetter}(${engine}, ${target.cpp}, ` +
+                `${numericFieldValue(
+                    context,
+                    `${recordAt(`${engine}.lights`, target.cpp)}.${property}`,
+                    operator,
+                    expression.right,
+                    "double",
+                )});`,
         });
         return true;
     }
@@ -3455,6 +3507,16 @@ function emitNameAssignment(
             kind: "expression",
             code: `${recordAt(`${context.requireEngine(target, expression)}.${collection}`, target.cpp)}.name = ${name.cpp};`,
         });
+        return true;
+    }
+    if (target.kind === "light" && property === "name") {
+        // `createLightBase` gives every light the SceneNode `name` field. No
+        // compiled read names a light, so the value is evaluated and kept
+        // nowhere.
+        requireSimpleAssignment(context, expression, "light name");
+        const name = context.compileValue(expression.right);
+        context.expectKind(name, "string", expression.right);
+        context.emitDiscardedValue(name);
         return true;
     }
     return false;
@@ -4411,6 +4473,20 @@ function emitParentAssignment(
         const meshParent = mesh && parent.kind === "mesh";
         if (mesh && parent.kind === "data") {
             emitWorldMatrixProviderParent(context, state, parent);
+            return true;
+        }
+        if (mesh && parent.kind === "light") {
+            // A light is a tagged-host SceneNode upstream, and the light
+            // record composes its world live (`light_world_matrix`), so the
+            // child takes the light lane: its world reads the light's as it
+            // is now, and the light's writes push the invalidation.
+            context.expectSameEngine(target, parent, expression);
+            context.reachFeature("light:hierarchy", expression);
+            context.reachFeature("mesh:parenting", expression);
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_mesh_light_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent.cpp});`,
+            });
             return true;
         }
         if (!meshParent && !nullParent) {

@@ -8,8 +8,8 @@
  * external and head classic scripts, data scripts, inline event handlers, external style sheets,
  * foreign (SVG/MathML) markup and head content with an effect.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { deploymentAssetSource } from "./compiler/deployment.js";
 import type {
@@ -28,6 +28,7 @@ import {
     type HostPageElement,
     type HostPageNode,
 } from "./host-page-parser.js";
+import { retainsText } from "./compiler/ui-authored-markup.js";
 import {
     dynamicImportSpecifier,
     isRelativeSpecifier,
@@ -62,6 +63,42 @@ export function hostPageModulePath(
     root: string,
 ): string | undefined {
     return deploymentAssetSource(specifier, { publicDir: root });
+}
+
+/** An origin the page's root-relative URLs resolve beneath. */
+const pageOrigin = "http://page.invalid";
+
+/** The page's own URL beneath its site root. */
+function hostPageUrl(page: HostPageProgram): URL {
+    return new URL(
+        relative(hostPageRoot(page), resolve(page.path)).split(sep).join("/"),
+        `${pageOrigin}/`,
+    );
+}
+
+/**
+ * The file a URL in the page's document names, as a source
+ * `resolveBundledAsset` reads: the browser resolves the URL against the
+ * page; a file the site root serves is that file; a URL beneath the entry
+ * module's directory is the module's own asset, which native packaging
+ * serves at the public root (`moduleRelativeUrl`). Another origin's URL is
+ * returned as written.
+ */
+export function hostPageDocumentAsset(
+    page: HostPageProgram,
+    url: string,
+): string {
+    const resolved = new URL(url, hostPageUrl(page));
+    if (resolved.origin !== pageOrigin) return url;
+    const path = decodeURIComponent(resolved.pathname);
+    const served = resolve(hostPageRoot(page), `.${path}`);
+    if (existsSync(served) && statSync(served).isFile()) return served;
+    const moduleDirectory = page.entryUrl
+        ? new URL(".", new URL(page.entryUrl, pageOrigin)).pathname
+        : undefined;
+    return moduleDirectory && path.startsWith(moduleDirectory)
+        ? `/${path.slice(moduleDirectory.length)}`
+        : path;
 }
 
 const xhtml = "http://www.w3.org/1999/xhtml";
@@ -163,8 +200,10 @@ function pageEntry(
     script: HostPageElement,
     page: HostPageProgram & { lines: PageLines },
     fail: (message: string) => never,
-): { entry: string; loader?: PageLoaderModule } {
+): { entry: string; entryUrl: string; loader?: PageLoaderModule } {
     const root = hostPageRoot(page);
+    const urlOf = (specifier: string): string =>
+        new URL(specifier, hostPageUrl(page)).pathname;
     const modulePath = (specifier: string): string => {
         if (/[?#]/.test(specifier))
             fail(`module '${specifier}' carries a query or fragment.`);
@@ -185,7 +224,10 @@ function pageEntry(
     if (src !== undefined) {
         if (!isWhitespace(inline))
             fail("module script has both a src attribute and inline text.");
-        return { entry: page.entry ? resolve(page.entry) : modulePath(src) };
+        return {
+            entry: page.entry ? resolve(page.entry) : modulePath(src),
+            entryUrl: urlOf(src),
+        };
     }
     // Line numbers in the inline script follow the page's own lines.
     const fileName = `${resolve(page.path)}.inline-module.ts`;
@@ -221,13 +263,17 @@ function pageEntry(
             fail(
                 "inline module script runs statements after importing its entry; only a dynamic import() can precede them.",
             );
-        return { entry };
+        return { entry, entryUrl: urlOf(specifier) };
     }
     if (dynamic.length !== imports.length || dynamic.length > 1)
         fail(
             "inline module script must import its entry once, statically or dynamically.",
         );
-    return { entry, loader: { fileName, source, specifier } };
+    return {
+        entry,
+        entryUrl: urlOf(specifier),
+        loader: { fileName, source, specifier },
+    };
 }
 
 /**
@@ -337,10 +383,15 @@ export function hostPageFromDocument(
     };
     const hostNodes = (
         nodes: readonly HostPageNode[],
-        within: string,
+        parent: string,
     ): NativeHostUiNode[] =>
         nodes.flatMap((node): NativeHostUiNode[] => {
-            if (node.tag === undefined) return [node];
+            if (node.tag === undefined)
+                return retainsText(parent, node.text, (message) =>
+                    fail(`<${parent}> ${message}`),
+                )
+                    ? [node]
+                    : [];
             if (node.tag === "script") {
                 scripts.push(node);
                 const type = node.attributes?.type?.trim().toLowerCase();
@@ -406,13 +457,13 @@ export function hostPageFromDocument(
                     ? `is foreign (${node.namespace}) markup`
                     : unrepresentedElements.get(node.tag);
             if (reason) {
-                refuse(`<${node.tag}> in ${within}: ${reason}.`);
+                refuse(`<${node.tag}> in <${parent}>: ${reason}.`);
                 return [];
             }
             if (inlineHandlers(node)) return [];
             const element: NativeHostUiElement = { tag: node.tag };
             if (node.attributes) element.attributes = node.attributes;
-            const children = hostNodes(node.children ?? [], `<${node.tag}>`);
+            const children = hostNodes(node.children ?? [], node.tag);
             if (children.length > 0) element.children = children;
             return [element];
         });
@@ -420,7 +471,7 @@ export function hostPageFromDocument(
     inlineHandlers(body);
     // White space opening or closing the body (around its scripts, say)
     // collapses away at the edges of its block.
-    const elements = hostNodes(body.children ?? [], "<body>");
+    const elements = hostNodes(body.children ?? [], "body");
     const blank = (node: NativeHostUiNode | undefined): boolean =>
         node !== undefined && node.tag === undefined && isWhitespace(node.text);
     while (blank(elements[0])) elements.shift();
@@ -439,7 +490,11 @@ export function hostPageFromDocument(
         );
     const [script] = modules;
     if (!script) return fail("has no module script naming its entry.");
-    const { entry, loader } = pageEntry(script, { ...page, lines }, fail);
+    const { entry, entryUrl, loader } = pageEntry(
+        script,
+        { ...page, lines },
+        fail,
+    );
 
     const htmlAttributes = html.attributes ?? {};
     const bodyAttributes = body.attributes ?? {};
@@ -454,6 +509,7 @@ export function hostPageFromDocument(
         ...(page.root !== undefined ? { root: page.root } : {}),
         ...(title ? { title } : {}),
         entry,
+        entryUrl,
         ...(loader ? { loader } : {}),
         ...(startup.length ? { startup } : {}),
         ...(hasDocument

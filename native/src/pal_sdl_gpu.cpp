@@ -254,6 +254,21 @@ void release(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, state.environment);
     if (state.brdf_lut)
         SDL_ReleaseGPUTexture(state.device, state.brdf_lut);
+#if BBLITE_RECT_AREA_LIGHTS
+    for (SDL_GPUTexture*& table : state.area_light_ltc) {
+        if (table)
+            SDL_ReleaseGPUTexture(state.device, table);
+        table = nullptr;
+    }
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    for (const auto& gpu : state.area_light_emissions) {
+        SDL_ReleaseGPUTexture(state.device, gpu->array);
+        SDL_ReleaseGPUBuffer(state.device, gpu->slots);
+    }
+    state.area_light_emissions.clear();
+    state.area_light_emission = nullptr;
+#endif
     if (state.reflection_fallback) {
         SDL_ReleaseGPUTexture(state.device, state.reflection_fallback);
     }
@@ -1381,6 +1396,11 @@ public:
                 state.environment =
                     upload_environment(state.device, environment, 6, false, &state.environment_gpu);
                 state.brdf_lut = upload_brdf_lut(state.device, environment);
+#if BBLITE_RECT_AREA_LIGHTS
+                // The startup scene's area resources, read and uploaded
+                // here rather than on its first pass.
+                prepare_area_lighting(state, scene, engine);
+#endif
                 if (use_standard_material) {
                     state.reflection_fallback = upload_cube_texture(state.device, nullptr);
                     state.reflection_cubes.reserve(reflection_cubes.size());
@@ -2447,6 +2467,9 @@ public:
                             shadow_generator ? std::vector<std::uint8_t>{} :
 #endif
                                              pinned_lights_block(draw_context, engine);
+#if BBLITE_RECT_AREA_LIGHTS
+                        prepare_area_lighting(state, draw_context, engine);
+#endif
 #endif
                         SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
                         const auto draw_list = [&](const auto& list) {
@@ -3897,6 +3920,9 @@ public:
             upstream::SceneUniforms pass_scene_block =
                 write_pass_scene_block(pass_blocks.scene(scene), scene, engine, camera, matrix);
             std::vector<std::uint8_t> pass_lights_block = pinned_lights_block(scene, engine);
+#if BBLITE_RECT_AREA_LIGHTS
+            prepare_area_lighting(state, scene, engine);
+#endif
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
             // External renderables bind to this pass's target, update, and encode
@@ -4379,6 +4405,9 @@ public:
                 pass_scene_block = write_pass_scene_block(pass_blocks.scene(*overlay_scene),
                                                           *overlay_scene, engine, overlay_pass);
                 pass_lights_block = pinned_lights_block(*overlay_scene, engine);
+#if BBLITE_RECT_AREA_LIGHTS
+                prepare_area_lighting(state, *overlay_scene, engine);
+#endif
 #endif
                 color_info.load_op = SDL_GPU_LOADOP_LOAD;
                 depth_info.load_op = SDL_GPU_LOADOP_CLEAR;

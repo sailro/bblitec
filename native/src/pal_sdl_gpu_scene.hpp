@@ -858,6 +858,30 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUTexture* environment = nullptr;
     std::shared_ptr<ComputeTextureAllocation> environment_gpu;
     SDL_GPUTexture* brdf_lut = nullptr;
+#if BBLITE_RECT_AREA_LIGHTS
+    // area-light-ltc.ts's per-device allocation: the LTC1 and LTC2 tables,
+    // uploaded from Engine::area_light_ltc the first time an area-lit scene
+    // draws (`prepare_area_lighting`) and sampled through
+    // `background_sampler` (linear, clamp to edge).
+    std::array<SDL_GPUTexture*, 2> area_light_ltc{};
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    // area-light-emission.ts's scene allocation, one per emission snapshot a
+    // scene holds (`AreaLightEmission` identity): the array (one layer per
+    // processed image, every level copied), sampled through
+    // `background_sampler` (linear, linear mip, clamp to edge), and the slot
+    // words as the storage buffer a stage whose four uniform slots are spent
+    // reads them from. A snapshot no scene holds any more is released.
+    struct AreaLightEmissionGpu {
+        std::shared_ptr<const AreaLightEmission> source;
+        SDL_GPUTexture* array = nullptr;
+        SDL_GPUBuffer* slots = nullptr;
+    };
+    std::vector<std::unique_ptr<AreaLightEmissionGpu>> area_light_emissions;
+    // The allocation of the scene whose draws resolve now
+    // (`bind_area_light_scene`); null for a scene with no snapshot.
+    const AreaLightEmissionGpu* area_light_emission = nullptr;
+#endif
     SDL_GPUTexture* reflection_fallback = nullptr;
     std::vector<SDL_GPUTexture*> reflection_cubes;
     SDL_GPUTexture* color = nullptr;
@@ -1821,6 +1845,25 @@ SDL_GPUTexture* upload_cube_texture(SDL_GPUDevice* device,
 SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& texture_data);
 
 SDL_GPUTexture* upload_brdf_lut(SDL_GPUDevice* device, const EnvironmentState& environment);
+#if BBLITE_RECT_AREA_LIGHTS
+std::array<SDL_GPUTexture*, 2> upload_area_light_ltc(SDL_GPUDevice* device,
+                                                     const AreaLightLtcTables& tables);
+#endif
+#if BBLITE_RECT_AREA_LIGHTS
+/**
+ * A scene's area-lighting resources, beside its pass's lights block: the
+ * LTC tables on the device's first area-lit draw, and the allocation of the
+ * scene's emission snapshot, uploaded when the snapshot is new (an enable,
+ * a rebuild, a second area scene) and released once no scene holds it.
+ */
+void prepare_area_lighting(GpuState& state, const Scene& scene, const Engine& engine);
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+/** Points the draws that resolve next at `scene`'s emission allocation. */
+void bind_area_light_scene(GpuState& state, const Scene& scene);
+/** The emission allocation a textured area variant binds, which its scene holds. */
+const GpuState::AreaLightEmissionGpu& area_light_emission_binding(const GpuState& state);
+#endif
 
 SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment,
                                    std::uint32_t layers, bool cube_array,

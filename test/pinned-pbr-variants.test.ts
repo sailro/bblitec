@@ -44,6 +44,13 @@ test("registers every PBR extension the pin owns", async () => {
         // Registered last, where the first geometry view arms it; inert
         // without PBR2_GEOMETRY_OUTPUT.
         "pbr-geometry-params",
+        // The emission seam's textured ext: its `frag` returns null without
+        // the RECT_AREA_PBR_EMISSION bit only textured area arms carry.
+        "rect-area-emission",
+        // enableRectAreaLights' ext: its `frag` returns null without the
+        // RECT_AREA_PBR_SCENE scene bit only an area-enabled scene's arms
+        // carry.
+        "rect-area-light",
         "reflectance",
         "refraction",
         "sheen",

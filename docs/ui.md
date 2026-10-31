@@ -10,6 +10,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - TypeScript owns live controls; reviewed `ui/*.json` companions or an HTML page describe static chrome.
 - `bblitec page.html [--site-root <dir>]`: Chromium parses the page; markup, attributes and `<style>` sheets are the host,
   its one module script names the entry, `/` resolves beneath the site root (default: the page's directory).
+- Page URLs (markup, sheets, img `src` writes) resolve against the page; one beneath the entry module's directory is a
+  module asset, packaged at the public root.
+- A page `<select>` holds only its options: whitespace between them is dropped, other text refuses.
 - An inline module script must end with a statement `import()` of the entry. Inline classic body scripts admit
   expression statements and run at their parser position.
 - Refused, listed together: external/head classic scripts, classic globals, sheets after classic scripts, data scripts,
@@ -50,7 +53,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Area | Admitted | Refuses |
 | --- | --- | --- |
 | Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
-| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties, dataset, `new Image()`, img `src` selecting packaged images (literals or runtime strings with inferable candidates; load/error, natural size, `complete`), `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, img `src` without inferable candidates (incl. `data:`/object URLs), `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
+| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties (on a lookup of unknown tag, checked when written), dataset, `new Image()`, img `src` selecting packaged images (literals or runtime strings with inferable candidates; load/error, natural size, `complete`), `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, img `src` without inferable candidates (incl. `data:`/object URLs), `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events |
@@ -129,9 +132,9 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
 | Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur | Non-pixel shadow lengths, other backdrop functions (may degrade) |
 | Transforms/clipping | Uniform nonnegative scale; `clip-path` inset()/polygon() over px/%/calc() (aliased edges) | Nonuniform scale, nonempty clip rectangles, other basic shapes, `round`, reference boxes |
-| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way); inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
+| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way), positive `animation-duration` lists; inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
-| Other | `!important`, custom properties (`--bbl-` reserved), scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` (a `var()` one checked at run time) | Runtime-generated stylesheet text, list markers, translucent accents |
+| Other | `!important`, custom properties (`--bbl-` reserved), space-separated `rgb()`/`rgba()`, scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` (a `var()` one checked at run time) | Runtime-generated stylesheet text, list markers, translucent accents |
 
 In [deferred mode](features.md#deferred-capabilities), registered missing CSS properties and grid-track forms throw at
 the write; host-page sheets still need admission.

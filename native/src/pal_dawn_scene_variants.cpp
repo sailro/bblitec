@@ -105,6 +105,12 @@ WGPUBindGroupLayoutEntry variant_layout_entry(const upstream::PinnedVariantBindi
             : binding.kind == upstream::PinnedBindingKind::textureCubeArray
                 ? WGPUTextureViewDimension_CubeArray
                 : WGPUTextureViewDimension_2D;
+#if BBLITE_RECT_AREA_EMISSION
+        // The rect-area emission array: filterable float, one layer per
+        // processed image.
+        if (binding.kind == upstream::PinnedBindingKind::texture2dArray)
+            layout_entry.texture.viewDimension = WGPUTextureViewDimension_2DArray;
+#endif
         break;
     }
     return layout_entry;
@@ -260,6 +266,18 @@ void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const 
 }
 #endif
 
+#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_RECT_AREA_EMISSION
+namespace {
+// bindAreaLightEmission's slot block, whichever family binds it: the
+// uniform buffer of the scene's snapshot.
+void bind_area_light_emission_slots(const DawnState& state, WGPUBindGroupEntry& entry) {
+    const DawnAreaLightEmission& emission = area_light_emission_binding(state);
+    entry.buffer = emission.slots;
+    entry.size = emission.source->slots.size() * sizeof(std::uint32_t);
+}
+} // namespace
+#endif
+
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_PINNED_MATERIALS &&                     \
     BBLITE_PINNED_MATERIALS
 PinnedResource state_resource_for(const DawnState& state, upstream::MaterialTextureSource source) {
@@ -270,6 +288,20 @@ PinnedResource state_resource_for(const DawnState& state, upstream::MaterialText
         return PinnedResource{state.brdf_view, state.clamp_sampler};
     case upstream::MaterialTextureSource::scene_color:
         return PinnedResource{state.transmission_color_view, state.transmission_sampler};
+#if BBLITE_RECT_AREA_LIGHTS
+    // bindAreaLightLtc's pairs: the device's two LTC tables, each with the
+    // pin's linear clamp-to-edge sampler.
+    case upstream::MaterialTextureSource::rect_area_ltc1:
+        return PinnedResource{state.area_light_ltc_views[0], state.clamp_sampler};
+    case upstream::MaterialTextureSource::rect_area_ltc2:
+        return PinnedResource{state.area_light_ltc_views[1], state.clamp_sampler};
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    // bindAreaLightEmission's array, with the pin's linear clamp-to-edge,
+    // linear-mip sampler.
+    case upstream::MaterialTextureSource::rect_area_emission:
+        return PinnedResource{area_light_emission_binding(state).view, state.clamp_sampler};
+#endif
     default:
         return {};
     }
@@ -573,6 +605,15 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                 continue;
             }
 #endif
+#if BBLITE_RECT_AREA_EMISSION
+            // bindAreaLightEmission's slot block, from the scene snapshot
+            // rather than from this material.
+            if (binding.name == upstream::rect_area_emission_slots_block) {
+                bind_area_light_emission_slots(state, group_entry);
+                entries.push_back(group_entry);
+                continue;
+            }
+#endif
 #if BBLITE_VAT
             // The pin's 32-byte VAT settings: params then clock, written
             // on the mesh's own buffer by play/update.
@@ -642,7 +683,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
 
 DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std::uint32_t material,
                                            std::size_t variant, const MaterialRecord* record,
-                                           bool build_group) {
+                                           bool build_group, [[maybe_unused]] const Scene& scene) {
     DawnDrawState& draw_state = mesh.pinned_states.try_emplace(material, state).first->second;
     auto& allocations = draw_state.plugin_texture_allocations;
     std::size_t allocation_count = 0;
@@ -668,6 +709,10 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
         allocations.resize(allocation_count);
         allocations_changed = true;
     }
+#if BBLITE_RECT_AREA_EMISSION
+    // A new emission snapshot of the draw's scene stales the held group.
+    allocations_changed |= track_area_light_scene(state, draw_state, scene);
+#endif
     if (draw_state.group && draw_state.group_key == variant && !allocations_changed) {
         return draw_state;
     }
@@ -696,6 +741,9 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
         draw_state.material_upload.reset();
     }
     draw_state.group_key = variant;
+#if BBLITE_RECT_AREA_EMISSION
+    bind_area_light_draw(state, draw_state);
+#endif
     if (build_group)
         draw_state.group = build_pinned_draw_group(state, mesh, variant, draw_state.mesh_uniforms,
                                                    draw_state.material_uniforms, nullptr, record);
@@ -703,12 +751,27 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
 }
 
 DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
-                                               std::size_t variant, WGPUBuffer geometry_params) {
+                                               std::size_t variant, WGPUBuffer geometry_params,
+                                               [[maybe_unused]] const Scene& scene) {
     auto existing = mesh.pinned_geometry_states.find(variant);
     if (existing != mesh.pinned_geometry_states.end()) {
+#if BBLITE_RECT_AREA_EMISSION
+        // A new emission snapshot of the draw's scene stales the held group.
+        if (track_area_light_scene(state, existing->second, scene)) {
+            wgpuBindGroupRelease(existing->second.group);
+            bind_area_light_draw(state, existing->second);
+            existing->second.group =
+                build_pinned_draw_group(state, mesh, variant, existing->second.mesh_uniforms,
+                                        existing->second.material_uniforms, geometry_params);
+        }
+#endif
         return existing->second;
     }
     DawnDrawState draw_state{state};
+#if BBLITE_RECT_AREA_EMISSION
+    (void)track_area_light_scene(state, draw_state, scene);
+    bind_area_light_draw(state, draw_state);
+#endif
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -771,7 +834,7 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
             DawnDrawState& draw_state = ensure_pinned_geometry_bindings(
-                state, mesh, variant, geometry.pinned_geometry_params);
+                state, mesh, variant, geometry.pinned_geometry_params, scene);
             write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state);
         }
     }
@@ -787,6 +850,9 @@ void write_pinned_frame_blocks(DawnState& state, const Scene& scene, const Engin
     const std::vector<std::uint8_t> lights = pinned_lights_block(scene, engine);
     DawnGpuDevice{state.queue}.write_buffer(state.pinned_lights_uniforms, 0, lights.data(),
                                             lights.size());
+#if BBLITE_RECT_AREA_LIGHTS
+    prepare_area_lighting(state, scene, engine);
+#endif
 }
 
 InstanceStreams instance_streams_for([[maybe_unused]] const MeshRecord& record,
@@ -916,6 +982,11 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
             } else if (binding.name == "gp" && geometry_params) {
                 group_entry.buffer = geometry_params;
                 group_entry.size = sizeof(PinnedGeometryParams);
+#if BBLITE_RECT_AREA_EMISSION
+            } else if (binding.name == upstream::rect_area_emission_slots_block) {
+                // The scene's emission slot block, as the PBR family binds it.
+                bind_area_light_emission_slots(state, group_entry);
+#endif
             } else if (binding.name == "mat") {
                 // The material block, displaced past hand-managed
                 // binding 1 by the morph storage pair.
@@ -990,6 +1061,12 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
                 // allocates one level, so nothing samples past mip 0.
                 view = diffuse_render_view;
                 sampler = state.clamp_sampler;
+            } else if (const PinnedResource scene_owned = state_resource_for(state, row.source);
+                       scene_owned.view != nullptr) {
+                // A scene-owned row (the area LTC pairs and emission array),
+                // resolved the way the PBR family's are.
+                view = scene_owned.view;
+                sampler = scene_owned.sampler;
             } else {
                 // By source, not by name: the row names are the pin's own
                 // std bindings (dT/oT/rT...), the slot table's names are
@@ -1184,6 +1261,14 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
                                        colour_state, &geometry.velocity);
+#if BBLITE_RECT_AREA_EMISSION
+            // A new emission snapshot of the draw's scene stales the held group.
+            if (track_area_light_scene(state, draw_state, scene) && draw_state.group) {
+                wgpuBindGroupRelease(draw_state.group);
+                draw_state.group = nullptr;
+            }
+            bind_area_light_draw(state, draw_state);
+#endif
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,

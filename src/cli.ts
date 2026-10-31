@@ -63,6 +63,11 @@ import { parseDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
+    decodedAreaLightLtc,
+    packagedAreaLightImage,
+} from "./pinned-rect-area-lights.js";
+import { areaLightLtcSources } from "./lowering/rect-area-light-lowerer.js";
+import {
     buildStampHeader,
     buildStampHeaderPath,
     buildStampInputsPath,
@@ -429,6 +434,29 @@ async function materializeAsset(
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
         writeFileSync(destination, await generateIblBrdfLutRgba16f());
+        return;
+    }
+    // enableRectAreaLights' LTC tables: the pin fetches LTC_URL and runs
+    // decodeAreaLightLtc at enable; generation runs the same decode over the
+    // same pinned payload and packages the table the intrinsic registered.
+    const ltcTable = areaLightLtcSources.findIndex(
+        (source) => source === asset.source,
+    );
+    if (ltcTable >= 0) {
+        writeFileSync(destination, (await decodedAreaLightLtc())[ltcTable]!);
+        return;
+    }
+    // A processAreaLightTexture result: the pin's own load and processing,
+    // executed over the source's bytes, every level packaged.
+    const areaLightImage = asset.areaLightImage;
+    if (areaLightImage) {
+        writeFileSync(
+            destination,
+            await packagedAreaLightImage(
+                areaLightImage,
+                await assetBytes(areaLightImage.source, inputPath),
+            ),
+        );
         return;
     }
 
@@ -1197,6 +1225,52 @@ async function main(): Promise<void> {
         );
         result.manifest.assets.push(brdfAsset);
     }
+    if (result.manifest.features.includes("light:rect-area-lighting")) {
+        // The tables materializeAsset packaged for enableRectAreaLights.
+        result.manifest.adaptations.push({
+            id: "executed-area-light-ltc-decode",
+            category: "asset-materialization",
+            sourceSemantics:
+                "enableRectAreaLights fetches the Babylon LTC payload " +
+                "(area-light-ltc.ts LTC_URL) at run time, decodes it with " +
+                "decodeAreaLightLtc into two 64x64 rgba16float tables and " +
+                "uploads them once per device.",
+            nativeSemantics:
+                "Generation downloads the same pinned payload, runs the pin's " +
+                "own decodeAreaLightLtc and packages its two tables; " +
+                "enableRectAreaLights loads them and each backend uploads " +
+                "them once per device with a linear clamp sampler.",
+            risk: "low",
+            validation: [
+                "the packaged bytes are decodeAreaLightLtc's output",
+                "scenes 316, 317 and 318 against their browser references",
+            ],
+        });
+    }
+    if (result.manifest.features.includes("light:rect-area-emission")) {
+        // processAreaLightTexture's images, packaged by materializeAsset.
+        result.manifest.adaptations.push({
+            id: "executed-area-light-texture",
+            category: "asset-materialization",
+            sourceSemantics:
+                "processAreaLightTexture scales the loaded source into a " +
+                "1024x1024 rgba8unorm texture, reads it back, blurs it " +
+                "(blurAreaLightPixels), uploads it and generates its mips " +
+                "on the device at run time.",
+            nativeSemantics:
+                "Generation runs the pin's own loadTexture2D and " +
+                "processAreaLightTexture over the same source bytes and " +
+                "options in headless WebGPU (bakeAreaLightTexture) and " +
+                "packages every level; processAreaLightTexture loads them, " +
+                "and each backend copies every image of the scene snapshot " +
+                "into its emission array level for level.",
+            risk: "low",
+            validation: [
+                "the packaged levels are bakeAreaLightTexture's read-back of the pin's texture",
+                "scenes 319 and 320 against their browser references",
+            ],
+        });
+    }
     // Resolve reached variant slugs to full program records: predeclared
     // names come from the pinned registry (no defaults), scene-local
     // programs travel in the manifest.
@@ -1700,6 +1774,14 @@ async function main(): Promise<void> {
             ? {
                   pinnedStandardVariants: standardComposition.variants,
                   pinnedStandardSelectors: standardComposition.selectors,
+                  standardExtensionWriters:
+                      standardComposition.extensionWriters,
+                  ...(standardComposition.areaMaterialFeatures
+                      ? {
+                            standardAreaMaterialFeatures:
+                                standardComposition.areaMaterialFeatures,
+                        }
+                      : {}),
                   standardRenderableMeshFeatures:
                       standardRenderableMeshFeatures ?? [],
                   ...(standardRuntimeMeshFeatures !== undefined

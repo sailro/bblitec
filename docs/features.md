@@ -214,6 +214,14 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Clustered point/spot lights and containers can be stored in application records and arrays. Light scalar fields and
   retained position/diffuse/direction tuples are mutable; `markClusteredLightContainerDirty` publishes edits.
   Populate lights and scene meshes before attaching the container; capacity and point/spot layout stay fixed.
+- Rectangular area lights (`createRectAreaLight`, `enableRectAreaLights`) with solid emission light PBR and Standard
+  receivers; Standard `roughness` feeds the LTC lookup. An unprocessed `emissionTexture`, area shadows, Node lighting
+  in an area scene, and a layered PBR BRDF under a reaching area light refuse at run time with the pin's messages.
+- Textured area emission: `processAreaLightTexture` over a `loadTexture2D` texture with generation-known source and
+  options runs the pin's processing at generation. Each scene draws under its own area lighting (none, solid or
+  textured), and its emission snapshot follows image and light changes.
+- A light's `parent` may be a mesh, transform node or imported root, a mesh's `parent` may be a light, and
+  `light.rotationQuaternion.set` composes with its transform.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
   PBR field writes accept a material narrowed by `isPbrMaterial`; `baseColorTexture` replacement takes a loaded, solid
   or stored file texture before scene registration.

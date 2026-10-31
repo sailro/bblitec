@@ -244,6 +244,34 @@ static_assert(mesh_texture_slots == upstream::material_texture_mesh_slots,
  */
 struct DawnState;
 
+#if BBLITE_RECT_AREA_EMISSION
+/**
+ * area-light-emission.ts's scene allocation, one per emission snapshot a
+ * scene holds (`AreaLightEmission` identity): the array (one layer per
+ * processed image, every level copied) through a 2D-array view, sampled
+ * with `clamp_sampler` (linear, linear mip, clamp to edge), and the slot
+ * uniform buffer. `id` is never reused, so a draw state's held group can
+ * tell its allocation from a later one at the same address.
+ */
+struct DawnAreaLightEmission {
+    std::shared_ptr<const AreaLightEmission> source;
+    std::uint64_t id = 0;
+    WGPUTexture array = nullptr;
+    WGPUTextureView view = nullptr;
+    WGPUBuffer slots = nullptr;
+};
+
+/** Drops this backend's references; a bind group holding them keeps its own. */
+inline void release_area_light_emission(const DawnAreaLightEmission& gpu) {
+    if (gpu.view)
+        wgpuTextureViewRelease(gpu.view);
+    if (gpu.array)
+        wgpuTextureRelease(gpu.array);
+    if (gpu.slots)
+        wgpuBufferRelease(gpu.slots);
+}
+#endif
+
 struct DawnDrawResources {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
@@ -263,6 +291,12 @@ struct DawnDrawResources {
     std::vector<std::uint32_t> plugin_texture_allocations;
     std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
         material_upload;
+#if BBLITE_RECT_AREA_EMISSION
+    // The emission allocation of the draw's scene, which the held group
+    // binds (`track_area_light_scene`); id 0 for none.
+    const DawnAreaLightEmission* area_light_emission = nullptr;
+    std::uint64_t area_light_emission_id = 0;
+#endif
 };
 
 using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
@@ -970,6 +1004,21 @@ struct DawnState : DawnDevice {
     WGPUTextureView environment_cube_view = nullptr;
     WGPUTexture brdf_texture = nullptr;
     WGPUTextureView brdf_view = nullptr;
+#if BBLITE_RECT_AREA_LIGHTS
+    // area-light-ltc.ts's per-device allocation: the LTC1 and LTC2 tables,
+    // uploaded from Engine::area_light_ltc the first time an area-lit scene
+    // draws (`prepare_area_lighting`) and sampled through `clamp_sampler`
+    // (linear, clamp to edge).
+    std::array<WGPUTexture, 2> area_light_ltc{};
+    std::array<WGPUTextureView, 2> area_light_ltc_views{};
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    // One allocation per held snapshot; one no scene holds is released.
+    std::vector<std::unique_ptr<DawnAreaLightEmission>> area_light_emissions;
+    std::uint64_t area_light_emission_ids = 0;
+    // The allocation the group being built binds (`bind_area_light_draw`).
+    const DawnAreaLightEmission* area_light_emission = nullptr;
+#endif
     WGPUSampler default_sampler = nullptr;
     WGPUSampler clamp_sampler = nullptr;
     WGPUSampler ground_sampler = nullptr;
@@ -1862,6 +1911,18 @@ struct DawnState : DawnDevice {
             wgpuTextureViewRelease(brdf_view);
         if (brdf_texture)
             wgpuTextureRelease(brdf_texture);
+#if BBLITE_RECT_AREA_LIGHTS
+        for (WGPUTextureView view : area_light_ltc_views)
+            if (view)
+                wgpuTextureViewRelease(view);
+        for (WGPUTexture texture : area_light_ltc)
+            if (texture)
+                wgpuTextureRelease(texture);
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+        for (const auto& gpu : area_light_emissions)
+            release_area_light_emission(*gpu);
+#endif
         if (environment_cube_view) {
             wgpuTextureViewRelease(environment_cube_view);
         }
@@ -2128,10 +2189,39 @@ void upload_environment(DawnState& state, const EnvironmentState& environment);
 DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRecord* material);
 #endif
 
+// The Dawn twin of SDL_GPU's `upload_2d_texture`: one sampled level.
+WGPUTexture upload_dawn_2d_texture(WGPUDevice device, WGPUQueue queue, const void* bytes,
+                                   std::size_t byte_size, std::uint32_t width, std::uint32_t height,
+                                   std::uint32_t row_bytes, WGPUTextureFormat format,
+                                   const char* label);
 /** The environment's BRDF LUT texture (rgba16float, its decoded fallback without a LUT). */
 WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
                                 const EnvironmentState& environment);
 void upload_brdf(DawnState& state, const EnvironmentState& environment);
+#if BBLITE_RECT_AREA_LIGHTS
+/** area-light-ltc.ts upload: both LTC tables, once per device. */
+void upload_area_light_ltc(DawnState& state, const AreaLightLtcTables& tables);
+#endif
+#if BBLITE_RECT_AREA_LIGHTS
+/**
+ * A scene's area-lighting resources, beside its lights block: the LTC tables
+ * on the device's first area-lit draw, and the allocation of the scene's
+ * emission snapshot, uploaded when the snapshot is new (an enable, a
+ * rebuild, a second area scene) and released once no scene holds it.
+ */
+void prepare_area_lighting(DawnState& state, const Scene& scene, const Engine& engine);
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+/**
+ * Records on `draw` the emission allocation `scene` holds, returning whether
+ * it differs from the one its held group binds (the group is then stale).
+ */
+bool track_area_light_scene(const DawnState& state, DawnDrawResources& draw, const Scene& scene);
+/** Points the group about to build at `draw`'s emission allocation. */
+void bind_area_light_draw(DawnState& state, const DawnDrawResources& draw);
+/** The emission allocation a textured area variant binds, which its scene holds. */
+const DawnAreaLightEmission& area_light_emission_binding(const DawnState& state);
+#endif
 
 inline std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : 1u;
@@ -2430,7 +2520,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
  */
 DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std::uint32_t material,
                                            std::size_t variant, const MaterialRecord* record,
-                                           bool build_group);
+                                           bool build_group, const Scene& scene);
 
 /**
  * The per-draw buffers and group-1 bind group for one geometry-output MRT
@@ -2439,7 +2529,8 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
  * the same frame, so none can replace another.
  */
 DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
-                                               std::size_t variant, WGPUBuffer geometry_params);
+                                               std::size_t variant, WGPUBuffer geometry_params,
+                                               const Scene& scene);
 
 /**
  * The pin's two per-draw blocks for one resolved variant — the mesh block

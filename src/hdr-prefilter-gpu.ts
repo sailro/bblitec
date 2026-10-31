@@ -17,11 +17,14 @@ import {
     pinnedBrowserModuleUrl,
 } from "./capture-suite-reference.js";
 import {
+    decodePageBase64,
     pageBase64Script,
+    pagePayloadHeader,
+    pageTextureLevelsScript,
     runPageGlobal,
     webgpuComputeBrowserArgs,
 } from "./browser-harness.js";
-import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
+import { cachedBake, moduleIdentity } from "./bake-cache.js";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 
 interface HdrPrefilterSource {
@@ -33,9 +36,22 @@ interface HdrPrefilterSource {
 /** The served path the page fetches the parsed equirect floats from. */
 const equirectPath = "/hdr-equirect.f32";
 
-/** Each level's six faces as rgba16float texels, in face order. */
-interface CapturedCube {
-    levels: string[];
+/** One rgba16float texel. */
+const texelBytes = 8;
+
+/** The cached payload's header words: face size, level count; every level's
+ *  six faces follow, level-major, in face order. */
+const headerWords = 2;
+
+function faceBytes(faceSize: number, level: number): number {
+    return Math.max(1, faceSize >> level) ** 2 * texelBytes;
+}
+
+function cubeBytes(faceSize: number, levels: number): number {
+    let bytes = 0;
+    for (let level = 0; level < levels; level++)
+        bytes += faceBytes(faceSize, level) * 6;
+    return bytes;
 }
 
 function prefilterModule(faceSize: number, source: HdrPrefilterSource): string {
@@ -48,6 +64,7 @@ import {
 import { mipLevelCount } from ${JSON.stringify(pinnedBrowserModuleUrl("texture/mip-count.js"))};
 
 ${pageBase64Script}
+${pageTextureLevelsScript}
 window.__prefilterHdr = async () => {
     const engine = await createEngine(document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}));
     const device = engine._device;
@@ -63,49 +80,63 @@ window.__prefilterHdr = async () => {
     const srcCube = equirectToCubemapGPU(engine, hdr, faceSize);
     const mipCount = mipLevelCount(faceSize, faceSize);
     const cube = prefilterCubemapGPU(engine, srcCube, faceSize, mipCount);
-    const levels = [];
-    for (let mip = 0; mip < mipCount; mip++) {
-        const size = Math.max(1, faceSize >> mip);
-        const rowBytes = size * 8;
-        const rowPitch = Math.ceil(rowBytes / 256) * 256;
-        const readback = device.createBuffer({
-            size: rowPitch * size * 6,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        });
-        const encoder = device.createCommandEncoder();
-        encoder.copyTextureToBuffer(
-            { texture: cube, mipLevel: mip },
-            { buffer: readback, bytesPerRow: rowPitch, rowsPerImage: size },
-            { width: size, height: size, depthOrArrayLayers: 6 },
-        );
-        device.queue.submit([encoder.finish()]);
-        await readback.mapAsync(GPUMapMode.READ);
-        const mapped = new Uint8Array(readback.getMappedRange());
-        const packed = new Uint8Array(rowBytes * size * 6);
-        for (let row = 0; row < size * 6; row++) {
-            packed.set(mapped.subarray(row * rowPitch, row * rowPitch + rowBytes), row * rowBytes);
-        }
-        levels.push(bblBase64(packed));
-        readback.unmap();
-        readback.destroy();
+    if (cube.mipLevelCount !== mipCount) {
+        throw new Error("prefilterCubemapGPU made " + cube.mipLevelCount + " levels, not " + mipCount + ".");
     }
+    const { packed } = await bblReadTextureLevels(device, cube, ${texelBytes});
     cube.destroy();
-    return { levels };
+    return { levels: mipCount, cube: bblBase64(packed) };
 };
 `;
 }
 
-function decodeLevel(base64: string): Uint16Array[] {
-    const bytes = Buffer.from(base64, "base64");
-    const faceBytes = bytes.byteLength / 6;
-    const faces: Uint16Array[] = [];
-    for (let face = 0; face < 6; face += 1) {
-        const copy = Uint8Array.from(
-            bytes.subarray(face * faceBytes, (face + 1) * faceBytes),
+/** The page's result as the cached payload, the cube decoded straight into
+ *  it. */
+function cachePayload(faceSize: number, result: unknown): Uint8Array {
+    if (
+        typeof result !== "object" ||
+        result === null ||
+        !("levels" in result) ||
+        !("cube" in result) ||
+        typeof result.levels !== "number" ||
+        !Number.isSafeInteger(result.levels) ||
+        result.levels < 1 ||
+        typeof result.cube !== "string"
+    )
+        throw new Error("The pinned HDR prefilter returned no levels.");
+    return decodePageBase64(
+        result.cube,
+        [faceSize, result.levels],
+        cubeBytes(faceSize, result.levels),
+        `The pinned HDR prefilter's ${result.levels}-level ${faceSize} cube`,
+    );
+}
+
+/** A cached payload as faces: views into its one buffer. */
+function decodeCube(faceSize: number, payload: Uint8Array): Uint16Array[][] {
+    const [size = 0, levelCount = 0] =
+        pagePayloadHeader(payload, headerWords) ?? [];
+    if (
+        size !== faceSize ||
+        levelCount < 1 ||
+        levelCount > 32 ||
+        payload.byteLength !== headerWords * 4 + cubeBytes(faceSize, levelCount)
+    )
+        throw new Error(
+            `A prefiltered HDR payload does not hold a ${faceSize} cube.`,
         );
-        faces.push(new Uint16Array(copy.buffer));
+    const levels: Uint16Array[][] = [];
+    let offset = payload.byteOffset + headerWords * 4;
+    for (let level = 0; level < levelCount; level++) {
+        const faces: Uint16Array[] = [];
+        const bytes = faceBytes(faceSize, level);
+        for (let face = 0; face < 6; face++) {
+            faces.push(new Uint16Array(payload.buffer, offset, bytes / 2));
+            offset += bytes;
+        }
+        levels.push(faces);
     }
-    return faces;
+    return levels;
 }
 
 /**
@@ -124,10 +155,10 @@ export async function prefilterEquirectGgx(
         equirect.data.byteOffset,
         equirect.data.byteLength,
     );
-    const captured = await cachedJsonBake<CapturedCube>(
+    const payload = await cachedBake(
         {
             kind: "hdr-prefilter",
-            version: "2",
+            version: "3",
             module: moduleIdentity(import.meta.url),
             browser: true,
             parameters: {
@@ -138,26 +169,23 @@ export async function prefilterEquirectGgx(
             inputs: [sourceBytes],
         },
         async () =>
-            (await runPageGlobal(
-                createSuiteSceneServer(prefilterModule(faceSize, equirect), {
-                    virtualAssets: { [equirectPath]: sourceBytes },
-                }),
-                "__prefilterHdr",
-                {
-                    serverName: "HDR prefilter server",
-                    shared: true,
-                    browserRequirement:
-                        "Executing the pinned HDR GGX prefilter requires Chrome or Edge.",
-                    browserArgs: webgpuComputeBrowserArgs,
-                },
-            )) as CapturedCube,
+            cachePayload(
+                faceSize,
+                await runPageGlobal(
+                    createSuiteSceneServer(
+                        prefilterModule(faceSize, equirect),
+                        { virtualAssets: { [equirectPath]: sourceBytes } },
+                    ),
+                    "__prefilterHdr",
+                    {
+                        serverName: "HDR prefilter server",
+                        shared: true,
+                        browserRequirement:
+                            "Executing the pinned HDR GGX prefilter requires Chrome or Edge.",
+                        browserArgs: webgpuComputeBrowserArgs,
+                    },
+                ),
+            ),
     );
-    if (
-        !Array.isArray(captured.levels) ||
-        captured.levels.length === 0 ||
-        !captured.levels.every((level) => typeof level === "string")
-    ) {
-        throw new Error("The pinned HDR prefilter returned no levels.");
-    }
-    return captured.levels.map(decodeLevel);
+    return decodeCube(faceSize, payload);
 }

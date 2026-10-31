@@ -49,6 +49,9 @@ interface PinnedVariantSelector {
     lightMode: 0 | 1 | 2;
     singleLightType: string;
     toneMapping: boolean;
+    /** The scene's area lighting (`rectAreaLightingModes` index); absent in a
+     *  program that never enables area lighting. */
+    areaLighting?: number;
     /** The geometry-output task the MRT variant draws in; absent for the
      *  colour passes. */
     geometryTask?: number;
@@ -66,6 +69,11 @@ export interface PinnedVariantManifestEntry {
     pluginUniformFields?: readonly string[];
     pluginTextureBindings?: readonly string[];
     meshBindingLayout?: PinnedRenderableVariant["meshBindingLayout"];
+    /**
+     * The pin's refusal of these stages under a selected area light
+     * (`PinnedRenderableVariant.areaSelectedRefusal`).
+     */
+    areaSelectedRefusal?: string;
     /** The composed stages, for the emitter; omitted from `variants.json`. */
     vertexWgsl: string;
     fragmentWgsl: string;
@@ -115,6 +123,9 @@ export function writePinnedPbrVariants(
             lightMode: variant.lightMode,
             singleLightType: variant.singleLightType,
             toneMapping: variant.toneMapping,
+            ...(variant.areaLighting !== undefined
+                ? { areaLighting: variant.areaLighting }
+                : {}),
             ...(variant.geometryTask !== undefined
                 ? { geometryTask: variant.geometryTask }
                 : {}),
@@ -160,6 +171,9 @@ export function writePinnedPbrVariants(
                 : {}),
             ...(variant.meshBindingLayout
                 ? { meshBindingLayout: variant.meshBindingLayout }
+                : {}),
+            ...(variant.areaSelectedRefusal !== undefined
+                ? { areaSelectedRefusal: variant.areaSelectedRefusal }
                 : {}),
             vertexWgsl: variant.vertexWgsl,
             fragmentWgsl: variant.fragmentWgsl,

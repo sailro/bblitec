@@ -51,6 +51,27 @@ export function unrepresentedUiEasing(value: string): string | undefined {
 }
 
 /**
+ * Why a static `animation-duration` list is outside what the RmlUi duration
+ * longhand represents, or undefined: `auto` or positive times. A runtime
+ * substitution is left to the native parser.
+ */
+export function unrepresentedUiAnimationDuration(
+    value: string,
+): string | undefined {
+    if (/^auto$/i.test(value.trim())) return undefined;
+    for (const item of splitUiCssList(value)) {
+        if (/var\(|__bblite_ui_/i.test(item)) continue;
+        const time =
+            /^\s*\+?((?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(m?s)\s*$/i.exec(
+                item,
+            );
+        if (!time || !(Number(time[1]) > 0))
+            return "only auto or positive animation durations are represented";
+    }
+    return undefined;
+}
+
+/**
  * Why a static animation shorthand is outside what the RmlUi animation
  * parser represents, or undefined. Each keyword fills the first longhand it
  * is valid for that is still unset, else names the animation (CSS).

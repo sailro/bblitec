@@ -13,7 +13,7 @@
 // Row order is the manifest order (`manifest.generatedSources`, pinned by
 // the compiler tests) and, since the emitter loop follows the same table,
 // the emission order.
-import type { Feature } from "./compiler/types.js";
+import { lightKindFacts, lightKinds, type Feature } from "./compiler/types.js";
 import { shadowGeneratorFeatures } from "./shadow-capabilities.js";
 
 interface GeneratedSourceRule {
@@ -221,7 +221,27 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "light:directional",
             "light:spot",
             "light:point",
+            "light:rect-area",
         ],
+    },
+    {
+        // The rectangular factory and setters, and the scene's opt-in:
+        // either reaches the pin's rect-area-light.ts and
+        // enable-rect-area-lights.ts pair.
+        source: "upstream/src/light_rect_area.cpp",
+        features: ["light:rect-area", "light:rect-area-lighting"],
+    },
+    {
+        // buildScene's per-light `_validateLighting`, for the kinds whose
+        // factory installs it.
+        source: "upstream/src/light_validation.cpp",
+        features: lightKinds
+            .filter((kind) => lightKindFacts[kind].validatesLighting)
+            .map((kind) => lightKindFacts[kind].feature),
+    },
+    {
+        source: "upstream/src/light_hierarchy.cpp",
+        features: ["light:hierarchy"],
     },
     {
         source: "upstream/src/light_hemispheric.cpp",

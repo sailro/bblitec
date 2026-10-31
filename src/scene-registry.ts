@@ -3984,6 +3984,71 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene316",
+        name: "Scene 316 - Rect Area Lights PBR",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene316.ts",
+        title: "Babylon Lite Native - Rect Area Lights PBR",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 1.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene317",
+        name: "Scene 317 - Rect Area Lights Standard",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene317.ts",
+        title: "Babylon Lite Native - Rect Area Lights Standard",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 1.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene318",
+        name: "Scene 318 - Rect Area Light Transforms",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene318.ts",
+        title: "Babylon Lite Native - Rect Area Light Transforms",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 0.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene319",
+        name: "Scene 319 - Textured Rect Area Lights Standard",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene319.ts",
+        title: "Babylon Lite Native - Textured Rect Area Lights Standard",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 1.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene320",
+        name: "Scene 320 - Textured Rect Area Lights PBR",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene320.ts",
+        title: "Babylon Lite Native - Textured Rect Area Lights PBR",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 0.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene282",
         name: "Scene 282 - Standard UV Transform",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene282.ts",
@@ -4838,12 +4903,14 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Offscreen (Worker)",
-        nativeHostUi: "ui/offscreen-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/demo-offscreen.html",
+            root: "corpus/babylon-lite/lab",
+            entry: "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
+        },
         parity: {
             referenceFrame: 180,
             independentEngines: 2,
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-offscreen.html",
             // Full-page residual is the retained UI. Both canvas images differ
             // by at most one channel count from the unchanged upstream page.
             maxFullMad: 0.6,
@@ -4966,10 +5033,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Racer",
         nativeHostUi: "ui/racer-host.json",
         parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-racer.html",
             referenceFrame: 180,
-            // Measured 0.466 / 0.466 on both backends, all of it retained
-            // HUD text (the canvas-only lane below is 0.004), so the gate
-            // sits just above it.
+            // Measured 0.179 / 0.179 on both backends, all of it retained
+            // HUD text (the canvas-only lane below is 0.004).
             maxFullMad: 0.7,
             maxForegroundMad: 0.7,
             // Canvas-only lane: 0.004 / 0.004 on both backends
@@ -4989,10 +5056,12 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Antigravity Racer",
         nativeHostUi: "ui/antigravity-racer-host.json",
         parity: {
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-antigravity-racer.html",
             referenceFrame: 180,
-            // Measured 1.052 full / 1.070 foreground on both backends. The residual
-            // is retained text rasterization; the canvas-only lane below
-            // isolates the renderer.
+            // Measured 1.018 full / 1.035 foreground on both backends. The
+            // residual is retained text rasterization; the canvas-only lane
+            // below isolates the renderer.
             maxFullMad: 2.8,
             maxForegroundMad: 2.85,
             canvasThresholds: {
@@ -5012,6 +5081,8 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Littlest Tokyo",
         nativeHostUi: "ui/littlest-tokyo-host.json",
         parity: {
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-littlest-tokyo.html",
             referenceFrame: 180,
             maxFullMad: 0.2,
             maxForegroundMad: 0.2,
@@ -5028,6 +5099,8 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Bath Day",
         nativeHostUi: "ui/bath-day-host.json",
         parity: {
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-bath-day.html",
             referenceFrame: 180,
             maxFullMad: 0.2,
             maxForegroundMad: 0.2,
@@ -5060,12 +5133,16 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Ocean",
-        nativeHostUi: "ui/ocean-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/demo-ocean.html",
+            root: "corpus/babylon-lite/lab",
+            entry: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+        },
         parity: {
             neutralityPartition: {
                 width: 1280,
                 height: 720,
-                // Native 1280x720 layout of [data-timing] in ui/ocean-host.json.
+                // Native 1280x720 layout of the page's [data-timing] values.
                 // Labels, panel geometry, and the status prefix remain in the strict region.
                 regions: [
                     ...[
@@ -5092,7 +5169,6 @@ const sceneInputs: readonly SceneInput[] = [
                     },
                 ],
             },
-            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-ocean.html",
             referenceScrollbars: true,
             referenceSearch: "?seekTime=0.1",
             referenceFrame: 30,
@@ -5113,10 +5189,12 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - The Playroom",
-        nativeHostUi: "ui/playroom-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/demo-playroom.html",
+            root: "corpus/babylon-lite/lab",
+            entry: "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
+        },
         parity: {
-            referenceHostPage:
-                "corpus/babylon-lite/lab/lite/demo-playroom.html",
             referenceFrame: 180,
             // Not qualified: the canvas itself differs at the
             // reference frame (docs/status.md row). The gates sit just above
@@ -5183,12 +5261,16 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Screen-Space Effects",
-        nativeHostUi: "ui/screen-space-effects-host.json",
+        page: {
+            path: "corpus/babylon-lite/lab/lite/demo-screen-space-effects.html",
+            root: "corpus/babylon-lite/lab",
+            entry: "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
+        },
         parity: {
             // Both temporal effects accumulate 64 samples from a stable
             // view, so the convention's frame 180 is well past convergence
             // and the producer phase is the same on both sides. The
-            // canvas is byte-exact on both backends; the 0.361 / 0.440
+            // canvas is byte-exact on both backends; the 0.076 / 0.092
             // full-page residual is the three retained-UI toggle buttons
             // (glyph rasterization, docs/ui.md), where the two backends
             // agree to a thousandth, so one gate pair covers both.
@@ -5252,11 +5334,13 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Calculator",
         nativeHostUi: "ui/calculator-host.json",
         parity: {
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-calculator.html",
             // The graph's onStart cascade runs on the first before-render
             // tick and the demo's auto-rotate turns the camera a fixed
             // angle per frame, so the pose is a frame count from a fixed
-            // clock. The canvas is byte-close on both backends (canvas-only
-            // 0.000 / 0.002); the full-page residual is the retained chrome
+            // clock. The canvas is byte-exact on both backends (canvas-only
+            // pixel-perfect); the full-page residual is the retained chrome
             // (the same companion as Bath Day's over a longer credit):
             // the boxes match the golden to the pixel and the 11.52 px
             // credit text runs 8 px narrower, so it is glyph rasterization,

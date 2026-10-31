@@ -12,22 +12,18 @@
  * table from them. If the two built their inputs separately, a byte-identical
  * sweep would stop proving anything about what was emitted.
  */
+import type { LightKind } from "./compiler/types.js";
 import type { PinnedComposeOptions } from "./pinned-pbr-variants.js";
+import {
+    pinnedAreaPbrLighting,
+    rectAreaLightingModes,
+    type RectAreaLightingMode,
+} from "./pinned-rect-area-lights.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import {
     defaultToneMappingName,
     pinnedToneMapping,
 } from "./pinned-tone-mapping.js";
-
-/** The light kinds the pin ships a single-light module for. */
-export const pinnedSingleLightTypes = [
-    "hemispheric",
-    "directional",
-    "point",
-    "spot",
-] as const;
-
-export type PinnedSingleLightType = (typeof pinnedSingleLightTypes)[number];
 
 /** One reachable scene arm: what it is, and the composer input for it. */
 export interface PinnedSceneArm {
@@ -37,12 +33,33 @@ export interface PinnedSceneArm {
     /** The single-light kind for `lightMode` 1, empty otherwise. */
     singleLightType: string;
     toneMapping: boolean;
+    /**
+     * The scene's area lighting this arm composes under, as its
+     * `rectAreaLightingModes` index; absent in a program that never enables
+     * area lighting, whose keys carry no area lane.
+     */
+    areaLighting?: number;
+    /**
+     * An installed area lighting's scene bits with `RECT_AREA_PBR_SELECTED`
+     * added: what the arm's renderables compose under when an area light
+     * reaches them, which only the layered-BRDF refusal reads.
+     */
+    areaSelectedFeatures?: number;
     options: PinnedComposeOptions;
 }
 
 interface PinnedSceneArmRequest {
     /** Which single-light kinds to include an arm for. */
-    lightKinds: readonly PinnedSingleLightType[];
+    lightKinds: readonly LightKind[];
+    /**
+     * The area lightings a scene of the program can draw under
+     * (`reachedRectAreaLightings`). An installed one is
+     * `enableRectAreaLights(scene)`'s lighting extension: `pbr-renderable.ts`
+     * then takes the multi-light loop and the rectangular single-light
+     * source from `scene._lighting`, and ORs the extension's `_pbrFeatures`
+     * into every renderable's scene bits.
+     */
+    rectAreaLightings?: readonly RectAreaLightingMode[];
     /** Include the multi-light loop arm. */
     multiLight: boolean;
     /** Include the no-light arm. */
@@ -92,64 +109,104 @@ export async function pinnedSceneArms(
     const toneMapping = pinnedToneMapping(
         request.toneMappingName ?? defaultToneMappingName,
     );
-    const multi = {
-        multiLightWgsl:
-            multiLight.MULTI_LIGHT_STRUCTS() + multiLight.COMPUTE_PBR_LIGHT,
-        multiLightLoop: multiLight.getMultiLightLoop(),
-    };
     // The whole record, because the composer takes the whole record: a tone
     // mapping is a value upstream, and splitting it here is what let its
     // dependency key move without anything noticing.
     const tone = { toneMapping };
-    const singles = await Promise.all(
-        request.lightKinds.map(async (type) => {
-            const module = await importPinnedModule<{
-                SINGLE_LIGHT_STRUCTS: string;
-                getSingleLightBlock: () => string;
-            }>(`material/pbr/fragments/singlelight-${type}-wgsl.js`);
-            return {
-                type,
-                singleLightWgsl: module.SINGLE_LIGHT_STRUCTS,
-                singleLightBlock: module.getSingleLightBlock(),
-            };
-        }),
-    );
     const arms: PinnedSceneArm[] = [];
-    for (const toneMappingOn of request.toneMapping) {
-        const toneLabel = toneMappingOn ? " +tonemap" : "";
-        const sceneFeatures =
-            (request.environment ? bits.PBR_HAS_ENV : 0) |
-            (request.fog ? bits.PBR_HAS_FOG : 0) |
-            (toneMappingOn ? bits.PBR_HAS_TONEMAP : 0);
-        const toneOptions = toneMappingOn ? tone : {};
-        const push = (
-            label: string,
-            lightMode: 0 | 1 | 2,
-            singleLightType: string,
-            lightOptions: PinnedComposeOptions,
-        ) => {
-            arms.push({
-                label: `${label}${toneLabel}`,
-                lightMode,
-                singleLightType,
-                toneMapping: toneMappingOn,
-                options: {
-                    sceneFeatures,
+    for (const mode of request.rectAreaLightings ?? [undefined]) {
+        // `scene._lighting` when the scene enabled area lighting: its
+        // multi-light contribution replaces the module's, its single source
+        // answers the rectangular type, and its `_pbrFeatures` adds the
+        // scene bits.
+        const area =
+            mode === undefined || mode === "none"
+                ? undefined
+                : await pinnedAreaPbrLighting(mode);
+        const areaMulti = area?.multi();
+        const multi = areaMulti
+            ? {
+                  multiLightWgsl: areaMulti._helpers,
+                  multiLightLoop: areaMulti._loop,
+              }
+            : {
+                  multiLightWgsl:
+                      multiLight.MULTI_LIGHT_STRUCTS() +
+                      multiLight.COMPUTE_PBR_LIGHT,
+                  multiLightLoop: multiLight.getMultiLightLoop(),
+              };
+        // `scene._lighting?._single?.(type) ?? importSingleLightWgsl(type)`.
+        // A rectangular light in a scene that never enabled area lighting
+        // has no single source at all: its `_validateLighting` throws at
+        // registration (natively too) before any renderable composes, so it
+        // has no arm.
+        const singleKinds = request.lightKinds.filter(
+            (type) => type !== "rectArea" || area !== undefined,
+        );
+        const singles = await Promise.all(
+            singleKinds.map(async (type) => {
+                const module =
+                    area?.single(type) ??
+                    (await importPinnedModule<{
+                        SINGLE_LIGHT_STRUCTS: string;
+                        getSingleLightBlock: () => string;
+                    }>(`material/pbr/fragments/singlelight-${type}-wgsl.js`));
+                return {
+                    type,
+                    singleLightWgsl: module.SINGLE_LIGHT_STRUCTS,
+                    singleLightBlock: module.getSingleLightBlock(),
+                };
+            }),
+        );
+        const areaKey =
+            mode === undefined
+                ? {}
+                : { areaLighting: rectAreaLightingModes.indexOf(mode) };
+        const areaLabel = area ? ` +area ${mode}` : "";
+        for (const toneMappingOn of request.toneMapping) {
+            const toneLabel = toneMappingOn ? " +tonemap" : "";
+            const sceneFeatures =
+                (request.environment ? bits.PBR_HAS_ENV : 0) |
+                (request.fog ? bits.PBR_HAS_FOG : 0) |
+                (toneMappingOn ? bits.PBR_HAS_TONEMAP : 0) |
+                (area?.sceneFeatures ?? 0);
+            const toneOptions = toneMappingOn ? tone : {};
+            const push = (
+                label: string,
+                lightMode: 0 | 1 | 2,
+                singleLightType: string,
+                lightOptions: PinnedComposeOptions,
+            ) => {
+                arms.push({
+                    label: `${label}${areaLabel}${toneLabel}`,
                     lightMode,
-                    ...(singleLightType ? { singleLightType } : {}),
-                    ...lightOptions,
-                    ...toneOptions,
-                },
-            });
-        };
-        if (request.noLight) push("lights 0", 0, "", {});
-        for (const single of singles) {
-            push("light 1 " + single.type, 1, single.type, {
-                singleLightWgsl: single.singleLightWgsl,
-                singleLightBlock: single.singleLightBlock,
-            });
+                    singleLightType,
+                    toneMapping: toneMappingOn,
+                    ...areaKey,
+                    ...(area
+                        ? {
+                              areaSelectedFeatures:
+                                  sceneFeatures | area.selected,
+                          }
+                        : {}),
+                    options: {
+                        sceneFeatures,
+                        lightMode,
+                        ...(singleLightType ? { singleLightType } : {}),
+                        ...lightOptions,
+                        ...toneOptions,
+                    },
+                });
+            };
+            if (request.noLight) push("lights 0", 0, "", {});
+            for (const single of singles) {
+                push("light 1 " + single.type, 1, single.type, {
+                    singleLightWgsl: single.singleLightWgsl,
+                    singleLightBlock: single.singleLightBlock,
+                });
+            }
+            if (request.multiLight) push("lights 2", 2, "", multi);
         }
-        if (request.multiLight) push("lights 2", 2, "", multi);
     }
     return arms;
 }

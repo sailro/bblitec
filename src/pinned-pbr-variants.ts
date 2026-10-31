@@ -25,6 +25,10 @@ import {
 } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 import { pinnedClusteredLightExtensions } from "./pinned-clustered-lights.js";
+import {
+    pinnedRectAreaEmissionPbr,
+    pinnedRectAreaPbr,
+} from "./pinned-rect-area-lights.js";
 import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
 import { sharedPinnedContext } from "./lowering/context.js";
 
@@ -213,6 +217,16 @@ async function registerPbrExtensions(): Promise<void> {
         for (const ext of await pinnedClusteredLightExtensions()) {
             flags._registerPbrExt(ext);
         }
+        // `enableRectAreaLights` registers the area ext, and the emission
+        // seam its textured one after it. The solid `frag` returns null
+        // without the RECT_AREA_PBR_SCENE scene bit or with
+        // RECT_AREA_PBR_EMISSION, the textured one without the latter, and
+        // only an area-enabled scene's arms carry either
+        // (`pinned-scene-arms.ts`), so both are inert for every other scene.
+        flags._registerPbrExt((await pinnedRectAreaPbr()).rectAreaPbrExt);
+        flags._registerPbrExt(
+            (await pinnedRectAreaEmissionPbr()).rectAreaEmissionPbrExt,
+        );
     })();
     return registered;
 }

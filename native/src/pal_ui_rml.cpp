@@ -1640,6 +1640,18 @@ void ui_set_max_length(Engine& engine, UiElementHandle element, double value) {
     ui_set_attribute(engine, element, "maxlength", std::to_string(length));
 }
 
+void ui_set_declared_attribute(Engine& engine, UiElementHandle element,
+                               std::initializer_list<std::string_view> tags,
+                               std::string_view property, std::string name, std::string value) {
+    const std::string& tag = ui_element(engine, element).tag;
+    if (std::find(tags.begin(), tags.end(), tag) == tags.end())
+        throw js::make_dom_exception("'" + std::string(property) + "' on a <" + tag +
+                                         "> element is an expando property, which is not "
+                                         "represented natively.",
+                                     "NotSupportedError");
+    ui_set_attribute(engine, element, std::move(name), std::move(value));
+}
+
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
                       std::string value) {
     if (name.empty()) {
@@ -3474,11 +3486,12 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
 }
 
 /**
- * RmlUi's transition-delay and animation-delay replace the delays their shorthand lists, and a CSS
- * shorthand declaration resets its longhands: follow each transition/animation declaration of a
- * declaration list or sheet with its delay longhand's 'auto', which keeps the shorthand's delays.
+ * RmlUi's transition-delay, animation-delay and animation-duration replace the times their shorthand
+ * lists, and a CSS shorthand declaration resets its longhands: follow each transition/animation
+ * declaration of a declaration list or sheet with its time longhands' 'auto', which keeps the
+ * shorthand's times.
  */
-std::string rml_css_delay_resets(std::string_view source) {
+std::string rml_css_time_resets(std::string_view source) {
     std::string result;
     std::size_t copied = 0;
     for_each_css_declaration(
@@ -3488,17 +3501,21 @@ std::string rml_css_delay_resets(std::string_view source) {
             if (colon == std::string_view::npos)
                 return;
             const auto name = trim_css_token(declaration.substr(0, colon));
-            const std::string_view reset = ascii_iequals(name, "transition")  ? "transition-delay"
-                                           : ascii_iequals(name, "animation") ? "animation-delay"
-                                                                              : "";
-            if (reset.empty())
+            const bool transition = ascii_iequals(name, "transition");
+            if (!transition && !ascii_iequals(name, "animation"))
                 return;
             result.append(source.substr(copied, end - copied));
-            result += ';';
-            result += reset;
-            result += ":auto";
-            if (split_css_important(declaration.substr(colon + 1)).second)
-                result += " !important";
+            const bool important = split_css_important(declaration.substr(colon + 1)).second;
+            const auto reset = [&](std::string_view longhand) {
+                result += ';';
+                result += longhand;
+                result += ":auto";
+                if (important)
+                    result += " !important";
+            };
+            reset(transition ? "transition-delay" : "animation-delay");
+            if (!transition)
+                reset("animation-duration");
             copied = end;
         },
         true);
@@ -3620,6 +3637,74 @@ std::string rml_css_variable_colors(std::string value) {
     return value;
 }
 
+/**
+ * One CSS rgb()/rgba() argument in RmlUi's 0..255 range: a channel (a number, or a percentage of
+ * 255), or with `alpha` the opacity (a number, or a percentage of 1); empty when it is neither.
+ */
+std::optional<long> css_rgb_argument(std::string_view argument, bool alpha) {
+    argument = trim_css_token(argument);
+    const bool negative = !argument.empty() && argument.front() == '-';
+    std::size_t offset = !argument.empty() && (negative || argument.front() == '+') ? 1 : 0;
+    const auto number = pal::detail::css_decimal(argument, offset);
+    const bool percent = offset + 1 == argument.size() && argument[offset] == '%';
+    if (!number || (offset != argument.size() && !percent))
+        return std::nullopt;
+    const double signed_number = negative ? -*number : *number;
+    return std::lround(
+        alpha ? std::clamp(percent ? signed_number / 100 : signed_number, 0.0, 1.0) * 255
+              : std::clamp(percent ? signed_number * 255 / 100 : signed_number, 0.0, 255.0));
+}
+
+/**
+ * CSS Color 4's space-separated rgb()/rgba() (`rgb(21 22 38 / 88%)`) in the comma form RmlUi
+ * parses, channels and alpha in 0..255. A function it cannot read is left for RmlUi to refuse.
+ */
+std::string rml_css_space_colors(std::string value) {
+    constexpr std::string_view space = " \t\n\r\f";
+    for (std::size_t position = 0; (position = value.find("rgb", position)) != std::string::npos;) {
+        const bool alpha_name = value.compare(position, 5, "rgba(") == 0;
+        const std::size_t open = position + (alpha_name ? 5 : 4);
+        const std::size_t end = value.find(')', open);
+        if ((!alpha_name && value.compare(position, 4, "rgb(") != 0) ||
+            (position > 0 && css_identifier_character(value[position - 1])) ||
+            end == std::string::npos) {
+            position += 3;
+            continue;
+        }
+        const std::string_view body(value.data() + open, end - open);
+        const std::size_t slash = body.find('/');
+        const std::string_view channel_text = body.substr(0, slash);
+        std::vector<std::string_view> channels;
+        for (std::size_t start = channel_text.find_first_not_of(space);
+             start != std::string_view::npos;) {
+            const std::size_t stop =
+                std::min(channel_text.find_first_of(space, start), channel_text.size());
+            channels.push_back(channel_text.substr(start, stop - start));
+            start = channel_text.find_first_not_of(space, stop);
+        }
+        const std::optional<long> alpha = slash == std::string_view::npos
+                                              ? std::optional<long>{255}
+                                              : css_rgb_argument(body.substr(slash + 1), true);
+        bool readable =
+            body.find_first_of(",(") == std::string_view::npos && channels.size() == 3 && alpha;
+        std::string resolved = "rgba(";
+        for (const std::string_view channel : channels) {
+            const auto converted = readable ? css_rgb_argument(channel, false) : std::nullopt;
+            readable = converted.has_value();
+            if (readable)
+                resolved += std::to_string(*converted) + ",";
+        }
+        if (!readable) {
+            position = end + 1;
+            continue;
+        }
+        resolved += std::to_string(*alpha) + ")";
+        value.replace(position, end + 1 - position, resolved);
+        position += resolved.size();
+    }
+    return value;
+}
+
 /** Substituted rgb()/rgba() over var(): CSS channels and alpha to RmlUi's 0..255 channels. */
 std::string rml_css_resolve_variable_colors(std::string value) {
     constexpr std::string_view marker = "bbl-css-color(";
@@ -3640,19 +3725,10 @@ std::string rml_css_resolve_variable_colors(std::string value) {
             refuse();
         std::string resolved = arguments.size() == 4 ? "rgba(" : "rgb(";
         for (std::size_t index = 0; index < arguments.size(); ++index) {
-            const std::string_view argument = trim_css_token(arguments[index]);
-            const bool negative = !argument.empty() && argument.front() == '-';
-            std::size_t offset = !argument.empty() && (negative || argument.front() == '+') ? 1 : 0;
-            const auto number = pal::detail::css_decimal(argument, offset);
-            const bool percent = offset + 1 == argument.size() && argument[offset] == '%';
-            if (!number || (offset != argument.size() && !percent))
+            const auto channel = css_rgb_argument(arguments[index], index == 3);
+            if (!channel)
                 refuse();
-            const double signed_number = negative ? -*number : *number;
-            const double channel =
-                index == 3
-                    ? std::clamp(percent ? signed_number / 100 : signed_number, 0.0, 1.0) * 255
-                    : std::clamp(percent ? signed_number * 2.55 : signed_number, 0.0, 255.0);
-            resolved += std::to_string(std::lround(channel));
+            resolved += std::to_string(*channel);
             resolved += index + 1 == arguments.size() ? ")" : ",";
         }
         value.replace(position, end + 1 - position, resolved);
@@ -5578,7 +5654,7 @@ struct UiRmlRuntime {
             return value;
         if (property.empty())
             return project_css_outside_filters(
-                rml_css_delay_resets(value),
+                rml_css_time_resets(value),
                 [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
@@ -5594,7 +5670,7 @@ struct UiRmlRuntime {
         value = rml_css_length_math(std::move(value), viewport_width / density_ratio,
                                     viewport_height / density_ratio, root_font_size, property);
         value = rml_css_density_units(std::move(value));
-        return rml_css_color_alpha(rml_css_variable_colors(std::move(value)));
+        return rml_css_space_colors(rml_css_color_alpha(rml_css_variable_colors(std::move(value))));
     }
 
     /** Completes the math and colours the projection left over var() once it is substituted. */
@@ -5656,7 +5732,8 @@ struct UiRmlRuntime {
             name == "accent-color" || name == "color-scheme" || name == "text-decoration";
         // Motion values keep their case (keyframes names) and refuse rather than drop.
         const bool motion = name == "transition" || name == "animation" ||
-                            name == "transition-delay" || name == "animation-delay";
+                            name == "transition-delay" || name == "animation-delay" ||
+                            name == "animation-duration";
         const bool accepted = element.SetInlineProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
@@ -8107,13 +8184,21 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
             }
         }
     }
+    // The browser's ring around a focused canvas yields to any author outline,
+    // `outline: none` included; sync_outlines draws a non-none one.
+    const auto author_outline = [&runtime](UiElementHandle canvas) {
+        return canvas.value < runtime.projected_elements.size() &&
+               !runtime.projected_elements[canvas.value].outline.empty();
+    };
     if (runtime.engine.canvas_focused) {
-        append_canvas_focus_outline(runtime.render_interface.frame);
+        const auto& surface = runtime.engine.surface_canvas;
+        if (!surface || !author_outline(*surface))
+            append_canvas_focus_outline(runtime.render_interface.frame);
     } else if (runtime.engine.ui_focus_visible) {
         const auto focused = runtime.engine.ui_focused_element;
         if (focused.value < runtime.engine.ui_elements.size() &&
             runtime.engine.ui_elements[focused.value].tag == "canvas" &&
-            focused.value < runtime.projected_elements.size()) {
+            focused.value < runtime.projected_elements.size() && !author_outline(focused)) {
             auto* element = runtime.projected_elements[focused.value].element;
             if (element) {
                 const auto offset = element->GetAbsoluteOffset(Rml::BoxArea::Content);

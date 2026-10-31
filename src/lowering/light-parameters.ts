@@ -7,6 +7,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { sameSource } from "../compiler/syntax.js";
+import { lightKindFacts, type LightKind } from "../compiler/types.js";
 
 export function lightVersionBumpBody(
     context: LoweringContext,
@@ -50,8 +51,22 @@ export function lightVersionBumpBody(
     });
 }
 
-/** Public setters retain their source validation and no-change branches. */
-export function lightParameterHeader(context: LoweringContext): string {
+/**
+ * Public setters retain their source validation and no-change branches.
+ * `reachedKinds` decides which kinds' accessors the generic `light.intensity`
+ * store dispatches to: a kind whose factory installs an `intensity` accessor
+ * (`LightKindFacts.accessors`) runs that setter, as the pin's store does.
+ */
+export function lightParameterHeader(
+    context: LoweringContext,
+    reachedKinds: readonly LightKind[] = [],
+    /** `light:hierarchy`: a position write pushes the light's world change
+     *  down to the meshes under it. */
+    childMeshes = false,
+): string {
+    const intensityAccessors = reachedKinds
+        .map((kind) => lightKindFacts[kind])
+        .filter((facts) => facts.accessors.includes("intensity"));
     const module = "src/light/light-base.ts";
     const bumpBody = lightVersionBumpBody(context, "light.parameter_version");
     const observableModule = "src/math/observable-vec3.ts";
@@ -68,7 +83,13 @@ export function lightParameterHeader(context: LoweringContext): string {
                     ]),
                 ]),
                 calls: new Map([
-                    ["this._onDirty", () => "bump_light_version(record)"],
+                    [
+                        "this._onDirty",
+                        () =>
+                            childMeshes && vector === "position"
+                                ? "(bump_light_version(record), mark_light_children_dirty(engine, record))"
+                                : "bump_light_version(record)",
+                    ],
                 ]),
             };
             const cases = ["x", "y", "z"]
@@ -153,14 +174,26 @@ export function lightParameterHeader(context: LoweringContext): string {
                         ts.SyntaxKind.EqualsToken
                 ) {
                     const target = node.expression.left;
+                    const value = lowerer.expression(node.expression.right);
+                    const store = `${lowerer.expression(node.expression.left)}=${value};`;
+                    if (
+                        sameSource(target, "light.intensity") &&
+                        intensityAccessors.length > 0
+                    )
+                        return [
+                            `${indent}${intensityAccessors
+                                .map(
+                                    (facts) =>
+                                        `if (light.kind == LightKind::${facts.native}) set_${facts.native}_light_intensity(light, ${value});`,
+                                )
+                                .join(" else ")} else ${store}`,
+                        ];
                     if (
                         sameSource(target, "light.intensity") ||
                         (ts.isElementAccessExpression(target) &&
                             sameSource(target.expression, "light.diffuse"))
                     )
-                        return [
-                            `${indent}${lowerer.expression(node.expression.left)}=${lowerer.expression(node.expression.right)};`,
-                        ];
+                        return [`${indent}${store}`];
                 }
                 return undefined;
             },

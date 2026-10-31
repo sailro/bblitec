@@ -70,6 +70,21 @@ export function createsFormControls(markup: string): boolean {
 }
 
 /**
+ * Whether a text node under `parent` is retained: a select holds only its
+ * options, so whitespace between them is dropped and other text refuses.
+ */
+export function retainsText(
+    parent: string | undefined,
+    text: string,
+    fail: (message: string) => never,
+): boolean {
+    if (parent !== "select") return true;
+    if (text.trim().length > 0)
+        fail("has text inside <select>; it holds only options.");
+    return false;
+}
+
+/**
  * The element and text tree the browser parses `markup` into. Comments,
  * other tags, unreviewed attributes and file inputs refuse. Whitespace
  * between options is not retained: a select holds only its options.
@@ -89,11 +104,9 @@ export function parseAuthoredMarkup(
                     "with form controls has comments, which retained elements do not hold.",
                 );
             if (node.tag === undefined) {
-                if (parent === "select" && node.text.trim().length > 0)
-                    fail("has text inside <select>; it holds only options.");
                 if (parent === "textarea")
                     fail("textarea content is not represented; set its value.");
-                if (parent !== "select")
+                if (retainsText(parent, node.text, fail))
                     result.push({ kind: "text", text: node.text });
                 continue;
             }

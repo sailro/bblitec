@@ -13,21 +13,48 @@ const texture2DModule = "src/texture/texture-2d.ts";
  * starts using that has no row here fails generation naming it, rather than
  * silently picking a neighbour.
  */
-export const addressModeByPin: Readonly<Record<string, string>> = {
+const addressModes = {
     "clamp-to-edge": "TextureAddressMode::clamp",
     "mirror-repeat": "TextureAddressMode::mirror",
     repeat: "TextureAddressMode::repeat",
-};
+} as const satisfies Readonly<Record<GPUAddressMode, string>>;
+export const addressModeByPin: Readonly<Record<string, string>> = addressModes;
 
 /**
  * The pin's filter names, as the runtime enumerators. Same rule as the
  * address modes: a filter the pin starts using that has no row here fails
  * generation naming it.
  */
-export const textureFilterByPin: Readonly<Record<string, string>> = {
+const textureFilters = {
     nearest: "TextureFilter::nearest",
     linear: "TextureFilter::linear",
-};
+} as const satisfies Readonly<Record<GPUFilterMode, string>>;
+export const textureFilterByPin: Readonly<Record<string, string>> =
+    textureFilters;
+
+function tableKey<Table extends object>(
+    table: Table,
+    key: string,
+): key is Extract<keyof Table, string> {
+    return Object.hasOwn(table, key);
+}
+
+/** An address mode the pin spells and the runtime has a row for. */
+export type PinnedAddressMode = keyof typeof addressModes;
+/** A filter the pin spells and the runtime has a row for. */
+export type PinnedTextureFilter = keyof typeof textureFilters;
+
+/** A spelling {@link addressModeByPin} holds, typed as the pin's own mode. */
+export function pinnedAddressMode(key: string): PinnedAddressMode | undefined {
+    return tableKey(addressModes, key) ? key : undefined;
+}
+
+/** A spelling {@link textureFilterByPin} holds, typed as the pin's own filter. */
+export function pinnedTextureFilter(
+    key: string,
+): PinnedTextureFilter | undefined {
+    return tableKey(textureFilters, key) ? key : undefined;
+}
 
 const spelledInBbl = (
     table: Readonly<Record<string, string>>,

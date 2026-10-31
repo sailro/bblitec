@@ -7,10 +7,14 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#if BBLITE_RECT_AREA_EMISSION
+#include <bblite/pal_image.hpp>
+#endif
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include <bblite/upstream/pinned_texture.hpp>
 
@@ -60,6 +64,37 @@ inline void for_each_dds_skybox_level(const EnvironmentState& environment, const
         }
     }
 }
+
+#if BBLITE_RECT_AREA_EMISSION
+/**
+ * The packaged processAreaLightTexture chain both backends upload
+ * (`packagedAreaLightImage`): one decoded image `image.size` texels wide,
+ * each level at the left of its own band of rows, level zero first, so a
+ * level's rows are `image.size` texels apart. `visit` receives one
+ * (level, extent, byte offset of the level's first texel) cell and performs
+ * the backend's own upload; the bounds check is decided here, once.
+ */
+template <typename Visit>
+inline void for_each_area_light_image_level(const AreaLightImage& image, const DecodedImage& atlas,
+                                            const Visit& visit) {
+    std::size_t rows = 0;
+    for (std::uint32_t level = 0; level < image.levels; ++level)
+        rows += std::max(image.size >> level, 1u);
+    if (atlas.width < 0 || static_cast<std::size_t>(atlas.width) != image.size ||
+        atlas.height < 0 || static_cast<std::size_t>(atlas.height) != rows) {
+        throw std::runtime_error("Packaged area light image '" + image.path + "' is not the " +
+                                 std::to_string(image.size) + "x" + std::to_string(rows) +
+                                 " band layout of its " + std::to_string(image.levels) +
+                                 " levels.");
+    }
+    std::size_t row = 0;
+    for (std::uint32_t level = 0; level < image.levels; ++level) {
+        const std::uint32_t extent = std::max(image.size >> level, 1u);
+        visit(level, extent, row * image.size * 4u);
+        row += extent;
+    }
+}
+#endif
 
 inline std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height) {
     return static_cast<std::uint32_t>(upstream::mip_level_count(width, height));

@@ -43,6 +43,7 @@ test(
             `#define BBLITE_SHADOWS_ESM 1
 #define BBLITE_STANDARD_SKELETON 0
 #define BBLITE_STANDARD_VERTEX_ALPHA 0
+#define BBLITE_RECT_AREA_LIGHTS 0
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {
@@ -68,7 +69,7 @@ std::size_t pbr_runtime_mesh_features = base, standard_runtime_mesh_features = b
 constexpr unsigned standard_no_color_output_flag = 1, standard_alpha_blend_flag = 2, standard_esm_shadow_output_flag = 4;
 unsigned standard_material_features(const MaterialRecord&) { return 0; }
 bool light_affects_mesh(const LightRecord&, MeshHandle) { return false; }
-std::string_view pinned_single_light_type(const LightRecord&) { return {}; }
+std::string_view pinned_light_type(LightKind) { return {}; }
 unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }
 namespace bbl::pal {

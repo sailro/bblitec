@@ -44,7 +44,7 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
 - Compare native and WebGPU captures from the same device, canvas size, query and pose. Never use Windows goldens for
   Linux, macOS or Android. Keep device/build identity and both images.
 - Canvas-only lane: `BBLITE_CAPTURE_UI=0`; run parity with `--recapture-reference` on that host first; browser images
-  go to `artifacts/parity-canvas/`. Canvas-only capture excludes UI filters.
+  go to `artifacts/parity-canvas/`. Canvas-only capture keeps engine canvases only and excludes UI filters.
 - Android: `tools/android-smoke.mjs --canvas-only`; capture the browser on the target device and verify client size and
   DPR (Chrome's toolbar shrinks the viewport; use CDP device-metrics emulation). Emulator black screenshots need explicit
   GPU readback. Debug intents accept `nativeResolution=true` to bypass the pixel-ratio cap.

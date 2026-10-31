@@ -261,6 +261,11 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 304 | <img src="images/scenes/scene304.png" alt="Scene 304 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Calculator KHR_interactivity |
 | 305 | <img src="images/scenes/scene305.png" alt="Scene 305 rendering" width="160"> | pixel‑perfect | pixel‑perfect | NPE Teleport Graph Plumbing |
 | 306 | <img src="images/scenes/scene306.png" alt="Scene 306 rendering" width="160"> | pixel‑perfect | pixel‑perfect | External Video Texture |
+| 316 | <img src="images/scenes/scene316.png" alt="Scene 316 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Rect Area Lights PBR |
+| 317 | <img src="images/scenes/scene317.png" alt="Scene 317 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Rect Area Lights Standard; LTC roughness |
+| 318 | <img src="images/scenes/scene318.png" alt="Scene 318 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Rect Area Light Transforms; parented, rotated, back-facing and mixed lights |
+| 319 | <img src="images/scenes/scene319.png" alt="Scene 319 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Textured Rect Area Lights Standard; processed emission image |
+| 320 | <img src="images/scenes/scene320.png" alt="Scene 320 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Textured Rect Area Lights PBR; three processed emission images |
 
 ## Upstream application gates
 
@@ -268,16 +273,16 @@ Unchanged pinned applications.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.167/0.163 | 0.168/0.163 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | 0.309/0.424 | 0.309/0.424 | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
+| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.172/0.168 | 0.169/0.165 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.432}} / \color{#9a6700}{\textsf{0.590}}$ | $\color{#1a7f37}{\textsf{0.432}} / \color{#9a6700}{\textsf{0.590}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.123/0.125 | 0.123/0.125 | Thin-instance game; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.024/0.023 | 0.024/0.023 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | pixel‑perfect | pixel‑perfect | Frame graph; offscreen effects; bloom. |
 | Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.659}} / \color{#9a6700}{\textsf{0.659}}$ | $\color{#9a6700}{\textsf{0.659}} / \color{#9a6700}{\textsf{0.659}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Voronoi fracture; PBR; physics. |
-| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | 0.175/0.175 | 0.175/0.175 | Driving game; CSM; physics; audio; retained HUD. UI residual; canvas-only MAD: 0.004/0.004 on both backends. |
-| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{1.052}} / \color{#cf222e}{\textsf{1.070}}$ | $\color{#cf222e}{\textsf{1.052}} / \color{#cf222e}{\textsf{1.070}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
+| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | 0.179/0.179 | 0.179/0.179 | Driving game; CSM; physics; audio; retained HUD. UI residual; canvas-only MAD: 0.004/0.004 on both backends. |
+| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{1.018}} / \color{#cf222e}{\textsf{1.035}}$ | $\color{#cf222e}{\textsf{1.018}} / \color{#cf222e}{\textsf{1.035}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.015/0.012 | 0.015/0.012 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.003/0.004 | 0.003/0.004 | Skinned Draco/WebP glTF; transmission; retained chrome. |
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.098/0.095 | 0.098/0.095 | Strategy map; sprites; picking; retained cursor/tooltips. |
@@ -285,7 +290,7 @@ Unchanged pinned applications.
 | Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.058/0.061 | 0.058/0.061 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#9a6700}{\textsf{0.680}} / \color{#9a6700}{\textsf{0.680}}$ | $\color{#9a6700}{\textsf{0.680}} / \color{#9a6700}{\textsf{0.680}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | pixel‑perfect | pixel‑perfect | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
-| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.139/0.169 | 0.139/0.169 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
+| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.076/0.092 | 0.076/0.092 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
 | Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.303/0.300 | 0.297/0.293 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual, with the live frame-rate and first-frame values; canvas-only MAD: 0.000/0.000 on both backends. |

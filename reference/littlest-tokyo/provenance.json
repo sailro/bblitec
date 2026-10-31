@@ -3,15 +3,17 @@
   "scene": "littlest-tokyo",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.31.1",
-    "sourceVersion": "7d66215c1c897734a3c2f25bdd15d0e7062ed8f4"
+    "version": "1.37.2",
+    "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4"
   },
   "reference": {
     "source": "reference/littlest-tokyo/babylon-lite-golden.png",
     "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
-  "capturedAt": "2026-09-26T07:08:44.464Z",
+  "hostPage": "corpus/babylon-lite/lab/lite/demo-littlest-tokyo.html",
+  "hostPageSha256": "05c5b26fbbec9ba136228468bc9951fe189115cd1b33c0c3d56a90fa92e59175",
+  "capturedAt": "2026-10-31T08:40:36.820Z",
   "pose": {
     "search": "",
     "width": 1280,
@@ -19,12 +21,12 @@
     "dpr": 1,
     "referenceFrame": 180
   },
-  "hostUi": {
-    "source": "ui/littlest-tokyo-host.json",
-    "sha256": "3a30511cb87b108e78660bb6d9a84bbea7e4c256f76bbcbad95ecb86938a0f97"
-  },
   "moduleSha256": "c944b23f609cb5d9df45f3b9bbfef718837739ea4582872d28059892aa56d2db",
   "sourceFiles": [
+    {
+      "path": "corpus/babylon-lite/lab/lite/demo-littlest-tokyo.html",
+      "sha256": "05c5b26fbbec9ba136228468bc9951fe189115cd1b33c0c3d56a90fa92e59175"
+    },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
       "sha256": "77c8407c2b121e8c46765dd13e2e6b410028bdc0446c7458872d41241e1e7519"
