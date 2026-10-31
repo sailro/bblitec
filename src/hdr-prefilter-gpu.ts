@@ -22,6 +22,7 @@ import {
     webgpuComputeBrowserArgs,
 } from "./browser-harness.js";
 import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 
 interface HdrPrefilterSource {
     width: number;
@@ -48,7 +49,7 @@ import { mipLevelCount } from ${JSON.stringify(pinnedBrowserModuleUrl("texture/m
 
 ${pageBase64Script}
 window.__prefilterHdr = async () => {
-    const engine = await createEngine(document.getElementById("renderCanvas"));
+    const engine = await createEngine(document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}));
     const device = engine._device;
     const response = await fetch(${JSON.stringify(equirectPath)});
     const hdr = {

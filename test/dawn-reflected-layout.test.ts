@@ -45,9 +45,18 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
             "inline std::vector<std::string_view> sidecar_words(",
         ),
     ].join("\n");
+    // The binding model's sample-type names, from the Dawn format tables.
+    const sampleType = cppFunction(
+        readFileSync("native/src/pal_dawn_formats.hpp", "utf8"),
+        "inline std::optional<WGPUTextureSampleType> dawn_texture_sample_type(",
+    );
     writeFileSync(
         join(output, "reflected-layout.hpp"),
-        [sidecarHelpers, source.slice(start, end + last.length)].join("\n"),
+        [
+            sidecarHelpers,
+            sampleType,
+            source.slice(start, end + last.length),
+        ].join("\n"),
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [

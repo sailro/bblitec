@@ -10,6 +10,7 @@
 
 #include <bblite/runtime.hpp>
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -136,12 +137,46 @@ inline WGPUAddressMode dawn_address_mode(TextureAddressMode mode) {
                                                 : WGPUAddressMode_Repeat;
 }
 
+/**
+ * The WebGPU names of the formats Dawn creates sampled and storage textures
+ * in by name (compute textures, text atlases).
+ */
+inline WGPUTextureFormat dawn_named_texture_format(std::string_view value) {
+    static constexpr std::pair<std::string_view, WGPUTextureFormat> formats[] = {
+        {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
+        {"rgba8snorm", WGPUTextureFormat_RGBA8Snorm},
+        {"rgba16float", WGPUTextureFormat_RGBA16Float},
+        {"r32float", WGPUTextureFormat_R32Float},
+        {"rg32float", WGPUTextureFormat_RG32Float},
+        {"rg32uint", WGPUTextureFormat_RG32Uint},
+        {"rgba32float", WGPUTextureFormat_RGBA32Float}};
+    for (const auto& [name, format] : formats)
+        if (name == value)
+            return format;
+    throw std::runtime_error("Unrepresented Dawn texture format: " + std::string(value));
+}
+
+/** A WebGPU `GPUTextureSampleType` name in Dawn's enum; empty for any other name. */
+inline std::optional<WGPUTextureSampleType> dawn_texture_sample_type(std::string_view value) {
+    static constexpr std::pair<std::string_view, WGPUTextureSampleType> types[] = {
+        {"float", WGPUTextureSampleType_Float},
+        {"unfilterable-float", WGPUTextureSampleType_UnfilterableFloat},
+        {"depth", WGPUTextureSampleType_Depth},
+        {"sint", WGPUTextureSampleType_Sint},
+        {"uint", WGPUTextureSampleType_Uint}};
+    for (const auto& [name, type] : types)
+        if (name == value)
+            return type;
+    return std::nullopt;
+}
+
 /** The WebGPU names of the formats Dawn render targets use (WebGPU subset, text). */
 inline constexpr std::pair<std::string_view, WGPUTextureFormat> dawn_webgpu_formats[] = {
     {"rgba8unorm", WGPUTextureFormat_RGBA8Unorm},
     {"rgba8unorm-srgb", WGPUTextureFormat_RGBA8UnormSrgb},
     {"bgra8unorm", WGPUTextureFormat_BGRA8Unorm},
     {"bgra8unorm-srgb", WGPUTextureFormat_BGRA8UnormSrgb},
+    {"r16float", WGPUTextureFormat_R16Float},
     {"rgba16float", WGPUTextureFormat_RGBA16Float},
     {"depth16unorm", WGPUTextureFormat_Depth16Unorm},
     {"depth24plus", WGPUTextureFormat_Depth24Plus},

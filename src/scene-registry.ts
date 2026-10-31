@@ -4990,7 +4990,7 @@ const sceneInputs: readonly SceneInput[] = [
         nativeHostUi: "ui/antigravity-racer-host.json",
         parity: {
             referenceFrame: 180,
-            // Measured 2.393 full / 2.437 foreground on both backends. The residual
+            // Measured 1.052 full / 1.070 foreground on both backends. The residual
             // is retained text rasterization; the canvas-only lane below
             // isolates the renderer.
             maxFullMad: 2.8,

@@ -4,6 +4,10 @@ import { isPinnedType } from "./data-types.js";
 import { cameraRecordField } from "./properties.js";
 import type { Value } from "./types.js";
 import { recordAt } from "./record-access.js";
+import {
+    cameraScalarWrite,
+    cameraVectorComponentWrite,
+} from "./camera-setters.js";
 
 interface CameraWriteContext extends Pick<
     LoweringServices,
@@ -113,13 +117,13 @@ export function cameraNumberWrite(
               property: vector.field,
               current: `${record}.${vector.field}.${left.name.text}`,
               write: (value) =>
-                  `bbl::write_camera_vector_component(${record}, &bbl::CameraRecord::${vector.field}, &bbl::Vec3d::${left.name.text}, ${value});`,
+                  `${cameraVectorComponentWrite(record, vector.field, left.name.text, value, true)};`,
           }
         : {
               camera,
               property: left.name.text,
               current: `${record}.${field!}`,
               write: (value) =>
-                  `bbl::write_camera_scalar(${record}, &bbl::CameraRecord::${field!}, ${value});`,
+                  `${cameraScalarWrite(record, field!, value, true)};`,
           };
 }

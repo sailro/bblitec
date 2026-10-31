@@ -444,7 +444,8 @@ struct HttpBodyState;
 class BodyStreamController {
 public:
     BodyStreamController() = default;
-    explicit BodyStreamController(std::shared_ptr<HttpBodyState> state) : state_(std::move(state)) {}
+    explicit BodyStreamController(std::shared_ptr<HttpBodyState> state)
+        : state_(std::move(state)) {}
     /** `controller.enqueue(chunk)`: a TypeError once closing or no longer readable. */
     void enqueue(js::U8Array chunk) const;
     /** `controller.close()`: a TypeError once closing or no longer readable. */
@@ -656,17 +657,18 @@ inline void call_pull_if_needed(const std::shared_ptr<HttpBodyState>& state) {
     } catch (...) {
         pulled = js::Promise<js::PromiseVoid>::rejected(std::current_exception());
     }
-    pulled.observe(js::make_closure(std::tuple{state},
-                                    [](auto& captured, const js::PromiseVoid&) {
-                                        const auto& current = std::get<0>(captured);
-                                        const auto& settled = current->pull;
-                                        settled->pulling = false;
-                                        if (std::exchange(settled->pull_again, false))
-                                            call_pull_if_needed(current);
-                                    }),
-                   js::make_closure(std::tuple{state}, [](auto& captured, std::exception_ptr reason) {
-                       error(*std::get<0>(captured), reason);
-                   }));
+    pulled.observe(
+        js::make_closure(std::tuple{state},
+                         [](auto& captured, const js::PromiseVoid&) {
+                             const auto& current = std::get<0>(captured);
+                             const auto& settled = current->pull;
+                             settled->pulling = false;
+                             if (std::exchange(settled->pull_again, false))
+                                 call_pull_if_needed(current);
+                         }),
+        js::make_closure(std::tuple{state}, [](auto& captured, std::exception_ptr reason) {
+            error(*std::get<0>(captured), reason);
+        }));
 }
 
 /**
@@ -975,9 +977,9 @@ inline void BodyStreamController::error(js::Error reason) const {
  * `new ReadableStream({ pull, cancel })` over byte chunks: the program's source, started on
  * the next microtask as its absent start algorithm settles.
  */
-[[nodiscard]] inline BodyStream make_pull_stream(
-    js::Callback<js::Promise<js::PromiseVoid>(BodyStreamController)> pull,
-    js::Callback<js::Promise<js::PromiseVoid>(js::Nullable<js::Error>)> cancel) {
+[[nodiscard]] inline BodyStream
+make_pull_stream(js::Callback<js::Promise<js::PromiseVoid>(BodyStreamController)> pull,
+                 js::Callback<js::Promise<js::PromiseVoid>(js::Nullable<js::Error>)> cancel) {
     auto state = js::make_gc_shared<HttpBodyState>();
     state->pull = js::make_gc_shared<BodyPullSource>();
     state->pull->pull = std::move(pull);

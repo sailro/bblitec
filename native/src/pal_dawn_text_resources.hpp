@@ -5,6 +5,7 @@
 
 #include <webgpu/webgpu.h>
 #include "pal_text_resources.hpp"
+#include "pal_dawn_formats.hpp"
 #include "pal_dawn_resources.hpp"
 
 #include <memory>
@@ -75,12 +76,14 @@ struct DawnTextGpuView final : GpuObject {
 };
 /** `GPUTexture`. */
 struct DawnTextGpuTexture final : GpuObject {
+    explicit DawnTextGpuTexture(std::size_t texel) : texel_bytes(texel) {}
     const void* device_identity() const override { return lease->owner->queue; }
     std::shared_ptr<DawnTextTextureLease> lease;
+    const std::size_t texel_bytes;
     void write_texture_bytes(std::span<const std::uint8_t> data,
                              const GpuTextureWriteLayout& layout,
                              const GpuWriteExtent& extent) override {
-        const auto row_bytes = layout.bytes_per_row.value_or(extent.width * 16u);
+        const auto row_bytes = layout.bytes_per_row.value_or(extent.width * texel_bytes);
         const auto count = static_cast<std::size_t>(row_bytes) * extent.height;
         const auto bytes =
             gpu_bytes(data, static_cast<double>(layout.offset), static_cast<double>(count));
@@ -251,19 +254,18 @@ struct DawnTextGpuResources : GpuDevice {
     }
 
     GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
-        if (descriptor.format != "rgba32float")
-            throw std::runtime_error("Unmapped text texture format: " + descriptor.format);
         const auto width = gpu_size(descriptor.size.width), rows = gpu_size(descriptor.size.height);
         WGPUTextureDescriptor info = WGPU_TEXTURE_DESCRIPTOR_INIT;
         info.dimension = WGPUTextureDimension_2D;
         info.size = WGPUExtent3D{gpu_u32(width), gpu_u32(rows),
                                  gpu_u32(gpu_size(descriptor.size.depth_or_array_layers))};
-        info.format = WGPUTextureFormat_RGBA32Float;
+        info.format = dawn_named_texture_format(descriptor.format);
         info.usage = static_cast<WGPUTextureUsage>(gpu_size(descriptor.usage));
-        auto texture = std::make_shared<DawnTextGpuTexture>();
+        auto texture =
+            std::make_shared<DawnTextGpuTexture>(webgpu_texel_layout(descriptor.format).bytes);
         texture->lease = retain_dawn_text_resource<DawnTextTextureLease>(
             owner, wgpuDeviceCreateTexture(owner->device, &info),
-            text_resource_role(descriptor.label), width * rows * 4u * sizeof(float), width, rows);
+            text_resource_role(descriptor.label), width * rows * texture->texel_bytes, width, rows);
         return texture;
     }
 

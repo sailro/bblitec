@@ -164,8 +164,8 @@ export class SceneManifestRecorder {
      * id names.
      *
      * `Mesh.id` is not `SceneNode.name`: the pin declares it separately as
-     * the unique id a source file carries, and `src/render/lights-ubo.ts`
-     * `affectsMesh` is its only reader. So the string is a join key rather
+     * the unique id a source file carries, and `src/render/mesh-light-selection.ts`
+     * `lightAffectsMeshId` is its only admitted reader. So the string is a join key rather
      * than record state, and the join folds here exactly as the `.babylon`
      * loader folds its own `meshes_by_id` — an id names a LIST,
      * because nothing upstream enforces uniqueness.
@@ -1258,8 +1258,8 @@ export class SceneManifestRecorder {
     /**
      * `mesh.id = "..."`, by the handle spelling the write named.
      *
-     * Nothing is emitted: the pin's only reader of `Mesh.id` is
-     * `affectsMesh`, whose join `resolveSceneMeshIds` folds, so the string
+     * Nothing is emitted: the pin's only admitted reader of `Mesh.id` is
+     * `lightAffectsMeshId`, whose join `resolveSceneMeshIds` folds, so the string
      * has no run-time reader to store it for. A write that would make an
      * ALREADY-emitted include set stale refuses instead, because the fold
      * cannot revisit a statement it has written.

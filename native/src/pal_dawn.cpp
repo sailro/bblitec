@@ -3321,27 +3321,30 @@ public:
                             // them into the frame encoder before its pass begins; group 0
                             // reads the block the frame's pass blocks wrote for the task.
                             const ExternalRenderablePass* const task_externals =
-                                !task.render.auto_mirror ? nullptr :
-                                prepare_external_pass(
-                                    state.external_passes.task(handle), engine, graph_scene,
-                                    GpuRenderTargetSignature{
-                                        dawn_webgpu_format_name(target.color_format),
-                                        pass_descriptor.depthStencilAttachment
-                                            ? js::Nullable<std::string>(dawn_webgpu_format_name(
-                                                  borrowed_depth_view
-                                                      ? WGPUTextureFormat_Depth24PlusStencil8
-                                                      : target.depth_format))
-                                            : js::Nullable<std::string>(),
-                                        {},
-                                        static_cast<double>(
-                                            target_sample_count(state, target_record))},
-                                    data_.pass_blocks.task(handle),
-                                    GpuDrawUpdateContext{static_cast<double>(target.width),
-                                                         static_cast<double>(target.height),
-                                                         task_pass_camera_handle(engine, task)},
-                                    external_encoder);
+                                !task.render.auto_mirror
+                                    ? nullptr
+                                    : prepare_external_pass(
+                                          state.external_passes.task(handle), engine, graph_scene,
+                                          GpuRenderTargetSignature{
+                                              dawn_webgpu_format_name(target.color_format),
+                                              pass_descriptor.depthStencilAttachment
+                                                  ? js::Nullable<
+                                                        std::string>(dawn_webgpu_format_name(
+                                                        borrowed_depth_view
+                                                            ? WGPUTextureFormat_Depth24PlusStencil8
+                                                            : target.depth_format))
+                                                  : js::Nullable<std::string>(),
+                                              {},
+                                              static_cast<double>(
+                                                  target_sample_count(state, target_record))},
+                                          data_.pass_blocks.task(handle),
+                                          GpuDrawUpdateContext{
+                                              static_cast<double>(target.width),
+                                              static_cast<double>(target.height),
+                                              task_pass_camera_handle(engine, task)},
+                                          external_encoder);
 #else
-                            const ExternalRenderablePass* const task_externals = nullptr;
+                        const ExternalRenderablePass* const task_externals = nullptr;
 #endif
                             const DawnPassTimestamps color_timestamps{timing_sequence.pass()};
                             pass_descriptor.timestampWrites = color_timestamps.get();
@@ -3430,7 +3433,7 @@ public:
                             draw_opaque_bucket(render_task.draw_lists.opaque, task_externals,
                                                draw_task_list, draw_external);
 #else
-                            draw_task_list(render_task.draw_lists.opaque);
+                        draw_task_list(render_task.draw_lists.opaque);
 #endif
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {

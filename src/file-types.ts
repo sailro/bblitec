@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { findRepositoryRoot } from "./repository-root.js";
+import { join } from "node:path";
+import { compilerRepositoryRoot } from "./repository-root.js";
 
 interface FileTypeDescriptor {
     readonly mime: string;
@@ -11,10 +10,7 @@ interface FileTypeDescriptor {
 
 /** The same descriptor rows included by the native File API. */
 export const fileTypes: readonly FileTypeDescriptor[] = readFileSync(
-    join(
-        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-        "native/include/bblite/file_types.inc",
-    ),
+    join(compilerRepositoryRoot(), "native/include/bblite/file_types.inc"),
     "utf8",
 )
     .split(/\r?\n/)

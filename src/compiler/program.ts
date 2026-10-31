@@ -1,5 +1,5 @@
+import { compilerRepositoryRoot } from "../repository-root.js";
 import { dirname, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import type { HostPageProgram } from "./types.js";
@@ -9,10 +9,7 @@ import {
     isLibraryTyping,
     libraryTypingFile,
 } from "../typescript-library-files.js";
-import {
-    findRepositoryRoot,
-    repositoryRelativePath,
-} from "../upstream-source.js";
+import { repositoryRelativePath } from "../upstream-source.js";
 
 /**
  * The pinned members the published typings erase.
@@ -182,9 +179,7 @@ export function createCompilerProgram(
               ? page?.loader?.source
               : startup.get(absolute);
     };
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
+    const repositoryRoot = compilerRepositoryRoot();
     const { babylon: babylonTypes, webGpu: webGpuTypes } =
         compilerPackageTypings();
     const options: ts.CompilerOptions = {

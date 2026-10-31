@@ -2982,7 +2982,7 @@ export class PropertyAccessLowerer {
             this.context.isCanvasElement(ownerExpression) &&
             !this.context.ui.uiElementValue(ownerExpression)
         ) {
-            // The generated host's primary renderCanvas has no class
+            // The generated host's primary canvas has no class
             // attribute. Keep that browser fact available to multi-surface
             // code which mirrors its class onto an auxiliary canvas.
             return {

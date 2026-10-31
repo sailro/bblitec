@@ -9,6 +9,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("compute uniform layouts execute pinned vector and matrix packing", async () => {
     const fields = [
@@ -48,8 +49,8 @@ function make(){return createComputeUniformLayout([{name:"direction",type:"vec3<
 const first=make(),second=make(),alias=first;
 if(first===second||alias!==first||first.byteLength!==16)throw new Error("uniform layout identity");
 let caught=0;
-try{createComputeUniformLayout([]);}catch(error){if(error.message==="#1020")caught++;}
-try{createComputeUniformLayout([{name:"a",type:"f32"},{name:"a",type:"u32"}]);}catch(error){if(error.message==="#1022")caught++;}
+try{createComputeUniformLayout([]);}catch(error){if(error.message==="${pinnedError("ComputeUniformLayout requires at least one field.")}")caught++;}
+try{createComputeUniformLayout([{name:"a",type:"f32"},{name:"a",type:"u32"}]);}catch(error){if(error.message==="${pinnedError('ComputeUniformLayout: duplicate field "${a0}".')}")caught++;}
 if(caught!==2)throw new Error("uniform layout validation");
 `);
     assert.ok(result.manifest.features.includes("compute:uniform-layout"));

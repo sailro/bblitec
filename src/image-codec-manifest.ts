@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { asObject } from "./json-fields.js";
-import { findRepositoryRoot } from "./repository-root.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
 
 interface ImageCodec {
     codec: string;
@@ -90,10 +89,7 @@ export function parseImageCodecs(manifest: unknown): ImageCodec[] {
 export const imageCodecs = parseImageCodecs(
     JSON.parse(
         readFileSync(
-            resolve(
-                findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-                "native/vcpkg.json",
-            ),
+            resolve(compilerRepositoryRoot(), "native/vcpkg.json"),
             "utf8",
         ),
     ),

@@ -1451,8 +1451,8 @@ bool pick_candidate(const MeshRecord& mesh);
 bool mesh_draws(const MeshRecord& mesh);
 bool render_item_material_draws(const RenderItem& item, const Engine& engine);
 bool render_item_draws_now(const RenderItem& item, const Engine& engine);
-// src/render/mesh-light-selection.ts affectsMesh: a light applies to the meshes its
-// includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
+// src/render/mesh-light-selection.ts lightAffectsMeshId: a light applies to the meshes its
+// includedOnlyMeshIds names, or to every mesh its excludedMeshIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
 bool light_affects_mesh(
@@ -2320,7 +2320,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
         !(mesh.thin_instances && mesh.thin_instances->gpu_culling_enabled)) || render_item_material_draws(item, engine);
 }
 
-// src/render/mesh-light-selection.ts affectsMesh.
+// src/render/mesh-light-selection.ts lightAffectsMeshId.
 bool light_affects_mesh(
     const LightRecord& light,
     MeshHandle mesh) {
@@ -2718,17 +2718,21 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                     node.name.text === "order",
             );
         // A factory that returns a shared Renderable shell (the cubemap
-        // skyboxes' `createCubemapSkyboxRenderable`) stamps through it.
+        // skyboxes' `createCubemapSkyboxRenderable`), directly or through
+        // the local it returns, stamps through it.
         const stampScope = (
             factory: ts.FunctionDeclaration,
         ): ts.FunctionDeclaration => {
-            const shell = finalReturn(factory.body);
-            return orderStamps(factory).length === 0 &&
-                shell?.expression &&
-                ts.isCallExpression(shell.expression) &&
-                ts.isIdentifier(shell.expression.expression)
-                ? this.context.functionOf(shell.expression.expression)
-                      .declaration
+            if (orderStamps(factory).length) return factory;
+            const returned = finalReturn(factory.body)?.expression;
+            const shell =
+                returned && ts.isIdentifier(returned)
+                    ? this.context.initializerOf(returned)
+                    : returned;
+            return shell &&
+                ts.isCallExpression(shell) &&
+                ts.isIdentifier(shell.expression)
+                ? this.context.functionOf(shell.expression).declaration
                 : factory;
         };
         for (const [{ modulePath, factory }, order] of [
@@ -3022,63 +3026,29 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
     }
 
     /**
-     * The pinned per-mesh light predicate, anchored arm by arm. The
-     * emitted `light_affects_mesh` is a representation translation — the
-     * pin keys Sets of string mesh ids where the records key index
-     * vectors — so it cannot be lowered by the numeric translator, and
-     * each arm's fold is justified against the shape asserted here: a
-     * native mesh index is always a present id, so the pin's `!!meshId`
-     * conjunct folds to true and its `!meshId` disjunct folds to false,
-     * leaving exactly the two membership tests the emission carries, in
-     * the pinned precedence (included wins when it is non-empty).
+     * The pinned per-mesh light predicate, whole. The emitted
+     * `light_affects_mesh` is a representation translation — the pin keys
+     * Sets of string mesh ids where the records key index vectors — so it
+     * cannot be lowered by the numeric translator, and each arm's fold is
+     * justified against the body asserted here: a native mesh index is
+     * always a present id, so the pin's `!!meshId` conjunct folds to true
+     * and its `!meshId` disjunct folds to false, leaving exactly the two
+     * membership tests the emission carries, in the pinned precedence
+     * (included wins when it is non-empty). The id is the mesh's own
+     * (`assertPinnedLightSlotPacking`).
      */
     private assertPinnedAffectsMesh(): void {
-        const { declaration } = this.context.functionDeclaration(
+        this.context.assertFunctionContract(
             "src/render/mesh-light-selection.ts",
-            "affectsMesh",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "included"),
-            "light.includedOnlyMeshIds",
-            "Pinned affectsMesh included source",
-        );
-        const gate = this.context.findNodes(
-            declaration,
-            (node): node is ts.IfStatement => ts.isIfStatement(node),
-        );
-        if (gate.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Pinned affectsMesh no longer forks once on the " +
-                    "included list.",
-            );
-        }
-        this.context.assertExpressionShape(
-            gate[0]!.expression,
-            "included?.size",
-            "Pinned affectsMesh included gate",
-        );
-        const returns = this.context.findNodes(
-            declaration,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node) && node.expression !== undefined,
-        );
-        if (returns.length !== 2) {
-            this.context.contractError(
-                declaration,
-                "Pinned affectsMesh no longer returns the two " +
-                    "membership arms.",
-            );
-        }
-        this.context.assertExpressionShape(
-            returns[0]!.expression!,
-            "!!meshId && included.has(meshId)",
-            "Pinned affectsMesh included arm",
-        );
-        this.context.assertExpressionShape(
-            returns[1]!.expression!,
-            "!meshId || !light.excludedMeshIds?.has(meshId)",
-            "Pinned affectsMesh excluded arm",
+            "lightAffectsMeshId",
+            `export function lightAffectsMeshId(light: LightBase, meshId: string | undefined): boolean {
+                const included = light.includedOnlyMeshIds;
+                if (included?.size) {
+                    return !!meshId && included.has(meshId);
+                }
+                return !meshId || !light.excludedMeshIds?.has(meshId);
+            }`,
+            "Pinned lightAffectsMeshId membership arms",
         );
     }
 
@@ -3581,8 +3551,9 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
 
     /**
      * Anchors for the light-slot packing contract behind the emitted
-     * `light_affects_mesh`: the pinned `affectsMesh` fork it transcribes,
-     * and the two pinned packing loops whose slot arithmetic the PALs walk
+     * `light_affects_mesh` (its `lightAffectsMeshId` fork is anchored by
+     * `assertPinnedAffectsMesh`, here only its call on `mesh.id`), and the
+     * two pinned packing loops whose slot arithmetic the PALs walk
      * against it — `writeMeshLightSelection` (per-mesh indices from
      * `MSH_LIGHT_INDEX_WORD_OFFSET`, count at word 16) and `fillLightsData`
      * (entries at `headerFloats + count * LIGHT_ENTRY_FLOATS`). Both loops
@@ -3592,69 +3563,18 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
      * loop fails generation here before a PAL can walk them differently.
      */
     private assertPinnedLightSlotPacking(): void {
-        const lightsUboModule = "src/render/mesh-light-selection.ts";
-        const { declaration: affects } = this.context.functionDeclaration(
-            lightsUboModule,
-            "affectsMesh",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(affects, "meshId"),
-            "mesh.id",
-            "Pinned light-inclusion mesh id",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(affects, "included"),
-            "light.includedOnlyMeshIds",
-            "Pinned light inclusion list",
-        );
-        const affectsFork = this.context.findNodes(
-            affects,
-            (node): node is ts.IfStatement => ts.isIfStatement(node),
-        )[0];
-        if (!affectsFork) {
-            this.context.contractError(
-                affects,
-                "Expected the pinned inclusion fork.",
-            );
-        }
-        this.context.assertExpressionShape(
-            affectsFork.expression,
-            "included?.size",
-            "Pinned inclusion-list predicate",
-        );
-        const affectsReturns = this.context.findNodes(
-            affects,
-            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
-        );
-        if (
-            affectsReturns.length !== 2 ||
-            !affectsReturns[0]?.expression ||
-            !affectsReturns[1]?.expression
-        ) {
-            this.context.contractError(
-                affects,
-                "Expected the pinned two-arm affectsMesh.",
-            );
-        }
-        this.context.assertExpressionShape(
-            affectsReturns[0].expression,
-            "!!meshId && included.has(meshId)",
-            "Pinned included-mesh arm",
-        );
-        this.context.assertExpressionShape(
-            affectsReturns[1].expression,
-            "!meshId || !light.excludedMeshIds?.has(meshId)",
-            "Pinned excluded-mesh arm",
-        );
-
+        const lightSelectionModule = "src/render/mesh-light-selection.ts";
         const { declaration: selection } = this.context.functionDeclaration(
-            lightsUboModule,
+            lightSelectionModule,
             "writeMeshLightSelection",
         );
         const selectionGuards: ReadonlyArray<readonly [string, string]> = [
             ["pi >= MAX_LIGHTS", "Pinned light-slot cursor break"],
             ["!light._writeLightUbo", "Pinned light-slot eligibility skip"],
-            ["affectsMesh(light, mesh)", "Pinned per-mesh light test"],
+            [
+                "lightAffectsMeshId(light, mesh.id)",
+                "Pinned per-mesh light test on the mesh's own id",
+            ],
             ["u32", "Pinned light-index write guard"],
             ["u32", "Pinned light-count write guard"],
         ];

@@ -54,6 +54,20 @@ function pinnedErrorCalls(
     );
 }
 
+/** The literal codes of the pin's error-helper calls under `owner`. */
+function pinnedErrorCodes(
+    context: LoweringContext,
+    owner: ts.Node,
+): Set<number> {
+    return new Set(
+        pinnedErrorCalls(context, owner).flatMap((call) =>
+            call.arguments[0] && ts.isNumericLiteral(call.arguments[0])
+                ? [Number(call.arguments[0].text)]
+                : [],
+        ),
+    );
+}
+
 /** The pin's generated error table: one message decoder per code. */
 function pinnedErrorTable(context: LoweringContext): {
     file: ts.SourceFile;
@@ -78,13 +92,7 @@ export function encodePinnedErrorContracts(
     const { table } = pinnedErrorTable(context);
     const codes = new Map<string, number>();
     const templates = new Map<string, number>();
-    const reachedCodes = new Set(
-        pinnedErrorCalls(context, owner).flatMap((call) =>
-            call.arguments[0] && ts.isNumericLiteral(call.arguments[0])
-                ? [Number(call.arguments[0].text)]
-                : [],
-        ),
-    );
+    const reachedCodes = pinnedErrorCodes(context, owner);
     const templateKey = (template: ts.TemplateExpression): string =>
         JSON.stringify([
             template.head.text,
@@ -180,6 +188,55 @@ export function pinnedErrorCode(
             "Expected one pinned ThrowLiteError call with a literal code.",
         );
     return Number(code.text);
+}
+
+/**
+ * The code whose decoder spells `message` as the pin's error table does: a
+ * string's text, or a template's text with its `${a0}` placeholders. A
+ * message several codes share needs `owner`, the pinned declaration whose
+ * `ThrowLiteError` call passes the one code meant.
+ */
+export function pinnedErrorCodeOf(
+    context: LoweringContext,
+    message: string,
+    owner?: ts.Node,
+): number {
+    const { table } = pinnedErrorTable(context);
+    const codes = table.elements.flatMap((decoder, code) => {
+        const body =
+            ts.isArrowFunction(decoder) && !ts.isBlock(decoder.body)
+                ? context.unwrapExpression(decoder.body)
+                : undefined;
+        if (body && ts.isStringLiteral(body))
+            return body.text === message ? [code] : [];
+        if (!body || !ts.isTemplateExpression(body))
+            return context.contractError(
+                decoder,
+                "Expected a pinned error decoder returning a string or template.",
+            );
+        const spelled =
+            body.head.text +
+            body.templateSpans
+                .map(
+                    (span) =>
+                        `\${${span.expression.getText()}}${span.literal.text}`,
+                )
+                .join("");
+        return spelled === message ? [code] : [];
+    });
+    const thrown = owner && pinnedErrorCodes(context, owner);
+    const owned = thrown ? codes.filter((code) => thrown.has(code)) : codes;
+    if (owned.length !== 1)
+        return context.contractError(
+            owner ?? table,
+            `Expected one pinned error code for '${message}'` +
+                (owner ? " thrown here" : "") +
+                `, found ${owned.join(", ") || "none"}` +
+                (!owner && owned.length > 1
+                    ? "; name the pinned declaration that throws it."
+                    : "."),
+        );
+    return owned[0]!;
 }
 
 /** The fixed message the pin's error table decodes for `code`. */

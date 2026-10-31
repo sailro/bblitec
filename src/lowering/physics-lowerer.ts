@@ -1253,6 +1253,13 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
             PhysicsLowerer.meshAccumulatorContracts,
         );
         this.assertOrderContracts(resolve, PhysicsLowerer.orderContracts);
+        // The scene's world discovery list is read only by getPhysicsWorlds
+        // and disposePhysics, neither of which has a compiler route.
+        this.context.assertAccessedOnlyIn("_physicsWorlds", [
+            [havokModule, "createHavokWorld"],
+            [havokModule, "disposePhysics"],
+            [havokModule, "getPhysicsWorlds"],
+        ]);
     }
 
     /**

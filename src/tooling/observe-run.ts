@@ -23,6 +23,7 @@ import {
     createSuiteSceneServer,
     suiteBrowserModule,
 } from "../capture-suite-reference.js";
+import { HOST_PRIMARY_CANVAS_ID } from "../host-primary-canvas.js";
 import { readNativeHostUi } from "../native-host-ui.js";
 import { usesSeededRandom } from "../parity-scene.js";
 import { compareImages } from "../parity.js";
@@ -85,7 +86,7 @@ export function applyObserveHooks(
 
 const DEFAULT_STATE_EXPRESSION =
     "typeof window.__observe === 'function' ? window.__observe() : " +
-    "(() => { const canvas = document.getElementById('renderCanvas'); " +
+    `(() => { const canvas = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}); ` +
     "return { dataset: { ...canvas.dataset }, viewport: { width: canvas.width, height: canvas.height } }; })()";
 
 async function letFramesPass(page: Page, count: number): Promise<void> {
@@ -173,9 +174,9 @@ async function navigateReady(
     await gotoScenePage(page, origin, search);
     if (ready === "none") return;
     await page.waitForFunction(
-        (flag: string) =>
-            document.getElementById("renderCanvas")?.dataset[flag] === "true",
-        ready,
+        ({ flag, id }: { flag: string; id: string }) =>
+            document.getElementById(id)?.dataset[flag] === "true",
+        { flag: ready, id: HOST_PRIMARY_CANVAS_ID },
         { timeout: 120_000 },
     );
 }
@@ -326,7 +327,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     const path = resolve(outputDirectory, image);
                     if (step.screenshot === "canvas") {
                         await page
-                            .locator("#renderCanvas")
+                            .locator(`#${HOST_PRIMARY_CANVAS_ID}`)
                             .screenshot({ path });
                     } else {
                         await page.screenshot({ path });

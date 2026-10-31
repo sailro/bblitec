@@ -101,15 +101,17 @@ struct SdlTextGpuView final : GpuObject {
 };
 /** `GPUTexture`. */
 struct SdlTextGpuTexture final : GpuObject {
+    explicit SdlTextGpuTexture(std::size_t texel) : texel_bytes(texel) {}
     const void* device_identity() const override { return lease->owner->device; }
     std::shared_ptr<SdlTextTextureLease> lease;
+    const std::size_t texel_bytes;
     void write_texture_bytes(std::span<const std::uint8_t> data,
                              const GpuTextureWriteLayout& layout,
                              const GpuWriteExtent& extent) override {
-        const auto row_bytes = layout.bytes_per_row.value_or(extent.width * 16u);
-        if (row_bytes != static_cast<std::size_t>(extent.width) * 16u ||
+        const auto row_bytes = layout.bytes_per_row.value_or(extent.width * texel_bytes);
+        if (row_bytes != static_cast<std::size_t>(extent.width) * texel_bytes ||
             extent.depth_or_array_layers != 1)
-            throw std::runtime_error("Text atlas upload requires contiguous RGBA32F rows.");
+            throw std::runtime_error("Text atlas upload requires contiguous texel rows.");
         const auto bytes = gpu_bytes(data, static_cast<double>(layout.offset),
                                      static_cast<double>(row_bytes) * extent.height);
         write_sdl_gpu_texture(lease->owner->device, lease->get(), bytes,
@@ -169,6 +171,7 @@ struct SdlTextPassEncoder final : GpuEncoder {
     std::shared_ptr<SdlTextGpuGroup> current_group;
     std::shared_ptr<SdlTextBufferLease> current_quad, current_instances;
     std::vector<SDL_GPUBuffer*> storage_scratch;
+    StageTextureBindingScratch texture_scratch;
     std::vector<std::uint8_t> pushed_uniform_bytes;
 
     void set_pipeline(const GpuHandle& handle) override {
@@ -211,14 +214,14 @@ struct SdlTextPassEncoder final : GpuEncoder {
                                        return group->styles->get();
                                    return nullptr;
                                });
-            bind_stage_textures(
-                pass, slots, fragment, "Text", [&](const std::string& name, std::size_t) {
-                    const auto role = text_binding_role(name);
-                    SDL_GPUTexture* texture = role == TextBindingRole::curves ? group->curves->get()
-                                              : role == TextBindingRole::bands ? group->bands->get()
-                                                                               : nullptr;
-                    return SDL_GPUTextureSamplerBinding{texture, sampler->get()};
-                });
+            const auto resolve = [&](const std::string& name, std::size_t) {
+                const auto role = text_binding_role(name);
+                SDL_GPUTexture* texture = role == TextBindingRole::curves  ? group->curves->get()
+                                          : role == TextBindingRole::bands ? group->bands->get()
+                                                                           : nullptr;
+                return SDL_GPUTextureSamplerBinding{texture, sampler->get()};
+            };
+            bind_stage_textures(pass, slots, fragment, "Text", texture_scratch, resolve, resolve);
         }
         if (owner->capture.enabled())
             current_group = group;
@@ -339,18 +342,21 @@ struct SdlTextGpuResources : GpuDevice {
     }
 
     GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
-        if (descriptor.format != "rgba32float" ||
-            !webgpu_usage_has(descriptor.usage, webgpu_texture_usage::texture_binding) ||
+        if (!webgpu_usage_has(descriptor.usage, webgpu_texture_usage::texture_binding) ||
             gpu_size(descriptor.size.depth_or_array_layers) != 1)
             throw std::runtime_error("Unmapped text texture descriptor.");
         const auto width = gpu_size(descriptor.size.width), rows = gpu_size(descriptor.size.height);
-        auto texture = std::make_shared<SdlTextGpuTexture>();
+        const auto texel = webgpu_texel_layout(descriptor.format);
+        auto texture = std::make_shared<SdlTextGpuTexture>(texel.bytes);
         texture->lease = retain_sdl_gpu_text_resource<SdlTextTextureLease>(
             owner,
-            create_frame_texture(owner->device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+            create_frame_texture(owner->device, sdl_named_texture_format(descriptor.format),
                                  SDL_GPU_SAMPLECOUNT_1, gpu_u32(width), gpu_u32(rows),
-                                 SDL_GPU_TEXTUREUSAGE_SAMPLER),
-            text_resource_role(descriptor.label), width * rows * 4u * sizeof(float), width, rows);
+                                 // SDL binds an integer texture load through a
+                                 // storage-texture slot.
+                                 texel.integer ? SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ
+                                               : SDL_GPU_TEXTUREUSAGE_SAMPLER),
+            text_resource_role(descriptor.label), width * rows * texture->texel_bytes, width, rows);
         return texture;
     }
 

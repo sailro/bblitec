@@ -5,6 +5,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("compute buffer bindings retain ranges, dynamic limits and live registrations", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -37,17 +38,17 @@ int main(){
  resolved=bbl::resolve_compute_buffer_binding(engine,decl,range,expected,writable,false,true,16,512,256);
  assert(resolved.state.size==16&&resolved.dynamic->alignment==256&&resolved.dynamic->max_offset==240);
  const auto reject=[&](const bbl::ComputeBufferRange& value,bool dynamic,double minimum,double maximum,const char* code){bool failed=false;try{(void)bbl::resolve_compute_buffer_binding(engine,decl,value,expected,writable,false,dynamic,minimum,maximum,256);}catch(const std::exception& error){failed=std::string(error.what())==code;}assert(failed);};
- reject({},false,0,512,"#921");
- uniform->destroyed=true;reject(range,false,0,512,"#922");uniform->destroyed=false;
- auto other=std::make_shared<bbl::Engine>();ref->engine=other;reject(range,false,0,512,"#923");ref->engine=engine;
- for(double offset:{-256.0,1.0,0.5})reject({ref,offset,{}},false,0,512,"#925");
- reject(range,true,0,512,"#926");
- for(double size:{0.0,-4.0,3.0,4.5})reject({ref,0,size},false,0,512,"#927");
- reject({ref,512,{}},false,0,512,"#928");
- reject({ref,0,4},false,8,512,"#929");
- reject({ref,0,16},false,0,8,"#930");
- reject({ref,256,260},false,0,512,"#931");
- registry->buffers.erase(uniform);bool dead=false;try{(void)bbl::get_compute_buffer_binding_resource(engine,resolved.state,registered);}catch(const std::exception& error){dead=std::string(error.what())=="#932";}assert(dead);
+ reject({},false,0,512,"${pinnedError('ComputeBindingSet: binding "${a0}" received the wrong buffer resource type.')}");
+ uniform->destroyed=true;reject(range,false,0,512,"${pinnedError('ComputeBindingSet: resource for "${a0}" has been disposed or lost with its previous device; recreate it.')}");uniform->destroyed=false;
+ auto other=std::make_shared<bbl::Engine>();ref->engine=other;reject(range,false,0,512,"${pinnedError('ComputeBindingSet: resource for "${a0}" belongs to a different engine.')}");ref->engine=engine;
+ for(double offset:{-256.0,1.0,0.5})reject({ref,offset,{}},false,0,512,"${pinnedError('ComputeBindingSet: offset for "${a0}" must be a non-negative multiple of ${a1}.')}");
+ reject(range,true,0,512,"${pinnedError('ComputeBindingSet: dynamic binding "${a0}" requires size or a non-zero minBindingSize.')}");
+ for(double size:{0.0,-4.0,3.0,4.5})reject({ref,0,size},false,0,512,"${pinnedError('ComputeBindingSet: size for "${a0}" must be a positive multiple of 4.')}");
+ reject({ref,512,{}},false,0,512,"${pinnedError('ComputeBindingSet: binding "${a0}" must expose at least 4 bytes.')}");
+ reject({ref,0,4},false,8,512,"${pinnedError('ComputeBindingSet: binding "${a0}" provides ${a1} bytes but requires at least ${a2} bytes.')}");
+ reject({ref,0,16},false,0,8,"${pinnedError('ComputeBindingSet: binding "${a0}" exceeds this device\'s maximum binding size of ${a1} bytes.')}");
+ reject({ref,256,260},false,0,512,"${pinnedError('ComputeBindingSet: binding "${a0}" exceeds its ${a1}-byte allocation.')}");
+ registry->buffers.erase(uniform);bool dead=false;try{(void)bbl::get_compute_buffer_binding_resource(engine,resolved.state,registered);}catch(const std::exception& error){dead=std::string(error.what())=="${pinnedError("ComputeBindingSet contains a disposed or invalid buffer resource.")}";}assert(dead);
 }
 `,
         {

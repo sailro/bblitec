@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGltfAnimationPose } from "../src/lowering/gltf/animation-pose.js";
 import { lowerMatrixComposeCpp } from "../src/lowering/gltf/matrix-leaves.js";
@@ -17,6 +16,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const modulePath = "src/skeleton/skeleton-updater.ts";
 interface NodeRest {
@@ -90,16 +90,7 @@ function sourceCase(
     upload: boolean,
     disposed: boolean,
 ) {
-    const file = context.sourceFile(modulePath),
-        printer = ts.createPrinter();
-    let source = file.statements
-        .filter((statement) => !ts.isImportDeclaration(statement))
-        .map((statement) =>
-            printer
-                .printNode(ts.EmitHint.Unspecified, statement, file)
-                .replace(/^export /gm, ""),
-        )
-        .join("\n");
+    let source = pinnedModuleSource(context, modulePath);
     assert.equal(source.split("return ctrl;").length, 2);
     source = source.replace(
         "return ctrl;",
@@ -108,13 +99,8 @@ function sourceCase(
     const events: unknown[] = [];
     const math = (path: string, symbol: string) =>
         createJavaScriptFunction(
-            transpileCommonJs(
-                context
-                    .functionDeclaration(path, symbol)
-                    .declaration.getText()
-                    .replace(/^export /, ""),
-                path,
-            ) + `\nreturn ${symbol};`,
+            transpileCommonJs(pinnedDeclaration(context, path, symbol), path) +
+                `\nreturn ${symbol};`,
         )() as (...args: unknown[]) => void;
     const compose = math(
         "src/math/compose-mat4-into-buffer.ts",

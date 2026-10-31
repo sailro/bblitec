@@ -7,7 +7,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { extname, relative, resolve, sep } from "node:path";
+import type { Page } from "playwright-core";
 import type { NativeHostUi } from "./compiler/types.js";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 import type { ReferenceSettle } from "./scene-registry.js";
 import { applyCaptureAnimationPose } from "./capture-animation-pose.js";
 import {
@@ -579,9 +581,15 @@ if (hostStyleSheet) {
     style.textContent = hostStyleSheet;
     document.head.appendChild(style);
 }
+// The page's canvas takes the place the host UI gives the primary canvas, as
+// on the upstream page and the native host: one primary canvas, in its wrapper.
+const primary = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)});
 const create = (record) => {
     if (record.tag === undefined) return document.createTextNode(record.text);
-    const element = document.createElement(record.tag);
+    const element =
+        record.attributes?.id === primary.id
+            ? primary
+            : document.createElement(record.tag);
     for (const [name, value] of Object.entries(record.attributes ?? {})) {
         element.setAttribute(name, value);
     }
@@ -669,12 +677,9 @@ export function createSuiteSceneServer(
     const hostUiScript = options.hostUi
         ? hostUiBootstrapScript(options.hostUi)
         : "";
-    const hideNonCanvasAtFixedFrame =
-        options.fixedAnimationFrame !== undefined && !captureUiEnabled();
     let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
-${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
-</style></head><body><canvas id="renderCanvas" width="${width}" height="${height}"></canvas>
+</style></head><body><canvas id="${HOST_PRIMARY_CANVAS_ID}" width="${width}" height="${height}"></canvas>
 ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
@@ -1020,7 +1025,7 @@ const schedule = () => {
         if (
             engineStartFrame < 0 &&
             (marks.dataset.fixedEngineStarting === "true" ||
-                document.getElementById("renderCanvas")?.dataset.fixedEngineStarting === "true")
+                document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)})?.dataset.fixedEngineStarting === "true")
         ) {
             engineStartFrame = frame;
         }
@@ -1146,12 +1151,8 @@ export async function captureSuiteReference(
     if (existsSync(referencePath) && !force) return;
     // Past the cached-reference early return, the browser is genuinely
     // needed; only now does the harness (playwright + typescript) load.
-    const {
-        hideNonCanvasChrome,
-        screenshotCaptureBrowserArgs,
-        waitForSceneReady,
-        withBrowserPage,
-    } = browserHarness();
+    const { screenshotCaptureBrowserArgs, waitForSceneReady, withBrowserPage } =
+        browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,
@@ -1197,27 +1198,42 @@ export async function captureSuiteReference(
                 await page.evaluate(waitForCapturedEngines, 60_000);
             }
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
-            if (captureUiEnabled()) {
-                await page.screenshot({ path: referencePath });
-            } else {
-                if (
-                    options.independentEngines !== undefined ||
-                    options.hostPage !== undefined
-                ) {
-                    // Keep every canvas at its authored page position. Hidden
-                    // ancestors retain layout; visibility is restored on canvases.
-                    await page.addStyleTag({
-                        content:
-                            "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}",
-                    });
-                    await page.screenshot({ path: referencePath });
-                    return;
-                }
-                await hideNonCanvasChrome(page);
-                await page
-                    .locator("#renderCanvas")
-                    .screenshot({ path: referencePath });
-            }
+            await screenshotScenePage(page, referencePath, options);
         },
     );
+}
+
+/**
+ * A scene page's screenshot at `path`: the whole page, or with
+ * `BBLITE_CAPTURE_UI=0` its canvases alone. The golden and the instrumented
+ * capture both take it, so they cannot disagree about what it contains.
+ *
+ * Canvas-only hides every element (hidden ancestors keep their layout) and
+ * keeps the canvases visible without their focus outline, which is retained
+ * UI rather than a canvas pixel; the rules outrank the page's own. A host
+ * page or independent engines keep every canvas at its authored position
+ * over black; otherwise the primary canvas is shot alone. A scene whose
+ * frame depends on DOM the port does not reproduce (a control that must be
+ * clicked first) is out of scope -- see docs/fidelity.md.
+ */
+export async function screenshotScenePage(
+    page: Page,
+    path: string,
+    options: Pick<SuiteCaptureOptions, "hostPage" | "independentEngines">,
+): Promise<void> {
+    if (captureUiEnabled()) {
+        await page.screenshot({ path });
+        return;
+    }
+    const everyCanvas =
+        options.hostPage !== undefined ||
+        options.independentEngines !== undefined;
+    const kept = everyCanvas ? "canvas" : `#${HOST_PRIMARY_CANVAS_ID}`;
+    await page.addStyleTag({
+        content:
+            `body *{visibility:hidden!important}${kept}{visibility:visible!important;outline:none!important}` +
+            (everyCanvas ? "html,body{background:#000!important}" : ""),
+    });
+    if (everyCanvas) await page.screenshot({ path });
+    else await page.locator(kept).screenshot({ path });
 }

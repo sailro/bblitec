@@ -18,12 +18,12 @@ import { join, resolve } from "node:path";
 import {
     captureUiEnabled,
     createSuiteSceneServer,
+    screenshotScenePage,
     suiteBrowserModule,
     suiteBrowserModuleDigest,
 } from "./capture-suite-reference.js";
 import {
     screenshotCaptureBrowserArgs,
-    hideNonCanvasChrome,
     pageBase64Script,
     waitForSceneReady,
     withBrowserPage,
@@ -427,14 +427,11 @@ export async function runInstrumentedCapture(
             // The shared fixed clock holds the reference's CSS phase.
             // Match its full-page or canvas-only capture mode.
             const screenshotPath = join(outputDirectory, "screenshot.png");
-            if (captureUi) {
-                await page.screenshot({ path: screenshotPath });
-            } else {
-                await hideNonCanvasChrome(page);
-                await page.locator("#renderCanvas").screenshot({
-                    path: screenshotPath,
-                });
-            }
+            await screenshotScenePage(
+                page,
+                screenshotPath,
+                sceneReferencePage(scene),
+            );
 
             const dump = await page.evaluate<{
                 shaders: { label: string; code: string }[];

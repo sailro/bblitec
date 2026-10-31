@@ -63,6 +63,8 @@
 // with it only that bake's context.
 import type { Server } from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
+import { routePinnedBabylonCdn } from "./pinned-babylon-cdn.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
@@ -163,19 +165,17 @@ export async function withBrowserPage<T>(
                   deviceScaleFactor: options.deviceScaleFactor ?? 1,
               }
             : undefined;
-        let page: Page;
-        if (options.shared) {
-            // Closing this connection closes the context opened through it,
-            // and only that: the page's own crash or failure stays its own.
-            browser = await chromium.connect(
-                await generationBrowserEndpoint(launch),
-                { timeout: 60_000 },
-            );
-            page = await (await browser.newContext(pageOptions)).newPage();
-        } else {
-            browser = await chromium.launch(launchOptions(launch));
-            page = await browser.newPage(pageOptions);
-        }
+        // Closing a shared connection closes the context opened through it,
+        // and only that: the page's own crash or failure stays its own.
+        browser = options.shared
+            ? await chromium.connect(await generationBrowserEndpoint(launch), {
+                  timeout: 60_000,
+              })
+            : await chromium.launch(launchOptions(launch));
+        const context = await browser.newContext(pageOptions);
+        // The run-time decoders the pin fetches come from one Babylon.js release.
+        await routePinnedBabylonCdn(context);
+        const page = await context.newPage();
         const pageErrorPrefix = options.pageErrorPrefix;
         if (pageErrorPrefix !== undefined) {
             page.on("pageerror", (error) => {
@@ -219,10 +219,9 @@ export async function waitForSceneReady(
     await waitForCanvasSettles(page, [canvasReadySettle], 120_000);
     if (awaitFrozenPose) {
         await page.waitForFunction(
-            () =>
-                document.getElementById("renderCanvas")?.dataset
-                    .animationFrozen === "true",
-            undefined,
+            (id: string) =>
+                document.getElementById(id)?.dataset.animationFrozen === "true",
+            HOST_PRIMARY_CANVAS_ID,
             { timeout: 120_000 },
         );
     }
@@ -342,40 +341,6 @@ async function waitForCanvasSettles(
         }
         await page.waitForTimeout(hold > 0 ? 250 : 25);
     }
-}
-
-/**
- * Hide everything the demo page draws OUTSIDE its canvas, before the shot.
- *
- * This is the CANVAS-ONLY attribution mode's tool. Since retained UI
- * became product support the port DOES reproduce reached DOM/CSS
- * (through RmlUi -- docs/ui.md), and the canonical goldens are full-page
- * by default; `BBLITE_CAPTURE_UI=0` requests the canvas-only capture
- * that subtracts the UI from a residual, and that mode is where this
- * helper runs. Both screenshot harnesses take it through the same
- * `captureUiEnabled()` fork, so the golden and the instrumented capture
- * cannot disagree about what a screenshot contains.
- *
- * Every scene keeps its own page otherwise: this hides siblings of the
- * canvas, it does not touch the scene or anything the scene drew into the
- * canvas. It does suppress the canvas's host focus outline: that decoration
- * is retained UI, not a canvas pixel, and otherwise survives after every
- * sibling was hidden. A scene whose behaviour depends on DOM the port does not
- * reproduce (a control that must be clicked before the frame under test)
- * is out of scope -- see docs/fidelity.md.
- */
-export async function hideNonCanvasChrome(page: Page): Promise<void> {
-    await page.evaluate(() => {
-        const canvas = document.getElementById("renderCanvas");
-        if (canvas instanceof HTMLElement) {
-            canvas.style.outline = "none";
-        }
-        for (const element of Array.from(document.body.children)) {
-            if (element !== canvas) {
-                (element as HTMLElement).style.visibility = "hidden";
-            }
-        }
-    });
 }
 
 /**

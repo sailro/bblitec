@@ -154,7 +154,8 @@ int main() try {
         for (int index = 0; index <= 5; ++index) {
             const auto over = raw->GetOption(index)->GetAbsoluteOffset(Rml::BoxArea::Border) +
                               raw->GetOption(index)->GetBox().GetSize(Rml::BoxArea::Border) * .5f;
-            runtime.context->ProcessMouseMove(static_cast<int>(over.x), static_cast<int>(over.y), 0);
+            runtime.context->ProcessMouseMove(static_cast<int>(over.x), static_cast<int>(over.y),
+                                              0);
             render();
             if (!in_box(runtime.context->GetElementAtPoint(at)))
                 throw std::runtime_error("A hovered option hands the list to a later panel");

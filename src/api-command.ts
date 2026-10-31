@@ -1,11 +1,8 @@
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createCompilerProgram } from "./compiler/program.js";
-import {
-    findRepositoryRoot,
-    repositoryRelativePath,
-} from "./upstream-source.js";
+import { repositoryRelativePath } from "./upstream-source.js";
 import {
     isMainModule,
     parseFlags,
@@ -113,7 +110,7 @@ function referencedFunctionOwners(
 }
 
 async function apiCommand(args: readonly string[]): Promise<void> {
-    const root = findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+    const root = compilerRepositoryRoot();
     const [command = "help", ...rest] = args;
     if (command === "help") {
         console.log(
@@ -224,7 +221,7 @@ export async function writeProjectApiReport(
     entry: string,
     output: string,
 ): Promise<void> {
-    const root = findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+    const root = compilerRepositoryRoot();
     const surface = loadApiSurface();
     await writeApiReport({
         root,

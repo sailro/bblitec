@@ -78,6 +78,7 @@ import {
 } from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
+import { pinnedError } from "./pinned-errors.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -1426,13 +1427,21 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(free.source, /camera\.kind = CameraKind::free/);
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);
+    // attachControl's own `decayInertia` travels with applyInertia as one
+    // native lambda over the pin's expression, its parameter a copy.
     assert.match(
         controls.source,
-        /if \(std::abs\(camera\.inertial_alpha_offset\) < 0\.001\) \{/,
+        /const auto decayInertia = \[&\]\(double offset, double factor, double epsilon\) -> double \{\n\s*return \(std::abs\(\(offset \*= factor\)\) < epsilon \? 0\.0 : offset\);/,
     );
     assert.match(
         controls.source,
-        /camera\.inertial_alpha_offset \*= camera\.inertia/,
+        /camera\.inertial_alpha_offset = decayInertia\(camera\.inertial_alpha_offset, camera\.inertia, 0\.001\);/,
+    );
+    // The pan writes through the pin's `target` alias reach the camera's
+    // own target, along the view plane's up vector.
+    assert.match(
+        controls.source,
+        /write_camera_vector_component\(camera, &CameraRecord::target, &Vec3d::y, \(camera\.target\.y \+ \(sinB \* panY\)\)\);/,
     );
     assert.match(
         controls.source,
@@ -2225,7 +2234,9 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#765"\);/,
+        new RegExp(
+            String.raw`if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("${pinnedError('enableSprite2DYSort: only depth: "none" layers are supported.')}"\);`,
+        ),
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

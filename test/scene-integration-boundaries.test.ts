@@ -13,6 +13,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
@@ -254,7 +255,11 @@ test("pinned local probes retain distinct cube layers, grid bytes, writer fields
                 projectionSize: [1, -1, 1],
             },
         }),
-        /#416/,
+        {
+            message: pinnedError(
+                "[babylon-lite] ${a0} must contain three finite${a1} values",
+            ),
+        },
     );
     assert.deepEqual(
         await packLocalCubemap(plan),

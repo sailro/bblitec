@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { withBrowserPage } from "../src/browser-harness.js";
 import { generationIdentity } from "../src/generation-browser.js";
+import { htmlPageServer } from "./html-page-server.js";
 
-const page = (): ReturnType<typeof createServer> =>
-    createServer((_request, response) => {
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end("<!doctype html><title>Generation bake</title>");
-    });
+const page = (): ReturnType<typeof htmlPageServer> =>
+    htmlPageServer("<!doctype html><title>Generation bake</title>");
 
 /** The pid of the host each published endpoint of this generation names. */
 function hosts(): number[] {

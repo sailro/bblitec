@@ -12,6 +12,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 const tools = optionalNativeFixtureTools();
 
@@ -32,7 +33,7 @@ test(
         const pinned = await importPinnedModule<{
             createHavokWorld(
                 this: void,
-                scene: { _beforeRender: Array<(ms: number) => void> },
+                scene: PinnedScene,
                 hk: typeof hknp,
                 gravity: { x: number; y: number; z: number },
             ): World;
@@ -52,9 +53,7 @@ test(
         }> = [];
         for (const fixed of [true, false])
             for (const fps of [60, 240]) {
-                const scene = {
-                    _beforeRender: [] as Array<(ms: number) => void>,
-                };
+                const scene = await createPinnedScene();
                 const world = pinned.createHavokWorld(scene, hknp, {
                     x: 0,
                     y: 0,

@@ -1624,12 +1624,10 @@ void configure_engine_scene_layout([[maybe_unused]] Engine& engine) {
 #endif
 }
 
-const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass, Engine& engine,
-                                                    const Scene& scene,
-                                                    const GpuRenderTargetSignature& signature,
-                                                    [[maybe_unused]] const RetainedSceneBlock& retained,
-                                                    const GpuDrawUpdateContext& context,
-                                                    FunctionRef<GpuCommandEncoderHandle()> encoder) {
+const ExternalRenderablePass* prepare_external_pass(
+    ExternalRenderablePass& pass, Engine& engine, const Scene& scene,
+    const GpuRenderTargetSignature& signature, [[maybe_unused]] const RetainedSceneBlock& retained,
+    const GpuDrawUpdateContext& context, FunctionRef<GpuCommandEncoderHandle()> encoder) {
     if (scene.state->external_renderables.empty() && pass.empty())
         return nullptr;
     pass.follow(engine, scene, signature);
@@ -1639,8 +1637,7 @@ const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass
     const upstream::SceneUniforms& block = retained.pass.block();
     pass.write_scene_group(
         engine,
-        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(&block),
-                                      sizeof(block)),
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(&block), sizeof(block)),
         pinned_lights_block(scene, engine));
 #endif
     pass.prepare(engine, context, encoder());

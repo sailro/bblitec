@@ -12,6 +12,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 interface PinMesh {
     name: string;
@@ -56,7 +57,7 @@ test("refreshed render tasks queue per-task overrides in the pin's renderable or
                 this: void,
                 config: object,
                 engine: object,
-                scene: object,
+                scene: PinnedScene,
             ): PinTask;
             addMeshToTask(
                 this: void,
@@ -90,13 +91,7 @@ test("refreshed render tasks queue per-task overrides in the pin's renderable or
             queue: { writeBuffer() {} },
         },
     };
-    const scene = {
-        _groups: new Map(),
-        _renderables: [],
-        _renderableVersion: 1,
-        lights: [],
-        _disposables: [],
-    };
+    const scene = await createPinnedScene({ engine }, { built: true });
     const rt = {
         _descriptor: { format: "rgba8unorm", samples: 1 },
         _eager: true,

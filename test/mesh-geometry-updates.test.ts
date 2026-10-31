@@ -11,6 +11,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("geometry update adapters retain range presence, result fields and feature isolation", (t) => {
     const compiled = compileSource(`
@@ -117,14 +118,14 @@ int check() { using namespace bbl;
  assert(engine.geometries[original].vertices[0].position.x==101);
  assert(engine.geometries[original].render_vertices_override->at(0).position.x==101);
  assert(engine.geometries[original].render_indices_override->at(0)==2);
- engine.geometries[original].owners=2;rejects([&]{update_mesh_geometry(engine,mesh,{},n,nextIndices,uv,uv,tangent,color);},"#558");engine.geometries[original].owners=1;
- rejects([&]{update_mesh_geometry(engine,mesh,js::F32Array(6),n,nextIndices,uv,uv,tangent,color);},"#559");
- rejects([&]{update_mesh_geometry(engine,mesh,next,n,nextIndices,std::nullopt,uv,tangent,color);},"#560");
- rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,0.9,std::nullopt);},"#561");
- engine.geometries[original].owners=2;rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,std::nullopt,std::nullopt);},"#552");engine.geometries[original].owners=1;
- rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,js::U32Array{1},uv,uv,tangent,color,std::nullopt,std::nullopt);},"#553");
- rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,std::nullopt,uv,tangent,color,std::nullopt,std::nullopt);},"#554");
- rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,std::nullopt,MeshGeometryRanges{{{3,1}}, {}});},"#551");
+ engine.geometries[original].owners=2;rejects([&]{update_mesh_geometry(engine,mesh,{},n,nextIndices,uv,uv,tangent,color);},"${pinnedError("updateMeshGeometry requires unshared, tightly-packed mesh geometry")}");engine.geometries[original].owners=1;
+ rejects([&]{update_mesh_geometry(engine,mesh,js::F32Array(6),n,nextIndices,uv,uv,tangent,color);},"${pinnedError("updateMeshGeometry requires unchanged vertex/index counts; use resizeMeshGeometry for topology changes")}");
+ rejects([&]{update_mesh_geometry(engine,mesh,next,n,nextIndices,std::nullopt,uv,tangent,color);},"${pinnedError("updateMeshGeometry requires unchanged optional-attribute layout; use resizeMeshGeometry for layout changes")}");
+ rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,0.9,std::nullopt);},"${pinnedError("updateMeshGeometryCapacity requires reserveFactor >= 1")}");
+ engine.geometries[original].owners=2;rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,std::nullopt,std::nullopt);},"${pinnedError("updateMeshGeometryCapacity requires unshared, tightly-packed mesh geometry")}");engine.geometries[original].owners=1;
+ rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,js::U32Array{1},uv,uv,tangent,color,std::nullopt,std::nullopt);},"${pinnedError("updateMeshGeometryCapacity requires coherent triangle-list geometry with uint32 indices")}");
+ rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,std::nullopt,uv,tangent,color,std::nullopt,std::nullopt);},"${pinnedError("updateMeshGeometryCapacity requires unchanged optional-attribute layout")}");
+ rejects([&]{update_mesh_geometry_capacity(engine,mesh,next,n,nextIndices,uv,uv,tangent,color,std::nullopt,MeshGeometryRanges{{{3,1}}, {}});},"${pinnedError("mesh geometry update requires valid ranges within the active geometry")}");
  js::F32Array bigP{201,202,203,204,205,206,207,208,209,210,211,212},bigN(12),bigUv(8),bigTangent(16),bigColor(16);js::U32Array bigIndices{0,1,2,1,3,2};
  const auto grown=update_mesh_geometry_capacity(engine,mesh,bigP,bigN,bigIndices,bigUv,bigUv,bigTangent,bigColor,std::nullopt,MeshGeometryRanges{{},{}});
  assert(!grown.stable && grown.vertexCapacity==5 && grown.indexCapacity==9);

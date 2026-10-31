@@ -461,14 +461,11 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
         enableModule,
         "enableCsmStaticCache",
     );
-    const parameters = declaration.parameters.map((parameter) =>
-        soleBindingName(parameter.name),
+    context.assertParameterNames(
+        declaration,
+        ["engine", "sg", "options"],
+        "enableCsmStaticCache",
     );
-    if (parameters.join() !== "engine,sg,options")
-        context.contractError(
-            declaration,
-            "Expected enableCsmStaticCache(engine, sg, options).",
-        );
     const optional = (name: string): PinnedBinding => ({
         cpp: `(*${name})`,
         type: "scalar",

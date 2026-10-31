@@ -11,6 +11,10 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
+const foreignTexture = pinnedError(
+    'ComputeBindingSet: texture resource for "${a0}" is invalid or belongs to a different engine.',
+);
 
 test("installed compute resolvers enforce resource ownership, compatibility and realm isolation", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -37,35 +41,35 @@ struct Device final:bbl::pal::OffscreenDevice{bbl::pal::ComputeShaderLimits comp
 template<class F> void error(const char* expected,F fn){try{fn();}catch(const std::exception& e){if(std::string(e.what())==expected)return;throw std::runtime_error(std::string("Expected ")+expected+", got "+e.what());}throw std::runtime_error(std::string("Expected ")+expected+", no error");}
 int main(){
  for(int realm=0;realm<2;++realm){bbl::js::RealmScope scope;
-  error("#917",[]{bbl::get_compute_binding_resolver(3);});
+  error("${pinnedError("Compute binding declaration was not created by a supported resource helper.")}",[]{bbl::get_compute_binding_resolver(3);});
   auto engine=std::make_shared<bbl::Engine>(), other=std::make_shared<bbl::Engine>();
   engine->offscreen_run=std::make_shared<bbl::pal::OffscreenRun>(std::make_shared<bbl::pal::OffscreenSurface>(1,1),std::make_shared<Device>());
   bbl::ComputeBindingOptions options;auto sampled=bbl::compute_texture_binding("image",options);
   auto texture=std::make_shared<bbl::ComputeTextureResource>();texture->engine=engine;texture->handle=std::make_shared<Image>();texture->sample_type="float";texture->view_dimension="2d";
   auto resolver=bbl::get_compute_binding_resolver(sampled->kind);auto resolved=resolver->resolve(engine,sampled,texture);assert(std::get<std::shared_ptr<bbl::ComputeTextureResource>>(resolved.state)==texture);
   assert(std::get<bbl::pal::ComputeTextureResource>(resolver->get(engine,resolved.state)).role==bbl::pal::ComputeTextureViewRole::sampled);
-  error("#985",[&]{resolver->resolve(other,sampled,texture);});
-  error("#985",[&]{resolver->resolve(engine,sampled,std::monostate{});});
-  error("#990",[&]{resolver->validate(other,resolved.state);});
-  texture->sample_type="uint";error("#986",[&]{resolver->resolve(engine,sampled,texture);});texture->sample_type="float";
-  texture->multisampled=true;error("#987",[&]{resolver->resolve(engine,sampled,texture);});texture->multisampled=false;
-  texture->view_dimension="3d";error("#988",[&]{resolver->resolve(engine,sampled,texture);});texture->view_dimension="2d";
-  texture->destroyed=true;error("#989",[&]{resolver->get(engine,resolved.state);});
+  error("${foreignTexture}",[&]{resolver->resolve(other,sampled,texture);});
+  error("${foreignTexture}",[&]{resolver->resolve(engine,sampled,std::monostate{});});
+  error("${pinnedError("ComputeBindingSet contains a texture from a different engine.")}",[&]{resolver->validate(other,resolved.state);});
+  texture->sample_type="uint";error("${pinnedError('ComputeBindingSet: texture "${a0}" has sample type ${a1}, expected ${a2}.')}",[&]{resolver->resolve(engine,sampled,texture);});texture->sample_type="float";
+  texture->multisampled=true;error("${pinnedError('ComputeBindingSet: texture "${a0}" multisampling does not match its declaration.')}",[&]{resolver->resolve(engine,sampled,texture);});texture->multisampled=false;
+  texture->view_dimension="3d";error("${pinnedError('ComputeBindingSet: texture "${a0}" uses a ${a1} view, expected ${a2}.')}",[&]{resolver->resolve(engine,sampled,texture);});texture->view_dimension="2d";
+  texture->destroyed=true;error("${pinnedError("ComputeBindingSet contains an invalid texture resource.", { module: "src/compute/compute-texture-binding.ts", name: "getTexture" })}",[&]{resolver->get(engine,resolved.state);});
   auto samplerDecl=bbl::compute_sampler_binding("sampler",options),storageDecl=bbl::compute_storage_buffer_binding("buffer",options);
   auto sampler=std::make_shared<bbl::ComputeSamplerResource>();sampler->engine=engine;sampler->allocation=std::make_shared<Image>();sampler->type="non-filtering";
   auto samplerResolver=bbl::get_compute_binding_resolver(samplerDecl->kind);auto samplerState=samplerResolver->resolve(engine,samplerDecl,sampler).state;
-  error("#954",[&]{samplerResolver->get(other,samplerState);});
-  sampler->type="comparison";error("#953",[&]{samplerResolver->resolve(engine,samplerDecl,sampler);});
-  auto storageResolver=bbl::get_compute_binding_resolver(storageDecl->kind);error("#921",[&]{storageResolver->resolve(engine,storageDecl,sampler);});
+  error("${pinnedError("ComputeBindingSet contains an invalid sampler resource.")}",[&]{samplerResolver->get(other,samplerState);});
+  sampler->type="comparison";error("${pinnedError('ComputeBindingSet: sampler "${a0}" has type ${a1}, expected ${a2}.')}",[&]{samplerResolver->resolve(engine,samplerDecl,sampler);});
+  auto storageResolver=bbl::get_compute_binding_resolver(storageDecl->kind);error("${pinnedError('ComputeBindingSet: binding "${a0}" received the wrong buffer resource type.')}",[&]{storageResolver->resolve(engine,storageDecl,sampler);});
   options.format="rgba16float";auto imageDecl=bbl::compute_storage_texture_binding("output",options);
   auto registry=std::make_shared<bbl::ComputeStorageTextureRegistry>();registry->engine=engine;
   auto image=std::make_shared<bbl::ComputeStorageTexture>();image->registry=registry;image->allocation=std::make_shared<Image>();image->descriptor.format="rgba16float";image->descriptor.accesses={"write-only"};registry->resources.insert(image);
   auto imageResolver=bbl::get_compute_binding_resolver(imageDecl->kind);auto imageState=imageResolver->resolve(engine,imageDecl,image).state;
   assert(std::get<bbl::pal::ComputeTextureResource>(imageResolver->get(engine,imageState)).role==bbl::pal::ComputeTextureViewRole::storage);
-  image->descriptor.format="rgba32float";error("#970",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.format="rgba16float";
-  image->descriptor.dimension="3d";error("#971",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.dimension="2d";
-  image->descriptor.accesses={"read-only"};error("#972",[&]{imageResolver->resolve(engine,imageDecl,image);});
-  registry->resources.erase(image);error("#973",[&]{imageResolver->get(engine,imageState);});
+  image->descriptor.format="rgba32float";error("${pinnedError('ComputeBindingSet: storage texture "${a0}" has format ${a1}, expected ${a2}.')}",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.format="rgba16float";
+  image->descriptor.dimension="3d";error("${pinnedError('ComputeBindingSet: storage texture "${a0}" uses a ${a1} view, expected ${a2}.')}",[&]{imageResolver->resolve(engine,imageDecl,image);});image->descriptor.dimension="2d";
+  image->descriptor.accesses={"read-only"};error("${pinnedError('ComputeBindingSet: storage texture "${a0}" was not validated for ${a1} access.')}",[&]{imageResolver->resolve(engine,imageDecl,image);});
+  registry->resources.erase(image);error("${pinnedError("ComputeBindingSet contains an invalid storage texture resource.")}",[&]{imageResolver->get(engine,imageState);});
   auto original=resolver;bbl::install_compute_binding_resolver(3,nullptr,nullptr);assert(bbl::get_compute_binding_resolver(3)==original);
  }
 }

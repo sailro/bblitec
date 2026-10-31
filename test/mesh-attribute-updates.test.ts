@@ -14,6 +14,16 @@ import {
     runNativeFixtureCompiler,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
+const sharedGeometry = pinnedError(
+    "mesh attribute updates require unshared, tightly-packed geometry; update the source StorageBuffer instead: ${a0}",
+);
+const invalidSourceRange = pinnedError(
+    "mesh attribute update requires a valid tightly-packed vertex range",
+);
+const invalidDestinationRange = pinnedError(
+    "mesh attribute update requires a valid destination vertex range",
+);
 
 test("position and UV updates share source range validation and native uploads", (t) => {
     const compiled =
@@ -59,15 +69,15 @@ original::update_mesh_uvs(engine,mesh,{1,2,3,4,5,6},1,1,1);
 assert(uploaded[1].uv.x==3&&uploaded[1].uv.y==4&&uploaded[2].uv.x==0&&!geometry.has_uvs&&geometry.attribute_version==2);
 assert(geometry.vertices[1].uv.x==0&&geometry.vertices[1].uv.y==0);
 original::update_mesh_uvs(engine,mesh,{0,0},999,0,0);assert(geometry.attribute_version==2);
-rejects([&]{changed::update_mesh_uvs(engine,mesh,{0,0},0,0,0);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0},0,std::nullopt,0);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},-1,1,0);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,1,0.5);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,std::numeric_limits<double>::quiet_NaN(),0);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,2,0);},"#556");
-rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},3,1,0);},"#557");
-geometry.owners=2;rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,1,0);},"#555");geometry.owners=1;
-geometry.owned_packed_geometry=false;rejects([&]{original::update_mesh_positions(engine,mesh,{0,0,0},0,1,0);},"#555");
+rejects([&]{changed::update_mesh_uvs(engine,mesh,{0,0},0,0,0);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0},0,std::nullopt,0);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},-1,1,0);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,1,0.5);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,std::numeric_limits<double>::quiet_NaN(),0);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,2,0);},"${invalidSourceRange}");
+rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},3,1,0);},"${invalidDestinationRange}");
+geometry.owners=2;rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},0,1,0);},"${sharedGeometry}");geometry.owners=1;
+geometry.owned_packed_geometry=false;rejects([&]{original::update_mesh_positions(engine,mesh,{0,0,0},0,1,0);},"${sharedGeometry}");
 assert(geometry.attribute_version==2&&engine.meshes[0].transform_version==2);
 }`,
     );
@@ -171,19 +181,19 @@ int main() {
     original::update_mesh_tangents(engine,mesh,{},999,0,0);
     original::update_mesh_uv2(engine,mesh,{},999,0,0);
     assert(geometry.attribute_version==4);
-    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0},0,std::nullopt,0);},"#556");
-    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},-1,1,0);},"#556");
-    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0.5);},"#556");
-    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,2,0);},"#556");
-    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},3,1,0);},"#557");
-    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},3,1,0);},"#557");
-    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},3,1,0);},"#557");
-    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},3,1,0);},"#557");
+    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0},0,std::nullopt,0);},"${invalidSourceRange}");
+    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},-1,1,0);},"${invalidSourceRange}");
+    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0.5);},"${invalidSourceRange}");
+    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,2,0);},"${invalidSourceRange}");
+    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},3,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},3,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},3,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},3,1,0);},"${invalidDestinationRange}");
     geometry.owners=2;
-    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,1,0);},"#555");
+    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,1,0);},"${sharedGeometry}");
     geometry.attribute_capacities=original::uploaded_mesh_attribute_capacities(9,9,0,0,0,0);
     // Absent optional buffers return before shared ownership and malformed ranges.
     original::update_mesh_colors(engine,mesh,{0},-1,std::nullopt,-1);
@@ -195,11 +205,11 @@ int main() {
     assert(omitted.uv==24 && omitted.uv2==0 && omitted.tangent==0 && omitted.color==0);
     geometry.attribute_capacities=original::uploaded_mesh_attribute_capacities(9,0,2,2,4,4);
     assert(geometry.attribute_capacities.normal==4);
-    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"#557");
-    rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},1,1,0);},"#557");
-    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},1,1,0);},"#557");
-    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},1,1,0);},"#557");
-    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},1,1,0);},"#557");
+    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_uvs(engine,mesh,{0,0},1,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},1,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},1,1,0);},"${invalidDestinationRange}");
+    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},1,1,0);},"${invalidDestinationRange}");
     geometry.attribute_capacities=original::uploaded_mesh_attribute_capacities(9,15,10,10,20,20);
     original::update_mesh_normals(engine,mesh,{7,8,9},4,1,0);
     original::update_mesh_uvs(engine,mesh,{7,8},4,1,0);
@@ -222,10 +232,10 @@ int main() {
     assert(changedSizes.normal==16 && changedSizes.uv2==16 && changedSizes.color==16);
     assert(changed_allocation::uploaded_mesh_attribute_capacities(9,9,6,2,4,4).uv2==0);
     geometry.owned_packed_geometry=false;
-    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0);},"#555");
-    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,1,0);},"#555");
+    rejects([&]{original::update_mesh_normals(engine,mesh,{0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_colors(engine,mesh,{0,0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_tangents(engine,mesh,{0,0,0,0},0,1,0);},"${sharedGeometry}");
+    rejects([&]{original::update_mesh_uv2(engine,mesh,{0,0},0,1,0);},"${sharedGeometry}");
     geometry.owned_packed_geometry=true;
     const js::F32Array backing{99,99,99,1,2,3,4,5,6,99,99,99};
     const js::F32Array view(backing.buffer(),12,6);

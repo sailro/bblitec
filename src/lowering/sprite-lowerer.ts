@@ -566,20 +566,11 @@ ${body}
                 `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${stores} floats written.`,
             );
         }
-        const parameters = ["device", "fxBuffer", "timeSeconds", "params"];
-        const pinned = declaration.parameters.map((parameter) =>
-            soleBindingName(parameter.name),
+        this.context.assertParameterNames(
+            declaration,
+            ["device", "fxBuffer", "timeSeconds", "params", "scratch"],
+            "Pinned writeSpriteFxUbo",
         );
-        if (
-            pinned.length !== parameters.length + 1 ||
-            parameters.some((name, index) => pinned[index] !== name) ||
-            pinned[parameters.length] !== "scratch"
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected pinned writeSpriteFxUbo(device, fxBuffer, timeSeconds, params, scratch).",
-            );
-        }
         const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings: new Map<string, PinnedBinding>([
                 ["timeSeconds", { cpp: "time_seconds", type: "scalar" }],
